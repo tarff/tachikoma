@@ -95,6 +95,7 @@ export interface FrameIn {
   cursorRow: number; // the cursor's row among them
   promptTop: number; // the prompt window's first row last frame, which scroll() moves from
   working: boolean; // the working line
+  liveRows: number; // the open run's live row, drawn above the working line (release 8c plan, choice 67; Task 17)
   toolLine: boolean; // a tool line to draw, when there is room for it: never under the model list
   detail: boolean; // the detail view, which draws no prompt
   hint: boolean; // a line for the hint row; whether there is one does not depend on the rows left for the queue
@@ -168,7 +169,7 @@ export function frame(i: FrameIn): FrameOut {
   const reds = i.askedText === null ? [] : i.askedWarnings;
   const note = i.askedText !== null && i.askedNote ? 1 : 0;
   const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
-  const base = i.rows - 1 - 1 - (i.working && !i.question ? 1 : 0) - (i.full ? 1 : 0);
+  const base = i.rows - 1 - 1 - (i.working && !i.question ? 1 : 0) - i.liveRows - (i.full ? 1 : 0);
   // The rows kept below the tool line and the hint: the cursor's, while the prompt is drawn, or a question's least.
   const cursor = i.askedText !== null ? note + linesOf(i.askedShort ?? i.askedText).length + Math.min(1, reds.length) : i.detail ? 0 : 1;
   const tooled = i.toolLine && base >= 1 + cursor + (i.hint ? 1 : 0);
@@ -190,7 +191,7 @@ export function frame(i: FrameIn): FrameOut {
   const queuedShown = i.queued <= left ? i.queued : Math.max(0, left);
   // The frame's row short, the conversation's, the filter line and the status line.
   const pickerRows = i.pickerNeeded === null ? 0 : Math.max(1, Math.min(i.pickerNeeded, i.rows - 1 - 1 - 1 - 1 - (hinted ? 1 : 0)));
-  const abovePrompt = (i.working ? 1 : 0) + todoShown.length + queuedShown; // the live area's rows drawn above the prompt
+  const abovePrompt = i.liveRows + (i.working ? 1 : 0) + todoShown.length + queuedShown; // the live area's rows drawn above the prompt
   const live = (askedRows: number) =>
     (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);

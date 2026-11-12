@@ -43,7 +43,10 @@ export function killTree(child: ChildProcess): void {
     try {
       process.kill(-child.pid, "SIGKILL"); // the shell leads its own process group (detached below)
     } catch {
-      // ESRCH: the group is gone. Throwing here would crash Node from inside an abort listener.
+      // ESRCH: the group is gone. Throwing here would crash Node from inside an abort listener. Or the child never led a
+      // group: an MCP server, which the library starts in Tachikoma's own, is killed alone, its children a known limit
+      // (release 8c plan, choice 3). Node sends nothing to a child it has seen exit, so a reused pid is never hit.
+      child.kill("SIGKILL");
     }
   }
 }

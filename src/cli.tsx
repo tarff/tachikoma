@@ -10,6 +10,7 @@ import { accountCommand } from "./auth/chatgpt.js";
 import { withLock } from "./auth/lock.js";
 import {
   approvalQuestion,
+  askServers,
   checkOffLine,
   chooseSession,
   dropOnExit,
@@ -31,6 +32,7 @@ import {
   leadOf,
   leadSession,
   MAX_TASKS,
+  mcpLines,
   networkLine,
   newSaved,
   openSaved,
@@ -45,7 +47,9 @@ import {
   sandboxStart,
   screenMode,
   type Started,
+  stopSoon,
   systemAgain,
+  turnAnswer,
   WindowSessions,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
@@ -62,6 +66,11 @@ import { LocalExecutor, LocalWorkspace } from "./exec/local.js";
 import { Hooks } from "./hooks/hooks.js";
 import { pathsFor } from "./hooks/tools.js";
 import { readKeybindings } from "./keybindings.js";
+import { type Answers, answersFor, launchAnswers } from "./mcp/answers.js";
+import { AuthStore } from "./mcp/auth.js";
+import { mergeServers, readProjectFile } from "./mcp/config.js";
+import { Servers } from "./mcp/servers.js";
+import { approveOf, mcpTools } from "./mcp/tools.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
@@ -72,6 +81,7 @@ import { copyLock } from "./sandbox/snapshot.js";
 import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
+import { shellOf } from "./safety/split.js";
 import { hooksOf, loadSettings, SETTINGS, shownFile } from "./settings.js";
 import { delegateTool } from "./tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
@@ -81,7 +91,7 @@ import { App } from "./tui/App.js";
 import { NOT_GONE } from "./tui/app/constants.js";
 import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
-import { conversationLines } from "./tui/describe.js";
+import { conversationLines, mcpNames } from "./tui/fold.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
 import { programRunning } from "./tui/owner.js";
@@ -139,9 +149,9 @@ In a session: /lead <provider:model> switches the lead model, /lead or /model pi
 it, /compact [words] shortens it into a summary now, /autocompact <tokens> shortens it once it
 passes that many tokens (/autocompact off: only when a request would not fit), /tasks lists the
 subagents (/tasks t1 shows one, /tasks stop stops them), /hooks lists the hooks in force,
-/errors summarises the error log, /screen switches between full screen and classic,
-/settings opens the settings file in your editor, /keybindings opens the keys file in your editor,
-/vim switches vim mode in this window, /exit quits.
+/mcp lists the MCP servers, /errors summarises the error log, /screen switches between full screen
+and classic, /settings opens the settings file in your editor, /keybindings opens the
+keys file in your editor, /vim switches vim mode in this window, /exit quits.
 Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty
 prompt quits. Ctrl+T hides or shows the to-do list. Esc and Ctrl+T can be moved in the keys file;
 Ctrl-C and Ctrl-D cannot. ? on an empty prompt lists every key.`;
@@ -163,6 +173,9 @@ function fail(message: string): never {
 // The question at the start, before the screen is drawn (release 4 design, "Files that lead elsewhere
 // ask first"): y reads the files, any other key leaves them out, and Ctrl-C quits. Ink unrefs stdin when a screen drawn
 // before this one ends (`tachi -r`'s list), and Node would then exit instead of waiting for the key, so it is ref'd again.
+// It is resumed too: a data listener does not wake a stream paused on purpose (Node's stream docs, readable.pause), as
+// the question before leaves it, so a question after another, such as each project MCP server's (release 8c plan,
+// choice 23), would otherwise never hear its key (found at Task 9's build).
 function askAtStart(question: string): Promise<boolean> {
   process.stdout.write(`${question} `);
   process.stdin.ref();
@@ -177,6 +190,7 @@ function askAtStart(question: string): Promise<boolean> {
       process.stdout.write(`${yes ? "y" : "n"}\n`);
       resolve(yes);
     });
+    process.stdin.resume();
   });
 }
 
@@ -348,6 +362,9 @@ if (parsed.help) {
 // OSC 52 cannot act on the terminal (release 6 plan, choice 30).
 const loaded = loadSettings();
 if ("problem" in loaded) fail(visible(loaded.problem));
+// A project's MCP servers are read with the settings (release 8c plan, Task 9), at the launch only (Task 2), their
+// warnings said with the settings', and shown with them in full screen (App.tsx).
+const projectServers = readProjectFile(process.cwd(), process.env, loaded.warnings);
 for (const warning of loaded.warnings) console.error(visible(warning));
 const leadSpec = leadOf(parsed, process.env, loaded.settings);
 if (!leadSpec) fail(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${shownFile()}.\n\n${HELP}`);
@@ -473,7 +490,11 @@ let ready: Ready | undefined;
 // The executor stops running commands, and the sandbox's box is removed (src/sandbox/executor.ts), from "exit" handlers,
 // which dying by a signal skips. SIGQUIT is ignored while the editor has the terminal (clilib.ts, exitOn). Set before the
 // sandbox's launch, so a SIGTERM or SIGHUP during it, the copy among them, runs them too (Task 21's quality review).
-for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning));
+// Once the MCP servers are made (below), a signal stops them first, as the window's and -p's exits do, waiting at most
+// choice 3's wait (stopSoon; release 8c plan, Task 9).
+let mcpServers: Servers | undefined;
+const stopServers = () => (mcpServers ? stopSoon(mcpServers) : Promise.resolve());
+for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning, stopServers));
 // Copy mode's copy is removed when the launch ends before the session starts, however it ends (clilib.ts, dropOnExit).
 // From the image's steps until the box has started, Ctrl-C, with raw mode off, ends the launch through process.exit, so
 // the exit handlers remove the copy and any box already started (executor.ts); at the instruction files' question, it
@@ -541,6 +562,42 @@ const instructions = await readInstructions(instructionsAt, async (reached) => {
   for (const r of reached) asked.set(r.path, yes);
   return yes;
 });
+// The MCP servers, the user's entry winning a name both files give (release 8c design, "A project's servers"). The
+// sandbox's network is "none" with the sandbox off; with it on and its network off, no server starts (design, "Starting
+// and stopping servers").
+const mcpConfigs = mergeServers(loaded.settings.mcpServers ?? [], projectServers);
+const mcpNetwork = sandbox === "off" ? "none" : options.network;
+// The project's answers (choice 24), read once, when a project's server needs one; readPrivate's note that it made the
+// file private is grey, as the launch's other notes are. A file that cannot be read leaves every project server
+// unanswered: Servers says why in red (Task 5), and in the window each is asked about again, its answer kept for this
+// launch only (launchOnly), as nothing can be written there.
+let answers: Answers | undefined;
+let unread: { err: unknown } | undefined;
+const projectAnswers = (): Answers => {
+  if (unread) throw unread.err;
+  try {
+    return (answers ??= answersFor(root, data, (line) => console.error(gray(line))));
+  } catch (err) {
+    unread = { err };
+    throw err;
+  }
+};
+const launchOnly = launchAnswers();
+// In the window, after the instruction files' question, one question per project server not yet answered (choice 23);
+// none with the network off, as none could start. -p asks nothing: it starts only those already said yes to. An answer
+// that could not be saved still holds for this launch; its red line is said in the window, as the unreadable answers'
+// is (choice 50).
+const unsaved: string[] = [];
+if (interactive && mcpNetwork !== "off") {
+  const answersNow = () => {
+    try {
+      return projectAnswers();
+    } catch {
+      return launchOnly;
+    }
+  };
+  await askServers(mcpConfigs, answersNow, askAtStart, (line) => unsaved.push(line));
+}
 // Then the box: leftover boxes removed, the box started and its node checked (sandboxStart). From here the model works in
 // it, on /work (choice 19). Its launch lines are grey in the interface, and on stderr with -p.
 let box: Started | undefined;
@@ -558,6 +615,29 @@ if (ready) {
 const where = box ?? { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root) };
 const first = box?.system ?? systemPrompt(root);
 const system = [first, instructions.text].filter(Boolean).join("\n\n");
+// The MCP servers, made once the sandbox has started, and started once the bus has its listeners (release 8c plan, Task
+// 9). They work in the project's own folder, as they run outside the box until a later release (design, "Starting and
+// stopping servers").
+const servers = new Servers(mcpConfigs, {
+  root,
+  env: process.env,
+  bus,
+  answers: projectAnswers,
+  unread: launchOnly,
+  network: mcpNetwork,
+  // Read only when a line is said, from startAll on, once the session below exists.
+  lead: () => session.lead.id,
+  // The remote servers' sign-ins, kept in the data folder (release 8c plan, Task 11); readPrivate's note that it made the
+  // file private is grey, as the servers' other notes are, and a damaged file's line red, as their failures are (choice
+  // 57). -p cannot sign in, and says so of a server that needs it.
+  auth: new AuthStore(
+    data,
+    (line) => bus.emit("mcp-note", line),
+    (message) => bus.emit("error", { kind: "mcp", attempted: "MCP sign-ins", message, lead: session.lead.id }),
+  ),
+  headless: !interactive,
+});
+mcpServers = servers;
 
 let declined = false;
 let ask: Ask = async (summary, _detail, owner, _plain, warnings) => {
@@ -574,6 +654,7 @@ const gate = new PermissionGate(mode, (...a) => ask(...a), interactive ? undefin
   ...(interactive ? {} : { hookRefused: () => void (declined = true) }),
 });
 gate.rules = rules;
+const shell = box?.gate.shell ?? shellOf("host"); // the shell tool's, which the window's rows fold by (release 8c plan, Task 15)
 gate.protection = box?.protection ?? protection;
 // The user's hooks, one object for the window, handed to the lead's session and, through Tasks, each subagent's (release
 // 8b plan, "Architecture"; Task 6). They run in the project's real folder, and are sent its real paths, or the box's in
@@ -590,6 +671,10 @@ const hooks = new Hooks(
   },
   bus,
 );
+// mcp_tool hooks reach the servers only through this, the subagents' Hooks too (release 8c plan, Task 8); a server's forms
+// fire the Elicitation hooks (Task 12).
+hooks.useServers(servers);
+servers.forms.useHooks(hooks);
 const paths = pathsFor(root, box ? { mode: sandbox === "copy" ? "copy" : "live" } : null);
 // ctx.root and the workspace's root are one place: /work in the box (Task 14's review).
 const { executor, workspace } = where;
@@ -604,6 +689,7 @@ const tasks = new Tasks({
   transcript: () => session.transcript, // each subagent saves beside the lead (release 8a plan, Task 5)
   hooks,
   paths,
+  mcp: servers, // each subagent's own MCP tools, its trusted read-only ones only (Task 7)
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus. In the box the shell tool says
 // bash, whatever the host.
@@ -641,6 +727,10 @@ const { session, pictures } = leadSession({
   tasks,
   hooks,
   paths,
+  // The MCP tools, each call asked about by the launch's question (release 8c plan, Task 7), and the servers the first
+  // prompt waits for (choice 25).
+  mcp: mcpTools(servers, bus, approveOf(servers)),
+  servers,
 });
 // SessionStart's source, by how the launch opened the conversation (release 8b plan, Task 10): a copy opened as another
 // window holds the session is still a resume, as -c or -r asked for one.
@@ -657,14 +747,14 @@ if (parsed.print !== undefined) {
     // A judge that cannot be reached refuses one action, as a no does, and fails no run (release 7 plan, choice 65); nor
     // does a transcript that cannot be saved (release 8a plan, Task 5), nor a shortening's line after which the request was
     // sent as it is (Task 13): a later line that ends the turn has no mark, and still fails it. Nor does a hook that failed
-    // (release 8b design, "What the user sees").
-    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge" && e.kind !== "saving" && e.kind !== "hook" && !(e.kind === "shortening" && e.sent)) {
-      failed = true;
-    }
+    // (release 8b design, "What the user sees"), nor an MCP server, nor the project's answers (release 8c plan, choice 26).
+    const harmless = ["tool", "fallback", "judge", "saving", "hook", "mcp"];
+    if (!harmless.includes(e.kind) && !(e.kind === "shortening" && e.sent)) failed = true;
   });
   if (parsed.json) {
-    // A hook's grey lines too, each a line of its own (release 8b plan, Task 8; the user's choice, 2026-11-09).
-    for (const event of ["message", "usage", "error", "lead", "hook-note"] as const) {
+    // A hook's grey lines too, each a line of its own (release 8b plan, Task 8; the user's choice, 2026-11-09), and the MCP
+    // ones (release 8c plan, choice 26).
+    for (const event of ["message", "usage", "error", "lead", "hook-note", "mcp-note"] as const) {
       bus.on(event, (data: unknown) => console.log(jsonLine(event, data)));
     }
   } else {
@@ -678,7 +768,12 @@ if (parsed.print !== undefined) {
     // A hook's grey lines, as a fallback's note is written (release 8b plan, choice 23), escaped whole, so a line break in
     // the hook's own words cannot pass for a line of Tachikoma's (Task 6's review).
     bus.on("hook-note", (line) => console.error(`note: ${visible(line, { tabs: true })}`));
+    // An MCP grey line so too (choice 26); a failure is `mcp: <line>`, as every other kind's (above).
+    bus.on("mcp-note", (line) => console.error(`note: ${visible(line, { tabs: true })}`));
   }
+  // Started once the listeners are on, before the prompt is sent, which waits for them (choice 25).
+  servers.startAll();
+  for (const line of mcpLines(servers, { print: true })) bus.emit("mcp-note", line);
   // Loaded once the error listeners are on, so a start line or mend that failed is said now, not at the first write.
   for (const line of said) console.error(gray(line.text));
   session.load(opened.conversation);
@@ -688,24 +783,25 @@ if (parsed.print !== undefined) {
   const stop = new AbortController();
   process.once("SIGINT", () => stop.abort());
   // A prompt a UserPromptSubmit hook blocked, and a hook's continue: false, end the run with exit code 1, as its work was
-  // cut short (release 8b plan, Task 8 and choice 9). A blocked prompt, or one a stop left unsent, leaves the history as it
-  // was, so a resumed session's last answer is not printed as this run's; a stop later in the turn prints the answer it
-  // came after, as a Stop hook's does (Task 9).
+  // cut short (release 8b plan, Task 8 and choice 9). Only the reply this turn added is printed (turnAnswer): a blocked
+  // prompt, one a stop left unsent, and one stopped while it waited for SessionStart or the MCP servers add none, so a
+  // resumed session's last answer is not printed as this run's (release 8c plan, Task 9's review); a stop later in the
+  // turn prints the answer it came after, as a Stop hook's does (release 8b plan, Task 9).
+  const before = session.messages.at(-1);
   const ended = await session.send(parsed.print, stop.signal);
   // Read now: a Ctrl-C during SessionEnd or copy mode's step below comes after the run's work, so it does not mark the run
   // stopped (Task 10's code review).
   const aborted = stop.signal.aborted;
-  if (!parsed.json && !(ended && ("blocked" in ended || ended.unsent))) {
-    const last = session.messages.at(-1);
-    if (last?.role === "assistant") {
-      const text = last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
-      const { out, note } = headlessAnswer(text, { raw: parsed.raw === true, tty: process.stdout.isTTY === true });
-      console.log(out);
-      if (note) console.error(note);
-    }
+  const text = parsed.json ? undefined : turnAnswer(before, session.messages);
+  if (text !== undefined) {
+    const { out, note } = headlessAnswer(text, { raw: parsed.raw === true, tty: process.stdout.isTTY === true });
+    console.log(out);
+    if (note) console.error(note);
   }
   // The run's session ends here, after its answer, however its turn ended, a stop by Ctrl-C too (release 8b plan, Task 10).
+  // Then the MCP servers stop, after SessionEnd, whose mcp_tool hooks call them (release 8c plan, Task 8's code review).
   await session.end("other");
+  await servers.stopAll();
   // Nobody can review here, so the copy is kept (choice 29), unless it has nothing to review: then, as at the session's
   // end in the interface (queue.ts, leave), once the box is gone and under the copy's lock, it is removed (choice 121).
   if (box?.copy) {
@@ -730,7 +826,7 @@ if (parsed.print !== undefined) {
   // Ctrl-C reaches the interface as a key, as raw mode is on, so a SIGINT here came from outside (`kill -INT`), or from
   // Ctrl-C typed while the editor has the terminal, with raw mode off: that one is ignored, as Git ignores it, and the
   // turn goes on (clilib.ts, exitOn; release 6 plan, choice 31).
-  process.on("SIGINT", exitOn("SIGINT", programRunning));
+  process.on("SIGINT", exitOn("SIGINT", programRunning, stopServers));
   // After the instruction files' question, which stays on the normal screen, and before Ink's first frame, which goes to
   // the second (release 5 design, "The two modes"). restoreOnExit is set up in every mode, as /screen can enter full
   // screen later. tests/tui/terminal.test.tsx ("restoreOnExit") copies this order from here to restoreWhenInkEnds: keep
@@ -785,10 +881,10 @@ if (parsed.print !== undefined) {
       branch={await workspace.branch().catch(() => null)}
       historyFile={historyFile(root)}
       // A resumed conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan,
-      // Task 6).
+      // Task 6), its tool rows folded as they were live (release 8c plan, Task 15).
       intro={[
         ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
-        ...conversationLines(opened.conversation.messages),
+        ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers) }),
         ...said.map((l) => ({ ...l, color: "gray" as const })),
       ]}
       pictures={pictures}
@@ -818,6 +914,8 @@ if (parsed.print !== undefined) {
       saved={windowSessions}
       leftLines={(lines) => left.push(...lines)}
       hooks={hooks}
+      mcp={{ servers, project: projectServers }}
+      shell={shell}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing
@@ -826,14 +924,20 @@ if (parsed.print !== undefined) {
   );
   // Ink's first render, in its legacy mode, runs the App's effects before render() returns (measured 2026-11-06), so its
   // listeners are on: a start line or mend that failed is said on screen now, not at the first write. So are SessionStart's
-  // lines (release 8b plan, Task 10).
+  // lines (release 8b plan, Task 10), and the MCP servers' (release 8c plan, Task 9), started now, before a prompt can be
+  // typed, which waits for them (choice 25).
+  servers.startAll();
+  for (const line of mcpLines(servers, { print: false })) bus.emit("mcp-note", line);
+  for (const message of unsaved) bus.emit("error", { kind: "mcp", attempted: "MCP answers", message, lead: session.lead.id });
   session.load(opened.conversation);
   session.start(source);
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   // After the terminal is back, as restoreWhenInkEnds waits on the same promise first; an error is its to report. The
   // lines come escaped (Review.tsx, ReviewEnd). Then the window's exit is done, after SessionEnd (queue.ts, leave), so
-  // an async hook still running is killed, as at the end of a -p run (the user's choice, 2026-11-10; final review).
+  // an async hook still running is killed, as at the end of a -p run (the user's choice, 2026-11-10; final review), and
+  // the MCP servers stop, after SessionEnd too, whose mcp_tool hooks call them (release 8c plan, Task 8's code review). A
+  // crash leaves them to the exit's kill (exec/local.ts, running).
   exited
     .then(
       () => {
@@ -842,5 +946,6 @@ if (parsed.print !== undefined) {
       },
       () => {},
     )
-    .then(() => hooks.stopAsync());
+    .then(() => hooks.stopAsync())
+    .then(() => servers.stopAll());
 }

@@ -1,6 +1,8 @@
 import path from "node:path";
 import type { Hooks } from "../hooks/hooks.js";
 import type { Paths } from "../hooks/tools.js";
+import type { Servers } from "../mcp/servers.js";
+import { approveOf, mcpTools } from "../mcp/tools.js";
 import { cost } from "../providers/pricing.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import { Bus, type ErrorEvent } from "./bus.js";
@@ -57,6 +59,10 @@ export interface TasksOptions {
   // through hooks.for(itself), so its input carries its agent_id (release 8b plan, Task 6).
   hooks?: Hooks;
   paths?: Paths;
+  // The servers each subagent's own MCP tools are made from here: its trusted read-only ones only, so no caller can give a
+  // subagent more (release 8c plan, Task 7 and choice 17), with a tool_search and a loaded set of its own, starting with
+  // none, never the lead's (choice 43).
+  mcp?: Servers;
 }
 
 // The task manager (release 4 design, "How it is built"): starts subagents, each its own Session,
@@ -172,13 +178,14 @@ export class Tasks {
     // design, "Saving sessions"). The lead's line is written before the first wait; the subagent's own file only with its
     // first message or its ended line, and a missing file reads as unfinished. So from start, before delegate says it
     // started and while it waits for a place, a closed window's subagent is found lost, never its id handed out again. None once
-    // the lead's saving has stopped, so no file is saved that no line names. A subagent is never sent pictures, so its
-    // transcript never writes to that folder. The lead's write made the sessions folder private, so the subagents folder
-    // inside it inherits that permission, as transcript.ts's pictures folder does.
+    // the lead's saving has stopped, so no file is saved that no line names. A subagent numbers the pictures its tools
+    // answer with from its own 1, so they are saved in a folder of its own, <id>/subagents/<tN>/pictures, never over the
+    // lead's (release 8c plan, Task 6's code review). The lead's write made the sessions folder private, so the subagents
+    // folder inside it inherits that permission, as transcript.ts's pictures folder does.
     const lead = this.opts.transcript?.();
     lead?.write({ t: "subagent", id: t.id, description: t.description, file: `${t.id}.jsonl` });
     const file = (l: Transcript) => path.join(pathsOf(l.file).subagents, `${t.id}.jsonl`);
-    const own = lead && !lead.failed ? new Transcript(file(lead), lead.pictures, { inherits: true }) : undefined;
+    const own = lead && !lead.failed ? new Transcript(file(lead), pathsOf(file(lead)).pictures, { inherits: true }) : undefined;
     const result = (await this.#place(signal)) ? await this.#work(t, provider, fallback, signal, own) : null;
     const stopped = this.#stops.get(t.id)!;
     // A hook's stop comes with its own result and its stopReason (#work).
@@ -257,6 +264,8 @@ export class Tasks {
       ...(own ? { transcript: own } : {}),
       ...(hooks ? { hooks } : {}),
       ...(this.opts.paths ? { paths: this.opts.paths } : {}),
+      // A reconnect's grey line goes to the lead's bus, which shows it, as the servers' own lines do.
+      ...(this.opts.mcp ? { mcp: mcpTools(this.opts.mcp, this.opts.bus, approveOf(this.opts.mcp), { trustedOnly: true }) } : {}),
     });
     t.messages = session.messages;
     t.state = "running";

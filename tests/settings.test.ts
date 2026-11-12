@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -325,6 +326,31 @@ describe("readSettings", () => {
       const said = 'has a hook with "if", which Tachikoma cannot check, so it was left out: ';
       expect(r.warnings).toEqual([`settings.json: "hooks": "Stop" ${said}jq x`, `settings.json: "hooks": "Stop" ${said}jq x`]);
       expect(r.hooksLeftOut).toEqual([`"Stop" ${said}first`, `"Stop" ${said}second`]);
+    });
+  });
+
+  // Release 8c plan, Task 2: the servers themselves are read in src/mcp/config.ts (tests/mcp/config.test.ts).
+  describe("mcpServers", () => {
+    it("reads the servers, filling ${VAR} from the environment it is given, and applies the other entries", () => {
+      const r = readSettings(JSON.stringify({ mode: "ask", mcpServers: { tv: { command: "${BIN}" }, w: { type: "ws" } } }), { BIN: "node" });
+      expect(r).toEqual({
+        settings: {
+          mode: "ask",
+          mcpServers: [{
+            name: "tv", safe: "tv", where: "user", trusted: null, trustedTools: [], alwaysLoad: false,
+            entry: { kind: "stdio", command: "node", args: [], env: {} },
+            written: createHash("sha256").update(JSON.stringify({ command: "${BIN}" })).digest("hex"),
+            asWritten: { command: "${BIN}", args: [] },
+          }],
+        },
+        warnings: ['settings.json: "mcpServers": "w" has "type" "ws", which Tachikoma does not support; it was left out'],
+      });
+    });
+
+    it("refuses mcpServers of the wrong type, so nothing in the file applies", () => {
+      expect(read({ mode: "ask", mcpServers: [{ command: "node" }] })).toEqual({
+        problem: 'settings.json: "mcpServers" must be an object of servers (got a list)',
+      });
     });
   });
 

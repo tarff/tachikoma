@@ -1,5 +1,7 @@
 import type { Fns } from "../App.js";
+import { screen as escaped } from "../describe.js";
 import { move } from "../editor.js";
+import { type Fold, foldRow, openRows } from "../fold.js";
 import type { Mouse } from "../input.js";
 import type { Scroll } from "../keys.js";
 import { layout, placeOn, scroll as windowOf } from "../layout.js";
@@ -98,7 +100,7 @@ export const mouse = (ui: UI, fns: Fns) => {
       if (h?.copy) {
         fns.copy();
         ui.rerender((n) => n + 1);
-      }
+      } else if (h?.fold !== undefined) fns.toggleFold(h.fold);
       return;
     }
     const top = firstRow(p.rows, p.view.current, viewHeight);
@@ -150,7 +152,10 @@ export const mouse = (ui: UI, fns: Fns) => {
     ui.lastPress.current = { at, x, y, count };
     const cell = fns.cellAt(rows, top + y, x);
     ui.rerender((n) => n + 1);
-    if (count === 1) return void (ui.held.current = { press: span(rows, cell, cell), copy: false, top: y === 0 });
+    // A folded tool row in the conversation, which a click with no drag opens or closes (Task 15).
+    const line = !ui.detail.current && top + y < rows.total ? rows.row(top + y).line : undefined;
+    const fold = line !== undefined && rows.lines[line]!.fold ? { fold: line } : {};
+    if (count === 1) return void (ui.held.current = { press: span(rows, cell, cell), copy: false, top: y === 0, ...fold });
     const { pos, past } = placeAt(rows, cell.row, cell.x);
     if (top + y >= rows.total || (count === 2 && past)) return;
     const text = rows.lines[pos.line]!.text;
@@ -194,6 +199,37 @@ export const mouse = (ui: UI, fns: Fns) => {
     fns.forget();
     ui.rerender((n) => n + 1);
   };
+  // A click on a folded tool row opens it in place into its calls' rows, and a click on one of those closes it again; each
+  // keeps its own state (release 8c plan, choice 65).
+  const toggleFold = (line: number) => {
+    const fold = ui.kept.lines[line]?.fold;
+    if (!fold) return;
+    fold.open = !fold.open;
+    putFold(fold);
+  };
+  // A folded row's lines put again as it now is: open, its calls' rows with the results come so far; closed, its own row.
+  // A click puts them, and so does a result for an open row's call, so it shows under its call as it comes (choice 70;
+  // App.tsx, onMessage). An open row is in `kept`, as only a click in full screen opens one. The lines after it move, so
+  // the view held below it and a question's detail move with their own lines.
+  const putFold = (fold: Fold) => {
+    const { kept } = ui;
+    const to = kept.lines.findLastIndex((l) => l.fold === fold) + 1;
+    let from = to - 1;
+    while (from > 0 && kept.lines[from - 1]!.fold === fold) from--;
+    const put = (fold.open ? openRows(fold, ui.run.options.names) : [foldRow(fold)]).map(escaped);
+    kept.replace(from, to - from, put);
+    const moved = (n: number) => (n >= to ? n + put.length - (to - from) : Math.min(n, from));
+    const at = ui.view.current.at;
+    const inside = at !== null && at.line >= from && at.line < to;
+    if (at) ui.view.current = { ...ui.view.current, at: inside ? { line: from, offset: 0 } : { line: moved(at.line), offset: at.offset } };
+    for (const q of ui.questions.current) if (q.detail) q.detail = [moved(q.detail[0]), moved(q.detail[1])];
+    // A press held on a row below, which a result can move before its release, still opens that row (Task 21's review).
+    const held = ui.held.current;
+    if (held?.fold !== undefined) held.fold = moved(held.fold);
+    // The rows under the pointer have moved, so a quick next press is a click of its own, never a double-click on them.
+    ui.lastPress.current = null;
+    ui.rerender((n) => n + 1);
+  };
   // A drag while selecting grows the selection to the pointer's cell. Below the conversation the view first scrolls a row
   // for each report, so a selection can be longer than the screen (release 5 design, "Selecting"). The frame starts at
   // the terminal's top, so the pointer cannot go above the conversation: its top row stands for above it, for a drag
@@ -208,5 +244,5 @@ export const mouse = (ui: UI, fns: Fns) => {
     h.copy = true;
     ui.rerender((n) => n + 1);
   };
-  return { scroll, selected, copy, onMouse, cellAt, textRows, pressAt, clickAt, dragTo };
+  return { scroll, selected, copy, onMouse, cellAt, textRows, pressAt, clickAt, toggleFold, putFold, dragTo };
 };

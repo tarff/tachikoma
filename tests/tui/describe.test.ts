@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { exportText } from "../../src/core/exportText.js";
 import type { Message } from "../../src/core/types.js";
 import type { Event, Hook } from "../../src/hooks/config.js";
 import type { Run } from "../../src/hooks/hooks.js";
 import type { Ran } from "../../src/hooks/run.js";
-import { lastTurn, describe as lines } from "../../src/tui/describe.js";
+import { callLines, lastTurn, describe as lines } from "../../src/tui/describe.js";
 
 describe("describe", () => {
   // Release 8b design, "What a hook's answer does": the user does not see a hook's text for the model in the conversation.
@@ -16,6 +17,40 @@ describe("describe", () => {
       ],
     };
     expect(lines(results)).toEqual([{ text: "  ⎿ ok", color: "gray", oneLine: true }]);
+  });
+
+  // Release 8c plan, choice 34: a tool's pictures are the server's, so they are drawn under the results, never as a prompt.
+  it("draws a tool's pictures as a grey row under the results, never as the user's prompt", () => {
+    const png = { type: "image", mediaType: "image/png", data: Buffer.from("png"), from: "server" } as const;
+    const results: Message = {
+      role: "user",
+      parts: [
+        { type: "tool_result", callId: "c1", output: "two\n[The tool's answer has pictures: [Image #4], [Image #5]]", isError: false },
+        { ...png, id: 4 },
+        { ...png, id: 5 },
+      ],
+    };
+    expect(lines(results)).toEqual([
+      { text: "  ⎿ ok", color: "gray", oneLine: true },
+      { text: "  ⎿ [Image #4] [Image #5]", color: "gray", oneLine: true },
+    ]);
+  });
+
+  // Release 8c plan, Task 13 and choice 34: what a server supplied after the typed line is for the model, so the prompt
+  // shows as typed, and a resource's picture as a tool's does.
+  it("draws a prompt as typed, leaving out the text a server supplied after it", () => {
+    const prompt: Message = {
+      role: "user",
+      parts: [
+        { type: "text", text: "/fake:greet Ann" },
+        { type: "text", text: "Say hello to Ann.", from: "server" },
+        { type: "image", id: 2, mediaType: "image/png", data: Buffer.from("png"), from: "server" },
+      ],
+    };
+    expect(lines(prompt)).toEqual([
+      { text: "> /fake:greet Ann", color: "cyan" },
+      { text: "  ⎿ [Image #2]", color: "gray", oneLine: true },
+    ]);
   });
 });
 
@@ -57,6 +92,27 @@ describe("lastTurn", () => {
       { text: "◆ Stop hook slow.sh · out of time · 600004 ms", color: "gray" },
       { text: "◆ Stop hook gone.sh · could not start · 1 ms", color: "gray" },
       { text: "◆ Stop hook again\\u0007.sh · exit 2 · 12 ms\n  ⎿ run the tests", color: "gray" },
+    ]);
+  });
+
+  // Release 8c plan, Task 8: an mcp_tool hook by its server and tool, how its call ended in the words of its red lines.
+  it("lists an mcp_tool hook's runs by its server and tool: answered, an error answer, not called, out of time", () => {
+    const mcp = { server: "memory", tool: "search", input: {} };
+    const hook: Hook = { event: "Stop", matcher: { all: true }, command: "", mcp, async: false, where: '"Stop"' };
+    const ran = (more: Partial<Ran>): Ran => ({ code: null, stdout: "", stderr: "", ms: 12, ...more });
+    const ok = { kind: "ok" } as const;
+    const failed = { kind: "failed", line: "x" } as const;
+    const runs: Run[] = [
+      { event: "Stop", hook, ran: ran({ code: 0, stdout: "found" }), outcome: ok },
+      { event: "Stop", hook, ran: ran({ failed: "error", reason: "boom" }), outcome: failed },
+      { event: "Stop", hook, ran: ran({ failed: "call", reason: "memory is not running" }), outcome: failed },
+      { event: "Stop", hook, ran: ran({ failed: "time", limit: 600 }), outcome: failed },
+    ];
+    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "go" }] }], runs).slice(1).map((l) => l.text)).toEqual([
+      "◆ Stop hook memory search · exit 0 · 12 ms",
+      "◆ Stop hook memory search · answered an error · 12 ms",
+      "◆ Stop hook memory search · could not be called · 12 ms",
+      "◆ Stop hook memory search · out of time · 12 ms",
     ]);
   });
 
@@ -127,5 +183,21 @@ describe("lastTurn", () => {
       "◆ PostToolUseFailure hook check.sh for delegate · exit 1 · 12 ms",
       "◆ SessionStart hook check.sh · exit 0 · 12 ms",
     ]);
+  });
+
+  // Release 8c plan, choice 68 (Task 18, the user's answer, 2026-11-12): Ctrl+O's and /tasks <id>'s full record names an
+  // MCP call by its server and tool as the server gives them, as its row does; /export keeps the full name (exportText).
+  it("names an MCP call in the full record by its server and tool as the server gives them", () => {
+    const messages: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "go" }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "mcp__my_tv__foo_bar", input: { x: 1 } }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "set", isError: false }] },
+    ];
+    const names = (full: string) => (full === "mcp__my_tv__foo_bar" ? { server: "my.tv", tool: "foo.bar" } : { server: "?", tool: "?" });
+    const record = '● my.tv foo.bar {\n  "x": 1\n}\n  ⎿ set';
+    expect(lastTurn(messages, [], names)).toEqual([{ text: "Last turn: 1 tool call", color: "gray" }, { text: record, color: "gray" }]);
+    expect(callLines(messages, names)).toEqual([{ text: record, color: "gray" }]);
+    expect(callLines(messages)[0]!.text).toBe('● my_tv foo_bar {\n  "x": 1\n}\n  ⎿ set'); // without the window's names
+    expect(exportText(messages, "fake:a")).toContain('● mcp__my_tv__foo_bar {\n  "x": 1\n}\n  ⎿ set');
   });
 });

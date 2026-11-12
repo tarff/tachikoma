@@ -5,13 +5,19 @@ import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "v
 import path from "node:path";
 import { privateDir } from "../src/auth/private.js";
 import { Bus } from "../src/core/bus.js";
+import { projectFile } from "../src/core/datadir.js";
 import { readInstructions } from "../src/core/instructions.js";
 import { PermissionGate } from "../src/core/permissions.js";
 import { listSessions, openSession, sessionsDir } from "../src/core/sessions.js";
 import type { Message, ToolSpec } from "../src/core/types.js";
 import type { Hook } from "../src/hooks/config.js";
+import { type Answers, answersFor } from "../src/mcp/answers.js";
+import type { ServerConfig } from "../src/mcp/config.js";
+import { KILL_MS } from "../src/mcp/server.js";
+import { Servers } from "../src/mcp/servers.js";
 import {
   approvalQuestion,
+  askServers,
   chooseSession,
   exitOn,
   exitSignals,
@@ -26,6 +32,7 @@ import {
   jsonLine,
   leadOf,
   leadSession,
+  mcpLines,
   newSaved,
   openSaved,
   prose,
@@ -35,7 +42,10 @@ import {
   resumeArgs,
   screenMode,
   scrollSpeed,
+  serverQuestion,
   statusSegments,
+  stopSoon,
+  turnAnswer,
   systemAgain,
   WindowSessions,
 } from "../src/clilib.js";
@@ -80,6 +90,132 @@ describe("the instruction files on screen", () => {
     expect(headlessLeftOut([{ path: path.resolve("/elsewhere/x.md"), how: "imported by CLAUDE.md" }])).toBe(
       `note: 1 instruction file from outside the project left out, since nobody can approve it in -p mode: ${path.resolve("/elsewhere/x.md")}, imported by CLAUDE.md`,
     );
+  });
+});
+
+// Release 8c plan, Task 9 (choices 23, 24, 26 and 48-50; "Lines this plan adds"): a project's MCP servers asked about at
+// the launch, and the launch's MCP lines. No server is started here: a Servers made without startAll starts none.
+describe("MCP servers at the launch", { timeout: 15_000 }, () => {
+  // An entry as the settings give it, filled in, with `asWritten` the file's own words: the entry's when not given.
+  const server = (name: string, entry: ServerConfig["entry"], where: ServerConfig["where"] = "project", asWritten?: ServerConfig["asWritten"]) => ({
+    name, safe: name.replace(/[^A-Za-z0-9_-]/g, "_"), entry, where, trusted: null, trustedTools: [], alwaysLoad: false, written: `as written: ${name}`,
+    asWritten: asWritten ?? (entry.kind === "stdio" ? { command: entry.command, args: entry.args } : { url: entry.url, headers: entry.headers }),
+  }) satisfies ServerConfig;
+  const local = (name: string, args: string[] = [], where: ServerConfig["where"] = "project", env: Record<string, string> = {}) =>
+    server(name, { kind: "stdio", command: "npx", args, env }, where);
+  const servers = (configs: ServerConfig[], network: "on" | "off" | "none", answers: () => Answers) =>
+    new Servers(configs, { root: tmpdir(), env: {}, bus: new Bus(), answers, network, lead: () => "fake:a" });
+  const none = (): Answers => ({ get: () => undefined, set: () => {}, reset: () => {} });
+
+  it("asks about a project's local server with its command and arguments, and a remote one at its address, escaped", () => {
+    const tv = local("tv", ["-y", "tradingview-mcp"]);
+    expect(serverQuestion(tv)).toBe('Start the MCP server "tv" from this project\'s .mcp.json: npx -y tradingview-mcp? [y/n]');
+    // A command or argument that is empty or holds a space or a quote is shown in quotes, a quote in it as \", so where
+    // each ends can be seen.
+    expect(serverQuestion(local("a\u001b[2Jb", ["C:\\my server\\x.js", "", 'say "hi"']))).toBe(
+      'Start the MCP server "a\\u001b[2Jb" from this project\'s .mcp.json: npx "C:\\my server\\x.js" "" "say \\"hi\\""? [y/n]',
+    );
+    const remote = server("sanity", { kind: "http", url: "https://mcp.sanity.io/\u202e", headers: {} });
+    expect(serverQuestion(remote)).toBe('Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.sanity.io/\\u202e? [y/n]');
+  });
+
+  // Choice 48: as .mcp.json writes it, so a key filled in from the environment never reaches the screen.
+  it("shows the entry as written, ${VAR} unfilled, never the value filled in", () => {
+    const filled = { kind: "stdio" as const, command: "npx", args: ["--key=sk-secret-123"], env: {} };
+    const tv = server("tv", filled, "project", { command: "npx", args: ["--key=${TOKEN}"] });
+    expect(serverQuestion(tv)).toBe('Start the MCP server "tv" from this project\'s .mcp.json: npx --key=${TOKEN}? [y/n]');
+    const url = { kind: "http" as const, url: "https://mcp.example.com/mcp?key=sk-secret-123", headers: {} };
+    const sanity = server("sanity", url, "project", { url: "https://mcp.example.com/mcp?key=${TOKEN}", headers: {} });
+    expect(serverQuestion(sanity)).toBe(
+      'Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.example.com/mcp?key=${TOKEN} (sends TOKEN)? [y/n]',
+    );
+    for (const c of [tv, sanity]) expect(serverQuestion(c)).not.toContain("sk-secret-123");
+  });
+
+  // Choice 49: the variables a local entry sets, names only, in the file's order, escaped and quoted as the command is; a
+  // remote server's headers are not named, only the variables they read (choice 64, below).
+  it("names the variables a local server's entry sets, never their values, and no headers", () => {
+    const env = { NODE_OPTIONS: "--require ./steal.js", "MY KEY\u001b": "sk-secret-123" };
+    expect(serverQuestion(local("tv", ["server.js"], "project", env))).toBe(
+      'Start the MCP server "tv" from this project\'s .mcp.json: npx server.js (sets NODE_OPTIONS, "MY KEY\\u001b")? [y/n]',
+    );
+    const headers = { kind: "http" as const, url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer sk-secret-123" } };
+    expect(serverQuestion(server("sanity", headers))).toBe(
+      'Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.example.com/mcp? [y/n]',
+    );
+  });
+
+  // Choice 64: the variables a remote entry's address and headers read, as written, names only, in the file's order, each
+  // once, escaped and quoted as a local one's are; one that reads none names nothing.
+  it("names the variables a remote server's address and headers read, never their values", () => {
+    const filled = { kind: "http" as const, url: "https://tools.example.dev/mcp", headers: { Authorization: "Bearer sk-secret-123" } };
+    const one = server("tools", filled, "project", { url: "https://tools.example.dev/mcp", headers: { Authorization: "Bearer ${TICKETS_TOKEN}" } });
+    expect(serverQuestion(one)).toBe('Connect to the MCP server "tools" from this project\'s .mcp.json at https://tools.example.dev/mcp (sends TICKETS_TOKEN)? [y/n]');
+    const headers = { Authorization: "Bearer ${TICKETS_TOKEN}", "X-Team": "${TEAM}", "X-Key": "${MY KEY\u001b:-none}" };
+    const several = server("tools", filled, "project", { url: "https://${HOST:-tools.example.dev}/mcp?team=${TEAM}", headers });
+    expect(serverQuestion(several)).toBe(
+      'Connect to the MCP server "tools" from this project\'s .mcp.json at https://${HOST:-tools.example.dev}/mcp?team=${TEAM} ' +
+        '(sends HOST, TEAM, TICKETS_TOKEN, "MY KEY\\u001b")? [y/n]',
+    );
+    const none = server("tools", filled, "project", { url: "https://tools.example.dev/mcp", headers: { "X-Team": "core" } });
+    expect(serverQuestion(none)).toBe('Connect to the MCP server "tools" from this project\'s .mcp.json at https://tools.example.dev/mcp? [y/n]');
+    for (const c of [one, several, none]) expect(serverQuestion(c)).not.toContain("sk-secret-123");
+  });
+
+  it("asks about each project server not yet answered for its entry, in order, and keeps a yes and a no for the next launch", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-mcp-"));
+    onTestFinished(() => removeTree(top));
+    const data = path.join(top, "data", "tachikoma");
+    answersFor(top, data).set("old", "as written: old", true);
+    const asked: string[] = [];
+    const replies = [true, false];
+    const configs = [local("mine", [], "user"), local("old"), local("yes"), local("no")];
+    const failed: string[] = [];
+    await askServers(configs, () => answersFor(top, data), async (question) => (asked.push(question), replies.shift()!), (line) => failed.push(line));
+    expect(asked).toEqual([serverQuestion(local("yes")), serverQuestion(local("no"))]);
+    expect(failed).toEqual([]);
+    const kept = answersFor(top, data);
+    expect(["old", "yes", "no"].map((name) => kept.get(name, `as written: ${name}`))).toEqual([true, true, false]);
+    // Nothing read nor asked without a project server.
+    const never = async () => expect.unreachable();
+    await askServers([local("mine", [], "user")], () => expect.unreachable("no project server, so no answers are read"), never, never);
+  });
+
+  // Choice 50: an answer that cannot be written holds for this launch, with one red line each, and the launch goes on. The
+  // data folder cannot be written as a file stands where the answers' folder goes, which the test made itself; no
+  // permission is changed.
+  it("says an answer that could not be saved, and keeps it for this launch", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-mcp-"));
+    onTestFinished(() => removeTree(top));
+    const data = path.join(top, "data", "tachikoma");
+    let answers: Answers | undefined;
+    const blocked = () => {
+      answers = answersFor(top, data); // read first: nothing is there yet
+      mkdirSync(data, { recursive: true });
+      writeFileSync(path.dirname(projectFile("mcp-answers", top, data)), "a file where the answers' folder goes");
+      return answers;
+    };
+    const failed: string[] = [];
+    const replies = [true, false];
+    await askServers([local("yes"), local("no\u001b")], blocked, async () => replies.shift()!, (line) => failed.push(line));
+    const unsaved = (name: string) => new RegExp(`^Your answer for ${name} could not be saved \\(.+\\); Tachikoma asks again at the next launch\\.$`);
+    expect(failed).toEqual([expect.stringMatching(unsaved("yes")), expect.stringMatching(unsaved("no\\\\u001b"))]);
+    expect([answers!.get("yes", "as written: yes"), answers!.get("no\u001b", "as written: no\u001b")]).toEqual([true, false]);
+  });
+
+  // In -p every project server without a yes, one answered no included (the plan's line, Task 9's spec review).
+  it("says once that the sandbox's network keeps every server off, and in -p names each project server without a yes", () => {
+    const configs = [local("mine", [], "user"), local("yes"), local("no"), local("new")];
+    expect(mcpLines(servers(configs, "off", none), { print: true })).toEqual([
+      "MCP servers are off: the sandbox's network is off, and servers run outside the box until a later release. Start with --network on to use them.",
+    ]);
+    const given = (): Answers => ({ get: (name) => ({ yes: true, no: false })[name], set: () => {}, reset: () => {} });
+    expect(mcpLines(servers(configs, "none", given), { print: true })).toEqual([
+      "MCP server no from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.",
+      "MCP server new from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.",
+    ]);
+    expect(mcpLines(servers(configs, "none", given), { print: false })).toEqual([]);
+    expect(mcpLines(servers([], "off", none), { print: true })).toEqual([]);
   });
 });
 
@@ -261,6 +397,8 @@ describe("gitBashLine", () => {
     expect(gitBashLine({ hooks: [hook()], disableAllHooks: true }, "win32", none)).toBeUndefined();
     expect(gitBashLine({ hooks: [hook({ args: ["x"] }), hook({ shell: "powershell" })] }, "win32", none)).toBeUndefined();
     expect(gitBashLine({}, "win32", none)).toBeUndefined();
+    // Release 8c plan, Task 8: an mcp_tool hook calls a server, with no shell.
+    expect(gitBashLine({ hooks: [hook({ command: "", mcp: { server: "s", tool: "t", input: {} } })] }, "win32", none)).toBeUndefined();
   });
 });
 
@@ -316,6 +454,52 @@ describe("exitOn", () => {
       exitOn(sig, () => true)();
       expect(exit).toHaveBeenLastCalledWith(128 + constants.signals[sig]);
     }
+  });
+
+  // Release 8c plan, Task 9's spec review: a signal stops the MCP servers before the exit, which comes however the stop
+  // ends; one ignored while a program has the terminal stops nothing.
+  it("exits once `before` has settled, ended or failed, and runs none for a signal it ignores", async () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as typeof process.exit);
+    onTestFinished(() => exit.mockRestore());
+    let end!: () => void;
+    exitOn("SIGTERM", () => false, () => new Promise<void>((resolve) => (end = resolve)))();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(exit).not.toHaveBeenCalled();
+    end();
+    await vi.waitFor(() => expect(exit).toHaveBeenLastCalledWith(128 + constants.signals.SIGTERM));
+    exitOn("SIGHUP", () => false, () => Promise.reject(new Error("made-up failure")))();
+    await vi.waitFor(() => expect(exit).toHaveBeenLastCalledWith(128 + constants.signals.SIGHUP));
+    exit.mockClear();
+    const before = vi.fn(async () => {});
+    exitOn("SIGINT", () => true, before)();
+    expect(before).not.toHaveBeenCalled();
+  });
+});
+
+// Choice 3's wait bounds a signal's stop of the MCP servers, so a hung one cannot hold the exit (Task 9's spec review).
+describe("stopSoon", () => {
+  it("ends when the servers have stopped, or after choice 3's wait for one that never does", async () => {
+    let stopped = false;
+    await stopSoon({ stopAll: async () => void (stopped = true) });
+    expect(stopped).toBe(true);
+    const at = performance.now();
+    await stopSoon({ stopAll: () => new Promise<void>(() => {}) });
+    // Less 1 ms: the timer runs on the event loop's whole-millisecond clock, which can round its start down.
+    expect(performance.now() - at).toBeGreaterThanOrEqual(KILL_MS - 1);
+  });
+});
+
+// Release 8c plan, Task 9's review: a -p run prints only the reply its turn added, so a resumed one stopped before it sent
+// anything does not print the saved session's last answer.
+describe("turnAnswer", () => {
+  const user = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
+  const model = (...texts: string[]): Message => ({ role: "assistant", parts: texts.map((text) => ({ type: "text" as const, text })) });
+  it("gives the reply the turn added, its text parts joined by line breaks, and none when the turn added none", () => {
+    const saved = [user("hi"), model("the saved answer")];
+    expect(turnAnswer(saved.at(-1), saved)).toBeUndefined();
+    expect(turnAnswer(saved.at(-1), [...saved, user("again")])).toBeUndefined();
+    expect(turnAnswer(saved.at(-1), [...saved, user("again"), model("a", "b")])).toBe("a\nb");
+    expect(turnAnswer(undefined, [user("hi"), model("new")])).toBe("new");
   });
 });
 
@@ -636,31 +820,57 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect([read(path.join(dir, "held.jsonl")), read(path.join(dir, "forked.jsonl"))]).toEqual(before);
     });
 
-    // Release 8a plan, choice 4 (Task 6 spec review): the lead and the tools a resume brings are recorded.
-    it("writes a lead line for another lead, and a tools line for other tools, and nothing for the same ones", () => {
+    // Release 8a plan, choice 4 (Task 6 spec review): the lead a resume brings is recorded. Its tools are not: the session's
+    // first request writes its tools line, holding tool_search and the MCP tools too (release 8c plan, Task 9; choice 46).
+    it("writes a lead line for another lead, and no tools line for other tools, and nothing for the same ones", () => {
       const file = saved(dir, "same", talk("same", "hi"));
       open("same").release();
       expect(lines(file).map((l) => l.t)).toEqual(["start", "message", "message"]);
       open("same", { lead: "fake:b", as: other }).release();
-      expect(lines(file).slice(3)).toMatchObject([{ t: "lead", lead: "fake:b" }, { t: "tools", tools: other }]);
+      expect(lines(file).slice(3)).toEqual([expect.objectContaining({ t: "lead", lead: "fake:b" })]);
     });
 
-    it("sends a reply's thinking only under the tools it was saved under, saying when any was left out", () => {
+    // Release 8c plan, Task 9 (choice 46): the history comes under the tools it was last saved under, which the session's
+    // first request compares with its own (keepThinking), so the strip is left to it; the line is said only when
+    // Tachikoma's own tools changed.
+    it("keeps a reply's thinking for the session under the tools it was saved under, saying when Tachikoma's own changed", () => {
       saved(dir, "thought", [start("thought"), message(prompt("hi")), message(said("Done.", native))]);
       saved(dir, "plain", [start("plain"), message(prompt("hi")), message(said("Done."))]);
       const changed = "The tools have changed since this session was saved, so its earlier replies are sent without their thinking.";
-      // Under other tools: the first reply's thinking is left out, and a reply made then keeps its own.
+      // Under other tools of Tachikoma's own: the line, the thinking kept for the session's first request to leave out.
       const b = open("thought", { as: other });
-      expect(b.conversation.messages).toEqual([prompt("hi"), said("Done.")]);
+      expect(b.conversation.messages).toEqual([prompt("hi"), said("Done.", native)]);
+      expect(b.conversation.tools).toEqual(tools);
       expect(b.lines.map((l) => l.text)).toEqual(["Resumed: hi.", changed]);
+      // As the session's first request under them writes it, then its reply.
+      b.conversation.transcript!.write({ t: "tools", tools: other });
       b.conversation.transcript!.write({ t: "message", message: prompt("again") });
       b.conversation.transcript!.write({ t: "message", message: said("Done again.", native) });
       b.release();
-      // Back under the first tools: the first reply's thinking goes again, and the other tools' does not.
+      // Back under the first tools: the reply before the tools changed goes without its thinking here, as thinking is left
+      // out only from the front (Task 6b's quality review); the later one's is left for the session.
       const a = open("thought");
-      expect(a.conversation.messages).toEqual([prompt("hi"), said("Done.", native), prompt("again"), said("Done again.")]);
+      expect(a.conversation.messages).toEqual([prompt("hi"), said("Done."), prompt("again"), said("Done again.", native)]);
+      expect(a.conversation.tools).toEqual(other);
       expect(a.lines.map((l) => l.text)).toEqual(["Resumed: hi.", changed]);
       expect(open("plain", { as: other }).lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+    });
+
+    // Choice 46 at resume: a saved set holding tool_search and MCP tools beside Tachikoma's own says nothing and keeps the
+    // thinking, as the session's first request offers the same set when the same servers are ready.
+    it("says nothing of tool_search and the MCP tools in the saved set, keeping the thinking and that set", () => {
+      const mcp: ToolSpec[] = [
+        { name: "tool_search", description: "Finds MCP tools.", inputSchema: { type: "object" } },
+        { name: "mcp__tv__quote_get", description: "A quote.", inputSchema: { type: "object" } },
+      ];
+      const searched = [start("searched"), { t: "tools", at, tools: [...tools, ...mcp] }, message(prompt("hi")), message(said("Done.", native))];
+      const file = saved(dir, "searched", searched);
+      const o = open("searched");
+      expect(o.lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+      expect(o.conversation.messages).toEqual([prompt("hi"), said("Done.", native)]);
+      expect(o.conversation.tools).toEqual([...tools, ...mcp]);
+      o.release();
+      expect(lines(file).map((l) => l.t)).toEqual(["start", "tools", "message", "message"]);
     });
 
     // Release 8a final review (user, 2026-11-07: "Rebuild it", "Save the setting", "Only at the change"): a session saved
@@ -676,6 +886,8 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(b.conversation.messages).toEqual([prompt("hi"), said("Done.")]);
       expect(b.lines.map((l) => l.text)).toEqual(["Resumed: hi.", `${changed}, and its earlier replies are sent without their thinking.`]);
       expect(lines(file).at(-1)).toMatchObject({ t: "system", system: box.full, box: true });
+      // As the session's first request under the box's tools writes them (choice 46), then its reply.
+      b.conversation.transcript!.write({ t: "tools", tools: other });
       b.conversation.transcript!.write({ t: "message", message: prompt("again") });
       b.conversation.transcript!.write({ t: "message", message: said("Done again.", native) });
       b.release();

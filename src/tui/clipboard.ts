@@ -222,7 +222,7 @@ const startsWith = (data: Buffer, at: number, bytes: number[] | string) => {
 // A picture's type from its first bytes: PNG specification, "PNG signature"; ITU-T T.81 (JPEG), Table B.1's SOI marker
 // X'FFD8', then another marker, each starting with X'FF' (B.1.1.2); GIF89a specification, "17. Header"; RFC 9649
 // (WebP), "RIFF Header": "RIFF", the size's 4 bytes, then "WEBP".
-function typeOf(data: Buffer): Picture["mediaType"] | null {
+export function typeOf(data: Buffer): Picture["mediaType"] | null {
   if (startsWith(data, 0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
   if (startsWith(data, 0, [0xff, 0xd8, 0xff])) return "image/jpeg";
   if (startsWith(data, 0, "GIF87a") || startsWith(data, 0, "GIF89a")) return "image/gif";

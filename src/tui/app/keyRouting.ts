@@ -88,8 +88,10 @@ export const keyRouting = (ui: UI, fns: Fns) => {
     if (h.phase.kind === "ended" || h.phase.kind === "review" || h.phase.kind === "printed") return; // printed out: a key read with the `[` that printed the view out
     ui.clearCopied();
     ui.notes.current = []; // a live edit's lines leave the hint row at the next key (note, output.ts)
-    // /resume's list is the picker phase too, but has no field, so its letters are Select's, as in tachi -r's (PR #10's review).
-    const field = h.phase.kind === "search" || (h.phase.kind === "picker" && ui.sessions === null) || (h.phase.kind === "detail" && h.phase.searching);
+    // /resume's list is the picker phase too, but has no field, so its letters are Select's, as in tachi -r's (PR #10's review);
+    // so is /mcp's (release 8c plan, Task 10). A server's form, drawn over them, is a field (Task 12).
+    const picking = h.phase.kind === "picker" && (ui.form !== null || (ui.sessions === null && !ui.mcpList));
+    const field = h.phase.kind === "search" || picking || (h.phase.kind === "detail" && h.phase.searching);
     fns.onKey(h, fns.route(h.phase.kind, field, ch, key), ch, key);
   };
   // What a key does in each phase. `ch` and `key` are for a key no binding takes (`got` null), which the prompt's
@@ -186,6 +188,12 @@ export const keyRouting = (ui: UI, fns: Fns) => {
     // plan, choice 17), so a reader that never answers cannot hold the prompt.
     if (h.working && name && name !== "Ctrl-D" && ui.reading.current) {
       fns.stopReads();
+      return ui.rerender((n) => n + 1);
+    }
+    // While the first prompt waits for the MCP servers, Esc sends it without those still starting; Ctrl-C stops the turn
+    // as ever (release 8c design, "Starting and stopping servers"; plan, choice 25).
+    if (h.working && name === "Esc" && ui.session.waitingFor().length) {
+      ui.session.stopWaiting();
       return ui.rerender((n) => n + 1);
     }
     if (h.working && name) {

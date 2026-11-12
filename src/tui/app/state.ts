@@ -1,10 +1,11 @@
 import { useApp, useWindowSize } from "ink";
 import { useRef, useState } from "react";
-import { type Mode, type Protection, visible } from "../../core/permissions.js";
+import { type Ask, type Mode, type Protection, visible } from "../../core/permissions.js";
 import type { Row } from "../../core/sessions.js";
 import type { Effort } from "../../providers/anthropic.js";
 import type { ModelGroup } from "../../providers/models.js";
 import { NO_RULES } from "../../safety/rules.js";
+import { shellOf } from "../../safety/split.js";
 import type { ToReview } from "../../sandbox/apply.js";
 import type { TodoItem } from "../../tools/todo.js";
 import type { AppProps, Fns } from "../App.js";
@@ -13,6 +14,8 @@ import type { Clipboard } from "../clipboard.js";
 import type { Line } from "../describe.js";
 import type { Detail } from "../DetailView.js";
 import { type Editor, empty } from "../editor.js";
+import type { Asked } from "../Field.js";
+import { mcpNames, OpenRun } from "../fold.js";
 import type { History } from "../history.js";
 import { named } from "../keys.js";
 import type { Listing } from "../menus.js";
@@ -61,6 +64,8 @@ export function useAppState({
   saved,
   leftLines,
   hooks,
+  mcp,
+  shell,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -200,6 +205,8 @@ export function useAppState({
   // when its answer is under its tool line (release 7 plan, choices 66 and 67; describe.ts).
   const toolLine = useRef<string | null>(null);
   const answered = useRef(new Map<string, string | null>());
+  // The lead's quiet calls not yet said, and the runs said, for their results (fold.ts; release 8c plan, Task 15).
+  const [run] = useState(() => new OpenRun({ asked: session.asked, shell: shell ?? shellOf("host"), names: mcpNames(mcp?.servers) }));
   // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
   const todos = useRef<{ items: TodoItem[]; hidden: boolean }>({ items: [], hidden: false });
   // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a
@@ -214,6 +221,11 @@ export function useAppState({
   // /resume's list of the folder's other saved sessions, and when it was read, for how long ago each was used: the picker
   // phase too, with Select's keys (release 8a plan, choice 14).
   const [sessions, setSessions] = useState<{ rows: Row[]; now: number } | null>(null);
+  // /mcp's list of the MCP servers, open or not: the picker phase too, with Select's keys (release 8c plan, Task 10).
+  const [mcpList, setMcpList] = useState(false);
+  // The field of a server's form being asked, in the prompt's place: the picker phase too, as it takes Select's keys and
+  // typed text, drawn over the lists (release 8c plan, Task 12; choice 29).
+  const [form, setForm] = useState<Asked | null>(null);
   const listOpen = useRef(false); // the picker or the sessions' list, for keys and answers read before the screen is drawn again
   const announced = useRef(new Set<string>()); // background subagents whose ending has been shown
   const [, rerender] = useState(0);
@@ -239,6 +251,13 @@ export function useAppState({
   const [now, setNow] = useState(started.current);
   const [branch, setBranch] = useState(firstBranch);
   const abort = useRef<AbortController | null>(null);
+  // The window's own question, as bound for the session and the gate (App.tsx), which /mcp's Sign in asks too (release
+  // 8c plan, Task 11).
+  const asking = useRef<Ask | null>(null);
+  const bindAskHere = (ask: Ask) => {
+    asking.current = ask;
+    bindAsk(ask);
+  };
   const nextId = useRef(0);
   const printUpTo = useRef<number | null>(null); // while an editor has the terminal in classic mode (away, handover.tsx)
   const lookups = useRef(0);
@@ -288,7 +307,7 @@ export function useAppState({
   // own `question`.
   return {
     session, tasks, bus, stats, mode, onMode, onRules, project, root, workspace, historyFile, intro, errorFile, segments,
-    makeProvider, bindAsk, login, listModels, screen, fullPossible, mouse, scrollSpeed, clipboard, input, bindings,
+    makeProvider, bindAsk: bindAskHere, asking, login, listModels, screen, fullPossible, mouse, scrollSpeed, clipboard, input, bindings,
     home, live, picturesGiven, readPicture, exit, suspendTerminal, lines, setLines, editor, goal, vim, vimText, first,
     table, setTable, chordTimer, keyOf, pickerKey, step, search, stash, chosen, closed, listed, columns, height, full,
     setFull, switching, setSwitching, kept, unkept, view, detail, pane, printed, dropping, waitingList, ended, owner,
@@ -297,8 +316,8 @@ export function useAppState({
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
-    happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
-    editingBack, leftLines, hooks, hookStatus,
+    happening, late, toolLine, answered, run, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
+    editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm,
   } as const;
 }
 

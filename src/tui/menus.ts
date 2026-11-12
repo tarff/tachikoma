@@ -1,6 +1,9 @@
 import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import type { Prompt } from "@modelcontextprotocol/client";
+import { visible } from "../core/permissions.js";
 import { errorText } from "../core/types.js";
+import type { Servers } from "../mcp/servers.js";
 import { resolveIn } from "../tools/files.js";
 import { EXPORT_WORDS, SESSION_WORDS, SHORTEN_WORDS } from "./app/constants.js";
 
@@ -37,6 +40,7 @@ const COMMANDS: { label: string; run: string; note: string }[] = [
   { label: "/autocompact <tokens>", run: "/autocompact", note: SHORTEN_WORDS.autocompact },
   { label: "/tasks", run: "/tasks", note: "List the subagents; /tasks t1 shows one, /tasks stop stops them" },
   { label: "/hooks", run: "/hooks", note: "List the hooks in force" }, // the user's words, 2026-11-10 (release 8b plan, Task 12)
+  { label: "/mcp", run: "/mcp", note: "List the MCP servers" }, // release 8c plan, "Lines this plan adds"
   { label: "/errors", run: "/errors", note: "Summarise the error log" },
   { label: "/screen", run: "/screen", note: "Switch between full screen and classic" },
   { label: "/settings", run: "/settings", note: "Open the settings file in your editor" },
@@ -45,12 +49,52 @@ const COMMANDS: { label: string; run: string; note: string }[] = [
   { label: "/exit", run: "/exit", note: "Quit" },
 ];
 
+// What the ready MCP servers offer the prompt (release 8c plan, Task 13): each resource as `<name>:<uri>`, which `@`
+// lists, and each prompt as the command `/<name>:<prompt>`, in the servers' order and each list's. One whose name or uri
+// holds a blank or a character visible() escapes is left out, as it could be neither typed nor read back from the prompt
+// as one word; so is every server whose name holds ":" or "/", which would make a key that reads as another server's,
+// and any key two servers share in any letter case, as a key is matched in any when its own case is not found (the fix
+// round).
+export interface Offers {
+  resources: { server: string; uri: string; key: string }[];
+  prompts: { server: string; prompt: Prompt; command: string }[];
+}
+export function offers(servers: Pick<Servers, "list" | "server"> | undefined): Offers {
+  const plain = (s: string) => !/\s/.test(s) && visible(s) === s;
+  const o: Offers = { resources: [], prompts: [] };
+  for (const { name } of servers?.list() ?? []) {
+    if (/[:/]/.test(name)) continue;
+    const server = servers!.server(name);
+    for (const r of server?.resources ?? []) if (plain(`${name}:${r.uri}`)) o.resources.push({ server: name, uri: r.uri, key: `${name}:${r.uri}` });
+    for (const p of server?.prompts ?? []) if (plain(`/${name}:${p.name}`)) o.prompts.push({ server: name, prompt: p, command: `/${name}:${p.name}` });
+  }
+  // Each key in lower case with the one server that has it, or null once a second has it too: one pass, as a server can
+  // list thousands (measured: 150 ms a redraw at 3,000 resources across two servers, comparing each with each).
+  const once = <T extends { server: string }>(items: T[], key: (t: T) => string) => {
+    const owner = new Map<string, string | null>();
+    for (const t of items) {
+      const k = key(t).toLowerCase();
+      const was = owner.get(k);
+      owner.set(k, was === undefined || was === t.server ? t.server : null);
+    }
+    return items.filter((t) => owner.get(key(t).toLowerCase()) !== null);
+  };
+  return { resources: once(o.resources, (r) => r.key), prompts: once(o.prompts, (p) => p.command) };
+}
+
 // A slash at the start of the prompt and the word after it, with the cursor at the end: commands
-// count only there, so "/tmp is full" is a message.
-export function commandMenu(text: string, cursor: number): Menu | null {
+// count only there, so "/tmp is full" is a message. The MCP servers' prompts follow Tachikoma's commands, each with the
+// first line of its description, escaped, as the label is (Menu.tsx); `prompts` is called only when the text opens the
+// menu, as building the offers reads every server's lists.
+export function commandMenu(text: string, cursor: number, prompts: () => Offers["prompts"] = () => []): Menu | null {
   if (cursor !== text.length || !/^\/\S*$/.test(text)) return null;
   const typed = text.toLowerCase();
-  const entries = COMMANDS.filter((c) => c.run.startsWith(typed)).map((c) => ({ label: c.label, note: c.note, fill: `${c.run.split(" ")[0]} `, run: c.run }));
+  const entries: Entry[] = COMMANDS.filter((c) => c.run.startsWith(typed)).map((c) => ({ label: c.label, note: c.note, fill: `${c.run.split(" ")[0]} `, run: c.run }));
+  for (const p of prompts()) {
+    if (!p.command.toLowerCase().startsWith(typed)) continue;
+    const note = p.prompt.description?.split(/\r?\n/)[0];
+    entries.push({ label: p.command, ...(note && { note: visible(note) }), fill: `${p.command} `, run: p.command });
+  }
   return entries.length ? { kind: "command", from: 0, entries } : null;
 }
 
@@ -58,8 +102,11 @@ export type Listing = { entries: { name: string; folder: boolean }[] } | { error
 
 // `@` at the start or after a space, then a path, up to the cursor: the folder typed so far (the
 // project folder for none) listed, narrowed by the name after it, in any case. A folder goes in with
-// its "/", so the next Tab lists it; a file is completed with a space after it.
-export function pathMenu(text: string, cursor: number, list: (folder: string) => Listing): Menu | null {
+// its "/", so the next Tab lists it; a file is completed with a space after it. The MCP servers' resources follow the
+// files, as `@<name>:<uri>`, those whose `<name>:<uri>` starts with what is typed, in any case (release 8c plan, Task
+// 13), completed as a file is. A uri's slashes make the folder typed so far one that cannot be listed, so the listing's
+// error is left out while a resource matches. `resources`, as commandMenu's `prompts`, is called only for a menu.
+export function pathMenu(text: string, cursor: number, list: (folder: string) => Listing, resources: () => Offers["resources"] = () => []): Menu | null {
   const m = /(?:^|\s)@(\S*)$/.exec(text.slice(0, cursor));
   if (!m || /\S/.test(text[cursor] ?? "")) return null;
   const typed = m[1]!;
@@ -68,10 +115,12 @@ export function pathMenu(text: string, cursor: number, list: (folder: string) =>
   const part = typed.slice(cut).toLowerCase();
   const from = cursor - typed.length - 1;
   const listing = list(folder);
-  if ("error" in listing) return { kind: "path", from, entries: [{ label: `Cannot list ${folder || "the project folder"}: ${listing.error}`, fill: "", error: true }] };
-  const entries = listing.entries
+  const served = resources().filter((r) => r.key.toLowerCase().startsWith(typed.toLowerCase())).map((r) => ({ label: `@${r.key}`, fill: `@${r.key} ` }));
+  if ("error" in listing && !served.length) return { kind: "path", from, entries: [{ label: `Cannot list ${folder || "the project folder"}: ${listing.error}`, fill: "", error: true }] };
+  const files = "error" in listing ? [] : listing.entries
     .filter((e) => e.name.toLowerCase().startsWith(part))
     .map((e) => ({ label: `${folder}${e.name}${e.folder ? "/" : ""}`, fill: `@${folder}${e.name}${e.folder ? "/" : " "}` }));
+  const entries = [...files, ...served];
   return entries.length ? { kind: "path", from, entries } : null;
 }
 

@@ -6,13 +6,15 @@ import type { Cache } from "../providers/pictures.js";
 export type Part =
   // `from: "tasks"`: text the session added for the lead, such as a background subagent's answer, not
   // something the user typed. `from: "hooks"`: text a hook handed the model, headed `<Event> hook:` (release 8b plan,
-  // choice 6).
-  | { type: "text"; text: string; from?: "tasks" | "hooks" }
+  // choice 6). `from: "server"`: text an MCP server supplied, a picked resource's or a prompt command's, sent after the
+  // typed words and never part of them (release 8c plan, choice 34).
+  | { type: "text"; text: string; from?: "tasks" | "hooks" | "server" }
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; callId: string; output: string; isError: boolean }
   // A picture the user added, the original as read, kept in memory for the session (release 6 plan, choice 9); `id` is
-  // its number, the N of its marker `[Image #N]` (release 6 design, "Pictures").
-  | { type: "image"; id: number; mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: Buffer };
+  // its number, the N of its marker `[Image #N]` (release 6 design, "Pictures"). `from: "server"`: one an MCP server
+  // supplied, such as a tool answer's, never part of the user's own words (release 8c plan, choice 34).
+  | { type: "image"; id: number; mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: Buffer; from?: "server" };
 
 export type ToolCall = Extract<Part, { type: "tool_call" }>;
 export type ToolResult = Extract<Part, { type: "tool_result" }>;
@@ -64,6 +66,30 @@ export interface ToolSpec {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+}
+
+// What a reply was made under, for keepThinking: the system prompt and the tools as a set, sorted by name, as Anthropic
+// binds them, so a new order is the same set and any change to a spec is another (claude-api skill, model-migration.md,
+// "Breaking change 3").
+export function madeUnder(system: string, tools: ToolSpec[]): string {
+  return JSON.stringify([system, [...tools].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))]);
+}
+
+// Anthropic binds each thinking block to the system prompt, the set of tools and every message before it, and lets
+// thinking be left out only as a leading run, oldest first. So a reply keeps its own content only in the trailing run of
+// replies made under `now`: every reply at or before the last one made under anything else is sent without it, its
+// words, calls and results kept, so nothing is ever left out from the middle (release 8c plan, Task 6b's quality review:
+// the user's choice, "Drop older thinking"; release 8a design, "Before the build", check 2). `under` gives what a reply
+// was made under. Only Anthropic's is left out: other providers' own content is not bound so, and some of
+// them want a tool call's reasoning sent back with it. The live session and a resume both ask here, so they send the
+// same (release 8c plan, choice 70: the outside review of PR #17, finding 1).
+export function keepThinking(messages: Message[], under: (m: Message) => string | undefined, now: string): Message[] {
+  const last = messages.findLastIndex((m) => m.role === "assistant" && under(m) !== now);
+  return messages.map((m, i) => {
+    if (i > last || m.native?.provider !== "anthropic") return m;
+    const { native: _, ...rest } = m;
+    return rest;
+  });
 }
 
 // Token counts for one request. `input` excludes tokens read from or written to the prompt cache.

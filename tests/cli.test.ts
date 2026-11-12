@@ -12,9 +12,13 @@ import { projectFile } from "../src/core/datadir.js";
 import { openSession, sessionsDir } from "../src/core/sessions.js";
 import { readTranscript } from "../src/core/transcript.js";
 import { onPath } from "../src/exec/env.js";
+import { answersFor } from "../src/mcp/answers.js";
+import { AuthStore, McpAuth } from "../src/mcp/auth.js";
+import { readProjectFile, readServers } from "../src/mcp/config.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
 import { removeTree } from "./helpers.js";
+import { type FakeOptions, fakeServer, readLog, signInFake } from "./mcp/fake.js";
 
 // Docker's answer for an image with no bash (node:22-alpine, as the quality review gave it).
 const NO_BASH = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "bash": executable file not found in $PATH: unknown';
@@ -1174,10 +1178,202 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   });
 
   // Release 8b plan, Task 12: /hooks among the commands, in the user's words (2026-11-10), after the /tasks part.
-  it("lists /hooks in the help, after /tasks", () => {
+  // Release 8c plan, Task 10: /mcp after the /hooks part, in the plan's words.
+  it("lists /hooks in the help, after /tasks, and /mcp after it", () => {
     expect(tachi("--help").stdout).toContain(
-      "subagents (/tasks t1 shows one, /tasks stop stops them), /hooks lists the hooks in force,\n/errors summarises the error log,",
+      "subagents (/tasks t1 shows one, /tasks stop stops them), /hooks lists the hooks in force,\n/mcp lists the MCP servers, /errors summarises the error log,",
     );
+  });
+});
+
+// The window, launched for real: tachiLater() with a stand-in terminal (tests/standin/terminal.mjs), so the launch's
+// questions and the window's keys come from write(). The window draws JSX, which tsx compiles by the project's settings,
+// and the case's folder has none, so they are named. Ink takes the terminal for one only outside CI (is-in-ci), so the
+// run is told it is not in CI; it is in classic mode, and outside Windows Terminal, whose win32 input mode reads keys as
+// records (input.ts), so the keys written arrive as typed. A case waits on what the launch writes before the window, or
+// on what the window starts, as the window's frames are redrawn in place.
+function windowLater(...args: (string | Record<string, string>)[]) {
+  const { argv, options } = launch(args);
+  argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/terminal.mjs")).href); // after tsx's loader
+  const terminal = { TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"), CI: "0", CONTINUOUS_INTEGRATION: "0", TACHI_CLASSIC: "1", WT_SESSION: "" };
+  const child = spawn(process.execPath, argv, { ...options, env: { ...options.env, ...terminal } });
+  onTestFinished(() => void child.kill());
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+  child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+  const closed = new Promise<number | null>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", resolve);
+  });
+  const write = (keys: string) => void child.stdin.write(keys);
+  // /exit, then Enter as a key of its own, as typed: 200 ms after, ten times the 20 ms the window's input waits for the
+  // rest of a key (input.ts, InputFilter), room for a busy machine. Its exit code once it has closed.
+  const exit = async () => {
+    write("/exit");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    write("\r");
+    return closed;
+  };
+  return { write, exit, stdout: () => stdout, stderr: () => stderr };
+}
+
+// Release 8c plan, Task 9: the MCP servers at the launch. Each server is a fake of tests/mcp/fake.ts, a Node script written
+// into the case's own folder, logging what it is sent and writing its process id; the lead is a stand-in for OpenAI's
+// chat completions served on the loopback address, as above, answering "done" and keeping what each request was sent.
+// 60 s, as the copy-mode end-to-end cases below have: the window's case, two launches, took 17.2 s run alone (measured
+// 2026-11-11, Task 9's review), too near 30 s under load.
+describe("tachi's MCP servers", { timeout: 60_000 }, () => {
+  // A wait on another process: several seconds for a busy machine, inside the case's 60 s.
+  const WAIT = { timeout: 15_000 };
+  const SKIPPED = (name: string) => `MCP server ${name} from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.`;
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  async function project() {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-mcp-")));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    const data = path.join(top, "data", "tachikoma");
+    const asked: { tools?: { function: { name: string; description: string } }[] }[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        asked.push(JSON.parse(body));
+        const choice = { index: 0, finish_reason: "stop", message: { role: "assistant", content: "done" } };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    let n = 0;
+    // A fake server's entry, as .mcp.json or the settings file gives it, with its log and its process id once started.
+    const fake = async (opts: FakeOptions = {}) => {
+      const log = path.join(top, `log-${++n}.jsonl`);
+      const pidFile = path.join(top, `pid-${n}`);
+      const script = await fakeServer(top, { log, pidFile, ...opts });
+      return { entry: { command: process.execPath, args: [script] }, script, log, pid: () => Number(readFileSync(pidFile, "utf8")) };
+    };
+    const mcpJson = (servers: Record<string, object>) => writeFileSync(path.join(proj, ".mcp.json"), JSON.stringify({ mcpServers: servers }));
+    // The answers the window keeps, as the launch reads them; each entry as .mcp.json writes it now.
+    const answers = () => answersFor(proj, data);
+    const written = (name: string) => readProjectFile(proj, {}, []).find((c) => c.name === name)!.written;
+    const env = { cwd: proj, TACHI_DATA_DIR: data, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url };
+    return { proj, data, asked, fake, mcpJson, answers, written, env };
+  }
+  const initializes = (log: string) => readLog(log).filter((m) => m.method === "initialize").length;
+
+  // The design, "A project's servers" (option chosen: "Window: Claude's way; -p: only yes'd"), and Task 8's build: the
+  // launch's hooks reach the servers (useServers), and SessionEnd fires before they stop, so its mcp_tool hook gets there.
+  it("with -p, starts the project's server said yes to, skips one not answered with its note, and stops it after SessionEnd", async () => {
+    const p = await project();
+    const yes = await p.fake();
+    const unanswered = await p.fake();
+    p.mcpJson({ yes: yes.entry, new: unanswered.entry });
+    p.answers().set("yes", p.written("yes"), true);
+    const hooks = { SessionEnd: [{ hooks: [{ type: "mcp_tool", server: "yes", tool: "echo", input: { text: "bye" } }] }] };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "hi", { ...p.env, ...homeWith(JSON.stringify({ hooks })) });
+    expect(r).toEqual({ code: 0, stdout: "done\n", stderr: `note: ${SKIPPED("new")}\n` });
+    // The first request waited for it: its tools are named in tool_search's description (choice 37).
+    const search = p.asked[0]!.tools!.find((t) => t.function.name === "tool_search")!;
+    expect(search.function.description).toContain("mcp__yes__echo");
+    expect(search.function.description).not.toContain("mcp__new__");
+    expect(readLog(yes.log).filter((m) => m.method === "tools/call").map((m) => m.params)).toEqual([{ name: "echo", arguments: { text: "bye" } }]);
+    expect(readLog(unanswered.log)).toEqual([]);
+    expect(alive(yes.pid())).toBe(false);
+  });
+
+  // Choice 26: an mcp error goes to the error output as `mcp: <line>` and fails no run; the answers that cannot be read
+  // (Task 5) leave the project's server unanswered, so -p skips it.
+  it("with -p, says a server that fails to start and answers that cannot be read as mcp: lines, and still exits 0", async () => {
+    const p = await project();
+    const answered = await p.fake();
+    p.mcpJson({ answered: answered.entry });
+    const file = projectFile("mcp-answers", p.proj, p.data);
+    mkdirSync(file, { recursive: true }); // a folder where the file goes
+    const settings = { mcpServers: { bad: { command: "tachi-no-such-program" } } };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "hi", { ...p.env, ...homeWith(JSON.stringify(settings)) });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe("done\n");
+    expect(r.stderr.split("\n").sort()).toEqual(
+      [
+        "",
+        `mcp: MCP answers for this project could not be read (${file} is not a plain file, so it was not used), so its servers are asked about again.`,
+        "mcp: MCP server bad failed to start: tachi-no-such-program was not found on PATH",
+        `note: ${SKIPPED("answered")}`,
+      ].sort(),
+    );
+    expect(readLog(answered.log)).toEqual([]);
+  });
+
+  it("with -p --json, writes an mcp-note line", async () => {
+    const p = await project();
+    p.mcpJson({ new: (await p.fake()).entry });
+    const r = await tachiLater("--lead", "openai:lead", "-p", "hi", "--json", p.env);
+    expect(r.code).toBe(0);
+    expect(r.stdout.trim().split("\n").map((l) => JSON.parse(l))).toContainEqual({ event: "mcp-note", data: SKIPPED("new") });
+  });
+
+  // Release 8c plan, Task 11: -p never signs in, and says so; a sign-in kept in the data folder, as /mcp's Sign in keeps
+  // it in the window, works there.
+  it("with -p, says a server needs sign-in, and uses a sign-in the window kept", async () => {
+    const p = await project();
+    const fake = await signInFake();
+    const mcpServers = { om: { type: "http", url: fake.url } };
+    const home = homeWith(JSON.stringify({ mcpServers }));
+    const first = await tachiLater("--lead", "openai:lead", "-p", "hi", { ...p.env, ...home });
+    expect(first).toEqual({ code: 0, stdout: "done\n", stderr: "note: MCP server om needs sign-in, which -p cannot do; sign in from /mcp in the window.\n" });
+    expect(fake.seen.registered).toBe(0);
+    const config = readServers("settings.json", mcpServers, {}, [])[0]!;
+    const io = { ask: async () => true, openBrowser: fake.browser, say: () => {}, signal: new AbortController().signal };
+    expect(await new McpAuth(new AuthStore(p.data), config).signIn(io)).toBe(true);
+    const again = await tachiLater("--lead", "openai:lead", "-p", "hi", { ...p.env, ...home });
+    expect(again).toEqual({ code: 0, stdout: "done\n", stderr: "" });
+    const search = p.asked.at(-1)!.tools!.find((t) => t.function.name === "tool_search")!;
+    expect(search.function.description).toContain("mcp__om__echo");
+  });
+
+  // Choices 23 and 24: one question per project server not yet answered, after the instruction files' question; a yes
+  // starts it and a no does not, both kept, so the next launch asks nothing. At exit the window stops its servers.
+  it("asks in the window about each project server, starts a yes and not a no, keeps both, and stops the server at exit", async () => {
+    const p = await project();
+    const yes = await p.fake();
+    const no = await p.fake();
+    p.mcpJson({ yes: yes.entry, no: no.entry });
+    // Node's path holds a space where it is installed under C:\Program Files, so it is shown in quotes there.
+    const node = process.execPath.includes(" ") ? `"${process.execPath}"` : process.execPath;
+    const question = (name: string, script: string) => `Start the MCP server "${name}" from this project's .mcp.json: ${node} ${script}? [y/n] `;
+    const w = windowLater("--lead", "ollama:none", p.env);
+    await vi.waitFor(() => expect(w.stdout()).toContain(question("yes", yes.script)), WAIT);
+    w.write("y");
+    await vi.waitFor(() => expect(w.stdout()).toContain(question("no", no.script)), WAIT);
+    w.write("n");
+    await vi.waitFor(() => expect(initializes(yes.log)).toBe(1), WAIT); // the window has opened and started it
+    expect(await w.exit()).toBe(0);
+    expect(w.stdout()).toContain(`${question("yes", yes.script)}y\n${question("no", no.script)}n\n`);
+    expect(readLog(no.log)).toEqual([]);
+    expect(alive(yes.pid())).toBe(false);
+    expect([p.answers().get("yes", p.written("yes")), p.answers().get("no", p.written("no"))]).toEqual([true, false]);
+    // The next launch asks nothing and starts the yes again.
+    const again = windowLater("--lead", "ollama:none", p.env);
+    await vi.waitFor(() => expect(initializes(yes.log)).toBe(2), WAIT);
+    expect(await again.exit()).toBe(0);
+    expect(again.stdout()).not.toContain("Start the MCP server");
+    expect(readLog(no.log)).toEqual([]);
   });
 });
 
@@ -1605,7 +1801,8 @@ describe("dropOnExit", () => {
 // served on the loopback address, which answers at once with no tool call.
 describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000 }, () => {
   // `change`: the lead's stand-in writes a file into the copy's work/ before it answers, as the box would.
-  async function copyRun(standin: "ok" | "start-fails" | "stuck", change = false) {
+  // `more`: the run's own variables besides, such as a pretend home folder's.
+  async function copyRun(standin: "ok" | "start-fails" | "stuck", change = false, more: Record<string, string> = {}) {
     const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-e2e-")));
     onTestFinished(() => removeTree(top));
     const proj = path.join(top, "proj");
@@ -1629,6 +1826,7 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     });
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
     const env = { cwd: proj, PATH: empty, Path: empty, TACHI_DATA_DIR: data, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, TACHI_TEST_STANDIN_DOCKER: standin };
+    Object.assign(env, more);
     const { argv, options } = launch(["--lead", "openai:lead", "--sandbox", "copy", "-p", "hi", env]);
     argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/register.mjs")).href); // after tsx's loader
     const child = spawn(process.execPath, argv, options);
@@ -1687,6 +1885,18 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("The sandbox could not start: docker: Error response from daemon: made-up failure.");
     expect(readdirSync(r.copies)).toEqual([]);
+  });
+
+  // Release 8c plan, Task 9 (design, "Starting and stopping servers"): with the box's network off no server starts, as it
+  // would run on the user's machine with the web open; the line says so once. The server's program is not on the empty
+  // PATH either, so a start would fail with a line of its own.
+  it("says once that the MCP servers are off with the sandbox's network off, and starts none", async () => {
+    const settings = JSON.stringify({ mcpServers: { tv: { command: "node", args: ["server.js"] }, sanity: { command: "npx" } } });
+    const r = await copyRun("ok", false, homeWith(settings));
+    expect(r.code).toBe(0);
+    const off =
+      "note: MCP servers are off: the sandbox's network is off, and servers run outside the box until a later release. Start with --network on to use them.";
+    expect(r.stderr.split("\n").filter((l) => l.includes("MCP"))).toEqual([off]);
   });
 });
 

@@ -6,8 +6,9 @@ export interface ErrorEvent {
   // "fallback": a refusal another model rescued; "judge": the judge's request failed (release 7 plan, Task 9); "saving":
   // the session's transcript could not be written, which stops nothing else (release 8a plan, Task 5); "shortening": a
   // conversation too long for the model could not be shortened, or was still too long once it was (Task 12); "hook": a
-  // hook failed, which stops nothing (release 8b plan, choice 22)
-  kind: "tool" | "provider" | "refusal" | "max_tokens" | "fallback" | "judge" | "saving" | "shortening" | "hook";
+  // hook failed, which stops nothing (release 8b plan, choice 22); "mcp": an MCP server failed or stopped, or the project's
+  // answers could not be read, which fails no -p run (release 8c plan, choice 26)
+  kind: "tool" | "provider" | "refusal" | "max_tokens" | "fallback" | "judge" | "saving" | "shortening" | "hook" | "mcp";
   attempted: string;
   message: string;
   lead: string;
@@ -39,6 +40,8 @@ export interface Events {
   "hook-note": [line: string, named?: true];
   // A hook with a statusMessage started (`running`) or ended, for the waiting line (release 8b plan, Task 12).
   "hook-status": [message: string, running: boolean];
+  // An MCP grey line, such as a tool left out or a late server ready (release 8c plan, choice 26).
+  "mcp-note": [line: string];
 }
 
 // The session emits; the interface, status line, headless output and error log listen.

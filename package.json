@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.132.0",
+    "@modelcontextprotocol/client": "2.4.0",
     "@napi-rs/keyring": "2.1.0",
     "ignore": "7.0.12",
     "ink": "7.1.1",

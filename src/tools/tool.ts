@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { PermissionGate } from "../core/permissions.js";
-import type { ToolSpec } from "../core/types.js";
+import type { Picture, ToolSpec } from "../core/types.js";
 import type { Executor } from "../exec/executor.js";
 import type { Workspace } from "../exec/workspace.js";
 
@@ -16,8 +16,15 @@ export interface ToolContext {
 
 export interface Tool {
   spec: ToolSpec;
-  run(input: unknown, ctx: ToolContext): Promise<string>;
+  // The text the model reads; with pictures, such as an MCP tool's answer, which the session passes on after the results
+  // (release 8c plan, choice 10).
+  run(input: unknown, ctx: ToolContext): Promise<string | { text: string; pictures: Picture[] }>;
   parallel?: boolean; // a reply's calls of it start together (delegate); other calls run one after another
+}
+
+// A tool whose answer is text alone, as each of Tachikoma's own is.
+export interface TextTool extends Tool {
+  run(input: unknown, ctx: ToolContext): Promise<string>;
 }
 
 // An input the tool's schema refused, after which no PostToolUseFailure hook runs (Claude Code's hooks reference;
@@ -31,7 +38,7 @@ export function defineTool<S extends z.ZodObject>(
   description: string,
   schema: S,
   run: (input: z.infer<S>, ctx: ToolContext) => Promise<string>,
-): Tool {
+): TextTool {
   const { $schema: _, ...inputSchema } = z.toJSONSchema(schema) as Record<string, unknown>;
   return {
     spec: { name, description, inputSchema },

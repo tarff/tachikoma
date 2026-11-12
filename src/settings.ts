@@ -6,6 +6,7 @@ import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
 import { MODES, type Mode, OFFERED } from "./core/permissions.js";
 import { errorText } from "./core/types.js";
 import { type Hook, type HooksConfig, readHooks } from "./hooks/config.js";
+import { readServers, type ServerConfig } from "./mcp/config.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { type Kind, KINDS, type UserRules } from "./safety/rules.js";
 import type { Segment } from "./tui/StatusLine.js";
@@ -54,6 +55,9 @@ export interface Settings {
   // and they are still read, so /hooks can say what is off (release 8b plan, Task 1). Both are LIVE.
   hooks?: Hook[];
   disableAllHooks?: boolean;
+  // The user's MCP servers, in Claude Code's shape, ${VAR} filled in (release 8c design, "The settings entry"); LIVE, applied
+  // by the /mcp task (release 8c plan, Tasks 2 and 10).
+  mcpServers?: ServerConfig[];
 }
 
 // The box's limits as the user wrote them (release 7 plan, Task 12): memory in Docker's own units, g or m. Each one
@@ -72,8 +76,8 @@ export type Loaded = { settings: Settings; warnings: string[]; hooksLeftOut?: st
 // Each value gets its flag's check and words, after the file's and the entry's names (the plan's choice 8); a value of the
 // wrong JSON type is a problem too. An unknown name is a warning and the rest applies. $schema, which editors use to check
 // the file, is allowed and ignored. The lead, fallback, worker and judge are checked by createProvider at use, as flags
-// are.
-export function readSettings(text: string): Loaded {
+// are. `env` fills the servers' ${VAR} (mcp/config.ts).
+export function readSettings(text: string, env: NodeJS.ProcessEnv = process.env): Loaded {
   const settings: Settings = {};
   const warnings: string[] = [];
   let hooksLeftOut: string[] | undefined;
@@ -107,7 +111,8 @@ export function readSettings(text: string): Loaded {
       else if (name === "disableAllHooks") {
         if (typeof value !== "boolean") throw wrongType(entry, "true or false, without quotes", value);
         settings.disableAllHooks = value;
-      } else warnings.push(`${entry} is not a setting; it was left out`);
+      } else if (name === "mcpServers") settings.mcpServers = readServers(SETTINGS, value, env, warnings);
+      else warnings.push(`${entry} is not a setting; it was left out`);
     }
   } catch (err) {
     return { problem: errorText(err) };

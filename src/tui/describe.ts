@@ -1,17 +1,20 @@
 import { callText } from "../core/exportText.js";
 import { visible } from "../core/permissions.js";
 import { FEEDBACK } from "../core/session.js";
-import type { Message } from "../core/types.js";
+import type { Message, ToolCall, ToolResult } from "../core/types.js";
 import { combine, hookName } from "../hooks/answer.js";
 import type { Event } from "../hooks/config.js";
 import type { Run } from "../hooks/hooks.js";
-import { outputFrom, tachikomaName } from "../hooks/tools.js";
+import type { Ran } from "../hooks/run.js";
+import { isMcp, outputFrom, tachikomaName } from "../hooks/tools.js";
+import type { Fold, OpenRun } from "./fold.js";
 import { marker } from "./pictures.js";
 
 export interface Line {
   text: string;
   color?: string;
   oneLine?: boolean; // shown on one line, cut to the screen's width (App.tsx)
+  fold?: Fold; // a folded tool row, or a row of one opened, which a click opens or closes (release 8c plan, Task 15)
 }
 
 const firstLine = (s: string) => s.split(/\r?\n/)[0] ?? "";
@@ -33,19 +36,58 @@ export function brief(name: string, input: unknown): string | null {
 // terminal columns, so the escapes and wide characters count toward the width.
 export function screen(l: Line): Line {
   const text = l.oneLine ? visible(l.text) : l.text.split(/\r?\n/).map((s) => visible(s, { tabs: true })).join("\n");
-  return { text, ...(l.color === undefined ? {} : { color: l.color }), ...(l.oneLine ? { oneLine: true } : {}) };
+  return { text, ...(l.color === undefined ? {} : { color: l.color }), ...(l.oneLine ? { oneLine: true } : {}), ...(l.fold ? { fold: l.fold } : {}) };
 }
+
+// An MCP call's server and tool as the server gives them, by its full name (release 8c plan, Task 18; choice 68): the
+// window's from the names Servers offered (fold.ts, mcpNames); without them, the safe server and the full name's tool part.
+export type McpNames = (full: string) => { server: string; tool: string };
+export const safeNames: McpNames = (full) => {
+  const at = full.indexOf("__", 5); // the server part of mcp__<server>__<tool> holds no "__" (config.ts)
+  // A name with no tool part, which a model can make up (mcp__tradingview), is all server (Task 18's review).
+  return at === -1 ? { server: full.slice(5), tool: "" } : { server: full.slice(5, at), tool: full.slice(at + 2) };
+};
+
+// A call's name on screen: an MCP call's server and tool, a space between, or the server alone for a name with no tool
+// part; any other tool's own name. Hooks, saved sessions, /export and the model keep the full name (choice 68).
+export function shownName(name: string, names: McpNames = safeNames): string {
+  if (!isMcp(name)) return name;
+  const { server, tool } = names(name);
+  return tool ? `${server} ${tool}` : server;
+}
+
+// A call's row and its result's, as the scrollback shows them unfolded (fold.ts opens a folded row into these).
+export const callRow = (p: ToolCall, names?: McpNames): Line => ({ text: `● ${shownName(p.name, names)} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
+export const resultRow = (p: ToolResult): Line => ({
+  text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`,
+  color: p.isError ? "red" : "gray",
+  oneLine: true,
+});
 
 // How one message appears in the scrollback. `answered`: the calls a question was declined for, each with the short row
 // that takes its result row's place, or null for none, as its answer line under the tool line says what came of it
-// (release 7 plan, choices 66 and 67; App.tsx).
-export function describe(m: Message, answered?: ReadonlyMap<string, string | null>): Line[] {
+// (release 7 plan, choices 66 and 67; App.tsx). `run`: the open run of quiet calls (fold.ts), which takes them, and which
+// what is shown next ends, its row said first (release 8c plan, Task 15).
+export function describe(m: Message, answered?: ReadonlyMap<string, string | null>, run?: OpenRun): Line[] {
   const lines: Line[] = [];
   let typed: Line | null = null; // the user's prompt so far, its text and pictures one line
   let picture = false; // the last part put in it was a picture
+  let served: Line | null = null; // the row of a tool's pictures so far
   for (const p of m.parts) {
     if (p.type === "text" && p.from === "tasks") continue; // shown when it arrived, as "t3 finished"
     if (p.type === "text" && p.from === "hooks") continue; // for the model, not the conversation (release 8b design, "What a hook's answer does")
+    // A picked resource's text and a prompt command's messages, which follow the typed line: the server's, never the
+    // user's prompt (release 8c plan, choice 34), and for the model, as a hook's text is.
+    if (p.type === "text" && p.from === "server") continue;
+    // Shown, text and pictures end the open run: its row comes first, so nothing it counts is said under them (Task 15).
+    if (p.type === "text" || p.type === "image") lines.push(...(run?.end() ?? []));
+    // A tool's pictures, which follow the results, are the server's, never the user's prompt (release 8c plan, choice 34):
+    // their markers on one grey row, as a result's.
+    if (p.type === "image" && p.from === "server") {
+      if (served) served.text += ` ${marker(p.id)}`;
+      else lines.push((served = { text: `  ⎿ ${marker(p.id)}`, color: "gray", oneLine: true }));
+      continue;
+    }
     // A picture is its marker in its place, in the line's colour (release 6 plan, choice 22). Two next to each other
     // get a space between, as the blanks between them were left out of the message (pictures.ts, messageParts).
     if (p.type === "text" || p.type === "image") {
@@ -54,11 +96,12 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
       if (m.role !== "user") lines.push({ text });
       else if (typed) typed.text += text;
       else lines.push((typed = { text: `> ${text}`, color: "cyan" }));
-    } else if (p.type === "tool_call")
-      lines.push({ text: `● ${p.name} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
+    } else if (p.type === "tool_call") lines.push(...(run ? run.call(p) : [callRow(p)]));
     else if (p.type === "tool_result") {
+      const folded = run?.result(p) ?? null;
       const short = answered?.get(p.callId);
-      if (short === undefined) lines.push({ text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`, color: p.isError ? "red" : "gray", oneLine: true });
+      if (folded) lines.push(...folded);
+      else if (short === undefined) lines.push(resultRow(p));
       else if (short !== null) lines.push({ text: `  ⎿ ${short}`, color: "gray", oneLine: true });
     } else {
       const _: never = p; // a new kind of part must be given its own line here
@@ -67,21 +110,18 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
   return lines;
 }
 
-// A resumed conversation as the scrollback shows a live one, message by message (release 8a plan, Task 6; user,
-// 2026-11-06: "Show it").
-export const conversationLines = (messages: Message[]): Line[] => messages.flatMap((m) => describe(m));
-
 // Ctrl+O: every tool call of the latest turn, from its prompt on, with its full input and result,
 // under a heading. A call of a turn still running may have no result yet. A turn starts with a user
 // message that is not tool results: a prompt, or background answers alone; never a Stop hook's feedback, which keeps
 // the turn going (release 8b plan, Task 9's code review).
 // `runs`: the turn's hook runs (hooks.ts, Hooks.runs), listed after the calls (release 8b plan, choice 24); before the
 // first turn, SessionStart's, after the line saying there is none (the user's choice, 2026-11-10; final review).
-export function lastTurn(messages: Message[], runs: readonly Run[] = []): Line[] {
+// `names`: an MCP call's server and tool, as its row names them (choice 68).
+export function lastTurn(messages: Message[], runs: readonly Run[] = [], names?: McpNames): Line[] {
   const feedback = (m: Message) => m.parts[0]?.type === "text" && m.parts[0].from === "hooks" && m.parts[0].text.startsWith(`${FEEDBACK}\n`);
   const start = messages.findLastIndex((m) => m.role === "user" && !m.parts.some((p) => p.type === "tool_result") && !feedback(m));
   if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "gray" }, ...runs.map(runLine)];
-  const calls = callLines(messages.slice(start));
+  const calls = callLines(messages.slice(start), names);
   return [{ text: `Last turn: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`, color: "gray" }, ...calls, ...runs.map(runLine)];
 }
 
@@ -93,11 +133,15 @@ const TOOL_EVENTS: readonly Event[] = ["PreToolUse", "PostToolUse", "PostToolUse
 // escapes a command, how it ended and its time; under it after ⎿ each text it handed the model (a Stop or
 // SubagentStop block's reason among them, which the model reads as feedback), its rewrite as JSON, or that its
 // updatedToolOutput was not used. A hook a signal ended names it, or says none is known, and a tool event's run names its
-// tool as the window does (the user's words, 2026-11-10; choice 10).
+// tool as the window does (the user's words, 2026-11-10; choice 10). An mcp_tool hook's call that failed ends in its red
+// line's words (release 8c plan, Task 8), and one that answered shows exit 0, as its answer is read (choice 21).
+const ENDS: Record<NonNullable<Ran["failed"]>, string> = {
+  time: "out of time", start: "could not start", call: "could not be called", error: "answered an error",
+};
 function runLine(r: Run): Line {
   const { ran } = r;
   const signal = ran.signal ? `ended by signal ${ran.signal}` : "ended by an unknown signal";
-  const end = ran.failed === "time" ? "out of time" : ran.failed === "start" ? "could not start" : ran.code === null ? signal : `exit ${ran.code}`;
+  const end = ran.failed ? ENDS[ran.failed] : ran.code === null ? signal : `exit ${ran.code}`;
   const c = combine(r.event, [r]);
   const tool = tachikomaName(r.match ?? "");
   const forTool = TOOL_EVENTS.includes(r.event) && r.match !== undefined ? ` for ${visible(tool)}` : "";
@@ -114,9 +158,10 @@ function runLine(r: Run): Line {
   return { text: [head, ...under.map((u) => `  ⎿ ${u}`)].join("\n"), color: "gray" };
 }
 
-// Each tool call in `messages`, with its full input and result, grey: for Ctrl+O and `/tasks t3`.
-export function callLines(messages: Message[]): Line[] {
+// Each tool call in `messages`, with its full input and result, grey: for Ctrl+O and `/tasks t3`, an MCP call named by
+// its server and tool as its row is (release 8c plan, Task 18; choice 68).
+export function callLines(messages: Message[], names?: McpNames): Line[] {
   const parts = messages.flatMap((m) => m.parts);
   const results = new Map(parts.flatMap((p) => (p.type === "tool_result" ? [[p.callId, p.output] as const] : [])));
-  return parts.flatMap((c) => (c.type === "tool_call" ? [{ text: callText(c, results.get(c.id)), color: "gray" }] : []));
+  return parts.flatMap((c) => (c.type === "tool_call" ? [{ text: callText(c, results.get(c.id), shownName(c.name, names)), color: "gray" }] : []));
 }

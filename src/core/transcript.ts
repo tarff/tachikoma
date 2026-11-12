@@ -1,7 +1,18 @@
 import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { privateDir } from "../auth/private.js";
-import { errorText, type Image, type Message, marker, type Part, type ToolCall, type ToolResult, type ToolSpec } from "./types.js";
+import {
+  errorText,
+  type Image,
+  keepThinking,
+  madeUnder,
+  type Message,
+  marker,
+  type Part,
+  type ToolCall,
+  type ToolResult,
+  type ToolSpec,
+} from "./types.js";
 
 // A session's transcript (release 8a design, "Saving sessions"): one JSON line per event, appended as it happens, as the
 // error log writes its rows, so two windows in one project never clash and a crash costs at most the line being written.
@@ -44,7 +55,13 @@ export type Line<M = SavedMessage> =
   | { t: "ended"; at: string; state: "failed" | "stopped" | "lost" }
   // A PreToolUse hook's rewrite of the call `id` of the reply before it, in Tachikoma's fields, written before the call
   // runs (release 8b plan, choice 16).
-  | { t: "rewritten"; at: string; id: string; input: unknown };
+  | { t: "rewritten"; at: string; id: string; input: unknown }
+  // The MCP tools loaded through tool_search so far, all of them, written whenever a search adds to them (release 8c plan,
+  // choice 41).
+  | { t: "loaded"; at: string; names: string[] }
+  // A call the user was shown a question for, whatever the answer, written as the question opens, so a resumed conversation
+  // keeps its row unfolded as the live one did (release 8c plan, Task 15).
+  | { t: "asked"; at: string; id: string };
 
 // Omit on a union keeps only the shared fields, so each variant is omitted on its own, as boxWorkspace.ts:106 does.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -108,7 +125,7 @@ export class Transcript {
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       }
-      return { type: "image", id: p.id, mediaType: p.mediaType, file };
+      return { type: "image", id: p.id, mediaType: p.mediaType, file, ...(p.from && { from: p.from }) };
     });
     return { ...m, parts };
   }
@@ -151,11 +168,13 @@ export interface Read {
   tools: ToolSpec[]; // the tools the history was last saved under: the last start or tools line
   print: boolean; // a -p run not opened in the window since, as the session list reads it (readOutline)
   box: boolean; // whether the sandbox was on: the last start or system line's setting
-  // The history for a launch with these tools and system prompt: a reply keeps its provider's own content only when the
+  loaded: string[]; // the MCP tools loaded through tool_search: the last loaded line's, kept by a shortening (release 8c plan, choice 41)
+  asked: string[]; // the calls the user was asked about, from the whole file (release 8c plan, Task 15)
+  // The history for a launch with these tools and system prompt: an Anthropic reply keeps its own content only when the
   // tools and system prompt it was saved under are these, as Anthropic refuses a thinking block once either changed
-  // before it (release 8a design, "Before the build", check 2; plan, choice 4). `dropped`: whether any reply's was left
-  // out; `otherTools`: whether any of those was saved under other tools and this system prompt.
-  withTools(tools: ToolSpec[], system: string): { messages: Message[]; dropped: boolean; otherTools: boolean };
+  // before it (release 8a design, "Before the build", check 2; plan, choice 4); other providers' replies keep theirs
+  // (release 8c plan, choice 70). `dropped`: whether any reply's was left out.
+  withTools(tools: ToolSpec[], system: string): { messages: Message[]; dropped: boolean };
 }
 
 // The result given to a call left without one (release 8a design, "Resuming"; approved as worded).
@@ -179,8 +198,11 @@ function cutOff(reply: SavedMessage, next: SavedMessage | undefined): boolean {
   );
 }
 
-// A part of a user message as the user typed it: its text, or a picture's marker; never a result or waiting text.
-const own = (p: SavedMessage["parts"][number]) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : []);
+// A part of a user message as the user typed it: its text, or a picture's marker; never a result, waiting text or what a
+// server supplied, such as a tool answer's picture, a resource's text or a prompt command's messages (release 8c plan,
+// choice 34).
+const own = (p: SavedMessage["parts"][number]) =>
+  p.type === "image" && p.from === undefined ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [];
 
 export function readTranscript(file: string, pictures: string): Read | { problem: string } {
   try {
@@ -193,6 +215,9 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     let { system, lead, tools, print } = start;
     let box = start.box === true;
     let name: string | undefined;
+    let loaded: string[] = [];
+    // A call's mark goes with a later message's call of its id, as a provider may use an id again (release 8c plan, Task 15).
+    const asked = new Set<string>();
     let history: { m: SavedMessage; tools: ToolSpec[]; system: string }[] = [];
     const prompts: string[] = [];
     const calls: { name: string; input: unknown }[] = [];
@@ -230,6 +255,9 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       }
       if (l.t === "lead") lead = l.lead;
       if (l.t === "name") name = l.name;
+      if (l.t === "loaded") loaded = l.names;
+      if (l.t === "asked") asked.add(l.id);
+      if (l.t === "message") for (const p of l.message.parts) if (p.type === "tool_call") asked.delete(p.id);
       if (l.t === "subagent") subagents.push(l);
       if ("message" in l) for (const p of l.message.parts) if (p.type === "image") used.push(p.id);
     }
@@ -238,22 +266,13 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     const nextPicture = Math.max(0, ...used, ...numbered(pictures, /^(\d+)\.(png|jpg|gif|webp)$/)) + 1;
     const nextTask = Math.max(0, ...subagents.map((s) => Number(/^t(\d+)$/.exec(s.id)?.[1] ?? 0)), ...numbered(subagentsDir, /^t(\d+)\.jsonl$/)) + 1;
     // Each reply with the tools and system prompt it was saved under; pair() keeps a reply as the same object.
-    const restored = history.map((h) => ({ m: restore(h.m, pictures), tools: JSON.stringify(h.tools), system: h.system }));
+    const restored = history.map((h) => ({ m: restore(h.m, pictures), under: madeUnder(h.system, h.tools) }));
     const savedUnder = new Map(restored.map((h) => [h.m, h]));
     const messages = pair(restored.map((h) => h.m));
+    // The session's own rule (keepThinking), so a resume sends what the live session would have.
     const withTools = (now: ToolSpec[], nowSystem: string) => {
-      let dropped = false;
-      let otherTools = false;
-      const kept = messages.map((m) => {
-        const under = savedUnder.get(m);
-        if (m.native === undefined || (under?.tools === JSON.stringify(now) && under.system === nowSystem)) return m;
-        dropped = true;
-        // Under an older system prompt, the resume that changed it said so; a sandbox switch changes the shell tool too.
-        if (under?.system === nowSystem && under.tools !== JSON.stringify(now)) otherTools = true;
-        const { native: _, ...rest } = m;
-        return rest;
-      });
-      return { messages: kept, dropped, otherTools };
+      const kept = keepThinking(messages, (m) => savedUnder.get(m)?.under, madeUnder(nowSystem, now));
+      return { messages: kept, dropped: kept.some((m, i) => m !== messages[i]) };
     };
     return {
       start,
@@ -272,6 +291,8 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       tools,
       print,
       box,
+      loaded,
+      asked: [...asked],
       withTools,
     };
   } catch (err) {
@@ -357,6 +378,8 @@ function valid(l: unknown): l is Line {
   if (r.t === "subagent") return strings("id", "description", "file");
   if (r.t === "ended") return r.state === "failed" || r.state === "stopped" || r.state === "lost";
   if (r.t === "rewritten") return strings("id") && typeof r.input === "object" && r.input !== null && !Array.isArray(r.input);
+  if (r.t === "loaded") return Array.isArray(r.names) && r.names.every((n) => typeof n === "string");
+  if (r.t === "asked") return strings("id");
   return false;
 }
 
@@ -368,7 +391,8 @@ function restore(m: SavedMessage, pictures: string): Message {
     const ext: string | undefined = EXT[p.mediaType];
     try {
       if (ext === undefined) throw new Error("not a format Tachikoma saves");
-      return { type: "image", id: p.id, mediaType: p.mediaType, data: readFileSync(path.join(pictures, `${p.id}.${ext}`)) };
+      const data = readFileSync(path.join(pictures, `${p.id}.${ext}`));
+      return { type: "image", id: p.id, mediaType: p.mediaType, data, ...(p.from === "server" && { from: p.from }) };
     } catch {
       return { type: "text", text: `[Image #${p.id}: not found]` };
     }

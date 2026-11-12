@@ -1,4 +1,4 @@
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, statSync } from "node:fs";
 import path from "node:path";
 
 // The API keys Tachikoma reads. Commands never see them, so one cannot print a key back to the model
@@ -52,16 +52,66 @@ export const system32 = (exe: string) => path.join(process.env.SystemRoot ?? "C:
 // is looked for on Windows: a .cmd or .bat would run through cmd.exe.
 export function onPath(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const windows = process.platform === "win32";
-  // The last of two (Path and PATH on Windows), as `{ ...process.env, PATH: x }` means x.
-  const value = Object.entries(env).findLast(([key]) => (windows ? key.toUpperCase() === "PATH" : key === "PATH"))?.[1] ?? "";
-  for (const entry of value.split(path.delimiter)) {
-    // Windows' PATH may hold a folder in quotes; "\folder" and "C:folder" depend on the working folder's drive or folder.
-    const dir = windows ? entry.replace(/^"(.*)"$/, "$1") : entry;
-    if (!(windows ? /^([a-z]:[\\/]|\\\\)/i.test(dir) : dir.startsWith("/"))) continue;
+  for (const dir of pathFolders(env, windows)) {
     const file = path.join(dir, windows ? `${name}.exe` : name);
     if (runnable(file, windows)) return file;
   }
   return undefined;
+}
+
+// A variable's value: on Windows, whatever the case of its name, the last of two (Path and PATH), as
+// `{ ...process.env, PATH: x }` means x.
+const variable = (env: NodeJS.ProcessEnv, name: string, windows: boolean) =>
+  Object.entries(env).findLast(([key]) => (windows ? key.toUpperCase() === name : key === name))?.[1];
+
+// PATH's folders that are written in full.
+function pathFolders(env: NodeJS.ProcessEnv, windows: boolean): string[] {
+  return (variable(env, "PATH", windows) ?? "").split(windows ? ";" : ":").flatMap((entry) => {
+    // Windows' PATH may hold a folder in quotes; "\folder" and "C:folder" depend on the working folder's drive or folder.
+    // A share needs its server's name: "\\" and "\\\" alone name the working folder's drive.
+    const dir = windows ? entry.replace(/^"(.*)"$/, "$1") : entry;
+    return (windows ? /^([a-z]:[\\/]|\\\\[^\\/])/i.test(dir) : dir.startsWith("/")) ? [dir] : [];
+  });
+}
+
+// The endings Windows itself adds to a program's name, in its own order, used when PATHEXT names none of them (release 8c
+// plan, choice 4). Others PATHEXT may list, such as .vbs and .js, are left out, as choice 4 has it.
+const ENDINGS = [".com", ".exe", ".bat", ".cmd"];
+
+// An MCP server's program by its full path, or null when no PATH folder holds it (release 8c plan, choice 4). Unlike
+// onPath, a .cmd or .bat counts, as npx is npx.cmd on Windows: each PATH folder is tried with each of PATHEXT's endings
+// among ENDINGS, in its order, the first file found winning. A name already ending in one of them is looked for as
+// written. As with onPath, the working folder is never looked in unless PATH names it in full. A command with a folder
+// in it is used as written. Hooks keep onPath.
+export function mcpProgram(command: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string | null {
+  const windows = platform === "win32";
+  if ((windows ? /[\\/]/ : /\//).test(command)) return command;
+  const listed = (variable(env, "PATHEXT", windows) ?? "").split(";").map((e) => e.trim().toLowerCase()).filter((e) => ENDINGS.includes(e));
+  // Lower case, as the files are usually named (npx.cmd), so the full path given matches the file's own name.
+  const endings = !windows || ENDINGS.some((e) => command.toLowerCase().endsWith(e)) ? [""] : listed.length ? listed : ENDINGS;
+  for (const dir of pathFolders(env, windows)) {
+    for (const ending of endings) {
+      const file = path.join(dir, `${command}${ending}`);
+      if (windows ? startable(file) : runnable(file, false)) return file;
+    }
+  }
+  return null;
+}
+
+// runnable's Windows check, but a Microsoft Store program's alias in %LOCALAPPDATA%\Microsoft\WindowsApps (winget, Store
+// Python) counts too: Node cannot follow it, so statSync fails with EACCES, while lstatSync sees a link (Task 3's review;
+// measured on this PC for winget.exe). Windows starts it all the same, so a link that cannot be followed counts as found,
+// and a broken one fails when it is started, with its line. A folder never counts. onPath keeps runnable.
+function startable(file: string): boolean {
+  try {
+    return statSync(file).isFile();
+  } catch {
+    try {
+      return !lstatSync(file).isDirectory();
+    } catch {
+      return false;
+    }
+  }
 }
 
 // Git Bash, where Claude Code looks for it, for hooks run by a shell on Windows (release 8b plan, choice 1): the file

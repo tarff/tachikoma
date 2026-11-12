@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { commandMenu, listFolder, pathMenu } from "../../src/tui/menus.js";
+import { commandMenu, listFolder, offers, pathMenu } from "../../src/tui/menus.js";
 import { tempContext } from "../helpers.js";
 
 afterEach(() => {
@@ -16,11 +16,11 @@ describe("commandMenu", () => {
     expect(labels(m)).toEqual([
       ...["/lead <provider:model>", "/model", "/login chatgpt", "/logout chatgpt"],
       ...["/clear", "/resume", "/branch [name]", "/rename <name>", "/export [file]", "/compact [words]", "/autocompact <tokens>"],
-      ...["/tasks", "/hooks", "/errors", "/screen", "/settings", "/keybindings", "/vim", "/exit"],
+      ...["/tasks", "/hooks", "/mcp", "/errors", "/screen", "/settings", "/keybindings", "/vim", "/exit"],
     ]);
     expect(m!.entries[0]).toMatchObject({ note: "Switch the lead model; alone, pick it from a list", fill: "/lead ", run: "/lead" });
-    expect(m!.entries[15]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
-    expect(m!.entries[16]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
+    expect(m!.entries[16]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
+    expect(m!.entries[17]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
   });
 
   // Release 8a plan, Task 13 (choice 25; constants.ts, SHORTEN_WORDS).
@@ -61,6 +61,11 @@ describe("commandMenu", () => {
   // Release 8b plan, Task 12; the note in the user's words, 2026-11-10.
   it("lists /hooks after /tasks, saying what it does", () => {
     expect(commandMenu("/", 1)!.entries[12]).toEqual({ label: "/hooks", note: "List the hooks in force", fill: "/hooks ", run: "/hooks" });
+  });
+
+  // Release 8c plan, Task 10 ("Lines this plan adds": the / menu's note).
+  it("lists /mcp after /hooks, saying what it does", () => {
+    expect(commandMenu("/", 1)!.entries[13]).toEqual({ label: "/mcp", note: "List the MCP servers", fill: "/mcp ", run: "/mcp" });
   });
 
   it("narrows as the command is typed, in any case", () => {
@@ -135,5 +140,22 @@ describe("listFolder", () => {
   it("gives the reason a folder cannot be listed", async () => {
     const { root } = await tempContext();
     expect(listFolder(root, "nope/")).toEqual({ error: expect.stringContaining("ENOENT") });
+  });
+});
+
+// Release 8c plan, Task 13's re-check: the offers of servers with thousands of resources, the keys two servers share in
+// any letter case left out, in one pass; only the result is checked, never the time.
+describe("offers", () => {
+  it("leaves out the keys two servers share among thousands, keeping every other in order", () => {
+    const notes = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => ({ uri: `note://${from + i}`, name: "n" }));
+    const lists: Record<string, { resources: { uri: string; name: string }[]; prompts: { name: string }[] }> = {
+      docs: { resources: notes(0, 1_500), prompts: [{ name: "sum" }] },
+      Docs: { resources: notes(1_000, 2_500), prompts: [{ name: "SUM" }, { name: "other" }] },
+    };
+    const servers = { list: () => Object.keys(lists).map((name) => ({ name })), server: (name: string) => lists[name] };
+    const o = offers(servers as unknown as Parameters<typeof offers>[0]);
+    const keys = [...notes(0, 1_000).map((r) => `docs:${r.uri}`), ...notes(1_500, 2_500).map((r) => `Docs:${r.uri}`)];
+    expect(o.resources.map((r) => r.key)).toEqual(keys);
+    expect(o.prompts.map((p) => p.command)).toEqual(["/Docs:other"]);
   });
 });

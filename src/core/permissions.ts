@@ -9,14 +9,15 @@ import type { Bus } from "./bus.js";
 // auto:    reads and edits in the project run, the judge decides the rest, and dangerous commands ask the user (release 7
 //          design, "Auto mode"; release 7 plan, Task 10)
 // never:   never ask; only with --sandbox copy, so nothing reaches the folder before the user has reviewed it
-//          (release 7 design, "Launching")
+//          (release 7 design, "Launching"); but an MCP call asks, as its server is outside the box (release 8c plan,
+//          choice 32)
 export type Mode = "ask" | "project" | "auto" | "never";
 export const MODES: Mode[] = ["ask", "project", "auto", "never"];
 // The modes a mistake's words offer: all four, now that copy mode, which `never` needs, is built (release 7 plan, Task 21).
 export const OFFERED: Mode[] = ["ask", "project", "auto", "never"];
 
 export interface Action {
-  kind: "read" | "write" | "shell";
+  kind: "read" | "write" | "shell" | "mcp";
   outside: boolean;
   summary: string;
   detail?: string; // what a write puts in the file, shown above the question; not escaped here
@@ -25,6 +26,11 @@ export interface Action {
   // path as the question names it, for the refusal in `never` (Task 8).
   protectedPart?: string;
   path?: string;
+  // An MCP tool's description, cut at 4,096 as the judge is shown it (release 8c plan, choice 15).
+  description?: string;
+  // An MCP tool's own description, as the server sent it; its first line is the question's grey note, on one screen row
+  // (choices 14 and 47).
+  note?: string;
 }
 
 // The git settings' paths the protected paths add, read once at launch (release 7 plan, Task 8; choices 57 and 59):
@@ -39,6 +45,9 @@ export interface Protection {
 // In auto, true is what its fast path does not pass, a read or a write outside the project and a shell command, which the
 // judge decides (release 7 plan, Task 10); a protected write and a danger the gate checks itself.
 export function needsApproval(mode: Mode, action: Action): boolean {
+  // An MCP call by its kind, never by `outside`: the user is asked in every mode, never included, as the server is outside
+  // the box, and in auto the judge decides (release 8c plan, choice 32; design, "Approval").
+  if (action.kind === "mcp") return true;
   if (mode === "never") return false;
   if (action.outside) return true;
   if (mode === "ask") return action.kind !== "read";
@@ -81,8 +90,9 @@ export interface Owner {
 // `plain`: the summary is a question of its own, not an action to allow, such as the session's "Send again without the
 // pictures" (release 6 plan, Task 18), so it is asked without "Allow" before it. `warnings`: the red lines above it, one
 // per danger the dangerous-command check found, escaped (release 7 plan, Task 8). `note`: a grey line said with it, auto
-// mode's pause (Task 10).
-export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean, warnings?: string[], note?: string) => Promise<boolean>;
+// mode's pause (Task 10). `oneRow`: the note is cut to one screen row in every view, as an MCP call's description is
+// (release 8c plan, choice 47); another wraps outside full screen, as before.
+export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean, warnings?: string[], note?: string, oneRow?: boolean) => Promise<boolean>;
 
 // Auto mode's judge, which cli.tsx gives the gate (release 7 plan, Task 10; safety/judge.ts, judgeOf). `own` is what a
 // subagent's gate adds: its own session's calls, which follow the lead's, and its bus, so the judge's spend and errors
@@ -109,6 +119,12 @@ const hookReason = (reason: string) => (reason ? ` (${visible(reason)})` : "");
 const hookNeverRefusal = (reason: string) => `Not allowed in never mode: a PreToolUse hook asked for this call to be approved${hookReason(reason)}.`;
 const hookHeadlessRefusal = (reason: string) => `Not allowed: a PreToolUse hook asked for this call to be approved${hookReason(reason)}, and -p cannot ask.`;
 const hookNote = (reason: string) => (reason ? `A hook asks: ${visible(reason)}` : "A hook asks.");
+// An MCP call's grey note: its tool's description cut to its first line, escaped; none for a tool with none (release 8c
+// plan, choice 14).
+const descriptionNote = (description = "") => {
+  const first = description.trim().split(/\r\n|\r|\n/, 1)[0]!.trim();
+  return first ? visible(first) : undefined;
+};
 
 // `root`: the project's, for the dangerous-command check; `headless`: -p mode, where a danger is refused (Task 8);
 // `judge`: auto mode's (Task 10), which cli.tsx always gives. `home` and `shell` are the box's in the sandbox, its
@@ -141,6 +157,9 @@ export class PermissionGate {
   #version = 0;
   // Set on a gate made for one call a PreToolUse hook allowed, or whose question the user said yes to (withHook).
   #hook: { allow: true } | { asked: true } | undefined;
+  // A subagent's gate's owner (for), which an MCP call passes on, so a form its server asks for meanwhile is headed with
+  // the subagent's id (release 8c plan, choice 29).
+  #owner: Owner | undefined;
   // Where the check reads a command (release 7 plan, Task 8): the project's root (cli.tsx gives its own, the folder it
   // started in), the home folder, and the shell the executor really runs, PowerShell on Windows and /bin/sh elsewhere
   // (exec/local.ts, shellFor; split.ts, shellOf); in live link the box's /work, /tmp and bash (GateOptions, Task 16).
@@ -186,11 +205,16 @@ export class PermissionGate {
   // A subagent's gate: the lead's mode, rules, protection and auto mode's counts, questions that name the subagent, and
   // what it adds for the judge (Own).
   for(owner: Owner, own?: Own): PermissionGate {
-    const ask: Ask = (summary, detail, _owner, plain, warnings, note) => this.ask(summary, detail, owner, plain, warnings, note);
+    const ask: Ask = (summary, detail, _owner, plain, warnings, note, oneRow) => this.ask(summary, detail, owner, plain, warnings, note, oneRow);
     const gate = new PermissionGate(this.#mode, ask, this.refusal, this.options);
     gate.#parent = this;
+    gate.#owner = owner;
     if (own) gate.#own = own;
     return gate;
+  }
+
+  get owner(): Owner | undefined {
+    return this.#owner;
   }
 
   // A gate for one call a PreToolUse hook allowed, or whose question the user said yes to (release 8b plan, Task 6 and
@@ -201,15 +225,32 @@ export class PermissionGate {
     const gate = new PermissionGate(this.#mode, this.ask, this.refusal, this.options);
     gate.#parent = this.#parent ?? this;
     if (this.#own) gate.#own = this.#own;
+    gate.#owner = this.#owner;
     gate.#hook = h;
+    return gate;
+  }
+
+  // A gate for one call, which tells `asked` as it puts the user a question for it, its own or a PreToolUse hook's, and
+  // otherwise this gate (release 8c plan, Task 15). Not in -p, where the ask only reports a refusal and nobody is asked.
+  noting(asked: () => void): PermissionGate {
+    const ask: Ask = (...a) => {
+      if (!this.options.headless) asked();
+      return this.ask(...a);
+    };
+    const gate = new PermissionGate(this.#mode, ask, this.refusal, this.options);
+    gate.#parent = this.#parent ?? this;
+    if (this.#own) gate.#own = this.#own;
+    gate.#owner = this.#owner;
+    gate.#hook = this.#hook;
     return gate;
   }
 
   // Where a PreToolUse hook's ask cannot be put, in never and headless, where nobody can answer it, the words of the
   // call's refusal (release 8b plan, choice 15; design, "Tool hooks"), which the session says and tells the model; else
-  // undefined, and the question is put (hookAsks).
-  hookCannotAsk(reason: string): string | undefined {
-    if (this.mode === "never") return hookNeverRefusal(reason);
+  // undefined, and the question is put (hookAsks). `mcp`: the call is an MCP tool's, whose hook's ask is put in never too,
+  // as the gate asks about such a call there (release 8c plan, choice 47).
+  hookCannotAsk(reason: string, mcp = false): string | undefined {
+    if (this.mode === "never" && !mcp) return hookNeverRefusal(reason);
     if (this.options.headless) return hookHeadlessRefusal(reason);
     return undefined;
   }
@@ -236,7 +277,9 @@ export class PermissionGate {
     const mode = this.mode;
     const found = action.command === undefined ? [] : dangers(action.command, this.#context, this.rules);
     const part = action.protectedPart;
-    if (mode === "never") {
+    // These refusals and passes are for the box's own actions; an MCP call goes on to the question (release 8c plan,
+    // choice 32; the plan review, finding 1).
+    if (mode === "never" && action.kind !== "mcp") {
       if (part !== undefined) throw new Declined(protectedRefusal(action.path ?? action.summary, part));
       // A write outside the project, one whose real place cannot be told among them (a link that leads nowhere has no
       // protected part to find), could reach the folder unreviewed (Task 21, from Task 8's spec review).
@@ -255,8 +298,10 @@ export class PermissionGate {
     if (mode === "auto" && !found.length && pause === null) return this.#judged(action, signal ?? new AbortController().signal);
     const shown = visible(action.summary);
     const warnings = found.map((d) => visible(`Danger: ${named(d)}`));
-    const note = pause === null ? undefined : `Auto mode paused after ${pause.count} refusals; approving this resumes it.`;
-    const yes = await this.ask(shown, action.detail, undefined, undefined, warnings, note);
+    // The question has one grey row: under a pause, the pause's line, as approving resumes auto mode; else an MCP call's
+    // tool's own words, cut to one screen row (choice 47).
+    const note = pause === null ? descriptionNote(action.note) : `Auto mode paused after ${pause.count} refusals; approving this resumes it.`;
+    const yes = await this.ask(shown, action.detail, undefined, undefined, warnings, note, pause === null && action.kind === "mcp");
     // Headless, the ask is the launch's report of a refusal (cli.tsx), so the run fails and says so; a danger is
     // refused whatever it answers.
     if (this.options.headless && found.length) throw new Declined(dangerRefusal(found));

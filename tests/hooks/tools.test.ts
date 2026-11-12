@@ -29,6 +29,8 @@ const CASES: [string, Record<string, unknown>, string, Record<string, unknown>][
     description: "find x", prompt: "Find where x is set.", run_in_background: true, subagent_type: "Explore" }],
   ["todo", { items: [{ text: "one", status: "done" }, { text: "two", status: "in_progress" }] }, "TodoWrite", {
     todos: [{ content: "one", status: "completed" }, { content: "two", status: "in_progress" }] }],
+  // Release 8c plan, choice 44.
+  ["tool_search", { query: "select:mcp__a__b", max_results: 2 }, "ToolSearch", { query: "select:mcp__a__b", max_results: 2 }],
 ];
 
 describe("toClaude and fromClaude: every tool both ways", () => {
@@ -50,6 +52,15 @@ describe("toClaude and fromClaude: every tool both ways", () => {
   it("makes a path whole against the project's root", () => {
     expect(toClaude({ name: "read_file", input: { path: "src/a.ts" } }, HOST).tool_input).toEqual({ file_path: "/proj/src/a.ts" });
     expect(toClaude({ name: "search_files", input: { pattern: "x", path: "." } }, HOST).tool_input).toEqual({ pattern: "x", path: "/proj" });
+  });
+
+  // Release 8c plan, choices 18 and 19: an MCP call under its own name, its arguments as they came, and a rewrite that is
+  // an object taken as its new arguments.
+  it("sends an MCP call by its own name with its arguments, and takes back a rewrite that is an object", () => {
+    const call = toClaude({ name: "mcp__s__echo", input: { text: "hi", n: [1] } }, HOST);
+    expect(call).toEqual({ tool_name: "mcp__s__echo", tool_input: { text: "hi", n: [1] } });
+    expect(fromClaude("mcp__s__echo", { text: "new", extra: null }, HOST)).toEqual({ input: { text: "new", extra: null } });
+    expect(fromClaude("mcp__s__echo", ["x"], HOST)).toEqual({ problem: '"updatedInput" must be an object' });
   });
 
   it("sends a tool it does not know by its own name, with its input", () => {
@@ -250,7 +261,9 @@ describe("responseOf and errorOf: what PostToolUse and PostToolUseFailure are se
   });
 
   it("gives the text the model reads for the other tools, and for a tool that reported nothing", () => {
-    for (const name of ["read_file", "edit_file", "find_files", "search_files", "todo", "other"]) expect(responseOf(name, "the text")).toBe("the text");
+    for (const name of ["read_file", "edit_file", "find_files", "search_files", "todo", "tool_search", "other"]) {
+      expect(responseOf(name, "the text")).toBe("the text");
+    }
     expect(responseOf("shell", "the text")).toBe("the text");
   });
 
@@ -290,6 +303,13 @@ describe("outputFrom: a hook's updatedToolOutput, turned back into what the mode
     expect(outputFrom("delegate", { content: [] })).toBeNull();
     expect(outputFrom("write_file", { filePath: "a", type: "create" })).toBeNull();
     expect(outputFrom("other", "x")).toBeNull();
+  });
+
+  // Release 8c plan, choice 20; Task 6b: a search's answer is not a hook's to rewrite.
+  it("takes text for an MCP call, and nothing for ToolSearch", () => {
+    expect(outputFrom("mcp__s__echo", "new text")).toBe("new text");
+    expect(outputFrom("mcp__s__echo", { content: [{ type: "text", text: "x" }] })).toBeNull();
+    expect(outputFrom("tool_search", "x")).toBeNull();
   });
 });
 

@@ -127,6 +127,14 @@ const TOOLS: Record<string, Spec> = {
     },
   },
   todo: { claude: "TodoWrite", fields: [{ ours: "items", theirs: "todos", kind: "todos", required: true }] },
+  // Its tool_response is its text, the default (release 8c plan, choice 44).
+  tool_search: {
+    claude: "ToolSearch",
+    fields: [
+      { ours: "query", theirs: "query", kind: "text", required: true },
+      { ours: "max_results", theirs: "max_results", kind: "count" },
+    ],
+  },
 };
 
 // The Tachikoma tool Claude Code's name stands for, or the name itself for a tool it does not know, for the lines, which
@@ -141,7 +149,11 @@ const TODO_FIELDS = ["content", "status", "activeForm"];
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 // A table's own entry: a plain lookup would find "constructor" or "toString" too (registry.ts does the same).
-const own = <T>(table: Record<string, T> | undefined, key: string): T | undefined => (table && Object.hasOwn(table, key) ? table[key] : undefined);
+export const own = <T>(table: Record<string, T> | undefined, key: string): T | undefined => (table && Object.hasOwn(table, key) ? table[key] : undefined);
+
+// An MCP server's tool, by the name the session gives it, mcp__<server>__<tool> (mcp/servers.ts). Hooks see it under that
+// name with its arguments as they came (release 8c plan, choice 18), as toClaude sends a tool it has no entry for.
+export const isMcp = (name: string) => name.startsWith("mcp__");
 
 // The model's call as hooks see it. The model's input is not yet checked against the tool's schema, so a field of the
 // wrong type is sent as it came; fields the tool does not have are left out, as its schema drops them.
@@ -164,10 +176,13 @@ export function toClaude(call: { name: string; input: unknown }, paths: Paths): 
 
 // A hook's rewrite (`updatedInput`, already an object, answer.ts) turned back into the input of the tool `name`, or why it
 // cannot be: the words of a `problem` name the field. A field set to null is not set, as answer.ts reads one.
+// An MCP call's rewrite is its new arguments whole (choice 19): the server's own schema says what it takes, and the
+// session's question and its check of the tool's definition still come after.
 export function fromClaude(name: string, input: unknown, paths: Paths): { input: unknown } | { problem: string } {
   const spec = own(TOOLS, name);
-  if (!spec) return { problem: "Tachikoma takes rewrites only for its own tools" };
+  if (!spec && !isMcp(name)) return { problem: "Tachikoma takes rewrites only for its own tools" };
   if (!isObject(input)) return { problem: '"updatedInput" must be an object' };
+  if (!spec) return { input };
   const out: Record<string, unknown> = {};
   for (const f of spec.fields) {
     const v = input[f.theirs];
@@ -262,9 +277,10 @@ const TEXT_RESULT = new Set(["read_file", "edit_file", "find_files", "search_fil
 
 // A hook's `updatedToolOutput` as the text the model reads (choice 13), or null where it does not match the tool's result
 // and is not used, as Claude Code ignores one. PostToolUse runs only after a call that succeeded, so a rebuilt shell
-// result is exit code 0.
+// result is exit code 0. An MCP call's is text, from updatedMCPToolOutput or updatedToolOutput (release 8c plan, choice
+// 20). ToolSearch's answer is not among them, so no hook rewrites a search (Task 6b's build).
 export function outputFrom(name: string, value: unknown): string | null {
-  if (TEXT_RESULT.has(name)) return typeof value === "string" ? value : null;
+  if (TEXT_RESULT.has(name) || isMcp(name)) return typeof value === "string" ? value : null;
   if (name === "shell" && isObject(value) && typeof value.stdout === "string" && typeof value.stderr === "string") {
     return shellText({ code: 0, signal: null, stdout: value.stdout, stderr: value.stderr });
   }

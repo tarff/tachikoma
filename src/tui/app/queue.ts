@@ -1,26 +1,32 @@
 import { lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Prompt } from "@modelcontextprotocol/client";
 import { withLock } from "../../auth/lock.js";
 import { leadGone, type Opened } from "../../clilib.js";
 import type { ErrorEvent } from "../../core/bus.js";
 import { summarize } from "../../core/errorlog.js";
 import { exportText } from "../../core/exportText.js";
 import { type Protection, visible } from "../../core/permissions.js";
-import { cannot } from "../../core/session.js";
+import { cannot, truncate } from "../../core/session.js";
 import { listSessions } from "../../core/sessions.js";
 import { CANCELLED } from "../../core/shorten.js";
 import type { Task } from "../../core/tasks.js";
-import { errorText, type Provider } from "../../core/types.js";
+import { errorText, type Part, type Picture, type Provider } from "../../core/types.js";
 import { hookName } from "../../hooks/answer.js";
 import { limitOf } from "../../hooks/hooks.js";
 import { KEYBINDINGS } from "../../keybindings.js";
+import { NotReached, type Server } from "../../mcp/server.js";
+import { until } from "../../mcp/tools.js";
 import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS, shownFile } from "../../settings.js";
 import type { Fns } from "../App.js";
-import { unquoted } from "../clipboard.js";
-import { callLines, conversationLines, type Line } from "../describe.js";
+import { typeOf, unquoted } from "../clipboard.js";
+import { callLines, type Line } from "../describe.js";
+import { conversationLines } from "../fold.js";
+import { offers } from "../menus.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
+import { type Action, stateText } from "../McpList.js";
 import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
@@ -73,8 +79,9 @@ export const queue = (ui: UI, fns: Fns) => {
     const q = ui.queue.current;
     const command = q.findIndex((d) => isCommand(d.text));
     if (!h.queued) return;
-    // /resume's list too, which would open under the printed view (release 8a plan, Task 7).
-    if (h.phase.kind === "printed" && command === 0 && (fns.recordToOpen(q[0]!.text) || /^\/(screen|resume)$/i.test(q[0]!.text))) return;
+    // /resume's list too, which would open under the printed view (release 8a plan, Task 7), and /mcp's (release 8c plan,
+    // Task 10).
+    if (h.phase.kind === "printed" && command === 0 && (fns.recordToOpen(q[0]!.text) || /^\/(screen|resume|mcp)$/i.test(q[0]!.text))) return;
     if (ui.owner.busy && command === 0 && /^\/(screen|settings|keybindings)$/i.test(q[0]!.text)) return;
     ui.view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     void fns.submit(joined(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command), "\n\n"));
@@ -105,6 +112,7 @@ export const queue = (ui: UI, fns: Fns) => {
       }
       if (alone("/errors")) return fns.say(...summarize(ui.errorFile).map((row) => ({ text: row, oneLine: true })));
       if (alone("/hooks")) return fns.say(...hooksList());
+      if (alone("/mcp")) return mcpOpen();
       // Not to full screen where it can't draw: classic, as at the start (clilib.ts, screenMode).
       if (alone("/screen") && !ui.fullNow.current && !ui.fullPossible)
         return fns.say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "gray" });
@@ -158,7 +166,7 @@ export const queue = (ui: UI, fns: Fns) => {
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
       if (!account && !listing && /^\/[a-z]+$/i.test(text)) return fns.say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
-      if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings", "/clear", "/resume", "/hooks"].includes(command))
+      if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings", "/clear", "/resume", "/hooks", "/mcp"].includes(command))
         return fns.say({ text: `${command} takes nothing after it.`, color: "red" });
       ui.abort.current = new AbortController();
       const turn = !account && !listing;
@@ -195,11 +203,27 @@ export const queue = (ui: UI, fns: Fns) => {
           // The message's pictures sent before it, which a blocked prompt's words do not take back (promptKeys.ts, giveBack).
           const before = new Set(message.spans.flatMap((s) => (ui.pictures.sent(s.id) ? [s.id] : [])));
           const read = await fns.readsEnded(message, signal);
-          const ended = await ui.session.send(read.parts, signal);
+          // What the MCP servers supply goes after the typed words, marked the server's (choice 34), got by the session once
+          // the first prompt's wait and UserPromptSubmit are done (Task 13's fix round). One that cannot be got stops the
+          // send, its line said; a stop meanwhile says nothing. Either way the words and their pictures come back into the
+          // prompt box (choices 30, 31).
+          let refused: Refused | undefined;
+          const got = async (): Promise<Part[] | null> => {
+            const supplied = await supply(read.draft.text, signal);
+            if (Array.isArray(supplied)) return supplied;
+            if (!signal.aborted) refused = supplied;
+            return null;
+          };
+          const ended = await ui.session.send(read.parts, signal, ui.mcp ? got : undefined);
+          if (ended && "unsupplied" in ended) {
+            if (refused) fns.say({ text: refused.line, color: "red" });
+            fns.giveBack(read.draft, before, refused?.said ?? false);
+          }
           // A prompt a UserPromptSubmit hook blocked or stopped was not sent (approved by the user, 2026-11-09).
-          if (ended && ("blocked" in ended || ended.unsent)) fns.giveBack(read.draft, before);
+          else if (ended && ("blocked" in ended || ended.unsent)) fns.giveBack(read.draft, before);
         }
       } finally {
+        fns.endRun(); // the turn's end, Esc's among them, says the open run of quiet calls (release 8c plan, choice 65)
         ui.setBusy(false);
         ui.working.current = false;
         // The model may have switched branches. Through the Workspace, so it lands just after the turn ends (release 7
@@ -211,6 +235,139 @@ export const queue = (ui: UI, fns: Fns) => {
     }
   };
 
+  // The MCP servers' parts for a prompt being sent (release 8c plan, Task 13), each marked the server's (choice 34): a
+  // prompt command's messages, each text and picture, an assistant's headed `(assistant)` (choice 31); then each resource
+  // picked in the words, `@<name>:<uri>` as `@` completes it, once, in the order picked: its text headed `Resource
+  // @<name>:<uri>:` and cut as a tool's answer is (choice 30; "Numbers in this plan"), then its pictures, numbered as
+  // pasted ones are once every one has been got, so a send that stops takes no numbers. A picture's type is read from its
+  // first bytes, as a tool answer's is; any other content is left out. A name and what follows it match in their letter
+  // case first, then in any, as the menus narrow in any (the fix round).
+  // The server named is made ready if it can be: a remote one whose connection dropped is connected again first, and a
+  // request that never reached it connects again and goes once more, as a tool call's does (choices 13, 33); it is safe,
+  // as reading changes nothing. A configured server that is still not ready stops the send, saying so in /mcp's words
+  // for its state (the user's words, the fix round). A ready one whose list lacks what was typed leaves it plain words.
+  // The red line instead, for the first that cannot be got, the reason escaped; `said`: whether the grey line saying the
+  // words are back is said after it, as the missing argument's line does not say so. Whatever else goes wrong meanwhile,
+  // as a server a live edit removed, gives the red line of the read or prompt being got, so the words always come back.
+  // The servers named are readied first, then the offers built once, as building them reads every server's lists.
+  const supply = async (text: string, signal: AbortSignal): Promise<Part[] | Refused> => {
+    const servers = ui.mcp!.servers;
+    const why = (err: unknown) => visible(errorText(err), { tabs: true });
+    const back = "Your words are back in the prompt box.";
+    // A server gone from the settings has no state to say, so it is said as Server says one it has no connection to.
+    const notReady = (name: string) => {
+      const s = servers.list().find((x) => x.name === name);
+      if (!s) throw new Error("Not connected");
+      return `${visible(name)} is not ready (${visible(stateText(s.state), { tabs: true })})`;
+    };
+    // The configured server `typed` names, ready if it can be made so; each name once.
+    const ready = new Map<string, string | undefined>();
+    const readied = async (typed: string): Promise<string | undefined> => {
+      if (ready.has(typed)) return ready.get(typed);
+      const s = named(servers.list(), typed, (x) => x.name);
+      ready.set(typed, s?.name);
+      if (!s) return undefined;
+      if (s.state.is === "stopped" && s.state.retry) await reconnect(s.name, signal);
+      const server = servers.server(s.name);
+      if (server?.state.is === "ready") await until(server.listed, signal);
+      return s.name;
+    };
+    const ask = async <T>(name: string, send: (server: Server) => Promise<T>): Promise<T> => {
+      const ready = () => {
+        const server = servers.server(name);
+        if (server?.state.is !== "ready") throw new Error(notReady(name));
+        return server;
+      };
+      try {
+        return await send(ready());
+      } catch (err) {
+        if (!(err instanceof NotReached) || signal.aborted || !(await reconnect(name, signal))) throw err;
+        return await send(ready());
+      }
+    };
+    const pending: (Part | Picture)[] = [];
+    const pictured = (base64: string): Picture[] => {
+      const data = Buffer.from(base64, "base64");
+      const mediaType = typeOf(data);
+      return mediaType ? [{ mediaType, data }] : [];
+    };
+    const [first = ""] = text.split(/\s+/);
+    // The red line for what is being got now, given its reason, set at each step.
+    let fail = (reason: string): Refused => ({ line: `Could not get the prompt ${visible(first)}: ${reason}. ${back}`, said: false });
+    try {
+      const command = /^\/([^\s/:]+):\S/.exec(first);
+      const typedKeys = [...new Set([...text.matchAll(/(?:^|\s)@(\S+)/g)].map((m) => m[1]!))];
+      const server = command && (await readied(command[1]!));
+      const picks: { typed: string; server: string }[] = [];
+      for (const typed of typedKeys) {
+        const colon = typed.indexOf(":");
+        fail = (reason) => ({ line: `Could not read @${visible(typed)}: ${reason}. ${back}`, said: false });
+        const owner = colon > 0 ? await readied(typed.slice(0, colon)) : undefined;
+        if (owner) picks.push({ typed, server: owner });
+      }
+      const o = offers(servers);
+      if (server) {
+        fail = (reason) => ({ line: `Could not get the prompt ${visible(first)}: ${reason}. ${back}`, said: false });
+        const p = named(o.prompts, first, (x) => x.command);
+        if (!p && servers.server(server)?.state.is !== "ready") return fail(notReady(server));
+        if (p) {
+          const filled = argumentsOf(p.prompt, text.slice(first.length));
+          if ("missing" in filled) {
+            const usage = [p.command, ...(p.prompt.arguments ?? []).map((a) => a.name)].map((w) => visible(w)).join(" ");
+            return { line: `${visible(p.command)} needs ${visible(filled.missing)}: ${usage}`, said: true };
+          }
+          fail = (reason) => ({ line: `Could not get the prompt ${visible(p.command)}: ${reason}. ${back}`, said: false });
+          const got = await ask(p.server, (s) => s.getPrompt(p.prompt.name, filled.args, { signal }));
+          for (const m of got.messages) {
+            const head = m.role === "assistant" ? "(assistant)" : undefined;
+            const c = m.content;
+            if (c.type === "text") pending.push({ type: "text", text: head ? `${head}\n${c.text}` : c.text, from: "server" });
+            else if (c.type === "image") {
+              const picture = pictured(c.data);
+              if (head && picture.length) pending.push({ type: "text", text: head, from: "server" });
+              pending.push(...picture);
+            }
+          }
+        }
+      }
+      const done = new Set<string>();
+      for (const { typed, server } of picks) {
+        fail = (reason) => ({ line: `Could not read @${visible(typed)}: ${reason}. ${back}`, said: false });
+        const r = named(o.resources, typed, (x) => x.key);
+        if (!r && servers.server(server)?.state.is !== "ready") return fail(notReady(server));
+        if (!r || done.has(r.key)) continue;
+        done.add(r.key);
+        fail = (reason) => ({ line: `Could not read @${visible(r.key)}: ${reason}. ${back}`, said: false });
+        const got = await ask(r.server, (s) => s.readResource(r.uri, { signal }));
+        const texts = got.contents.flatMap((c) => ("text" in c ? [c.text] : []));
+        const head = `Resource @${r.key}:`;
+        pending.push({ type: "text", text: texts.length ? `${head}\n${truncate(texts.join("\n\n"))}` : head, from: "server" });
+        for (const c of got.contents) if ("blob" in c) pending.push(...pictured(c.blob));
+      }
+    } catch (err) {
+      if (signal.aborted) return { line: "", said: false }; // the caller says nothing for a stop
+      return fail(why(err));
+    }
+    return pending.map((p): Part => {
+      if ("type" in p) return p;
+      const id = ui.pictures.next();
+      ui.pictures.set(id, p);
+      return { type: "image", id, ...p, from: "server" };
+    });
+  };
+  // A dropped remote server's one new connection (choices 13, 33), with the grey line a tool call's says, once for each new
+  // connection; false when it did not connect, or a stop ended the wait.
+  const reconnected = new WeakSet<Promise<boolean>>();
+  const reconnect = async (name: string, signal: AbortSignal): Promise<boolean> => {
+    const trying = ui.mcp!.servers.reconnect(name);
+    if (!(await until(trying, signal))) return false;
+    if (!reconnected.has(trying)) {
+      reconnected.add(trying);
+      ui.bus.emit("mcp-note", `MCP server ${visible(name)} was connected again.`);
+    }
+    return true;
+  };
+
   // `/tasks` lists the session's subagents, `/tasks t3` prints one's tool calls and answer in full,
   // and `/tasks stop` stops all of them, or with a number one (release 4 design, "Background subagents").
   const tasksCommand = (words: string[]): Line[] => {
@@ -219,7 +376,7 @@ export const queue = (ui: UI, fns: Fns) => {
     if (verb === undefined) {
       if (!ui.tasks.all.length) return [gray("No subagents yet.")];
       const now = Date.now();
-      return [gray(`Subagents: ${ui.tasks.all.length}`), ...ui.tasks.all.flatMap((t) => taskRow(t, now)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
+      return [gray(`Subagents: ${ui.tasks.all.length}`), ...ui.tasks.all.flatMap((t) => taskRow(t, now, ui.run.options.names)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
     }
     if (verb === "stop" && !rest.length) {
       if (id === undefined) return [gray(ui.tasks.stop() ? "Stopped every subagent." : "No subagent is running.")];
@@ -249,9 +406,78 @@ export const queue = (ui: UI, fns: Fns) => {
       : [`No hooks in force. They go in "hooks" in ${shownFile()}.`];
     return [...listed, ...(leftOut.length ? ["Left out:", ...leftOut.map((w) => `  ${visible(w)}`)] : [])].map(gray);
   };
+  // `/mcp` (release 8c plan, Task 10; choice 27): the servers' list (McpList.tsx), holding the queue until it closes, as
+  // /resume's does; with none, where they go, the file named as the launch names it (settings.ts, shownFile). True when
+  // it opened.
+  const mcpOpen = (): boolean | void => {
+    if (!ui.mcp?.servers.list().length) return fns.say(gray(`No MCP servers. They go in "mcpServers" in ${shownFile()}, or in a project's .mcp.json.`));
+    ui.listOpen.current = true;
+    ui.setMcpList(true);
+    return true;
+  };
+  const closeMcp = () => {
+    ui.listOpen.current = false;
+    ui.setMcpList(false);
+    fns.next();
+  };
+  // A server's action, picked in /mcp's list. Reconnect keeps the list open, which redraws as the server starts, then as
+  // its start ends (McpList.tsx); Show tools prints the server's tools into the conversation, as /hooks prints its list,
+  // then the ones left out, in their lines' words (Servers, tools); Reset my answer writes the reset (choice 24) and says
+  // so, or, when it cannot be written, that the answer still holds (choice 52). What is said is asked for, shown at the
+  // bottom, as the model list's pick says (pick, below).
+  const mcpAction = (name: string, action: Action) => {
+    const servers = ui.mcp!.servers;
+    if (action === "Reconnect") return void servers.restart(name);
+    ui.view.current = FOLLOWING;
+    if (action === "Sign in" || action === "Sign out") return void account(name, action);
+    const shown = visible(name);
+    if (action === "Show tools") {
+      const { names, leftOut } = servers.tools(name); // each tool's own name (release 8c plan, Task 16; choice 66)
+      fns.say(...[`${shown}'s tools:`, ...names.map((n) => `  ${visible(n)}`), ...(leftOut.length ? ["Left out:", ...leftOut.map((w) => `  ${visible(w)}`)] : [])].map(gray));
+    } else {
+      try {
+        servers.reset(name);
+        fns.say(gray(`Your answer for ${shown} was reset; Tachikoma asks again at the next launch.`));
+      } catch (err) {
+        fns.say({ text: `Your answer for ${shown} could not be reset (${visible(errorText(err), { tabs: true })}); the next launch still uses it.`, color: "red" });
+      }
+    }
+    closeMcp();
+  };
+  // /mcp's Sign in and Sign out (Task 11), run as /login and /logout are: their working line, what is typed waiting in the
+  // queue, Esc stopping a sign-in through its own signal, which also cancels its question, the window's own yes/no. The
+  // lines are the plan's; Esc says nothing more, as the user stopped it; a sign-out that cannot be written says so, and the
+  // sign-in stays (choice 56).
+  const account = async (name: string, action: "Sign in" | "Sign out") => {
+    const servers = ui.mcp!.servers;
+    const shown = visible(name);
+    const { signal } = (ui.abort.current = new AbortController());
+    ui.doing.current = { label: action === "Sign in" ? "Waiting for the browser" : "Signing out", at: Date.now(), from: null };
+    ui.setNow(ui.doing.current.at);
+    ui.setBusy(true);
+    ui.working.current = true;
+    closeMcp(); // the queue waits for this, as it works
+    try {
+      if (action === "Sign out") {
+        await servers.signOut(name);
+        fns.say(gray(`Signed out of ${shown}.`));
+      } else {
+        const ask = (question: string) => ui.asking.current?.(question, undefined, undefined, true) ?? Promise.resolve(false);
+        if (await servers.signIn(name, { ask, say: (line) => fns.say(gray(line)), signal })) fns.say(gray(`Signed in to ${shown}.`));
+      }
+    } catch (err) {
+      const why = visible(errorText(err), { tabs: true });
+      if (action === "Sign out") fns.say({ text: `Sign-out of ${shown} failed: ${why}`, color: "red" });
+      else if (!signal.aborted) fns.say({ text: `Sign-in to ${shown} failed: ${why}`, color: "red" });
+    } finally {
+      ui.setBusy(false);
+      ui.working.current = false;
+      fns.next();
+    }
+  };
   // `/tasks t3`'s record: the subagent's tool calls and answer in full.
   const recordOf = (t: Task): Line[] => {
-    const calls = callLines(t.messages);
+    const calls = callLines(t.messages, ui.run.options.names);
     const end = t.state === "done" ? `Answer:\n${t.answer}` : t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)";
     return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
   };
@@ -443,7 +669,8 @@ export const queue = (ui: UI, fns: Fns) => {
       ui.answered.current.clear();
       ui.stats.context = 0;
     }
-    fns.say(...(branched ? [] : conversationLines(next.conversation.messages)), ...lines);
+    // Folded by the window's rules, the session's asked calls now the loaded conversation's (release 8c plan, Task 15).
+    fns.say(...(branched ? [] : conversationLines(next.conversation.messages, ui.run.options)), ...lines);
     ui.rerender((n) => n + 1);
     if (how.lead) {
       ui.waiting.current.lead = undefined; // it wins over a lead the settings file set meanwhile, as a /lead typed then would
@@ -566,6 +793,30 @@ export const queue = (ui: UI, fns: Fns) => {
   };
   return {
     submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave, subagentsRunning, startFresh, resume,
-    pickSession, closeSessions, branch, rename, exportTo,
+    pickSession, closeSessions, branch, rename, exportTo, mcpAction, closeMcp,
   };
 };
+
+// Why what the MCP servers supply for a prompt was not got: its red line, and whether the grey line saying the words are
+// back follows it (supply, above).
+type Refused = { line: string; said: boolean };
+
+// The item `typed` names: by its key in the same letter case first, then in any (Task 13's fix round).
+const named = <T>(items: T[], typed: string, key: (t: T) => string): T | undefined =>
+  items.find((t) => key(t) === typed) ?? items.find((t) => key(t).toLowerCase() === typed.toLowerCase());
+
+// A prompt command's words as its arguments (release 8c plan, choice 31): split at blanks, each word the next argument's,
+// the last argument taking the rest as typed, line breaks and all; or the first needed one that is not given.
+function argumentsOf(prompt: Prompt, words: string): { args: Record<string, string> } | { missing: string } {
+  const list = prompt.arguments ?? [];
+  const args: Record<string, string> = {};
+  let rest = words.trim();
+  for (const [i, a] of list.entries()) {
+    if (!rest) break;
+    const word = i === list.length - 1 ? rest : /^\S+/.exec(rest)![0];
+    args[a.name] = word;
+    rest = rest.slice(word.length).trimStart();
+  }
+  const missing = list.find((a) => a.required && !Object.hasOwn(args, a.name));
+  return missing ? { missing: missing.name } : { args };
+}

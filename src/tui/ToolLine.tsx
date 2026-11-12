@@ -2,6 +2,7 @@ import { Text } from "ink";
 import { Fragment } from "react";
 import type { ToolOutcome } from "../core/bus.js";
 import { visible } from "../core/permissions.js";
+import { type McpNames, shownName } from "./describe.js";
 
 // A call of the turn, from the session's tool-start and tool-end events; no outcome while it runs.
 export interface Call {
@@ -28,9 +29,13 @@ const SHOWN = 4; // claude-hud's tools line shows the four most used (`renderToo
 
 // The line under the status line (release 3 design, "On screen", after claude-hud's tools line): the
 // running call and its target, then the finished calls counted by tool and how they ended, most
-// first. Names and targets come from the model, so they are escaped.
-export function toolParts(calls: Call[]): Part[] {
-  const running = calls.filter((c) => !c.outcome).map((c): Part => ({ mark: "◐", rest: visible(c.target === null ? c.name : `${c.name} ${c.target}`), color: "yellow", whole: false }));
+// first. Names and targets come from the model, so they are escaped. An MCP call is named by its server and tool as the
+// server gives them, from `names` (release 8c plan, Task 18; choice 68).
+export function toolParts(calls: Call[], names?: McpNames): Part[] {
+  const running = calls.filter((c) => !c.outcome).map((c): Part => {
+    const name = shownName(c.name, names);
+    return { mark: "◐", rest: visible(c.target === null ? name : `${name} ${c.target}`), color: "yellow", whole: false };
+  });
   const counts = new Map<string, { end: Omit<Part, "rest">; name: string; n: number }>();
   for (const c of calls) {
     if (!c.outcome) continue;
@@ -42,14 +47,14 @@ export function toolParts(calls: Call[]): Part[] {
   const done = [...counts.values()]
     .sort((a, b) => b.n - a.n)
     .slice(0, SHOWN)
-    .map((g): Part => ({ ...g.end, rest: `${visible(g.name)} ×${g.n}` }));
+    .map((g): Part => ({ ...g.end, rest: `${visible(shownName(g.name, names))} ×${g.n}` }));
   return [...running, ...done];
 }
 
-export function ToolLine({ calls }: { calls: Call[] }) {
+export function ToolLine({ calls, names }: { calls: Call[]; names?: McpNames }) {
   return (
     <Text wrap="truncate-end">
-      {toolParts(calls).map((p, n) => (
+      {toolParts(calls, names).map((p, n) => (
         <Fragment key={n}>
           {n ? " | " : ""}
           <Text color={p.whole ? p.color : undefined}>

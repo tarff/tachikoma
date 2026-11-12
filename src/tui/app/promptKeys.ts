@@ -5,7 +5,7 @@ import { apply, type Editor, load, move, replace } from "../editor.js";
 import { matches } from "../history.js";
 import { type Command, commands, isScroll, keyList } from "../keys.js";
 import { vertical } from "../layout.js";
-import { commandMenu, listFolder, type Menu as MenuData, pathMenu } from "../menus.js";
+import { commandMenu, listFolder, type Menu as MenuData, type Offers, offers, pathMenu } from "../menus.js";
 import type { Now } from "../phase.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
 import { promptWidth } from "../Prompt.js";
@@ -35,7 +35,7 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     // hook runs after its calls (release 8b plan, choice 24).
     if (c === "lastTurn") {
       const s = ui.summary.current;
-      const lines = s === null ? lastTurn(ui.session.messages, ui.hooks?.runs) : [gray(SHORTEN_WORDS.summary), gray(s)];
+      const lines = s === null ? lastTurn(ui.session.messages, ui.hooks?.runs, ui.run.options.names) : [gray(SHORTEN_WORDS.summary), gray(s)];
       return ui.fullNow.current ? fns.openDetail(lines) : fns.show(...lines);
     }
     if (c === "todos") return void (ui.todos.current.hidden = !ui.todos.current.hidden);
@@ -92,18 +92,20 @@ export const promptKeys = (ui: UI, fns: Fns) => {
   // prompts queued behind it come back after it, nothing sent, as Ctrl-C brings them back (the user's choice,
   // 2026-11-09). While the external editor has the prompt they wait for it to return, as its saved file takes the
   // prompt's place (handover.tsx, externalEditor; Task 8's code review).
-  const giveBack = (d: Draft, before: ReadonlySet<number>) => {
+  // `said`: false when the caller's own line says the words are back, as an MCP resource's or prompt's that could not be
+  // read does (release 8c plan, "Lines this plan adds").
+  const giveBack = (d: Draft, before: ReadonlySet<number>, said = true) => {
     for (const s of d.spans) if (!before.has(s.id)) ui.pictures.unmarkSent(s.id);
     const back = [d, ...ui.queue.current];
     ui.queue.current = [];
     if (ui.editingBack.current) ui.editingBack.current.push(...back);
-    else fns.putBack(back);
+    else fns.putBack(back, said);
   };
   // Given-back prompts into the prompt box as its text really is (Task 8's code review): Ctrl+R's search ends first, as
   // Ctrl-C ends it, so a match it gives cannot take their place, and a walk through the history ends with the draft it
   // kept, as Down past the newest prompt brings it back, so sending a recalled prompt cannot drop them. A recalled line
   // changed since, by typing or the external editor, is kept after the draft, before them (Task 8's re-check).
-  const putBack = (given: Draft[]) => {
+  const putBack = (given: Draft[], said = true) => {
     if (ui.search.current) fns.endSearch(ui.search.current.before);
     let back = given;
     const walk = ui.step.current;
@@ -119,7 +121,7 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     ui.editor.current = { ...load(ui.editor.current, all.text), spans: all.spans };
     ui.goal.current = null;
     fns.freshText();
-    fns.say(gray("Your words are back in the prompt box."));
+    if (said) fns.say(gray("Your words are back in the prompt box."));
   };
   const clear = (e: Editor) => {
     fns.keep(e.text);
@@ -169,11 +171,15 @@ export const promptKeys = (ui: UI, fns: Fns) => {
   };
 
   // The `/` or `@` menu for the prompt as it is, unless Esc closed it at this text. A folder is listed
-  // again when the menu opens again, so it shows what is there then.
+  // again when the menu opens again, so it shows what is there then; the MCP servers' prompts and resources are as they
+  // are now (release 8c plan, Task 13).
   const menuFor = (e: Editor): MenuData | null => {
     if (ui.closed.current !== e.text) ui.closed.current = null;
     if (ui.search.current || ui.closed.current !== null) return null;
-    return commandMenu(e.text, e.cursor) ?? pathMenu(e.text, e.cursor, fns.list);
+    // Built only when the text opens a menu, and once for both (Task 13's re-check).
+    let served: Offers | undefined;
+    const got = () => (served ??= offers(ui.mcp?.servers));
+    return commandMenu(e.text, e.cursor, () => got().prompts) ?? pathMenu(e.text, e.cursor, fns.list, () => got().resources);
   };
   const list = (folder: string) => {
     if (ui.listed.current?.folder !== folder) ui.listed.current = { folder, listing: listFolder(ui.root, folder) };

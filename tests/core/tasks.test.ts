@@ -13,9 +13,12 @@ import type { Provider, Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import type { Hook } from "../../src/hooks/config.js";
 import { Hooks, type Where } from "../../src/hooks/hooks.js";
+import type { ServerConfig } from "../../src/mcp/config.js";
+import { Servers } from "../../src/mcp/servers.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { readFileTool } from "../../src/tools/files.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts } from "../helpers.js";
+import { fakeServer, readLog } from "../mcp/fake.js";
 
 async function setup(worker: Provider | (() => Provider), opts: { max?: number; ask?: Ask; transcript?: () => Transcript | undefined } = {}) {
   const bus = new Bus();
@@ -268,6 +271,44 @@ describe("Tasks", () => {
     worker.answer("found it");
     await t.done;
     expect(notes).toEqual(["t1: PreToolUse hook: checked"]);
+  });
+
+  // Release 8c plan, Task 7 and choice 17: a subagent only reads, so it is offered only the tools the user trusts as
+  // read-only, which run without a question; the fake server (tests/mcp/fake.ts) is the only one started.
+  it("gives a subagent only the MCP tools trusted as read-only, each run without a question", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-tasks-mcp-"));
+    const log = path.join(dir, "log.jsonl");
+    const script = await fakeServer(dir, { log });
+    const entry = { kind: "stdio" as const, command: process.execPath, args: [script], env: {} };
+    const config: ServerConfig = {
+      name: "s", safe: "s", where: "user", trusted: null, trustedTools: ["echo"], alwaysLoad: true, written: "", entry, asWritten: entry,
+    };
+    const bus = new Bus();
+    const answers = () => {
+      throw new Error("no project server here, so no answers are read");
+    };
+    const servers = new Servers([config], { root: dir, env: process.env, bus, answers, network: "none", lead: () => "fake:a" });
+    // Stopped before the folder is removed: on Windows a running server holds the folder it works in.
+    onTestFinished(async () => {
+      await servers.stopAll();
+      await removeTree(dir);
+    });
+    servers.startAll();
+    await servers.ready();
+    const ctx = await tempContext("ask");
+    const tools: string[][] = [];
+    const turns = [callTool("c1", "mcp__s__echo", { text: "hi" }), reply("found it")];
+    const worker: Provider = { id: "fake:w", complete: async (req) => (tools.push(req.tools.map((s) => s.name)), turns.shift()!) };
+    const tasks = new Tasks({ bus, max: 1, worker: () => worker, system: "sub", tools: [], ctx, mcp: servers });
+    const task = tasks.start("look", { background: false });
+    expect(await task.done).toEqual({ state: "done", text: "found it" });
+    expect(tools).toEqual([
+      ["tool_search", "mcp__s__echo"],
+      ["tool_search", "mcp__s__echo"],
+    ]);
+    expect(task.messages[2]!.parts).toEqual([{ type: "tool_result", callId: "c1", output: "hi", isError: false }]);
+    expect(ctx.asked).toEqual([]);
+    expect(readLog(log).filter((m) => m.method === "tools/call").map((m) => m.params.arguments)).toEqual([{ text: "hi" }]);
   });
 });
 

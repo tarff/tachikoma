@@ -1,9 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, type Stats, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
-import { API_KEYS, commandEnv, onPath } from "../../src/exec/env.js";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { API_KEYS, commandEnv, mcpProgram, onPath } from "../../src/exec/env.js";
 import { PRESETS } from "../../src/providers/openai.js";
+
+// statSync and lstatSync as Node's own, unless a test stands in for some paths (mcpProgram's `pretend`, below).
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, statSync: vi.fn(fs.statSync), lstatSync: vi.fn(fs.lstatSync) };
+});
 
 describe("commandEnv", () => {
   it("covers every key a provider reads", () => {
@@ -125,5 +131,130 @@ describe("onPath", () => {
     const [dir] = folders("dir");
     writeFileSync(path.join(dir!, "tool"), "");
     expect(onPath("tool", { PATH: dir })).toBeUndefined();
+  });
+});
+
+// Release 8c plan, choice 4: an MCP server's program, by its full path, a .cmd such as npx's included. The programs are
+// empty files the test made, looked for and never run.
+describe("mcpProgram", () => {
+  const windows = process.platform === "win32";
+  function folders(...names: string[]) {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-mcpprogram-"));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    return names.map((name) => {
+      mkdirSync(path.join(dir, name));
+      return path.join(dir, name);
+    });
+  }
+  const files = (dir: string, ...names: string[]) => names.forEach((name) => writeFileSync(path.join(dir, name), ""));
+
+  it("finds npx.cmd for npx on Windows, .exe before .cmd when PATHEXT is unset", (ctx) => {
+    if (!windows) return ctx.skip("Windows only: PATHEXT");
+    const [first, second] = folders("first", "second");
+    files(first!, "npx.cmd");
+    files(second!, "npx.exe");
+    expect(mcpProgram("npx", { PATH: [first, second].join(";") }, "win32")).toBe(path.join(first!, "npx.cmd"));
+    files(first!, "npx.exe");
+    expect(mcpProgram("npx", { PATH: [first, second].join(";") }, "win32")).toBe(path.join(first!, "npx.exe"));
+    files(first!, "npx.com");
+    expect(mcpProgram("npx", { PATH: first }, "win32")).toBe(path.join(first!, "npx.com"));
+  });
+
+  it("follows PATHEXT's order, in any case, and only its .com, .exe, .bat and .cmd", (ctx) => {
+    if (!windows) return ctx.skip("Windows only: PATHEXT");
+    const [dir] = folders("dir");
+    files(dir!, "npx.exe", "npx.cmd", "npx.js");
+    expect(mcpProgram("npx", { PATH: dir, PATHEXT: ".CMD;.EXE" }, "win32")).toBe(path.join(dir!, "npx.cmd"));
+    expect(mcpProgram("npx", { Path: dir, pathext: ".JS;.Exe" }, "win32")).toBe(path.join(dir!, "npx.exe"));
+  });
+
+  it("looks for a name already ending in one of those endings as written, in any case", (ctx) => {
+    if (!windows) return ctx.skip("Windows only: PATHEXT");
+    const [dir] = folders("dir");
+    // node.exe.EXE and npx.cmd.CMD are there too, so adding an ending would find them first.
+    files(dir!, "node.exe", "node.exe.exe", "npx.cmd", "npx.cmd.cmd");
+    expect(mcpProgram("node.exe", { PATH: dir, PATHEXT: ".EXE;.CMD" }, "win32")).toBe(path.join(dir!, "node.exe"));
+    expect(mcpProgram("npx.cmd", { PATH: dir, PATHEXT: ".EXE;.CMD" }, "win32")).toBe(path.join(dir!, "npx.cmd"));
+    expect(mcpProgram("NPX.CMD", { PATH: dir }, "win32")?.toLowerCase()).toBe(path.join(dir!, "npx.cmd").toLowerCase());
+  });
+
+  it("never finds a program in the working folder, by npx or npx.cmd, nor through a relative PATH entry", (ctx) => {
+    if (!windows) return ctx.skip("Windows only: its own lookup starts in the working folder");
+    const [project, empty] = folders("project", "empty");
+    files(project!, "npx.cmd");
+    const before = process.cwd();
+    process.chdir(project!);
+    try {
+      for (const name of ["npx", "npx.cmd"]) expect(mcpProgram(name, { PATH: [empty, "", ".", "sub"].join(";") }, "win32")).toBeNull();
+    } finally {
+      process.chdir(before);
+    }
+  });
+
+  it("passes over a relative PATH entry", () => {
+    const [rel, next] = folders("rel", "next");
+    const name = windows ? "tool.exe" : "tool";
+    // Outside Windows, both made so they may be run, so only the entry's being relative leaves `rel` out.
+    writeFileSync(path.join(rel!, name), "", { mode: 0o755 });
+    writeFileSync(path.join(next!, name), "", { mode: 0o755 });
+    // As onPath's test: no relative path reaches another drive, so there `rel` is left out.
+    const relative = path.relative(process.cwd(), rel!);
+    const PATH = [...(path.isAbsolute(relative) ? [] : [relative]), next].join(path.delimiter);
+    expect(mcpProgram("tool", { PATH })).toBe(path.join(next!, name));
+  });
+
+  it("takes a command with a folder in it as written, and gives null when nothing is found", () => {
+    const [dir] = folders("dir");
+    expect(mcpProgram(path.join("tools", "node"), { PATH: dir })).toBe(path.join("tools", "node"));
+    expect(mcpProgram("./node", { PATH: dir })).toBe("./node");
+    expect(mcpProgram("node", { PATH: dir })).toBeNull();
+    expect(mcpProgram("node", {})).toBeNull();
+  });
+
+  it("passes over a folder named npx.cmd", (ctx) => {
+    if (!windows) return ctx.skip("Windows only: PATHEXT");
+    const [dir, next] = folders("dir", "next");
+    mkdirSync(path.join(dir!, "npx.cmd"));
+    files(next!, "npx.cmd");
+    for (const name of ["npx", "npx.cmd"]) expect(mcpProgram(name, { PATH: [dir, next].join(";") }, "win32")).toBe(path.join(next!, "npx.cmd"));
+  });
+
+  // Node's file checks stand in for the paths `fake` answers, so neither a real Store alias nor a share is needed: the
+  // user's own WindowsApps folder is never looked at, and no network path is reached.
+  async function pretend(fake: (file: string, call: "stat" | "lstat") => Stats | Error | undefined) {
+    const real = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const stand = (call: "stat" | "lstat", own: (...args: never[]) => unknown) => (file: string, ...rest: never[]) => {
+      const answer = fake(String(file), call);
+      if (answer instanceof Error) throw answer;
+      return answer ?? own(file as never, ...rest);
+    };
+    vi.mocked(statSync).mockClear().mockImplementation(stand("stat", real.statSync) as typeof statSync);
+    vi.mocked(lstatSync).mockClear().mockImplementation(stand("lstat", real.lstatSync) as typeof lstatSync);
+    onTestFinished(() => {
+      vi.mocked(statSync).mockImplementation(real.statSync);
+      vi.mocked(lstatSync).mockImplementation(real.lstatSync);
+    });
+  }
+  const failure = (code: string) => Object.assign(new Error(code), { code });
+
+  // Task 3's review, measured on this PC: Node's statSync of %LOCALAPPDATA%\Microsoft\WindowsApps\winget.exe fails with
+  // EACCES, and its lstatSync gives a link (isSymbolicLink true, isFile and isDirectory false).
+  it("finds a Microsoft Store alias, which Node cannot follow, but never a folder there, and onPath still does not", async (ctx) => {
+    if (!windows) return ctx.skip("Windows only: Store aliases");
+    const [apps] = folders("WindowsApps");
+    const link = { isDirectory: () => false, isSymbolicLink: () => true, isFile: () => false } as Stats;
+    const folder = { isDirectory: () => true, isSymbolicLink: () => true, isFile: () => false } as Stats;
+    const held: Record<string, Stats> = { [path.join(apps!, "winget.exe")]: link, [path.join(apps!, "box.exe")]: folder };
+    await pretend((file, call) => (held[file] ? (call === "stat" ? failure("EACCES") : held[file]) : undefined));
+    expect(mcpProgram("winget", { PATH: apps }, "win32")).toBe(path.join(apps!, "winget.exe"));
+    expect(mcpProgram("box", { PATH: apps }, "win32")).toBeNull();
+    expect(onPath("winget", { PATH: apps })).toBeUndefined();
+  });
+
+  it("passes over a PATH entry of \\\\ or \\\\\\ alone, which names the working folder's drive, but keeps a share", async (ctx) => {
+    if (!windows) return ctx.skip("Windows only: shares");
+    await pretend((file) => (file.startsWith("\\\\") ? failure("ENOENT") : undefined));
+    expect(mcpProgram("tool", { PATH: ["\\\\", "\\\\\\", "\\\\server\\share"].join(";"), PATHEXT: ".EXE" }, "win32")).toBeNull();
+    expect(vi.mocked(statSync).mock.calls.map((call) => String(call[0]))).toEqual(["\\\\server\\share\\tool.exe"]);
   });
 });

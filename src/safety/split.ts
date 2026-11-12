@@ -118,6 +118,10 @@ interface Runs {
 // script block, whose commands it has listed.
 const REREAD = new WeakSet<Command>();
 const BLOCKS = new WeakSet<Word>();
+// The commands fed another's output through a |, with a command before them in their pipeline (release 8c plan, Task 19;
+// choice 69), for the folded rows, which count a pipeline once; the checks do not read it.
+const PIPED_INTO = new WeakSet<Command>();
+export const pipedInto = (c: Command): boolean => PIPED_INTO.has(c);
 
 // Words before a command that are bash's own, not the command's; those that open and close a compound command.
 const RESERVED = new Set(["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!"]);
@@ -534,6 +538,7 @@ class Reader {
     let piped = false;
     let carried = false;
     let literal = false; // PowerShell: the pipe carries only a string written in the line
+    let headed = false; // the pipeline being read has a command already (PIPED_INTO)
     const add = (h: Hunger) => {
       const inside = open.at(-1);
       if (inside) inside.hungry = most(inside.hungry, h);
@@ -550,6 +555,8 @@ class Reader {
       if (r.hungry && fed && !written) throw new Unreadable(PIPED);
       add(written ? NONE : r.hungry);
       commands.push(...r.commands);
+      if (piped && headed) for (const c of r.commands) PIPED_INTO.add(c);
+      headed = (piped && headed) || r.commands.length > 0;
       for (let k = 0; k < r.closes && open.length > 0; k++) {
         const inside = open.pop()!;
         // A here-document, here-string or file after done or fi feeds every command inside (choices 35 and 38).

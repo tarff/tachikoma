@@ -2,7 +2,9 @@ import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { type Combined, commandOf } from "../hooks/answer.js";
 import type { Event } from "../hooks/config.js";
 import type { Hooks } from "../hooks/hooks.js";
-import { errorOf, fromClaude, outputFrom, type Paths, pathsFor, responseOf, toClaude } from "../hooks/tools.js";
+import { errorOf, fromClaude, isMcp, outputFrom, type Paths, pathsFor, responseOf, toClaude } from "../hooks/tools.js";
+import type { Offered, Servers } from "../mcp/servers.js";
+import type { McpTools } from "../mcp/tools.js";
 import type { Cache } from "../providers/pictures.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
@@ -14,13 +16,18 @@ import { CUT_OFF, type Transcript } from "./transcript.js";
 import {
   type CompletionRequest,
   errorText,
+  type Image,
+  keepThinking,
+  madeUnder,
   type Message,
   marker,
   type Part,
+  type Picture,
   type Provider,
   sentAll,
   type ToolCall,
   type ToolResult,
+  type ToolSpec,
   type Turn,
 } from "./types.js";
 
@@ -82,15 +89,23 @@ const settled = (p: Promise<void>, signal?: AbortSignal) =>
     });
   });
 
-// How a turn ended, when a hook ended it (Session.send).
-export type Ended = { blocked: string } | { stopped: string; unsent?: true };
+// How a turn ended, when a hook ended it (Session.send); `unsupplied`, when what the MCP servers supply for the prompt was
+// not got, or a stop came while it was being got, so nothing was sent or saved (release 8c plan, Task 13).
+export type Ended = { blocked: string } | { stopped: string; unsent?: true } | { unsupplied: true };
+
+// What the MCP servers supply for a prompt, after its typed words (release 8c plan, Task 13; choice 34): a picked
+// resource's text and pictures and a prompt command's messages, got under the turn's signal once the first prompt's wait
+// for the servers and UserPromptSubmit are done; null when they could not be got, the caller saying why.
+export type Supply = (signal?: AbortSignal) => Promise<Part[] | null>;
 
 // One reply's calls (release 8b plan, Task 7): they run under `signal`, the reply's own, joined to the turn's; `stop` is a
-// hook's continue: false, which stops them as a user's stop does, and `stopped` the first hook that said it.
+// hook's continue: false, which stops them as a user's stop does, and `stopped` the first hook that said it. `pictures`:
+// the calls' pictures, numbered, for after the results (release 8c plan, choice 10).
 interface Round {
   signal: AbortSignal;
   stop(event: Event, reason: string): void;
   stopped?: { event: Event; reason: string };
+  pictures: Image[];
 }
 
 export interface SessionOptions {
@@ -123,11 +138,22 @@ export interface SessionOptions {
   // sandbox's mode, as ctx.root is the box's /work there; without it, ctx.root's on the host.
   hooks?: Hooks;
   paths?: Paths;
+  // The MCP servers' tools (release 8c plan, Task 6; choice 9): each request takes one offer and sends its specs after
+  // Tachikoma's own, and a reply's calls run on the tools that request offered, so each runs on the tool the model was
+  // shown. `tool` makes the tool for one offered. The lead's offer holds every tool; a subagent's only trusted ones (Task 7).
+  // The offer defines the tools loaded so far and gives tool_search, which loads the rest; `loaded` is the conversation's
+  // set, saved here and replaced by a load (Task 6b; choices 37 and 41).
+  mcp?: McpTools;
+  // The MCP servers the launch's first prompt waits for, after SessionStart's hooks (release 8c plan, choice 25): `ready`
+  // as Servers gives it; `waitingFor` names those still starting, for the waiting line. The lead's only.
+  servers?: Pick<Servers, "ready" | "waitingFor">;
 }
 
 // A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
 // transcript's whole record, before and after its shortenings (choice 6); `nextPicture` and `nextTask` are the numbers
-// its pictures and subagents leave free (choices 4 and 5).
+// its pictures and subagents leave free (choices 4 and 5). `loaded`: the MCP tools it loaded through tool_search, none
+// when absent (release 8c plan, choice 41). `tools`: the tools its transcript was last saved under, which its replies kept
+// with their thinking were made under; Tachikoma's own tools when absent (Task 6b's quality review).
 export interface Conversation {
   id: string;
   messages: Message[];
@@ -137,6 +163,9 @@ export interface Conversation {
   calls: { name: string; input: unknown }[];
   nextPicture: number;
   nextTask: number;
+  loaded?: string[];
+  tools?: ToolSpec[];
+  asked?: string[]; // the calls the user was asked about, read back from the transcript (release 8c plan, Task 15)
 }
 
 export class Session {
@@ -153,6 +182,9 @@ export class Session {
   // of a reply that is run, in the reply's order, by name and input, never its result.
   readonly prompts: string[] = [];
   readonly calls: { name: string; input: unknown }[] = [];
+  // The calls of the conversation the user was asked about, by id, each saved as an asked line when its question opened,
+  // so the window keeps their rows unfolded, live and once resumed (release 8c plan, Task 15). Refilled in place by a load.
+  readonly asked = new Set<string>();
   #lead: Provider;
   #fallback: Provider | undefined;
   #running = false;
@@ -183,6 +215,24 @@ export class Session {
   // its sync hooks take the stop: async ones are left running, as every event's are but SessionEnd's (hooks.ts).
   #starting: Promise<void> | undefined;
   #stopStart: AbortController | undefined;
+  // The first prompt waits for the MCP servers still starting, once (choice 25); `#serverWait` stops that wait alone, so
+  // Esc sends the prompt without the late ones (design, "Starting and stopping servers").
+  #serversFirst: boolean;
+  #serverWait: AbortController | undefined;
+  // The MCP tools the request being made, or last made, offered, and its tool_search: its reply's calls run on these
+  // (release 8c plan, choices 9 and 37).
+  #offered: Offered[] = [];
+  #search: Tool | undefined;
+  // What each reply was made under, its request's system prompt and tools (types.ts, madeUnder), so each request sends
+  // thinking only on the trailing run of replies made under its own (keepThinking); and the tools the transcript was last
+  // saved under, so a request under others writes its tools line first, which a resume reads each reply's from (release
+  // 8c plan, Task 6b's quality review: the user's choice, "Drop older thinking").
+  readonly #under = new WeakMap<Message, string>();
+  #savedTools: string;
+  // The highest picture number the conversation has used, before and after its shortenings, so a tool's pictures are
+  // numbered on from it and no number is used twice, as the transcript saves each picture under its number once (release
+  // 8c plan, choice 10; release 8a plan, choice 5).
+  #lastPicture = 0;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -190,6 +240,13 @@ export class Session {
     this.id = opts.id ?? "";
     this.system = opts.system;
     this.#transcript = opts.transcript;
+    this.#serversFirst = opts.servers !== undefined;
+    // A launch's start line holds Tachikoma's own tools.
+    this.#savedTools = madeUnder("", this.#own());
+  }
+
+  #own(): ToolSpec[] {
+    return this.opts.tools.map((t) => t.spec);
   }
 
   get lead(): Provider {
@@ -220,6 +277,8 @@ export class Session {
     this.#transcript = c.transcript;
     this.messages.splice(0, this.messages.length, ...c.messages);
     this.prompts.splice(0, this.prompts.length, ...c.prompts);
+    this.asked.clear();
+    for (const id of c.asked ?? []) this.asked.add(id);
     this.#hookText.splice(0); // the last conversation's hook text, not yet sent, is not this one's (Task 6's code review)
     this.#nextText.splice(0); // nor is the text waiting for its next request: SessionStart fires after the load (Task 10)
     this.#stopStarting(); // nor the text of SessionStart's hooks still running for it, which are stopped (Task 10's code review)
@@ -231,9 +290,18 @@ export class Session {
     // sends none.
     if (!this.opts.subagent) this.opts.hooks?.forgetPrompt();
     this.calls.splice(0, this.calls.length, ...c.calls);
+    // Its MCP tools loaded through tool_search, so a resume and /branch keep them and /clear starts with none (release 8c
+    // plan, choice 41).
+    this.opts.mcp?.loaded.clear();
+    for (const name of c.loaded ?? []) this.opts.mcp?.loaded.add(name);
+    // Its replies that kept their thinking were made under the tools it was last saved under (Task 6b's quality review).
+    const tools = c.tools ?? this.#own();
+    this.#savedTools = madeUnder("", tools);
+    for (const m of c.messages) if (m.role === "assistant") this.#under.set(m, madeUnder(c.system, tools));
     // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
     this.#shrunk.clear();
     this.#sizes = new Sizes();
+    this.#lastPicture = Math.max(c.nextPicture - 1, ...c.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "image" ? [p.id] : []))));
     this.opts.pictures?.from(c.nextPicture);
     this.opts.tasks?.from(c.nextTask);
     this.#saving(); // a write made before the load, such as launch's start line or mend
@@ -304,6 +372,36 @@ export class Session {
     this.#starting = undefined;
   }
 
+  // The first prompt's wait for the MCP servers (choice 25), made once: false when the turn's own signal stopped it, so
+  // nothing is sent; true once none is starting, or when Esc stopped this wait alone (stopWaiting). Either stop leaves
+  // those still starting to say when they are ready (Servers, ready).
+  async #serversReady(signal?: AbortSignal): Promise<boolean> {
+    this.#serversFirst = false;
+    const wait = new AbortController();
+    const stop = () => wait.abort();
+    if (signal?.aborted) stop();
+    signal?.addEventListener("abort", stop, { once: true });
+    this.#serverWait = wait;
+    try {
+      await this.opts.servers!.ready(wait.signal);
+    } finally {
+      signal?.removeEventListener("abort", stop);
+      this.#serverWait = undefined;
+    }
+    return !signal?.aborted;
+  }
+
+  // The MCP servers the first prompt waits for now, escaped, for the waiting line (choice 25); none outside that wait.
+  waitingFor(): string[] {
+    return this.#serverWait ? this.opts.servers!.waitingFor() : [];
+  }
+
+  // Esc while the first prompt waits for the MCP servers: it is sent without those still starting, whose tools join a
+  // later request once they are ready (design, "Starting and stopping servers").
+  stopWaiting(): void {
+    this.#serverWait?.abort();
+  }
+
   // Before /lead makes `next` the lead (release 8a design, "When to shorten"): a conversation that will not fit its smaller
   // window is shortened between turns by the lead leading now, estimated with that lead's ratio, as `next` has none yet
   // (plan, Task 12). The reason it could not be, for /lead's refusal; undefined when it fits, when that cannot be told, and
@@ -315,6 +413,7 @@ export class Session {
     this.#running = true;
     try {
       if (!this.messages.length) return;
+      this.#offer();
       const lead = this.#lead;
       const now = await this.#window(lead, signal);
       const then = await this.#window(next, signal);
@@ -339,6 +438,7 @@ export class Session {
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
     try {
+      this.#offer();
       const lead = this.#lead;
       const window = await this.#window(lead, signal);
       const r = window === undefined ? { problem: CANCELLED } : await this.#shorten(lead, "between", window, signal, undefined, focus);
@@ -364,24 +464,38 @@ export class Session {
   // among its text (release 6 plan, Task 14). How the turn ended: `blocked`, a UserPromptSubmit hook's block, with its
   // reason, nothing sent or saved; `stopped`, a hook's continue: false, with its stopReason ("" when none), and `unsent`
   // when it came at UserPromptSubmit, nothing sent or saved either; nothing otherwise (release 8b plan, choice 17).
-  async send(text: string | Part[], signal?: AbortSignal): Promise<Ended | void> {
+  // `supply`: the MCP servers' parts for the prompt (release 8c plan, Task 13), the window's only.
+  async send(text: string | Part[], signal?: AbortSignal, supply?: Supply): Promise<Ended | void> {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
     try {
-      return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal);
+      return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal, supply);
     } finally {
       this.#running = false;
     }
   }
 
-  async #turn(typed: Part[], signal?: AbortSignal): Promise<Ended | void> {
+  async #turn(typed: Part[], signal?: AbortSignal, supply?: Supply): Promise<Ended | void> {
     const { bus, hooks } = this.opts;
     // SessionStart's hooks answer first, so their text goes with this request; a stop meanwhile sends and saves nothing and
     // says nothing, as a stop during UserPromptSubmit's does, and their text waits for the next one (Task 10).
-    if (this.#starting && !(await settled(this.#starting, signal))) return;
-    // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept.
-    const words = typed.flatMap((p) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
+    // The launch's first prompt waits for the MCP servers too, through the same wait, so one stop ends both, those still
+    // starting saying when they are ready (choice 25); an Esc during the servers' wait alone sends the prompt without them.
+    if (this.#starting && !(await settled(this.#starting, signal))) {
+      // The wait made with the stop's signal ends at once (Servers, ready).
+      if (this.#serversFirst) {
+        this.#serversFirst = false;
+        void this.opts.servers!.ready(signal);
+      }
+      return;
+    }
+    if (this.#serversFirst && !(await this.#serversReady(signal))) return;
+    // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept. A
+    // part a server supplied, a picture or a resource's or prompt's text, is not the user's (release 8c plan, choice 34).
+    const words = typed
+      .flatMap((p) => (p.type === "image" && p.from === undefined ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : []))
+      .join("");
     // Ctrl+O's list of this turn's hook runs starts here, before UserPromptSubmit, for a turn of background answers alone
     // too (release 8b plan, Task 12's code review). A subagent's runs are its own Hooks' (hooks.ts, for). A fresh
     // conversation's first turn begins it with SessionStart's runs that have answered, which Ctrl+O listed before the
@@ -397,8 +511,15 @@ export class Session {
       if (before) hooks!.restoreRuns(before);
       return prompted;
     }
+    // Got only now, once the servers the first prompt waits for have started and a hook has let the prompt through, so a
+    // blocked prompt asks no server for anything (Task 13); one not got sends and saves nothing, as a block does.
+    const supplied = supply ? await supply(signal) : [];
+    if (supply && (supplied === null || signal?.aborted)) {
+      if (before) hooks!.restoreRuns(before);
+      return { unsupplied: true };
+    }
     if (words && !this.opts.subagent) this.prompts.push(words);
-    const own: Part[] = [...typed, ...prompted, ...this.#waiting()];
+    const own: Part[] = [...typed, ...(supplied ?? []), ...prompted, ...this.#waiting()];
     if (!own.length) return;
     // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message.
     const parts: Part[] = [...this.#hookParts(this.#nextText), ...own];
@@ -424,6 +545,8 @@ export class Session {
       // wait before that subagent's request would make it miss.
       const window = lead.contextWindow ? await this.#window(lead, signal) : null;
       if (window === undefined) return; // stopped
+      // This request's MCP tools, which its size check, any shortening for it, a fallback's answer and its calls share.
+      this.#offer();
       // The check before the request, against the window and the /autocompact size; with neither known there is none, and
       // the "too long" answer is the safety net (design, "When to shorten").
       const limit = Math.min(window ?? Infinity, (autoFailed ? null : this.autoCompact) ?? Infinity);
@@ -511,8 +634,14 @@ export class Session {
       for (const f of turn.fallbacks ?? []) {
         bus.emit("error", { kind: "fallback", attempted: `response from ${answeredBy.id}`, message: `${f.from} declined; ${f.to} answered instead (Anthropic's fallback)`, lead: lead.id });
       }
-      // With the lead that answered: the fallback that rescued a refusal, or the model the provider says served it.
-      this.#push({ role: "assistant", parts: turn.parts, native: turn.native, lead: turn.servedBy ?? answeredBy.id });
+      // With the lead that answered: the fallback that rescued a refusal, or the model the provider says served it. Made
+      // under this request's system prompt and tools, which this request's offer still gives (Task 6b's quality review).
+      const answer: Message = { role: "assistant", parts: turn.parts, native: turn.native, lead: turn.servedBy ?? answeredBy.id };
+      this.#under.set(answer, madeUnder(this.system, this.#specs()));
+      // A call with an asked call's id is another call, as a provider may use an id again (release 8c plan, Task 15): let go
+      // before the reply reaches the window, which folds it by this set.
+      for (const p of turn.parts) if (p.type === "tool_call") this.asked.delete(p.id);
+      this.#push(answer);
 
       const calls = turn.parts.filter((p) => p.type === "tool_call");
       if (turn.cutOff) {
@@ -562,6 +691,7 @@ export class Session {
       if (signal?.aborted) halt.abort();
       const round: Round = {
         signal: halt.signal,
+        pictures: [],
         // The first stop wins, so a user's that came first keeps its words (Task 7's code review).
         stop: (event, reason) => {
           if (halt.signal.aborted) return;
@@ -570,14 +700,16 @@ export class Session {
         },
       };
       // Calls of a side-by-side tool (delegate) all start first, together; the rest run one after
-      // another. The results go back in the reply's order, then the hooks' text for the model, so a stopped turn's text
-      // is never the next one's (Task 6's review), then whatever is waiting for the lead, after the last tool result, as
-      // the providers want it.
+      // another, MCP calls among them. The results go back in the reply's order, then the calls' pictures (release 8c plan,
+      // choice 10), then the hooks' text for the model, so a stopped turn's text is never the next one's (Task 6's review),
+      // then whatever is waiting for the lead, after the last tool result, as the providers want it.
       const results: ToolResult[] = new Array(calls.length);
+      // The loaded set before the calls, so a search that grows it is saved (release 8c plan, choice 41).
+      const loaded = this.opts.mcp?.loaded.size;
       try {
-        const together = calls.map((c, i) =>
-          this.opts.tools.find((t) => t.spec.name === c.name)?.parallel ? this.#runTool(c, entries[i]!, round).then((r) => (results[i] = r)) : null,
-        );
+        // tool_search runs alongside the others too (release 8c plan, choice 44).
+        const parallel = (name: string) => (this.opts.tools.find((t) => t.spec.name === name) ?? (this.#search?.spec.name === name ? this.#search : undefined))?.parallel;
+        const together = calls.map((c, i) => (parallel(c.name) ? this.#runTool(c, entries[i]!, round).then((r) => (results[i] = r)) : null));
         // Each is handled now, so one that fails while a call after it runs is no unhandled rejection; Promise.all below
         // still rejects with it (Task 7's code review).
         for (const p of together) p?.catch(() => {});
@@ -586,7 +718,12 @@ export class Session {
       } finally {
         signal?.removeEventListener("abort", join);
       }
-      this.#push({ role: "user", parts: [...results, ...this.#hookParts(), ...this.#waiting()] });
+      this.#push({ role: "user", parts: [...results, ...round.pictures, ...this.#hookParts(), ...this.#waiting()] });
+      // The set whenever a search grew it, after the results' line (release 8c plan, Task 6b).
+      if (this.opts.mcp && this.opts.mcp.loaded.size !== loaded) {
+        this.#transcript?.write({ t: "loaded", names: [...this.opts.mcp.loaded] });
+        this.#saving();
+      }
       // Every call has its one result, saved, before the turn ends (design, review finding 1).
       if (round.stopped) {
         const { event, reason } = round.stopped;
@@ -605,6 +742,14 @@ export class Session {
     const { bus } = this.opts;
     const refused = this.#refusedPictures.has(provider.id);
     const req = this.#req(provider, signal);
+    // Its tools, when they are not the ones last saved, before its reply's line, so a resume reads what each reply was made
+    // under (Task 6b's quality review), in 8a's tools line.
+    const tools = madeUnder("", req.tools);
+    if (tools !== this.#savedTools) {
+      this.#transcript?.write({ t: "tools", tools: req.tools });
+      this.#savedTools = tools;
+      this.#saving();
+    }
     // Counted once, beside the request, from exactly what is sent, before the reply joins the history (plan, Task 12).
     const chars = characters(req.system, req.messages, req.tools);
     try {
@@ -653,14 +798,57 @@ export class Session {
 
   // The request the conversation makes now to `provider`, as it is sent, measured and counted.
   #req(provider: Provider, signal?: AbortSignal): CompletionRequest {
+    const tools = this.#specs();
     return {
       system: this.system,
-      messages: sentAll(this.messages),
-      tools: this.opts.tools.map((t) => t.spec),
+      messages: sentAll(this.#kept(tools)),
+      tools,
       signal,
       shrunk: this.#shrunk,
       ...(this.#refusedPictures.has(provider.id) ? { refusedBy: provider.id } : {}),
     };
+  }
+
+  // Tachikoma's own tools' specs, then tool_search's, then the MCP tools' this request defines (release 8c plan, choices 9
+  // and 37).
+  #specs(): ToolSpec[] {
+    return [...this.opts.tools.map((t) => t.spec), ...(this.#search ? [this.#search.spec] : []), ...this.#offered.map((o) => o.spec)];
+  }
+
+  // The history as a request under `tools` sends it: Anthropic's thinking only on the trailing run of replies made under
+  // them and this system prompt (keepThinking).
+  #kept(tools: ToolSpec[]): Message[] {
+    const now = madeUnder(this.system, tools);
+    return keepThinking(this.messages, (m) => this.#under.get(m), now);
+  }
+
+  // The MCP tools for the request about to be made, taken once for it (choice 9).
+  #offer(): void {
+    const offer = this.opts.mcp?.offer();
+    this.#offered = offer?.defined ?? [];
+    this.#search = offer?.search;
+  }
+
+  // A call's tool: Tachikoma's own first, then the request's tool_search, then the MCP tool the request offered under that
+  // name, so the call runs on the tool the model was shown (release 8c plan, choice 9; design, finding 4).
+  #tool(name: string): Tool | undefined {
+    const own = this.opts.tools.find((t) => t.spec.name === name);
+    if (own) return own;
+    if (this.#search?.spec.name === name) return this.#search;
+    const offered = this.#offered.find((o) => o.spec.name === name);
+    return offered && this.opts.mcp?.tool(offered);
+  }
+
+  // A tool's pictures (release 8c plan, choice 10), numbered on from the highest number the conversation has used, kept in
+  // the round for after the results and marked as the server's (choice 34); the window's Pictures numbers on after them.
+  // The text ends with a line naming them, cut so that the line still fits MAX_TOOL_OUTPUT.
+  #pictured(ran: { text: string; pictures: Picture[] }, round: Round): string {
+    if (!ran.pictures.length) return truncate(ran.text);
+    const images = ran.pictures.map((p): Image => ({ type: "image", id: ++this.#lastPicture, mediaType: p.mediaType, data: p.data, from: "server" }));
+    round.pictures.push(...images);
+    this.opts.pictures?.from(this.#lastPicture + 1);
+    const line = `[The tool's answer has pictures: ${images.map((p) => marker(p.id)).join(", ")}]`;
+    return ran.text ? `${truncateLeaving(ran.text, line.length + 1)}\n${line}` : line;
   }
 
   // A model's window, null when it is not known; undefined when the turn was stopped meanwhile.
@@ -718,13 +906,15 @@ export class Session {
       instructions = c.instructions;
     }
     const focused = [focus, ...instructions].filter(Boolean).join("\n\n");
+    const tools = this.#specs(); // the same offer as the request it is made for (release 8c plan, choice 9)
     const s: Shortening = {
       lead,
       system: this.system,
-      messages: this.messages,
+      // Its summary requests replay the history, so their thinking goes as the request's would (Task 6b's quality review).
+      messages: this.#kept(tools),
       ...(asked ? { asked } : {}),
       ...(focused ? { focus: focused } : {}),
-      tools: this.opts.tools.map((t) => t.spec),
+      tools,
       calls: this.calls,
       workspace: this.opts.ctx.workspace,
       sizes: this.#sizes,
@@ -837,16 +1027,22 @@ export class Session {
       this.opts.bus.emit("error", { kind: "tool", attempted: truncate(`${call.name} ${JSON.stringify(entry.input)}`), message, lead: this.#lead.id });
       return [result(call, message, true), "failed"];
     };
-    const tool = this.opts.tools.find((t) => t.spec.name === call.name);
+    const tool = this.#tool(call.name);
     if (!tool) return fail(`Unknown tool: ${call.name}`);
     const { hooks } = this.opts;
     let parts: unknown; // the result's parts as the tool reported them, for the shape hooks are sent (choice 12)
     let started: number | undefined; // unset: the tool never started
     let text: string;
     let ms: number;
+    let pictures: Image[] = []; // this call's in the round, which a hook's replaced output drops (release 8c plan, choice 20)
     try {
-      // A stop while a PreToolUse hook runs kills it and rejects, so the call is cancelled below, as any stop (run.ts).
-      const pre = hooks ? await this.#preToolUse(call, entry, hooks, signal) : { input: call.input, gate: this.opts.ctx.gate };
+      // A stop while a PreToolUse hook runs kills it and rejects, so the call is cancelled below, as any stop (run.ts). The
+      // call's own gate marks it asked when a question about it opens (Task 15); not once a stop came, as the window then
+      // drops the question unshown (App.tsx, bindAsk).
+      const own = this.opts.ctx.gate.noting(() => {
+        if (!signal.aborted) this.#asked(call.id);
+      });
+      const pre = hooks ? await this.#preToolUse(call, entry, hooks, own, signal) : { input: call.input, gate: own };
       if ("stop" in pre) {
         round.stop("PreToolUse", pre.stop);
         return stopped(NOT_RUN);
@@ -862,7 +1058,10 @@ export class Session {
       // A yes to a hook's own question, given after a hook stopped the turn, runs nothing either (Task 7's code review).
       if (signal.aborted) return stopped(NOT_RUN);
       started = Date.now();
-      text = truncate(await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal, ...report }));
+      const ran = await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal, ...report });
+      const before = round.pictures.length; // #pictured adds this call's at once, so those after `before` are its own
+      text = typeof ran === "string" ? truncate(ran) : this.#pictured(ran, round);
+      pictures = round.pictures.slice(before);
       ms = Date.now() - started;
     } catch (err) {
       // Ctrl-C at a question declines it and stops the turn: the call was cancelled, not declined.
@@ -883,8 +1082,12 @@ export class Session {
     const fields = { tool_response: responseOf(call.name, text, parts, this.#hookPaths()), duration_ms: ms };
     const c = await this.#postToolUse(hooks, "PostToolUse", call, entry, fields, round);
     // updatedToolOutput replaces what the model reads where it can be turned back into it, and is ignored otherwise (choice
-    // 13). The outcome stays the call's own.
-    const output = c && "output" in c ? outputFrom(call.name, c.output) : null;
+    // 13). The outcome stays the call's own. For an MCP call a string in either field replaces it, updatedMCPToolOutput's
+    // first, and the text replaced takes the answer's pictures with it, as they were part of it (release 8c plan, choice
+    // 20); their numbers stay used, so no later picture takes one the hooks were sent.
+    const mcp = c && isMcp(call.name) ? outputFrom(call.name, c.mcpOutput) : null;
+    const output = mcp ?? (c && "output" in c ? outputFrom(call.name, c.output) : null);
+    if (output !== null) round.pictures = round.pictures.filter((p) => !pictures.includes(p));
     return [result(call, output === null ? text : truncate(output), false), "ok"];
   }
 
@@ -985,6 +1188,7 @@ export class Session {
     call: ToolCall,
     entry: { name: string; input: unknown },
     hooks: Hooks,
+    given: PermissionGate,
     signal?: AbortSignal,
   ): Promise<{ input: unknown; gate: PermissionGate } | { refused: string } | { stop: string }> {
     const paths = this.#hookPaths();
@@ -1015,11 +1219,12 @@ export class Session {
       input = back.input;
     }
     // The question names the call that would run, by its name and input, as Ctrl+O does (choice 15).
-    let gate = this.opts.ctx.gate;
+    let gate = given;
     if (c.decision === "ask") {
       // Where nobody can be asked, in never and -p, the refusal is a grey line too, as a deny's is (the user's choice,
-      // 2026-11-09).
-      const cannot = gate.hookCannotAsk(c.reason ?? "");
+      // 2026-11-09); an MCP call's, the request's own MCP tool, is asked in never (release 8c plan, choice 47).
+      const mcp = !this.opts.tools.some((t) => t.spec.name === call.name) && this.#offered.some((o) => o.spec.name === call.name);
+      const cannot = gate.hookCannotAsk(c.reason ?? "", mcp);
       if (cannot !== undefined) return refused(cannot);
       await gate.hookAsks(`${call.name} ${JSON.stringify(input)}`, c.reason ?? "");
       gate = gate.withHook({ asked: true });
@@ -1037,6 +1242,14 @@ export class Session {
     return { input, gate };
   }
 
+  // A call the user is shown a question for, saved once (Task 15).
+  #asked(id: string): void {
+    if (this.asked.has(id)) return;
+    this.asked.add(id);
+    this.#transcript?.write({ t: "asked", id });
+    this.#saving();
+  }
+
   #waiting(): Part[] {
     return (this.opts.inbox?.() ?? []).map((text) => ({ type: "text", text, from: "tasks" }));
   }
@@ -1044,6 +1257,7 @@ export class Session {
   // The line is written before the event, so every message is on disk before anything else sees it (release 8a plan,
   // choice 4). A failed write stops saving and never the turn (transcript.ts).
   #push(message: Message): void {
+    for (const p of message.parts) if (p.type === "image") this.#lastPicture = Math.max(this.#lastPicture, p.id);
     this.messages.push(message);
     this.#transcript?.write({ t: "message", message });
     this.opts.bus.emit("message", message);

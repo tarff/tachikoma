@@ -22,6 +22,7 @@ export interface KeptLine {
   text: string;
   color?: string;
   oneLine?: boolean;
+  fold?: Line["fold"];
 }
 
 // A tab is drawn as spaces to the next stop. Ink would draw a tab handed to it wrongly: its output puts "\t" in one cell
@@ -143,6 +144,15 @@ function cut(text: string, width: number): string {
   return `${shown}…`;
 }
 
+// A Line as the lines it is kept as, one for each of its line breaks.
+const keptOf = (l: Line): KeptLine[] =>
+  l.text.split("\n").map((text) => ({
+    text,
+    ...(l.color === undefined ? {} : { color: l.color }),
+    ...(l.oneLine ? { oneLine: true } : {}),
+    ...(l.fold ? { fold: l.fold } : {}),
+  }));
+
 // All the lines, and where their rows start at the current width. Only places are kept, nothing for a line of one row,
 // and a row's text is made when it is drawn, so a long session costs little more than its text; with the count of rows
 // before each line, finding a row is a binary search (release 5 design, "The screen").
@@ -160,13 +170,17 @@ export class Rows {
   // Each Line split at its line breaks into lines of its own, the same colour, so a place is a line and an offset.
   add(lines: Line[]): void {
     known.clear();
-    for (const l of lines) {
-      for (const text of l.text.split("\n")) {
-        const kept: KeptLine = { text, ...(l.color === undefined ? {} : { color: l.color }), ...(l.oneLine ? { oneLine: true } : {}) };
-        this.#lines.push(kept);
-        this.#keep(kept);
-      }
+    for (const kept of lines.flatMap(keptOf)) {
+      this.#lines.push(kept);
+      this.#keep(kept);
     }
+  }
+
+  // Lines `at` to `at + count` replaced by `lines`, split as add splits them, and every line wrapped again: a folded tool
+  // row opened or closed in place (release 8c plan, Task 15).
+  replace(at: number, count: number, lines: Line[]): void {
+    this.#lines.splice(at, count, ...lines.flatMap(keptOf));
+    this.setWidth(this.#width);
   }
 
   #keep(l: KeptLine): void {

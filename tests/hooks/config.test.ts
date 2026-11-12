@@ -45,11 +45,13 @@ describe("readHooks", () => {
     });
   });
 
-  it("knows Claude Code's names for the 11 events", () => {
+  // Release 8c plan, Task 8: Elicitation and ElicitationResult, matched on the server's name.
+  it("knows Claude Code's names for the 13 events", () => {
     expect(EVENTS).toEqual([
       "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
-      "Stop", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact",
+      "Stop", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "Elicitation", "ElicitationResult",
     ]);
+    expect(hooksOf({ Elicitation: [{ matcher: "memory", hooks: [command()] }] })[0]!.matcher).toEqual({ names: ["memory"] });
   });
 
   it("leaves out an event it does not run hooks at, with a warning, and keeps the rest", () => {
@@ -71,10 +73,48 @@ describe("readHooks", () => {
   it("leaves out a hook of another kind, with a warning", () => {
     const hooks = pre({ type: "prompt", prompt: "Is this safe?" }, command(), { type: "http", url: "http://localhost" });
     expect(warnings(hooks)).toEqual([
-      'settings.json: "hooks": "PreToolUse" has a "prompt" hook; only "command" hooks run, so it was left out',
-      'settings.json: "hooks": "PreToolUse" has a "http" hook; only "command" hooks run, so it was left out',
+      'settings.json: "hooks": "PreToolUse" has a "prompt" hook; only "command" and "mcp_tool" hooks run, so it was left out',
+      'settings.json: "hooks": "PreToolUse" has a "http" hook; only "command" and "mcp_tool" hooks run, so it was left out',
     ]);
     expect(hooksOf(hooks)).toHaveLength(1);
+  });
+
+  // Release 8c plan, Task 8 and choice 22: an mcp_tool hook's server, tool and input, with the fields hooks share.
+  it("reads an mcp_tool hook, its input kept as written, none as an empty one", () => {
+    const mcp = { type: "mcp_tool", server: "memory", tool: "search", input: { q: "${tool_input.file_path}", n: 2 } };
+    const hooks = pre({ ...mcp, timeout: 10, statusMessage: "Recalling", onFailure: "block", once: true }, { type: "mcp_tool", server: "s", tool: "t" });
+    expect(warnings(hooks)).toEqual([]);
+    expect(hooksOf(hooks)).toEqual([
+      {
+        event: "PreToolUse", matcher: { names: ["Bash"] }, command: "", mcp: { server: "memory", tool: "search", input: mcp.input }, timeout: 10,
+        async: false, onFailure: "block", statusMessage: "Recalling", where: '"PreToolUse"',
+      },
+      { event: "PreToolUse", matcher: { names: ["Bash"] }, command: "", mcp: { server: "s", tool: "t", input: {} }, async: false, where: '"PreToolUse"' },
+    ]);
+  });
+
+  it("refuses an mcp_tool hook without server or tool, or with either or its input of the wrong type", () => {
+    const place = 'settings.json: "hooks": "PreToolUse"';
+    const example = '{"type": "mcp_tool", "server": "memory", "tool": "search"}';
+    expect(problem({ hooks: pre({ type: "mcp_tool", tool: "search" }) })).toBe(`${place}: an "mcp_tool" hook must have "server", such as ${example}`);
+    expect(problem({ hooks: pre({ type: "mcp_tool", server: "memory" }) })).toBe(`${place}: an "mcp_tool" hook must have "tool", such as ${example}`);
+    expect(problem({ hooks: pre({ type: "mcp_tool", server: 3, tool: "t" }) })).toBe(`${place}: a hook's "server" must be text in quotes (got 3)`);
+    expect(problem({ hooks: pre({ type: "mcp_tool", server: "s", tool: ["t"] }) })).toBe(`${place}: a hook's "tool" must be text in quotes (got ["t"])`);
+    expect(problem({ hooks: pre({ type: "mcp_tool", server: "s", tool: "t", input: "x" }) })).toBe(`${place}: a hook's "input" must be an object (got "x")`);
+  });
+
+  // A command hook's own fields are not an mcp_tool hook's; its warnings name it by its server and tool.
+  it("drops a command hook's fields from an mcp_tool hook, and leaves one with if out, each warning naming its server and tool", () => {
+    const hooks = pre(
+      { type: "mcp_tool", server: "memory", tool: "search", command: "x.sh", shell: "bash" },
+      { type: "mcp_tool", server: "s", tool: "t", if: "Bash" },
+    );
+    expect(warnings(hooks)).toEqual([
+      'settings.json: "hooks": "PreToolUse" has a hook with "command", which is not a hook field; it was left out: memory search',
+      'settings.json: "hooks": "PreToolUse" has a hook with "shell", which is not a hook field; it was left out: memory search',
+      'settings.json: "hooks": "PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: s t',
+    ]);
+    expect(hooksOf(hooks).map((h) => h.mcp)).toEqual([{ server: "memory", tool: "search", input: {} }]);
   });
 
   // The coordinator's fix 3 at Task 1's review (the user's words): a hook's own warnings end with its command and args,

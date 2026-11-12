@@ -56,6 +56,16 @@ describe("toolParts", () => {
     expect(toolParts(calls).map((p) => [p.color, p.whole])).toEqual([["yellow", false], ["green", false], ["green", false], ["red", true], ["gray", true]]);
   });
 
+  // Release 8c plan, choice 68 (Task 18, the user's answer, 2026-11-12): an MCP call by its server and tool as the server
+  // gives them, escaped; without the window's names, the safe server and the full name's tool part.
+  it("names an MCP call by its server and tool as the server gives them", () => {
+    const names = (full: string) => (full === "mcp__my_tv__foo_bar" ? { server: "my.tv", tool: "foo\u0007.bar" } : { server: "?", tool: "?" });
+    const dotted = [call("mcp__my_tv__foo_bar", "ok"), call("mcp__my_tv__foo_bar", undefined, null)];
+    expect(toolParts(dotted, names).map((p) => `${p.mark} ${p.rest}`)).toEqual(["◐ my.tv foo\\u0007.bar", "✓ my.tv foo\\u0007.bar ×1"]);
+    expect(shown([call("mcp__tradingview__chart_set_symbol", "ok")])).toEqual(["✓ tradingview chart_set_symbol ×1"]);
+    expect(shown([call("mcp__tradingview", "failed")])).toEqual(["✗ tradingview ×1"]); // no tool part: the server alone (the review)
+  });
+
   it("escapes what the model named, and has nothing to show with no calls", () => {
     expect(shown([call("x\u001b[2J", undefined, "a\rb")])).toEqual(["◐ x\\u001b[2J a␍b"]);
     expect(toolParts([])).toEqual([]);
@@ -119,6 +129,15 @@ describe("taskRows", () => {
     expect(shown(tasks).filter((r) => !r.startsWith(" ")).map((r) => r.split(" ")[1])).toEqual(["t2", "t3", "t1"]);
     expect(shown(tasks, 4)).toEqual([...shown(tasks).slice(0, 2), "  +2 more"]);
     expect(shown(tasks, 1)).toEqual(["  +3 more"]);
+  });
+
+  // Release 8c plan, choice 68 and Task 18: an MCP call names its server and its tool as the server gives them, escaped;
+  // without the window's names, the safe server and the full name's tool part.
+  it("names a latest MCP call by its server and tool as the server gives them", () => {
+    const mcp = task({ lastTool: { name: "mcp__my_tv__foo_bar", input: { x: 1 } } });
+    const names = (full: string) => (full === "mcp__my_tv__foo_bar" ? { server: "my.tv", tool: "foo\u0007.bar" } : { server: "?", tool: "?" });
+    expect(taskRows([mcp], 10, now, names)[1]!.text).toBe("⎿ claude-haiku-5-5 · 12s · ↓ 1.2k tokens · $0.01 · my.tv foo\\u0007.bar");
+    expect(taskRows([mcp], 10, now)[1]!.text).toBe("⎿ claude-haiku-5-5 · 12s · ↓ 1.2k tokens · $0.01 · my_tv foo_bar");
   });
 
   it("escapes what the model wrote, and keeps a description to its first line", () => {
