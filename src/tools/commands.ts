@@ -135,8 +135,7 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
 }
 
 // shell_output's first line, by the command's state ("Lines this plan adds"). A failed run's line follows choice 23's
-// ending line (background commands plan, Task 6); a stop names who stopped it (background commands plan, choice 28
-// (the user's)).
+// ending line (background commands plan, Task 6); a stop names who stopped it (choice 28, the user's).
 function firstLine(t: CommandTask): string {
   if (t.state === "running") return `${t.id} is still running.`;
   if (t.stoppedBy === "limit") return `${t.id} was stopped after reaching its background time limit.`;
