@@ -21,7 +21,7 @@ import { Servers } from "../../src/mcp/servers.js";
 import { approveOf, mcpTools } from "../../src/mcp/tools.js";
 import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { system32 } from "../../src/exec/env.js";
-import type { Executor, Running } from "../../src/exec/executor.js";
+import { type ExecResult, type Executor, MAX_TOOL_OUTPUT, type Running } from "../../src/exec/executor.js";
 import { LocalWorkspace, shellFor } from "../../src/exec/local.js";
 import type { Workspace } from "../../src/exec/workspace.js";
 import { Session, type SessionOptions } from "../../src/core/session.js";
@@ -1857,15 +1857,18 @@ describe("App's background commands", () => {
   const start = (id: string, command: string) => callTool(id, "shell", { command, background: true });
   const bg = (id: string, task: string) => callTool(id, "delegate", { description: task, task, background: true });
   const note = (text: string) => ({ type: "text", text, from: "tasks" });
-  // Each command started, as its run and a way to end it with an exit code.
+  // Each command started, as its run and ways to end it: with an exit code, killed by a signal, or its run failing.
   const held = () => {
-    const runs: { run: Running; end: (code: number) => void }[] = [];
+    const runs: { run: Running; end: (code: number) => void; kill: (signal: NodeJS.Signals) => void; fail: (err: Error) => void }[] = [];
     const executor: Executor = {
       exec: () => Promise.reject(new Error("exec is not used here")),
       start: () => {
-        let end = (_code: number) => {};
-        const run = standInRun(new Promise((resolve) => (end = (code) => resolve({ code, signal: null, stdout: "", stderr: "" }))));
-        runs.push({ run, end });
+        let settle = (_r: ExecResult) => {};
+        let fail = (_err: Error) => {};
+        const run = standInRun(new Promise<ExecResult>((resolve, reject) => ((settle = resolve), (fail = reject))));
+        const end = (code: number) => settle({ code, signal: null, stdout: "", stderr: "" });
+        const kill = (signal: NodeJS.Signals) => settle({ code: null, signal, stdout: "", stderr: "" });
+        runs.push({ run, end, kill, fail });
         return run;
       },
     };
@@ -1919,7 +1922,7 @@ describe("App's background commands", () => {
 
   it("opens a command's record in the detail view with /tasks t1 in full screen, putting nothing in the conversation", async () => {
     const { runs, executor } = held();
-    const { app } = await mount([start("c1", "npm run dev"), reply("started")], { executor, mode: "never", full: true });
+    const { app } = await mount([start("c1", "npm run dev"), reply("started"), reply("read it")], { executor, mode: "never", full: true });
     await type(app, "go");
     await until(app, "started");
     runs[0]!.run.log.add("ready");
@@ -1929,6 +1932,51 @@ describe("App's background commands", () => {
     await press(app, "q");
     expect(app.lastFrame()).not.toContain("running: shell command");
     expect(runs[0]!.run.log.unread()).toBe(5);
+    runs[0]!.end(0);
+    await until(app, "read it");
+    await type(app, "/tasks t1");
+    await until(app, "t1 (npm run dev), done: shell command");
+    expect(shown(app).slice(0, 4)).toEqual(["t1 (npm run dev), done: shell command", "t1 ended with exit code 0.", "ready", ""]);
+  });
+
+  // The user's choice 31 (2026-11-13): an ended command's record says how it ended, in shell_output's first line.
+  it("says in a command's record how it ended, in shell_output's words, and (no output) once it ended with none", async () => {
+    const { runs, executor } = held();
+    const four = { parts: ["npm test", "npm run dev", "npm run build", "npm run watch"].flatMap((c, i) => start(`c${i + 1}`, c).parts), usage };
+    const lead = new FakeProvider("a", [four, reply("started"), reply("read the first"), reply("read the second"), reply("read the third")]);
+    const { app } = await mount([], { lead, executor, mode: "never" });
+    await type(app, "go");
+    await until(app, "started");
+    runs[0]!.run.log.add("1 failed");
+    runs[0]!.end(1);
+    await until(app, "read the first");
+    runs[1]!.kill("SIGTERM");
+    await until(app, "read the second");
+    runs[2]!.fail(new Error("Docker could not be reached"));
+    await until(app, "read the third");
+    await type(app, "/tasks stop t4");
+    await until(app, "Stopped t4.");
+    for (const id of ["t1", "t2", "t3", "t4"]) await type(app, `/tasks ${id}`);
+    await until(app, "t4 (npm run watch), stopped: shell command");
+    const frame = app.lastFrame()!;
+    expect(frame).toContain("t1 (npm test), failed: shell command\nt1 ended with exit code 1.\n1 failed\n");
+    expect(frame).toContain("t2 (npm run dev), failed: shell command\nt2 was killed by SIGTERM.\n(no output)\n");
+    expect(frame).toContain("t3 (npm run build), failed: shell command\nt3 failed: Docker could not be reached\n(no output)\n");
+    expect(frame).toContain("t4 (npm run watch), stopped: shell command\nt4 was stopped by the user.\n(no output)\n");
+  });
+
+  it("says in a command's record how much output its log dropped, before the output it kept, leaving the model's place", async () => {
+    const { runs, executor } = held();
+    const { app } = await mount([start("c1", "npm run dev"), reply("started")], { executor, mode: "never" });
+    await type(app, "go");
+    await until(app, "started");
+    const { log } = runs[0]!.run;
+    log.add("a".repeat(12));
+    log.add("b".repeat(MAX_TOOL_OUTPUT)); // the log keeps MAX_TOOL_OUTPUT characters, so the 12 before are dropped
+    await type(app, "/tasks t1");
+    await until(app, "t1 (npm run dev), running: shell command\n[12 earlier characters were dropped]\nbbbb");
+    expect(app.lastFrame()).not.toContain("a".repeat(12));
+    expect(log.unread()).toBe(log.total);
   });
 
   it("stops a command with /tasks stop t1, or every one with /tasks stop, and the model hears of each at the next turn", async () => {
@@ -1948,6 +1996,8 @@ describe("App's background commands", () => {
     expect(tasks.all[1]!.state).toBe("stopped");
     await type(app, "/tasks stop");
     await until(app, "No subagent or command is running.");
+    await type(app, "/tasks stop t9");
+    await until(app, "No task t9. /tasks lists them.");
     await type(app, "next");
     await until(app, "noted");
     expect(lead.seen[2]!.at(-1)!.parts).toEqual([

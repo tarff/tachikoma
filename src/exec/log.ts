@@ -9,7 +9,7 @@ export function headCommand(command: string): string {
   return command.length <= HEAD_COMMAND ? command : `${command.slice(0, HEAD_COMMAND)}… [+${command.length - HEAD_COMMAND} chars]`;
 }
 
-const droppedNote = (n: number | string) => `[${n} earlier characters were dropped]`;
+export const droppedNote = (n: number | string) => `[${n} earlier characters were dropped]`; // /tasks t4's record says it too (choice 31)
 const moreNote = (n: number | string, id: string) => `[${n} more characters: shell_output ${id} gives them]`;
 
 // A background command's output, both streams in the order they arrived, and how far the model has read it. Only the

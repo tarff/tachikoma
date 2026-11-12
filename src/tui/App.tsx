@@ -58,7 +58,7 @@ import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 export interface AppProps {
   session: Session;
-  tasks: Tasks; // the lead's subagents
+  tasks: Tasks; // the lead's subagents and background commands
   bus: Bus;
   stats: Stats;
   mode: Mode; // the mode the session started in
@@ -157,7 +157,7 @@ export interface Fns {
   endRun: OutputArea["endRun"]; make: OutputArea["make"]; lookUpWindow: OutputArea["lookUpWindow"];
   submit: QueueArea["submit"]; next: QueueArea["next"]; recordToOpen: QueueArea["recordToOpen"]; leave: QueueArea["leave"];
   perform: QueueArea["perform"]; tasksCommand: QueueArea["tasksCommand"]; recordOf: QueueArea["recordOf"];
-  pick: QueueArea["pick"]; closePicker: QueueArea["closePicker"]; subagentsRunning: QueueArea["subagentsRunning"];
+  pick: QueueArea["pick"]; closePicker: QueueArea["closePicker"]; stillRunning: QueueArea["stillRunning"];
   startFresh: QueueArea["startFresh"]; resume: QueueArea["resume"];
   pickSession: QueueArea["pickSession"]; closeSessions: QueueArea["closeSessions"]; branch: QueueArea["branch"];
   rename: QueueArea["rename"]; exportTo: QueueArea["exportTo"]; mcpAction: QueueArea["mcpAction"]; closeMcp: QueueArea["closeMcp"];
@@ -502,7 +502,7 @@ export function App(props: AppProps) {
   }, []);
 
   // The working line's spinner and time, while something runs; the panel's times, once a second, while
-  // only subagents do.
+  // only subagents or commands do.
   useEffect(() => {
     if (!ui.busy && !ui.running) return;
     const spin = setInterval(() => ui.setNow(Date.now()), ui.busy ? SPIN_MS : 1000);

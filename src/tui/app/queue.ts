@@ -10,7 +10,8 @@ import { type Protection, visible } from "../../core/permissions.js";
 import { cannot, truncate } from "../../core/session.js";
 import { listSessions } from "../../core/sessions.js";
 import { CANCELLED } from "../../core/shorten.js";
-import type { Task } from "../../core/tasks.js";
+import type { CommandTask, Task } from "../../core/tasks.js";
+import { droppedNote } from "../../exec/log.js";
 import { errorText, type Part, type Picture, type Provider } from "../../core/types.js";
 import { hookName } from "../../hooks/answer.js";
 import { limitOf } from "../../hooks/hooks.js";
@@ -20,6 +21,7 @@ import { until } from "../../mcp/tools.js";
 import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS, shownFile } from "../../settings.js";
+import { firstLine } from "../../tools/commands.js";
 import type { Fns } from "../App.js";
 import { typeOf, unquoted } from "../clipboard.js";
 import { callLines, type Line } from "../describe.js";
@@ -126,8 +128,8 @@ export const queue = (ui: UI, fns: Fns) => {
         if (!rest.length && ["", "on", "off"].includes(word)) return fns.setVim(on);
         return fns.say({ text: "Usage: /vim, /vim on, /vim off", color: "red" });
       }
-      // In full screen a subagent's record opens in the detail view (release 5 plan, Task 12); the list, stopping and
-      // mistakes print.
+      // In full screen a subagent's or command's record opens in the detail view (release 5 plan, Task 12; background
+      // commands plan, Task 9); the list, stopping and mistakes print.
       if (command === "/tasks") {
         const t = fns.recordToOpen(text);
         return t ? fns.openDetail(fns.recordOf(t)) : fns.say(...fns.tasksCommand(words));
@@ -150,7 +152,7 @@ export const queue = (ui: UI, fns: Fns) => {
       if (command === "/compact") return await compact(text.slice(first.length).trim());
       if (command === "/autocompact") return autoCompact(words);
       if (alone("/clear") || alone("/resume") || command === "/branch") {
-        const refused = fns.subagentsRunning(command);
+        const refused = fns.stillRunning(command);
         if (refused) return fns.say(refused);
         if (command === "/resume") return fns.resume();
         // The instruction files are read again meanwhile (/clear), and SessionEnd's hooks run (both; release 8b plan, Task
@@ -188,7 +190,7 @@ export const queue = (ui: UI, fns: Fns) => {
       ui.setNow(ui.doing.current.at);
       ui.setBusy(true);
       ui.working.current = true;
-      // Finished subagents leave the panel at the user's next turn; after `working`, since the change
+      // Finished subagents and commands leave the panel at the user's next turn; after `working`, since the change
       // it reports would otherwise start the queue.
       if (turn && !answers) ui.tasks.clearFinished();
       try {
@@ -490,13 +492,26 @@ export const queue = (ui: UI, fns: Fns) => {
       fns.next();
     }
   };
-  // `/tasks t3`'s record: the subagent's tool calls and answer in full. A command's is the output its log keeps, read
-  // with kept(), which leaves the model's place, so shell_output still gives it all (background commands plan, Task 9).
+  // `/tasks t3`'s record: the subagent's tool calls and answer in full.
   const recordOf = (t: Task): Line[] => {
-    if (t.kind === "command") return [gray(`${t.id} (${visible(t.command)}), ${t.state}: shell command`), gray(t.run.log.kept() || "(no output yet)")];
+    if (t.kind === "command") return commandRecord(t);
     const calls = callLines(t.messages, ui.run.options.names);
     const end = t.state === "done" ? `Answer:\n${t.answer}` : t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)";
     return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
+  };
+  // A command's record (background commands plan, Task 9): once it ended, how, in shell_output's first line; the dropped
+  // note when its log took in more than it keeps; then the output kept, read with kept(), which leaves the model's place,
+  // so shell_output still gives it all (choice 31, the user's).
+  const commandRecord = (t: CommandTask): Line[] => {
+    const { log } = t.run;
+    const kept = log.kept();
+    const dropped = log.total - kept.length;
+    return [
+      gray(`${t.id} (${visible(t.command)}), ${t.state}: shell command`),
+      ...(t.state === "running" ? [] : [gray(firstLine(t))]),
+      ...(dropped ? [gray(droppedNote(dropped))] : []),
+      gray(kept || (t.state === "running" ? "(no output yet)" : "(no output)")),
+    ];
   };
 
   // Picking does what `/lead <provider:model>` does. What it says ("lead is now ...", from the bus, or why not) is asked-for
@@ -638,16 +653,17 @@ export const queue = (ui: UI, fns: Fns) => {
   // /clear, /resume and /branch are refused while a subagent or a background command runs, so no answer or ending can
   // arrive in the wrong session (release 8a design, "Resuming"; background commands design, confirmed); during a turn
   // they wait in the queue, as every command does. Null when none runs.
-  const subagentsRunning = (command: string): Line | null => {
+  const stillRunning = (command: string): Line | null => {
     const ids = ui.tasks.all.filter((t) => t.state === "running" || t.state === "waiting").map((t) => t.id).join(", ");
     return ids ? { text: `${command} waits until no subagent or command is running: ${ids} still running. /tasks stop stops them.`, color: "red" } : null;
   };
   // The window takes another session (release 8a plan, choice 15): the last one's shown calls, to-do list, answers and
   // tool line go, and the gauge's context, 0 until the next request. The subagents' waiting text is dropped: an answer
   // that wakes the lead was read in a turn of its own before this command ran (next), so what is left is a stopped
-  // subagent's note, which belongs to the last conversation. The conversation is loaded first: a load refused, as one is
-  // while a turn runs (a prompt read with /resume in one read of the terminal starts its turn under the list), lets the
-  // next session go and leaves the turn's state as it was. Then the last session is let go, and the conversation drawn
+  // subagent's or command's note, which belongs to the last conversation. The conversation is loaded first: a load
+  // refused, as one is while a turn runs (a prompt read with /resume in one read of the terminal starts its turn under
+  // the list), lets the next session go and leaves the turn's state as it was. Then the last session is let go, and
+  // the conversation drawn
   // as the launch draws a resumed one, and its lines said, so a saving failure the load reports comes first (Task 7). The
   // window's sandbox carries on: a copy-mode box is not started afresh, so its review at exit covers both sessions'
   // changes (Task 7). Another conversation's finished subagents leave /tasks and the panel. A branch is the same
@@ -810,7 +826,7 @@ export const queue = (ui: UI, fns: Fns) => {
     fns.say(gray(`Exported to ${to}.`));
   };
   return {
-    submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave, subagentsRunning, startFresh, resume,
+    submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave, stillRunning, startFresh, resume,
     pickSession, closeSessions, branch, rename, exportTo, mcpAction, closeMcp,
   };
 };
