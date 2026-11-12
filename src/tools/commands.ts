@@ -1,6 +1,7 @@
 import { z } from "zod";
-import type { Tasks } from "../core/tasks.js";
+import type { CommandTask, Tasks } from "../core/tasks.js";
 import type { ExecResult, Running } from "../exec/executor.js";
+import { deliver } from "../exec/log.js";
 import { shellText } from "./shell.js";
 import { defineTool, type Tool, type ToolContext } from "./tool.js";
 
@@ -24,8 +25,8 @@ type Way = { end: ExecResult } | "cancelled" | "timeout" | "moved";
 
 // The shell tool for the shell its commands run in: the host's (shellFor), or bash in the box (release 7 plan, Task 16).
 // A foreground command runs until its end, Esc, its timeout or Ctrl+B; a background one joins the task list at once
-// (background commands design, "What the model gets", "A command that runs long"; plan, choices 10-13). Task 6 adds
-// shell_output and stop_task here.
+// (background commands design, "What the model gets", "A command that runs long"; plan, choices 10-13). shell_output
+// and stop_task come with it (Task 6).
 export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolean }): Tool[] {
   const shell = defineTool(
     "shell",
@@ -104,5 +105,40 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
     });
   }
 
-  return [shell];
+  // No question: it only reads (design, "What the model gets"). An ended command's entry goes, as the model has its end
+  // here, so it is not told twice (choice 7); a subagent's id and an unknown one get their own lines (choice 14).
+  const shellOutput = defineTool(
+    "shell_output",
+    "Read what a background command has printed since you last read it, and whether it has ended. Give its id, such as t4.",
+    z.object({ id: z.string() }),
+    async ({ id }) => {
+      const t = tasks.get(id);
+      if (!t) return `No task ${id}.`;
+      if (t.kind === "subagent") return `${id} is a subagent, not a command; its answer comes in a message.`;
+      if (t.state !== "running") tasks.told(id);
+      return deliver(firstLine(t), t.run.log, id);
+    },
+  );
+
+  // No question (background commands plan, Task 6); a stop by the model is said so at the next turn (choices 7, 27).
+  const stopTask = defineTool(
+    "stop_task",
+    "Stop a background command or a background subagent by its id, such as t4.",
+    z.object({ id: z.string() }),
+    async ({ id }) => {
+      if (!tasks.get(id)) return `No task ${id}.`;
+      return tasks.stop(id, "tool") ? `Stopped ${id}.` : `${id} is not running.`;
+    },
+  );
+
+  return [shell, shellOutput, stopTask];
+}
+
+// shell_output's first line, by the command's state ("Lines this plan adds"). A failed run's line follows choice 23's
+// ending line (background commands plan, Task 6).
+function firstLine(t: CommandTask): string {
+  if (t.state === "running") return `${t.id} is still running.`;
+  if (t.state === "stopped") return t.limited ? `${t.id} was stopped after reaching its background time limit.` : `${t.id} was stopped.`;
+  if (t.error !== undefined) return `${t.id} failed: ${t.error}`;
+  return t.code !== null && t.code !== undefined ? `${t.id} ended with exit code ${t.code}.` : `${t.id} was killed by ${t.signal}.`;
 }

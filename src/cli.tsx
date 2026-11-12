@@ -693,8 +693,8 @@ const tasks = new Tasks({
   mcp: servers, // each subagent's own MCP tools, its trusted read-only ones only (Task 7)
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus. In the box the shell tool says
-// bash, whatever the host. The shell tool keeps its place after edit_file, so the order the model sees is as before
-// (background commands plan, Task 5).
+// bash, whatever the host. The shell tool keeps its place after edit_file, so the order the model sees is as before,
+// shell_output and stop_task just after it (background commands plan, Tasks 5 and 6).
 const commandTools = shellTools(tasks, { shell: box ? "bash" : shellFor().name, headless: !interactive });
 const tools = [
   ...TOOLS.flatMap((t) => (t === editFileTool ? [t, ...commandTools] : [t])),

@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
+import type { Provider } from "../../src/core/types.js";
 import { type CommandTask, Tasks } from "../../src/core/tasks.js";
 import type { ExecResult, Executor, Running } from "../../src/exec/executor.js";
 import { LocalExecutor } from "../../src/exec/local.js";
@@ -10,7 +11,7 @@ import { CommandLog, deliver } from "../../src/exec/log.js";
 import { shellTools } from "../../src/tools/commands.js";
 import { shellText } from "../../src/tools/shell.js";
 import { InvalidInput } from "../../src/tools/tool.js";
-import { Bus, FakeProvider, tempContext } from "../helpers.js";
+import { Bus, FakeProvider, Held, tempContext } from "../helpers.js";
 
 // Background commands plan, Task 5: the shell tool starts a command in the background, or runs it in the foreground until
 // its end, Esc, its timeout or Ctrl+B. The executor is a stand-in whose start gives a command the test drives, so no
@@ -29,7 +30,9 @@ function driven() {
 }
 
 type Limits = { started: number; moved: number; most: number };
-async function setup(opts: { headless?: boolean; mode?: Mode; answers?: boolean[]; limits?: Limits; start?: () => Running } = {}) {
+async function setup(
+  opts: { headless?: boolean; mode?: Mode; answers?: boolean[]; limits?: Limits; start?: () => Running; worker?: Provider } = {},
+) {
   const ctx = await tempContext(opts.mode ?? "never", opts.answers ?? []);
   const started: { command: string; cwd: string; run: ReturnType<typeof driven> }[] = [];
   const executor: Executor = {
@@ -44,7 +47,7 @@ async function setup(opts: { headless?: boolean; mode?: Mode; answers?: boolean[
   const tasks = new Tasks({
     bus: new Bus(),
     max: 8,
-    worker: () => new FakeProvider("w", []),
+    worker: () => opts.worker ?? new FakeProvider("w", []),
     system: "sub",
     tools: [],
     ctx: { ...ctx, executor },
@@ -54,12 +57,14 @@ async function setup(opts: { headless?: boolean; mode?: Mode; answers?: boolean[
   const reports: unknown[] = [];
   const call = (input: unknown, signal?: AbortSignal) =>
     tools[0]!.run(input, { ...ctx, executor, report: (p) => reports.push(p), ...(signal ? { signal } : {}) });
+  // shell_output or stop_task.
+  const use = (name: string, input: unknown) => tools.find((t) => t.spec.name === name)!.run(input, { ...ctx, executor });
   // The gate answers in promises and the stand-in at once, so a call reaches its wait within a few turns of the loop.
   // setImmediate, which the fake timers below leave real.
   const reached = async () => {
     for (let i = 0; i < 100 && !tasks.holding && !tasks.all.length; i++) await new Promise((r) => setImmediate(r));
   };
-  return { ctx, tasks, tools, started, reports, call, reached };
+  return { ctx, tasks, tools, started, reports, call, use, reached };
 }
 
 // Only the timers: the gate's questions and setImmediate stay real.
@@ -80,17 +85,19 @@ const settled = async (p: Promise<unknown>) => {
 };
 
 describe("the shell tool", () => {
-  it("is the only tool for now, and tells the model of the timeout, the move and background starts in the plan's words", async () => {
+  it("comes with shell_output and stop_task, each telling the model what it does in the plan's words", async () => {
     const { tasks } = await setup();
     const tools = shellTools(tasks, { shell: "bash", headless: false });
-    expect(tools.map((t) => t.spec.name)).toEqual(["shell"]);
-    expect(tools[0]!.spec.description).toBe(
+    expect(tools.map((t) => t.spec.name)).toEqual(["shell", "shell_output", "stop_task"]);
+    expect(tools.map((t) => t.spec.description)).toEqual([
       "Run a command with bash in the project root and return its output. " +
         'A command still running after "timeout" milliseconds (120000 when not given, at most 600000) moves to the background, unless it starts with sleep. ' +
         'With "background": true it starts in the background at once, for a dev server, a watch build or a long test run; ' +
         "read its output with shell_output and stop it with stop_task. You are told when a background command ends.",
-    );
-    expect(tools[0]!.parallel).toBeUndefined();
+      "Read what a background command has printed since you last read it, and whether it has ended. Give its id, such as t4.",
+      "Stop a background command or a background subagent by its id, such as t4.",
+    ]);
+    expect(tools.map((t) => t.parallel)).toEqual([undefined, undefined, undefined]); // one call after another
   });
 
   // Choice 11: from 1 ms to 2 hours, a whole number.
@@ -320,10 +327,9 @@ describe("the shell tool, in the foreground", () => {
     tasks.stop();
   });
 
-  // The design, "A command that runs long": what was printed before a move is not lost. Task 6 tests this through
-  // shell_output itself; here, what a read of the moved command's log gives.
+  // The design, "A command that runs long": what was printed before a move is not lost; the first shell_output gives it.
   it("keeps what the command printed before the move for the first read", async () => {
-    const { call, started, tasks, reached } = await setup();
+    const { call, use, started, tasks, reached } = await setup();
     fakeTimers();
     const out = call({ command: "npm test" });
     await reached();
@@ -331,8 +337,7 @@ describe("the shell tool, in the foreground", () => {
     vi.advanceTimersByTime(120_000);
     await out;
     started[0]!.run.run.log.add("12 passed\n");
-    const t = tasks.get("t1") as CommandTask;
-    expect(deliver("t1 is still running.", t.run.log, "t1")).toBe("t1 is still running.\ncompiling\n12 passed\n");
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 is still running.\ncompiling\n12 passed\n");
     tasks.stop();
   });
 
@@ -367,6 +372,122 @@ describe("the shell tool, in the foreground", () => {
     await expect(call({ command: "npm test" }, stop.signal)).rejects.toThrow("Cancelled");
     await expect(call({ command: "npm test", background: true }, stop.signal)).rejects.toThrow("Cancelled");
     expect(started).toEqual([]);
+  });
+});
+
+// Background commands plan, Task 6 and choices 7, 14 and 27: shell_output reads a command's output since the last read,
+// with a first line for its state, and stop_task stops a command or a background subagent. Neither asks a question.
+describe("shell_output", () => {
+  it("gives a running command's output once, what is new since the last read or that nothing is, without a question", async () => {
+    const { call, use, ctx, started, tasks } = await setup({ mode: "project", answers: [true] });
+    await call({ command: "npm run dev", background: true });
+    const { log } = started[0]!.run.run;
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 is still running.\nNo new output.");
+    log.add("ready\n");
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 is still running.\nready\n");
+    log.add("GET /\n");
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 is still running.\nGET /\n");
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 is still running.\nNo new output.");
+    expect(ctx.asked).toEqual(["run in the background: npm run dev"]); // the start's question alone
+    tasks.stop();
+  });
+
+  // Choice 7: the model read the end here, so the ending's message is not given at the next turn too.
+  it("gives an ended command's exit line and the rest of its output, and the next turn says nothing of its end", async () => {
+    const { call, use, started, tasks } = await setup();
+    await call({ command: "npm test", background: true });
+    const { run, end } = started[0]!.run;
+    run.log.add("compiling\n");
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 is still running.\ncompiling\n");
+    run.log.add("2 failed\n");
+    end({ code: 1 });
+    await tasks.get("t1")!.done;
+    expect(tasks.wakes()).toBe(true);
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 ended with exit code 1.\n2 failed\n");
+    expect([tasks.wakes(), tasks.take()]).toEqual([false, []]);
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 ended with exit code 1.\nNo new output.");
+  });
+
+  it("says a command was killed by a signal", async () => {
+    const { call, use, started, tasks } = await setup();
+    await call({ command: "npm run dev", background: true });
+    started[0]!.run.end({ code: null, signal: "SIGTERM" });
+    await tasks.get("t1")!.done;
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 was killed by SIGTERM.\nNo new output.");
+    expect(tasks.take()).toEqual([]);
+  });
+
+  it("says a stopped command was stopped, with what it printed before, and the next turn says nothing of the stop", async () => {
+    const { call, use, started, tasks } = await setup();
+    await call({ command: "npm run dev", background: true });
+    started[0]!.run.run.log.add("ready\n");
+    tasks.stop("t1");
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 was stopped.\nready\n");
+    expect(tasks.take()).toEqual([]);
+  });
+
+  // Task 6's choice (a): the task records a stop at the -p limit, so the read can tell it from any other stop.
+  it("says a command was stopped at its -p time limit", async () => {
+    const { call, use, started, tasks } = await setup({ headless: true, limits: { started: 600_000, moved: 600_000, most: 7_200_000 } });
+    fakeTimers();
+    await call({ command: "npm run e2e", background: true, timeout: 5_000 });
+    started[0]!.run.run.log.add("3 passed\n");
+    vi.advanceTimersByTime(5_000);
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 was stopped after reaching its background time limit.\n3 passed\n");
+    expect(tasks.take()).toEqual([]);
+  });
+
+  // Task 6's choice (b): a run that failed (choice 23) says its error, cut as a command is in a first line (choice 24).
+  it("says a command's run failed, with its error", async () => {
+    const { call, use, started, tasks } = await setup();
+    await call({ command: "npm run dev", background: true });
+    await call({ command: "npm run watch", background: true });
+    started[0]!.run.fail(new Error("spawn powershell.exe ENOENT"));
+    started[1]!.run.fail(new Error(`${"x".repeat(1_000)}12345`));
+    await Promise.all([tasks.get("t1")!.done, tasks.get("t2")!.done]);
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 failed: spawn powershell.exe ENOENT\nNo new output.");
+    expect(await use("shell_output", { id: "t2" })).toBe(`t2 failed: ${"x".repeat(1_000)}… [+5 chars]\nNo new output.`);
+    expect(tasks.take()).toEqual([]);
+  });
+
+  // Choice 14.
+  it("answers a subagent's id and an id not in the list with their lines", async () => {
+    const worker = new Held();
+    const { use, tasks } = await setup({ worker });
+    tasks.start("find x", { background: true });
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 is a subagent, not a command; its answer comes in a message.");
+    expect(await use("shell_output", { id: "t9" })).toBe("No task t9.");
+    tasks.stop();
+  });
+});
+
+describe("stop_task", () => {
+  it("stops a background command without a question, and the next turn says stop_task stopped it", async () => {
+    const { call, use, ctx, started, tasks } = await setup({ mode: "project", answers: [true] });
+    await call({ command: "npm run dev", background: true });
+    expect(await use("stop_task", { id: "t1" })).toBe("Stopped t1.");
+    expect([started[0]!.run.stop.mock.calls.length, tasks.get("t1")!.state]).toEqual([1, "stopped"]);
+    expect(ctx.asked).toEqual(["run in the background: npm run dev"]); // the start's question alone
+    expect(tasks.wakes()).toBe(false);
+    expect(tasks.take()).toEqual(["Background command t1 (npm run dev) was stopped by stop_task."]);
+    expect(await use("stop_task", { id: "t1" })).toBe("t1 is not running.");
+  });
+
+  // Choice 27, the user's: a subagent stop_task stopped says so, and a stop by the user keeps its words (tasks.test.ts).
+  it("stops a background subagent, whose answer and next-turn line say stop_task stopped it", async () => {
+    const worker = new Held();
+    const { use, tasks } = await setup({ worker });
+    const t = tasks.start("find x", { background: true });
+    expect(await use("stop_task", { id: "t1" })).toBe("Stopped t1.");
+    expect(await t.done).toEqual({ state: "stopped", text: "t1 was stopped by stop_task before it finished." });
+    expect(tasks.wakes()).toBe(false);
+    expect(tasks.take()).toEqual(["Background task t1 (find x) was stopped by stop_task before it finished."]);
+    expect(await use("stop_task", { id: "t1" })).toBe("t1 is not running.");
+  });
+
+  it("answers an id not in the list", async () => {
+    const { use } = await setup();
+    expect(await use("stop_task", { id: "t9" })).toBe("No task t9.");
   });
 });
 

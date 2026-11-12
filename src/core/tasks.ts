@@ -59,6 +59,10 @@ export interface CommandTask {
   shown: boolean;
   code?: number | null; // as it ended by itself
   signal?: NodeJS.Signals | null;
+  // For shell_output's first line (background commands plan, Task 6): a stop at the -p time limit, told apart from a stop
+  // by the user or stop_task, and a failed run's error (choice 23), cut as a command is in a first line (choice 24).
+  limited?: true;
+  error?: string;
   run: Running;
   done: Promise<void>;
 }
@@ -108,7 +112,8 @@ export class Tasks {
   #worker: () => Provider;
   #fallback: Provider | undefined;
   #line: (() => void)[] = []; // subagents waiting for a free place, in order
-  #stops = new Map<string, { stop: AbortController; byUser: boolean }>();
+  // `by` is who stopped it through stop(), for its words (choice 27); none when the lead's turn stopped it.
+  #stops = new Map<string, { stop: AbortController; by?: "user" | "tool" }>();
   #next = 1; // the next id's number: from(n) raises it past a loaded conversation's subagents (release 8a plan, choice 4)
 
   constructor(private readonly opts: TasksOptions) {
@@ -156,7 +161,7 @@ export class Tasks {
     const id = `t${this.#next++}`;
     const stop = new AbortController();
     opts.signal?.addEventListener("abort", () => stop.abort(), { once: true });
-    this.#stops.set(id, { stop, byUser: false });
+    this.#stops.set(id, { stop });
     // `done` is set just below, before anything reads it.
     const made = {
       kind: "subagent", id, description: opts.description ?? task, task, model: provider.id, background: opts.background, state: "waiting",
@@ -206,7 +211,7 @@ export class Tasks {
         if (t.kind === "command") this.#stopCommand(t, by);
         else {
           const s = this.#stops.get(t.id)!;
-          s.byUser = true;
+          s.by = by;
           s.stop.abort();
         }
         any = true;
@@ -271,7 +276,8 @@ export class Tasks {
     const result = (await this.#place(signal)) ? await this.#work(t, provider, fallback, signal, own) : null;
     const stopped = this.#stops.get(t.id)!;
     // A hook's stop comes with its own result and its stopReason (#work).
-    const byWhom = stopped.byUser ? " by the user before it finished" : ""; // the words, said after "was stopped"
+    // The words, said after "was stopped": a stop by stop_task says so (choice 27, the user's, 2026-11-13).
+    const byWhom = stopped.by ? ` by ${stopped.by === "user" ? "the user" : "stop_task"} before it finished` : "";
     const { hook, ...r }: Result & { hook?: string } = result ?? { state: "stopped", text: `${t.id} was stopped${byWhom}.` };
     // How it ended, when the lead was told it failed or was stopped, waiting or running, so a resumed session never
     // reports it lost (release 8a plan, choice 4). A finished one's answer, its last reply, says so already.
@@ -291,8 +297,8 @@ export class Tasks {
         : `${name} was stopped by a hook${hook ? `: ${hook}` : "."}`;
       this.#inbox.push({ id, kind, text, wake: true });
     }
-    if (t.background && r.state === "stopped" && stopped.byUser) {
-      this.#inbox.push({ id, kind, text: `${name} was stopped by the user before it finished.`, wake: false });
+    if (t.background && r.state === "stopped" && stopped.by) {
+      this.#inbox.push({ id, kind, text: `${name} was stopped${byWhom}.`, wake: false });
     }
     this.#changed();
     return r;
@@ -401,7 +407,8 @@ export class Tasks {
   // Choice 23. The error is cut as a command is, so the head stays short and the output has room (As built, Task 1).
   #failed(t: CommandTask, err: unknown): void {
     if (t.state !== "running") return;
-    const head = `Background command ${t.id} (${headCommand(t.command)}) failed: ${headCommand(errorText(err))}`;
+    t.error = headCommand(errorText(err));
+    const head = `Background command ${t.id} (${headCommand(t.command)}) failed: ${t.error}`;
     this.#ended(t, "failed", () => deliver(head, t.run.log, t.id), true);
   }
 
@@ -409,6 +416,7 @@ export class Tasks {
   // none for a stopped command (As built, Task 3).
   #limit(t: CommandTask): void {
     t.run.stop();
+    t.limited = true;
     const head = `Background command "${headCommand(t.command)}" was stopped after reaching its background time limit`;
     this.#ended(t, "stopped", () => deliver(head, t.run.log, t.id), true);
   }

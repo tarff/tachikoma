@@ -848,13 +848,13 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
 
   // Background commands plan, Task 5: the lead's shell tool, made in cli.tsx, names the host's shell, and keeps its place
   // after edit_file. The box's says bash (copy mode's -p run, below).
-  it("with -p, gives the lead the shell tool after edit_file, naming the host's shell", async () => {
+  it("with -p, gives the lead the shell tool, shell_output and stop_task after edit_file, naming the host's shell", async () => {
     const { proj, data } = place();
     const { url, sent } = await standIn();
     const r = await tachiLater("-p", "hi", where(proj, data, url));
     expect(r.code).toBe(0);
     const tools = (sent[0] as unknown as { tools: { function: { name: string; description: string } }[] }).tools.map((t) => t.function);
-    expect(tools.map((t) => t.name).slice(0, 6)).toEqual(["read_file", "write_file", "edit_file", "shell", "find_files", "search_files"]);
+    expect(tools.map((t) => t.name).slice(0, 6)).toEqual(["read_file", "write_file", "edit_file", "shell", "shell_output", "stop_task"]);
     expect(tools[3]!.description).toMatch(new RegExp(`^Run a command with ${shellFor().name} in the project root and return its output\\. `));
   });
 
