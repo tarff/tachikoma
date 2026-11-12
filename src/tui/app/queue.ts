@@ -564,7 +564,7 @@ export const queue = (ui: UI, fns: Fns) => {
     fns.next();
   };
   // Leaving the session (/exit, and Ctrl-C or Ctrl-D twice): Ink ends, as ever. No turn runs then, as /exit waits for it in
-  // the queue and the exit keys do nothing during one (keyRouting.ts), so only the subagents are stopped, first, in every
+  // the queue and the exit keys do nothing during one (keyRouting.ts), so only the subagents and commands are stopped, first, in every
   // mode. In copy mode the box is stopped next, and once Docker reports it gone the review (Review.tsx) opens in the App's
   // place, Ink still mounted, under the lock beside the copy's folder, so two reviews of one copy take turns; its lines are
   // handed back, to print once Ink has ended (release 7 plan, Task 21). From the first step the App's own keys, pastes
