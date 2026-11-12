@@ -59,7 +59,6 @@ import { attachErrorLog } from "./core/errorlog.js";
 import { type Reached, readInstructions } from "./core/instructions.js";
 import { type Ask, PermissionGate, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
-import type { Ended } from "./core/session.js";
 import { type Row, sessionsDir, sweep } from "./core/sessions.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
@@ -809,12 +808,8 @@ if (parsed.print !== undefined) {
   // Then the wait while background commands run, a turn for each ending, unless the first turn ended the run; either way
   // what is left stops as the window's close stops it (background commands design, "With -p"; plan, choices 25 and 29).
   // The waiting line only on a terminal, grey as the launch's lines.
-  let later: Ended | void = undefined;
-  if (first === undefined) {
-    const waitingLine = process.stderr.isTTY ? { waitingLine: (line: string) => console.error(gray(line)) } : {};
-    later = await waitForBackground(session, tasks, stop.signal, { bus, failed: () => failed, answer: printAnswer, ...waitingLine });
-  } else tasks.close();
-  const ended = first ?? later;
+  const waitingLine = process.stderr.isTTY ? { waitingLine: (line: string) => console.error(gray(line)) } : {};
+  const ended = await waitForBackground(first, session, tasks, stop.signal, { bus, failed: () => failed, answer: printAnswer, ...waitingLine });
   // Read now: a Ctrl-C during SessionEnd or copy mode's step below comes after the run's work, so it does not mark the run
   // stopped (Task 10's code review).
   const aborted = stop.signal.aborted;

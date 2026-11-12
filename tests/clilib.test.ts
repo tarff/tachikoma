@@ -56,7 +56,7 @@ import {
   waitForBackground,
   WindowSessions,
 } from "../src/clilib.js";
-import { Session } from "../src/core/session.js";
+import { type Ended, Session } from "../src/core/session.js";
 import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "../src/tools/commands.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 import { callTool, FakeProvider, removeTree, reply, standInRun, tempContext, usage } from "./helpers.js";
@@ -355,8 +355,8 @@ describe("waitForBackground", () => {
       answer(before);
       return ended;
     };
-    const wait = (signal: AbortSignal, waitingLine?: (line: string) => void) =>
-      waitForBackground(session, tasks, signal, { bus, failed: () => failed, answer, ...(waitingLine ? { waitingLine } : {}) });
+    const wait = (ended: Ended | void, signal: AbortSignal, waitingLine?: (line: string) => void) =>
+      waitForBackground(ended, session, tasks, signal, { bus, failed: () => failed, answer, ...(waitingLine ? { waitingLine } : {}) });
     const exit = (signal: AbortSignal, ended: unknown) => headlessExit({ aborted: signal.aborted, failed: failed || ended !== undefined, declined: false });
     const sent = (n: number) => JSON.stringify(lead.seen[n]!.at(-1));
     return { ctx, runs, tasks, lead, bus, answers, first, wait, exit, sent };
@@ -365,8 +365,9 @@ describe("waitForBackground", () => {
   it("takes a turn when a background command ends, prints its answer, and then returns", async () => {
     const s = await setup([started("c1", "node build.js"), reply("Started it."), reply("It printed done.")]);
     const stop = new AbortController();
-    expect(await s.first(stop.signal)).toBeUndefined();
-    const waited = s.wait(stop.signal);
+    const first = await s.first(stop.signal);
+    expect(first).toBeUndefined();
+    const waited = s.wait(first, stop.signal);
     s.runs[0]!.log.add("done\n");
     s.runs[0]!.end(ok("done\n"));
     expect(await waited).toBeUndefined();
@@ -379,8 +380,8 @@ describe("waitForBackground", () => {
   it("takes a turn for each of two endings", async () => {
     const s = await setup([both("node a.js", "node b.js"), reply("Started both."), reply("a ended."), reply("b ended.")]);
     const stop = new AbortController();
-    await s.first(stop.signal);
-    const waited = s.wait(stop.signal);
+    const first = await s.first(stop.signal);
+    const waited = s.wait(first, stop.signal);
     s.runs[0]!.end(ok(""));
     await vi.waitFor(() => expect(s.answers).toHaveLength(2));
     s.runs[1]!.end(ok(""));
@@ -395,10 +396,10 @@ describe("waitForBackground", () => {
     onTestFinished(() => void vi.useRealTimers());
     const s = await setup([started("c1", "npm run dev"), reply("Started it.")], { limits: true });
     const stop = new AbortController();
-    await s.first(stop.signal);
+    const first = await s.first(stop.signal);
     const lines: string[] = [];
     const listening = [s.bus.listenerCount("tasks"), getEventListeners(stop.signal, "abort").length];
-    const waited = s.wait(stop.signal, (line) => lines.push(line));
+    const waited = s.wait(first, stop.signal, (line) => lines.push(line));
     await vi.advanceTimersByTimeAsync(1_000);
     stop.abort();
     expect(await waited).toBeUndefined();
@@ -412,12 +413,13 @@ describe("waitForBackground", () => {
     expect(lines).toEqual([]);
   });
 
-  it("stops at a Stop hook's continue: false on the first turn: the CLI waits for nothing, closes the list, exit 1", async () => {
+  it("stops at a Stop hook's continue: false on the first turn: returns its result at once, the command stopped, exit 1", async () => {
     const s = await setup([started("c1", "npm run dev"), reply("Started it.")], { stopWhen: () => process.execPath }); // a file that exists: every turn stops
     const stop = new AbortController();
-    const ended = await s.first(stop.signal);
-    expect(ended).toEqual({ stopped: "enough" });
-    s.tasks.close(); // what the CLI does when the first turn ended the run (cli.tsx)
+    const first = await s.first(stop.signal);
+    expect(first).toEqual({ stopped: "enough" });
+    const ended = await s.wait(first, stop.signal);
+    expect(ended).toBe(first);
     expect(s.runs[0]!.stopped).toBe(true);
     expect(s.lead.seen).toHaveLength(2);
     expect(s.exit(stop.signal, ended)).toBe(1);
@@ -426,8 +428,9 @@ describe("waitForBackground", () => {
   it("stops at a Stop hook's continue: false on a later turn, returning that turn's result, the other command stopped", async () => {
     const s = await setup([both("node a.js", "npm run dev"), reply("Started both."), reply("a ended.")], { stopWhen: (root) => path.join(root, "stop-now") });
     const stop = new AbortController();
-    expect(await s.first(stop.signal)).toBeUndefined();
-    const waited = s.wait(stop.signal);
+    const first = await s.first(stop.signal);
+    expect(first).toBeUndefined();
+    const waited = s.wait(first, stop.signal);
     writeFileSync(path.join(s.ctx.root, "stop-now"), "");
     s.runs[0]!.end(ok(""));
     const ended = await waited;
@@ -441,8 +444,9 @@ describe("waitForBackground", () => {
   it("stops at a failed model call on the first turn: the command stopped, no turn, exit 1", async () => {
     const s = await setup([started("c1", "npm run dev"), new Error("the model is down")]);
     const stop = new AbortController();
-    expect(await s.first(stop.signal)).toBeUndefined();
-    expect(await s.wait(stop.signal)).toBeUndefined();
+    const first = await s.first(stop.signal);
+    expect(first).toBeUndefined();
+    expect(await s.wait(first, stop.signal)).toBeUndefined();
     expect(s.runs[0]!.stopped).toBe(true);
     expect(s.lead.seen).toHaveLength(2);
     expect(s.exit(stop.signal, undefined)).toBe(1);
@@ -451,8 +455,8 @@ describe("waitForBackground", () => {
   it("stops at a failed model call on a later turn: the other command stopped, no more turns, exit 1", async () => {
     const s = await setup([both("node a.js", "npm run dev"), reply("Started both."), new Error("the model is down")]);
     const stop = new AbortController();
-    await s.first(stop.signal);
-    const waited = s.wait(stop.signal);
+    const first = await s.first(stop.signal);
+    const waited = s.wait(first, stop.signal);
     s.runs[0]!.end(ok(""));
     expect(await waited).toBeUndefined();
     expect(s.runs[1]!.stopped).toBe(true);
@@ -465,8 +469,8 @@ describe("waitForBackground", () => {
     onTestFinished(() => void vi.useRealTimers());
     const s = await setup([started("c1", "npm run dev"), reply("Started it."), reply("It was stopped.")], { limits: true });
     const stop = new AbortController();
-    await s.first(stop.signal);
-    const waited = s.wait(stop.signal);
+    const first = await s.first(stop.signal);
+    const waited = s.wait(first, stop.signal);
     await vi.advanceTimersByTimeAsync(HEADLESS_LIMIT);
     expect(await waited).toBeUndefined();
     expect(s.runs[0]!.stopped).toBe(true);
@@ -482,9 +486,9 @@ describe("waitForBackground", () => {
     const odd = "node a.js\u001b[2J";
     const s = await setup([both(odd, "npm run dev"), reply("Started both."), reply("Both ended.")]);
     const stop = new AbortController();
-    await s.first(stop.signal);
+    const first = await s.first(stop.signal);
     const lines: string[] = [];
-    const waited = s.wait(stop.signal, (line) => lines.push(line));
+    const waited = s.wait(first, stop.signal, (line) => lines.push(line));
     await vi.advanceTimersByTimeAsync(4_999);
     expect(lines).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
@@ -498,19 +502,35 @@ describe("waitForBackground", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("never writes the waiting line itself, so without a terminal (no waitingLine) none is said", async () => {
-    vi.useFakeTimers();
-    onTestFinished(() => void vi.useRealTimers());
-    const s = await setup([started("c1", "npm run dev"), reply("Started it.")]);
+  // A turn's message carrying t1's ending, as the session pushes it, before the model is asked.
+  const carriesT1 = (m: Message) => m.role === "user" && JSON.stringify(m).includes("Background command t1");
+
+  it("gives a command that ends during a later turn a turn of its own after it", async () => {
+    const s = await setup([both("node a.js", "node b.js"), reply("Started both."), reply("a ended."), reply("b ended.")]);
     const stop = new AbortController();
-    await s.first(stop.signal);
-    const written = vi.spyOn(process.stderr, "write");
-    onTestFinished(() => void written.mockRestore());
-    const waited = s.wait(stop.signal);
-    await vi.advanceTimersByTimeAsync(10_000);
-    stop.abort();
-    await waited;
-    expect(written).not.toHaveBeenCalled();
+    const first = await s.first(stop.signal);
+    s.bus.on("message", (m) => void (carriesT1(m) && s.runs[1]!.end(ok(""))));
+    const waited = s.wait(first, stop.signal);
+    s.runs[0]!.end(ok(""));
+    expect(await waited).toBeUndefined();
+    expect(s.answers).toEqual(["Started both.", "a ended.", "b ended."]);
+    expect(s.lead.seen).toHaveLength(4);
+    expect(s.sent(2)).not.toContain("Background command t2");
+    expect(s.sent(3)).toContain("Background command t2 (node b.js) ended with exit code 0, with no new output.");
+  });
+
+  it("stops at Ctrl-C during a later turn: the other command stopped, no further turn, exit 130", async () => {
+    const s = await setup([both("node a.js", "npm run dev"), reply("Started both."), reply("a ended."), reply("never asked")]);
+    const stop = new AbortController();
+    const first = await s.first(stop.signal);
+    s.bus.on("message", (m) => void (carriesT1(m) && stop.abort()));
+    const waited = s.wait(first, stop.signal);
+    s.runs[0]!.end(ok(""));
+    expect(await waited).toBeUndefined();
+    expect(s.runs[1]!.stopped).toBe(true);
+    expect(s.lead.seen).toHaveLength(3); // the stopped turn's own request, and none after it
+    expect(s.answers).not.toContain("never asked");
+    expect(s.exit(stop.signal, undefined)).toBe(128 + constants.signals.SIGINT);
   });
 });
 

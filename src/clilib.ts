@@ -270,25 +270,25 @@ const WAITING_LINE_MS = 5_000;
 // -p's wait after its first answer (background commands design, "With -p", "How the wait ends"; plan, choices 21 and 25):
 // while a background command runs or an ending waits, each ending gets a turn, its answer printed as the first's. It ends
 // once everything has ended, at Ctrl-C (`signal`), at a failed call (`failed`), or at a turn whose result ended the run,
-// which it returns. However it ends, what is left stops as the window's close stops it, unrecorded, so a resume says it
-// was not running (choice 29, the user's); its time limit's timer goes with it, so nothing holds the process open.
-// `waitingLine` is given only when stderr is a terminal: the line is said once, after 5 s of waiting.
+// which it returns; `first`, the first turn's result, returned at once when it ended the run. However it ends, what is
+// left stops as the window's close stops it, unrecorded, so a resume says it was not running (choice 29, the user's); its
+// time limit's timer goes with it, so nothing holds the process open. `waitingLine` is given only when stderr is a
+// terminal: the line is said once, after 5 s of waiting.
 export async function waitForBackground(
+  first: Ended | void,
   session: Session,
   tasks: Tasks,
   signal: AbortSignal,
   opts: { bus: Bus; failed: () => boolean; answer: (before: Message | undefined) => void; waitingLine?: (line: string) => void },
 ): Promise<Ended | void> {
   const running = () => tasks.all.filter((t): t is CommandTask => t.kind === "command" && t.state === "running");
+  const { waitingLine } = opts;
   let said = false;
   // Until the list changes or Ctrl-C, the waiting line's timer and both listeners gone either way.
   const change = () =>
     new Promise<void>((resolve) => {
-      const say = () => {
-        said = true;
-        opts.waitingLine!(`Waiting for background work to finish: ${running().map((t) => `${t.id} (${visible(headCommand(t.command))})`).join(", ")}`);
-      };
-      const timer = opts.waitingLine && !said ? setTimeout(say, WAITING_LINE_MS) : undefined;
+      const line = () => `Waiting for background work to finish: ${running().map((t) => `${t.id} (${visible(headCommand(t.command))})`).join(", ")}`;
+      const timer = waitingLine && !said ? setTimeout(() => ((said = true), waitingLine(line())), WAITING_LINE_MS) : undefined;
       const done = () => {
         clearTimeout(timer);
         opts.bus.off("tasks", done);
@@ -299,6 +299,7 @@ export async function waitForBackground(
       signal.addEventListener("abort", done);
     });
   try {
+    if (first) return first;
     while (!signal.aborted && !opts.failed() && (tasks.wakes() || running().length)) {
       if (!tasks.wakes()) {
         await change();
