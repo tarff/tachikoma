@@ -376,7 +376,7 @@ export const queue = (ui: UI, fns: Fns) => {
     if (verb === undefined) {
       if (!ui.tasks.all.length) return [gray("No subagents yet.")];
       const now = Date.now();
-      return [gray(`Subagents: ${ui.tasks.all.length}`), ...ui.tasks.all.flatMap((t) => taskRow(t, now)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
+      return [gray(`Subagents: ${ui.tasks.all.length}`), ...ui.tasks.all.flatMap((t) => taskRow(t, now, ui.run.options.names)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
     }
     if (verb === "stop" && !rest.length) {
       if (id === undefined) return [gray(ui.tasks.stop() ? "Stopped every subagent." : "No subagent is running.")];

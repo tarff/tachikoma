@@ -5,7 +5,7 @@ import { safeName } from "../mcp/config.js";
 import { SEARCH } from "../mcp/search.js";
 import type { Servers } from "../mcp/servers.js";
 import { type Shell, split } from "../safety/split.js";
-import { brief, callRow, describe, type Line, resultRow } from "./describe.js";
+import { brief, callRow, describe, type Line, type McpNames, resultRow, safeNames } from "./describe.js";
 import { elapsed } from "./WorkingLine.js";
 
 // Folded tool rows, as Claude Code's (release 8c plan, choice 65; Task 15): calls with no text between them that only
@@ -16,15 +16,22 @@ type Counted = "search" | "read" | "list" | "called" | "ran";
 export type Kind = Counted | "hidden" | "own";
 
 // What a run's calls are counted by: the asked calls (Session.asked), the shell the shell tool runs in (split.ts,
-// shellOf), and a server's name as its settings give it, from the name its tools carry.
+// shellOf), and an MCP call's server and tool as the server gives them, from its full name (choice 68).
 export interface FoldOptions {
   asked: ReadonlySet<string>;
   shell: Shell;
-  server: (safe: string) => string;
+  names: McpNames;
 }
 
-// A server's settings name from its safe one, or the safe one for a server no longer set up.
-export const serverNames = (servers?: Pick<Servers, "list">) => (safe: string) => servers?.list().find((s) => safeName(s.name) === safe)?.name ?? safe;
+// An MCP call's server and tool as the last offer gave its full name (release 8c plan, Task 18; choice 68); for a name no
+// longer offered, the server's settings name from its safe one, or the safe one for a server no longer set up, and the
+// tool part of the full name.
+export const mcpNames = (servers?: Pick<Servers, "list" | "owner">): McpNames => (full) => {
+  const owner = servers?.owner(full);
+  if (owner) return owner;
+  const { server: safe, tool } = safeNames(full);
+  return { server: servers?.list().find((s) => safeName(s.name) === safe)?.name ?? safe, tool };
+};
 
 // The shell lists (Task 15), Tachikoma's own, as Claude Code's could not be read; each shell's, PowerShell's in lower case,
 // as it takes its names in any. `git` is the same program in either, so it is read the same way in both.
@@ -117,18 +124,15 @@ export function kindOf(call: ToolCall, asked: ReadonlySet<string>, failed: boole
   return (typeof command === "string" && shellKinds(command, shell)) || ["own"];
 }
 
-// The server part of mcp__<server>__<tool>, which holds no "__" (config.ts).
-const safeOf = (name: string) => name.slice(5, name.indexOf("__", 5));
-
 // The row's words (choice 65): the kinds present, in Claude Code's order, joined by ", ", the first word capitalised;
 // null for a run with none to count.
-export function rowText(calls: readonly { call: ToolCall; kinds: Kind[] }[], server: (safe: string) => string): string | null {
+export function rowText(calls: readonly { call: ToolCall; kinds: Kind[] }[], names: McpNames): string | null {
   const n: Record<Exclude<Counted, "called">, number> = { search: 0, read: 0, list: 0, ran: 0 };
   const called = new Map<string, number>(); // in the order first called
   for (const { call, kinds } of calls) {
     for (const k of kinds) {
       if (k === "called") {
-        const name = visible(server(safeOf(call.name)));
+        const name = visible(names(call.name).server);
         called.set(name, (called.get(name) ?? 0) + 1);
       } else if (k !== "hidden" && k !== "own") n[k]++;
     }
@@ -155,13 +159,13 @@ export interface Fold {
   open: boolean;
 }
 
-// A folded row opened (full screen, a click): its calls' rows as they look unfolded, each of them holding the fold, so a
-// click on any closes it again. tool_search has no row.
-export const openRows = (fold: Fold): Line[] =>
+// A folded row opened (full screen, a click): its calls' rows as they look unfolded, an MCP call's by `names` (choice 68),
+// each of them holding the fold, so a click on any closes it again. tool_search has no row.
+export const openRows = (fold: Fold, names: McpNames): Line[] =>
   fold.calls.flatMap(({ call, kinds }) => {
     if (kinds[0] === "hidden") return [];
     const r = fold.results.get(call.id);
-    return [callRow(call), ...(r ? [r] : [])].map((l) => ({ ...l, fold }));
+    return [callRow(call, names), ...(r ? [r] : [])].map((l) => ({ ...l, fold }));
   });
 
 // The folded row's own line, which a closed fold goes back to.
@@ -178,14 +182,14 @@ export class OpenRun {
   // The calls of the latest reply with rows of their own, until its results come (question, `under`).
   #rowed = new Set<string>();
   #resulted = false;
-  // The live row (release 8c plan, choice 67; Task 17): its two lines as the run's calls last set them, the searches and
-  // shell commands started in the run, whether a search set the top line, and the latest shell call's start and end.
-  #top: ((now: number) => string) | null = null;
-  #under: (now: number) => string = () => "";
+  // The live row (release 8c plan, choice 67; Task 17): its two lines as the run's calls last set them, kept and cleared
+  // together (Task 18), the searches and shell commands started in the run, whether a search set the top line, and the
+  // run's calls started, each with its start and end, in the order they started.
+  #live: { top: (now: number) => string; under: (now: number) => string } | null = null;
   #searches = 0;
   #shells = 0;
   #searchTop = false;
-  #shell: { id: string; at: number; end?: number } | null = null;
+  #started = new Map<string, { at: number; end?: number }>();
 
   constructor(readonly options: FoldOptions) {}
 
@@ -202,7 +206,7 @@ export class OpenRun {
     this.#said.delete(c.id);
     if (this.own(c)) {
       this.#rowed.add(c.id);
-      return [...this.end(), callRow(c)];
+      return [...this.end(), callRow(c, this.options.names)];
     }
     // A new run starting says the failed rows waiting from a run said before it, as their calls ran first.
     if (!this.#run.length) this.#quiet();
@@ -229,7 +233,7 @@ export class OpenRun {
       this.#run.splice(i, 1);
       this.#results.delete(r.callId);
     }
-    this.#failed.push(callRow(call), resultRow(r));
+    this.#failed.push(callRow(call, this.options.names), resultRow(r));
     return [];
   }
 
@@ -248,9 +252,16 @@ export class OpenRun {
     if (i >= 0) {
       call = this.#run[i]!.call;
       const after = this.#run.slice(i + 1);
+      // Calls run out of order, so those after it that started already set the live row again, in the order they started
+      // (Task 17's quality review; Task 18).
+      const started = [...this.#started].filter(([later]) => after.some((c) => c.call.id === later));
       this.#run = this.#run.slice(0, i);
       lines = this.end();
       this.#run = after;
+      for (const [later, s] of started) {
+        this.start(later, s.at);
+        if (s.end !== undefined) this.finished(later, s.end);
+      }
     } else {
       // A call of a run said already, one running beside the others (a known limit): still counted in its row.
       call = fold!.calls.find((c) => c.call.id === id)!.call;
@@ -258,7 +269,7 @@ export class OpenRun {
     }
     const under = this.#rowed.size === 0;
     this.#rowed.add(id);
-    return { lines: [...lines, callRow(call)], under };
+    return { lines: [...lines, callRow(call, this.options.names)], under };
   }
 
   // The run said, as one row, and emptied, then the rows of its calls that failed meanwhile. A run of only tool_search has
@@ -270,7 +281,7 @@ export class OpenRun {
     this.#run = [];
     this.#results = new Map();
     for (const c of fold.calls) if (!fold.results.has(c.call.id)) this.#said.set(c.call.id, fold);
-    const text = rowText(fold.calls, this.options.server);
+    const text = rowText(fold.calls, this.options.names);
     if (text !== null) fold.text = text;
     return [...(text === null ? [] : [foldRow(fold)]), ...this.#failed.splice(0)];
   }
@@ -281,55 +292,56 @@ export class OpenRun {
   start(id: string, at: number): void {
     const c = this.#run.findLast((x) => x.call.id === id)?.call;
     if (!c || c.name === SEARCH) return;
+    const started: { at: number; end?: number } = { at };
+    this.#started.set(id, started);
     const detail = brief(c.name, c.input) ?? JSON.stringify(c.input);
     const s = (n: number) => (n === 1 ? "" : "s");
     if (c.name === "find_files" || c.name === "search_files") {
       const n = ++this.#searches;
-      if (this.#top === null || this.#searchTop) {
-        this.#top = () => `● Searching for ${n} pattern${s(n)}`;
+      const under = () => `  ⎿  "${detail}"`;
+      if (this.#live === null || this.#searchTop) {
+        this.#live = { top: () => `● Searching for ${n} pattern${s(n)}`, under };
         this.#searchTop = true;
-      }
-      this.#under = () => `  ⎿  "${detail}"`;
+      } else this.#live = { ...this.#live, under };
       return;
     }
     this.#searchTop = false;
     if (c.name === "shell") {
       const n = ++this.#shells;
-      const shell: { id: string; at: number; end?: number } = (this.#shell = { id, at });
       // The whole seconds since it started, until it ended, from 1 s, as the working line counts its own (WorkingLine.tsx).
       const time = (now: number) => {
-        const ms = (shell.end ?? now) - shell.at;
+        const ms = (started.end ?? now) - started.at;
         return ms < 1000 ? null : elapsed(ms);
       };
-      this.#top = (now) => `● Running ${n} shell command${s(n)}${time(now) === null ? "" : ` · ${time(now)}`}`;
-      this.#under = (now) => `  ⎿  $ ${detail}${time(now) === null ? "" : ` (${time(now)})`}`;
+      this.#live = {
+        top: (now) => `● Running ${n} shell command${s(n)}${time(now) === null ? "" : ` · ${time(now)}`}`,
+        under: (now) => `  ⎿  $ ${detail}${time(now) === null ? "" : ` (${time(now)})`}`,
+      };
     } else if (isMcp(c.name)) {
-      const safe = safeOf(c.name);
-      this.#top = () => `● Calling ${visible(this.options.server(safe))}`;
-      this.#under = () => `  ⎿  ${c.name.slice(`mcp__${safe}__`.length)}`;
-    } else {
-      this.#top = () => `● Reading ${detail}`;
-      this.#under = () => `  ⎿  ${detail}`;
-    }
+      // The server and the tool as the server gives them (choice 68).
+      const { server, tool } = this.options.names(c.name);
+      this.#live = { top: () => `● Calling ${visible(server)}`, under: () => `  ⎿  ${visible(tool)}` };
+    } else this.#live = { top: () => `● Reading ${detail}`, under: () => `  ⎿  ${detail}` };
   }
 
-  // A shell call ending stops its seconds.
+  // A call ending: a shell call's seconds stop.
   finished(id: string, at: number): void {
-    if (this.#shell?.id === id) this.#shell.end = at;
+    const started = this.#started.get(id);
+    if (started) started.end = at;
   }
 
   // The live row's two grey lines, while the run holds a call that set them; none otherwise.
   live(now: number): Line[] {
-    if (!this.#run.length || this.#top === null) return [];
-    return [this.#top(now), this.#under(now)].map((text) => ({ text, color: "gray", oneLine: true }));
+    if (!this.#run.length || this.#live === null) return [];
+    return [this.#live.top(now), this.#live.under(now)].map((text) => ({ text, color: "gray", oneLine: true }));
   }
 
   // The live row gone, as its run ends or a new one starts.
   #quiet(): void {
-    this.#top = null;
+    this.#live = null;
     this.#searches = this.#shells = 0;
     this.#searchTop = false;
-    this.#shell = null;
+    this.#started.clear();
   }
 }
 

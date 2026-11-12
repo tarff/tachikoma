@@ -676,7 +676,7 @@ export function App(props: AppProps) {
     detail: d !== null,
     hint: hintFor(1) !== null, // whether there is a hint does not depend on the rows left (usualHint)
     menu: menu ? menu.entries.length : null,
-    taskRows: (rows) => taskRows(ui.tasks.all, rows, ui.now),
+    taskRows: (rows) => taskRows(ui.tasks.all, rows, ui.now, ui.run.options.names),
     todoRows: (rows) => (!ui.todos.current.hidden && unfinished(ui.todos.current.items) ? todoRows(ui.todos.current.items, rows) : []),
     queued: ui.queue.current.length,
     // The sessions' list: its heading and a row each; /mcp's, its heading and a row for each server, or for each action

@@ -215,6 +215,12 @@ export class Servers {
     return offer;
   }
 
+  // The server and the tool's own name the last offer gave a full name, for the screen (release 8c plan, Task 18; choice
+  // 68); none for a name it did not give.
+  owner(full: string): { server: string; tool: string } | undefined {
+    return this.#offered.get(full);
+  }
+
   // An offered tool against its server now (design, finding 4): "restarted" when its connection is not the one that offered
   // it, "stopped" when its server no longer runs, "changed" when its name now gives another tool or another definition, or
   // its server's entry was removed or changed to one that does not start.

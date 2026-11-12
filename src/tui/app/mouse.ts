@@ -211,7 +211,7 @@ export const mouse = (ui: UI, fns: Fns) => {
     while (from > 0 && kept.lines[from - 1]!.fold === fold) from--;
     while (to < kept.lines.length && kept.lines[to]!.fold === fold) to++;
     fold.open = !fold.open;
-    const put = (fold.open ? openRows(fold) : [foldRow(fold)]).map(escaped);
+    const put = (fold.open ? openRows(fold, ui.run.options.names) : [foldRow(fold)]).map(escaped);
     kept.replace(from, to - from, put);
     const moved = (n: number) => (n >= to ? n + put.length - (to - from) : Math.min(n, from));
     const at = ui.view.current.at;

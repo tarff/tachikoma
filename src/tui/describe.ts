@@ -6,7 +6,7 @@ import { combine, hookName } from "../hooks/answer.js";
 import type { Event } from "../hooks/config.js";
 import type { Run } from "../hooks/hooks.js";
 import type { Ran } from "../hooks/run.js";
-import { outputFrom, tachikomaName } from "../hooks/tools.js";
+import { isMcp, outputFrom, tachikomaName } from "../hooks/tools.js";
 import type { Fold, OpenRun } from "./fold.js";
 import { marker } from "./pictures.js";
 
@@ -39,8 +39,24 @@ export function screen(l: Line): Line {
   return { text, ...(l.color === undefined ? {} : { color: l.color }), ...(l.oneLine ? { oneLine: true } : {}), ...(l.fold ? { fold: l.fold } : {}) };
 }
 
+// An MCP call's server and tool as the server gives them, by its full name (release 8c plan, Task 18; choice 68): the
+// window's from the names Servers offered (fold.ts, mcpNames); without them, the safe server and the full name's tool part.
+export type McpNames = (full: string) => { server: string; tool: string };
+export const safeNames: McpNames = (full) => {
+  const at = full.indexOf("__", 5); // the server part of mcp__<server>__<tool> holds no "__" (config.ts)
+  return { server: full.slice(5, at), tool: full.slice(at + 2) };
+};
+
+// A call's name on screen: an MCP call's server and tool, a space between, any other tool's own name. Hooks, saved
+// sessions, /export and the model keep the full name (choice 68).
+export function shownName(name: string, names: McpNames = safeNames): string {
+  if (!isMcp(name)) return name;
+  const { server, tool } = names(name);
+  return `${server} ${tool}`;
+}
+
 // A call's row and its result's, as the scrollback shows them unfolded (fold.ts opens a folded row into these).
-export const callRow = (p: ToolCall): Line => ({ text: `● ${p.name} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
+export const callRow = (p: ToolCall, names?: McpNames): Line => ({ text: `● ${shownName(p.name, names)} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
 export const resultRow = (p: ToolResult): Line => ({
   text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`,
   color: p.isError ? "red" : "gray",

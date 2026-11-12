@@ -15,7 +15,7 @@ import type { Line } from "../describe.js";
 import type { Detail } from "../DetailView.js";
 import { type Editor, empty } from "../editor.js";
 import type { Asked } from "../Field.js";
-import { OpenRun, serverNames } from "../fold.js";
+import { mcpNames, OpenRun } from "../fold.js";
 import type { History } from "../history.js";
 import { named } from "../keys.js";
 import type { Listing } from "../menus.js";
@@ -206,7 +206,7 @@ export function useAppState({
   const toolLine = useRef<string | null>(null);
   const answered = useRef(new Map<string, string | null>());
   // The lead's quiet calls not yet said, and the runs said, for their results (fold.ts; release 8c plan, Task 15).
-  const [run] = useState(() => new OpenRun({ asked: session.asked, shell: shell ?? shellOf("host"), server: serverNames(mcp?.servers) }));
+  const [run] = useState(() => new OpenRun({ asked: session.asked, shell: shell ?? shellOf("host"), names: mcpNames(mcp?.servers) }));
   // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
   const todos = useRef<{ items: TodoItem[]; hidden: boolean }>({ items: [], hidden: false });
   // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a

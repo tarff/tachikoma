@@ -137,6 +137,19 @@ describe("Servers: names", () => {
     expect(notes).toEqual(TEN.map((t) => `MCP server x_y: "${t}" was left out: its name mcp__x_y__${t} is already x.y's "${t}"`));
   });
 
+  // Release 8c plan, choice 68 and Task 18: the screen names an MCP call by the server and the tool's own name the last
+  // offer gave its full name; none for a name it did not give.
+  it("gives a full name's server and tool as the last offer gave them, none for a name not offered", async () => {
+    const { config, make } = await setup();
+    const servers = make([await config("x.y", { tools: [tool("foo.bar")] })]);
+    servers.startAll();
+    await servers.ready();
+    expect(servers.owner("mcp__x_y__foo_bar")).toBeUndefined(); // no offer yet
+    expect(names(every(servers))).toEqual(["mcp__x_y__foo_bar"]);
+    expect(servers.owner("mcp__x_y__foo_bar")).toEqual({ server: "x.y", tool: "foo.bar" });
+    expect(servers.owner("mcp__x_y__gone")).toBeUndefined();
+  });
+
   // Choice 7: a name already offered keeps its owner, so a late server never takes it, though its config comes first.
   it("keeps a name already offered for its owner when an earlier server is ready late", async () => {
     const { notes, config, make, gated } = await setup();

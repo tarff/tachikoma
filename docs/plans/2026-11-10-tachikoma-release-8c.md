@@ -771,6 +771,15 @@ search, always on", "Own lookup tool, every provider")
     - **Unchanged:** hooks, saved sessions, `/export` files and the model keep the full
       `mcp__<server>__<tool>` name, which hooks match on; the permission question already reads
       `Allow tradingview: chart_set_symbol {...}?`.
+    - **As built** (Task 18, 2026-11-12):
+      - The names come from `Servers.owner`, the server and tool the last offer gave a full name; the
+        window's open run carries the lookup (`FoldOptions.names`, which replaces `server`), and the
+        panel, `/tasks` and a click that opens a row use the run's. A conversation resumed at the
+        launch is drawn before any offer, so its rows take the fallback: a tool whose name held `.`
+        reads with `_` there (`foo_bar`); rows said after the next request read `foo.bar`.
+      - Not in the rows above, so still the full name: the tool line under the prompt
+        (`✓ mcp__<server>__<tool> ×1`) and Ctrl+O's and `/tasks t3`'s full record, which `/export`'s
+        text gives.
 
 ## Lines this plan adds
 

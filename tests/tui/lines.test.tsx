@@ -121,6 +121,15 @@ describe("taskRows", () => {
     expect(shown(tasks, 1)).toEqual(["  +3 more"]);
   });
 
+  // Release 8c plan, choice 68 and Task 18: an MCP call names its server and its tool as the server gives them, escaped;
+  // without the window's names, the safe server and the full name's tool part.
+  it("names a latest MCP call by its server and tool as the server gives them", () => {
+    const mcp = task({ lastTool: { name: "mcp__my_tv__foo_bar", input: { x: 1 } } });
+    const names = (full: string) => (full === "mcp__my_tv__foo_bar" ? { server: "my.tv", tool: "foo\u0007.bar" } : { server: "?", tool: "?" });
+    expect(taskRows([mcp], 10, now, names)[1]!.text).toBe("⎿ claude-haiku-5-5 · 12s · ↓ 1.2k tokens · $0.01 · my.tv foo\\u0007.bar");
+    expect(taskRows([mcp], 10, now)[1]!.text).toBe("⎿ claude-haiku-5-5 · 12s · ↓ 1.2k tokens · $0.01 · my_tv foo_bar");
+  });
+
   it("escapes what the model wrote, and keeps a description to its first line", () => {
     expect(shown([task({ description: "a\u001b[2Jb\nsecond line", lastTool: { name: "read_file", input: { path: "x\ry" } } })])).toEqual(["◐ t2 a\\u001b[2Jb", "  ⎿ claude-haiku-5-5 · 12s · ↓ 1.2k tokens · $0.01 · read_file x␍y"]);
   });

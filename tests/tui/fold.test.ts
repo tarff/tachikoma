@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Message, ToolCall, ToolResult } from "../../src/core/types.js";
+import type { Servers } from "../../src/mcp/servers.js";
 import type { Line } from "../../src/tui/describe.js";
-import { describe as lines } from "../../src/tui/describe.js";
-import { conversationLines, kindOf, OpenRun, openRows, rowText, shellKinds } from "../../src/tui/fold.js";
+import { callRow, describe as lines } from "../../src/tui/describe.js";
+import { conversationLines, kindOf, mcpNames, OpenRun, openRows, rowText, shellKinds } from "../../src/tui/fold.js";
 
 // Release 8c plan, choice 65 and Task 15: a run of quiet tool calls is one grey row of counts, as Claude Code's is.
 const call = (id: string, name: string, input: unknown): ToolCall => ({ type: "tool_call", id, name, input });
@@ -13,11 +14,16 @@ const read = (id: string, path = "a.txt") => call(id, "read_file", { path });
 const reply = (...parts: Message["parts"]): Message => ({ role: "assistant", parts });
 const results = (...parts: Message["parts"]): Message => ({ role: "user", parts });
 const text = (t: string) => ({ type: "text" as const, text: t });
-// The settings' names of the servers, by their safe names.
-const NAMES: Record<string, string> = { plugin_mempalace_mempalace: "plugin:mempalace:mempalace" };
-const opts = (asked: string[] = [], shell: "bash" | "powershell" = "bash") => ({ asked: new Set(asked), shell, server: (safe: string) => NAMES[safe] ?? safe });
+// The servers as the window knows them (release 8c plan, choice 68): the names the last offer gave, each with its server
+// and the tool's own name, and the settings' servers, by whose safe names a name no longer offered finds its server.
+const OFFERED: Record<string, { server: string; tool: string }> = {
+  mcp__tradingview__chart_set_symbol: { server: "tradingview", tool: "chart_set_symbol" },
+  mcp__my_tv__foo_bar: { server: "my.tv", tool: "foo.bar" },
+};
+const servers = { list: () => [{ name: "plugin:mempalace:mempalace" }], owner: (full: string) => OFFERED[full] } as unknown as Pick<Servers, "list" | "owner">;
+const opts = (asked: string[] = [], shell: "bash" | "powershell" = "bash") => ({ asked: new Set(asked), shell, names: mcpNames(servers) });
 const words = (calls: ToolCall[], shell: "bash" | "powershell" = "bash") =>
-  rowText(calls.map((c) => ({ call: c, kinds: kindOf(c, new Set(), false, shell) })), opts().server);
+  rowText(calls.map((c) => ({ call: c, kinds: kindOf(c, new Set(), false, shell) })), opts().names);
 const gray = (t: string) => ({ text: t, color: "gray", oneLine: true });
 
 describe("folded tool rows", () => {
@@ -46,7 +52,7 @@ describe("folded tool rows", () => {
 
   it("names a server escaped, as it shows a server's name anywhere", () => {
     expect(words([call("m", "mcp__b_d__x", {})])).toBe("Called b_d"); // a server no longer set up: its safe name
-    const run = new OpenRun({ ...opts(), server: () => "bad\u001b[2Jname" });
+    const run = new OpenRun({ ...opts(), names: () => ({ server: "bad\u001b[2Jname", tool: "y" }) });
     run.call(call("m", "mcp__x__y", {}));
     expect(run.end()[0]!.text).toBe("Called bad\\u001b[2Jname");
   });
@@ -168,7 +174,7 @@ describe("the open run", () => {
     expect(lines(results(ok("r1"), ok("r2")), undefined, run)).toEqual([]);
     const said = lines(reply(text("Both say hi.")), undefined, run);
     expect(said.map(({ fold, ...l }) => l)).toEqual([gray("Read 2 files"), { text: "Both say hi." }]);
-    const rows = openRows(said[0]!.fold!);
+    const rows = openRows(said[0]!.fold!, opts().names);
     expect(rows.every((r) => r.fold === said[0]!.fold)).toBe(true); // a click on any of them closes it
     expect(rows.map(({ fold, ...l }) => l)).toEqual([
       { text: "● read_file a.txt", color: "yellow", oneLine: true },
@@ -242,7 +248,7 @@ describe("the open run", () => {
     lines(reply(read("r"), call("m", "mcp__s__echo", { text: "hi" }), read("r2", "b.txt")), undefined, run);
     const asked = run.question("m");
     expect(asked.under).toBe(true);
-    expect(asked.lines.map(({ fold, ...l }) => l)).toEqual([gray("Read 1 file"), { text: '● mcp__s__echo {"text":"hi"}', color: "yellow", oneLine: true }]);
+    expect(asked.lines.map(({ fold, ...l }) => l)).toEqual([gray("Read 1 file"), { text: '● s echo {"text":"hi"}', color: "yellow", oneLine: true }]);
     expect(lines(results(ok("r"), ok("m"), ok("r2")), undefined, run)).toEqual([gray("  ⎿ ok")]);
     expect(run.question("m")).toEqual({ lines: [], under: false }); // its row is said
     expect(run.end().map(({ fold, ...l }) => l)).toEqual([gray("Read 1 file")]); // b.txt
@@ -275,7 +281,7 @@ describe("the open run", () => {
       reply(text("done")),
     ];
     const plain = (ls: Line[]) => ls.map(({ fold, ...l }) => l.text);
-    expect(plain(conversationLines(history, opts(["m"])))).toEqual(["> go", "Read 1 file", "● mcp__s__echo {}", "  ⎿ ok", "Read 1 file", "done"]);
+    expect(plain(conversationLines(history, opts(["m"])))).toEqual(["> go", "Read 1 file", "● s echo {}", "  ⎿ ok", "Read 1 file", "done"]);
     // A transcript from before the asked mark folds it (a known limit).
     expect(plain(conversationLines(history, opts()))).toEqual(["> go", "Read 2 files, called s", "done"]);
   });
@@ -290,16 +296,16 @@ describe("the open run's live row", () => {
     const tv = call("m", "mcp__tradingview__quote_get", { symbol: "X" });
     const find = call("f", "find_files", { pattern: "*.ts" });
     const grep = call("g", "search_files", { pattern: "endRun" });
-    lines(reply(grep, find, read("r", "src\tui\fold.ts"), call("s", "search_files", { pattern: "x" }), tv, sh("c", "git status\necho more")), undefined, run);
+    lines(reply(grep, find, read("r", "src\\tui\\fold.ts"), call("s", "search_files", { pattern: "x" }), tv, sh("c", "git status\necho more")), undefined, run);
     expect(run.live(0)).toEqual([]); // no call has started
     run.start("g", 0);
     expect(run.live(0)).toEqual([gray("● Searching for 1 pattern"), gray('  ⎿  "endRun"')]);
     run.start("f", 0);
     expect(texts(run.live(0))).toEqual(["● Searching for 2 patterns", '  ⎿  "*.ts"']);
     run.start("r", 0);
-    expect(texts(run.live(0))).toEqual(["● Reading src\tui\fold.ts", "  ⎿  src\tui\fold.ts"]);
+    expect(texts(run.live(0))).toEqual(["● Reading src\\tui\\fold.ts", "  ⎿  src\\tui\\fold.ts"]);
     run.start("s", 0); // a search after a read leaves it on top
-    expect(texts(run.live(0))).toEqual(["● Reading src\tui\fold.ts", '  ⎿  "x"']);
+    expect(texts(run.live(0))).toEqual(["● Reading src\\tui\\fold.ts", '  ⎿  "x"']);
     run.start("m", 0);
     expect(texts(run.live(0))).toEqual(["● Calling tradingview", "  ⎿  quote_get"]);
     run.start("c", 1_000); // the command's first line only; its seconds from 1 s
@@ -356,9 +362,68 @@ describe("the open run's live row", () => {
     lines(reply(read("r"), call("m", "mcp__s__echo", {}), read("r2", "b.txt")), undefined, run);
     run.start("r", 0);
     run.start("m", 0);
-    expect(texts(run.question("m").lines)).toEqual(["Read 1 file", "● mcp__s__echo {}"]);
+    expect(texts(run.question("m").lines)).toEqual(["Read 1 file", "● s echo {}"]);
     expect(run.live(0)).toEqual([]);
     run.start("r2", 0);
     expect(texts(run.live(0))).toEqual(["● Reading b.txt", "  ⎿  b.txt"]);
+  });
+
+  // Task 17's quality review (release 8c plan, Task 18): calls can run out of order, so one after the asked call may have
+  // started before its question; once the question ends the run, the calls left in it set the live row again, a shell's
+  // seconds stopped where it ended.
+  it("sets the live row again from the calls after an asked one that started before its question", () => {
+    const run = new OpenRun(opts());
+    lines(reply(read("r"), call("m", "mcp__s__echo", {}), sh("c", "git status"), read("r2", "b.txt")), undefined, run);
+    run.start("r", 0);
+    run.start("c", 1_000);
+    run.finished("c", 3_500);
+    run.start("m", 4_000);
+    expect(texts(run.question("m").lines)).toEqual(["Read 1 file", "● s echo {}"]);
+    expect(texts(run.live(10_000))).toEqual(["● Running 1 shell command · 2s", "  ⎿  $ git status (2s)"]);
+    run.start("r2", 10_000);
+    expect(texts(run.live(10_000))).toEqual(["● Reading b.txt", "  ⎿  b.txt"]);
+    expect(texts(run.end())).toEqual(["Read 1 file, ran 1 shell command"]);
+  });
+});
+
+// Release 8c plan, choice 68 and Task 18: an MCP call on screen names its server and its tool as the server gives them, not
+// its full mcp__<server>__<tool> name, which hooks, saved sessions, /export and the model keep.
+describe("an MCP call's names on screen", () => {
+  const texts = (ls: Line[]) => ls.map((l) => l.text);
+  const yellow = (t: string) => ({ text: t, color: "yellow", oneLine: true });
+  const tv = call("m", "mcp__tradingview__chart_set_symbol", { symbol: "BTCUSDT" });
+  const dotted = call("d", "mcp__my_tv__foo_bar", { x: 1 }); // a server and a tool whose names held "."
+
+  it("names the server and the tool on the call's own row, the input as JSON", () => {
+    const names = opts().names;
+    expect(callRow(tv, names)).toEqual(yellow('● tradingview chart_set_symbol {"symbol":"BTCUSDT"}'));
+    expect(callRow(dotted, names)).toEqual(yellow('● my.tv foo.bar {"x":1}'));
+    const run = new OpenRun(opts());
+    expect(texts(lines(reply(read("r"), tv), undefined, run))).toEqual([]);
+    expect(texts(run.question("m").lines)).toEqual(["Read 1 file", '● tradingview chart_set_symbol {"symbol":"BTCUSDT"}']);
+  });
+
+  it("names them on the rows of a folded row clicked open, and on the live row's ⎿ line", () => {
+    const run = new OpenRun(opts());
+    lines(reply(tv, dotted), undefined, run);
+    run.start("m", 0);
+    expect(texts(run.live(0))).toEqual(["● Calling tradingview", "  ⎿  chart_set_symbol"]);
+    run.start("d", 0);
+    expect(texts(run.live(0))).toEqual(["● Calling my.tv", "  ⎿  foo.bar"]);
+    lines(results(ok("m"), ok("d")), undefined, run);
+    const [row] = run.end();
+    expect(row!.text).toBe("Called tradingview, called my.tv");
+    expect(texts(openRows(row!.fold!, opts().names))).toEqual(['● tradingview chart_set_symbol {"symbol":"BTCUSDT"}', "  ⎿ ok", '● my.tv foo.bar {"x":1}', "  ⎿ ok"]);
+  });
+
+  // A name no longer offered (a resumed session after the server changed or went): the server's settings name by its safe
+  // one, else the safe one, and the tool part of the full name.
+  it("falls back for a name no longer offered to the settings' server, else the safe one, and the full name's tool part", () => {
+    const names = mcpNames(servers);
+    expect(names("mcp__plugin_mempalace_mempalace__mempalace_search")).toEqual({ server: "plugin:mempalace:mempalace", tool: "mempalace_search" });
+    expect(names("mcp__b_d__x_y")).toEqual({ server: "b_d", tool: "x_y" });
+    expect(names("mcp__my_tv__gone")).toEqual({ server: "my_tv", tool: "gone" });
+    expect(mcpNames()("mcp__a__b__c")).toEqual({ server: "a", tool: "b__c" }); // no servers at all
+    expect(callRow(call("m", "mcp__b_d__x_y", {}))).toEqual(yellow("● b_d x_y {}")); // describe's rows without the window's names
   });
 });

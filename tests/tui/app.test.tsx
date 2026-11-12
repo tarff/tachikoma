@@ -51,14 +51,13 @@ import { readSettings, type Settings, settingsDir, shownFile } from "../../src/s
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
-import { conversationLines } from "../../src/tui/fold.js";
+import { conversationLines, mcpNames } from "../../src/tui/fold.js";
 import { mcpRow } from "../../src/tui/McpList.js";
 import { Pictures, type Read } from "../../src/tui/pictures.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
-import { SPIN_MS } from "../../src/tui/WorkingLine.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
 
@@ -383,7 +382,7 @@ describe("App", () => {
       { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "the notes", isError: false }] },
       { role: "assistant", parts: [{ type: "text", text: "They say hello." }] },
     ];
-    const folded = { asked: new Set<string>(), shell: "powershell" as const, server: (safe: string) => safe };
+    const folded = { asked: new Set<string>(), shell: "powershell" as const, names: mcpNames() };
     const { app } = await mount([], { intro: [...conversationLines(history, folded), { text: "Resumed: read the notes.", color: "gray" }] });
     const frame = app.lastFrame()!;
     expect(frame).toMatch(/^> read the notes\nRead 1 file\nThey say hello\.\nResumed: read the notes\.\n/);
@@ -2279,7 +2278,7 @@ describe("App's folded tool rows", () => {
     const { file, pictures } = sessionPaths(sessions, session.id);
     const saved = readTranscript(file, pictures);
     if ("problem" in saved) throw new Error(saved.problem);
-    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", server: (safe) => safe });
+    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames() });
     expect(resumed.map((l) => l.text)).toEqual(["> look", "Read 1 file, ran 1 shell command", "done"]);
   });
 
@@ -2340,14 +2339,6 @@ describe("App's live folded row", () => {
     return { executor, end: () => end() };
   };
   const both = (...calls: Turn[]): Turn => ({ parts: calls.flatMap((c) => c.parts), usage });
-  // The fake clock moved on by `ms`, a working line's spin at a time, the screen drawn after each: moved on in one go, the
-  // screen drew only the first spins' time (seen in this test).
-  const spin = async (ms: number) => {
-    for (let t = 0; t < ms; t += SPIN_MS) {
-      vi.advanceTimersByTime(SPIN_MS);
-      await tick();
-    }
-  };
 
   it.each([true, false])("draws the run's live row as its calls go, then says the finished row once at the text (full screen: %s)", async (full) => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
@@ -2367,9 +2358,14 @@ describe("App's live folded row", () => {
         lead.answer(both(callTool("c2", "find_files", { pattern: "*.txt" }), callTool("c3", "shell", { command: "git status\ngit log" })));
         await until(app, "$ git status");
         expect(live(app, full)).toEqual(["● Running 1 shell command", "  ⎿  $ git status", working]);
-        await spin(1_000);
+        // The fake clock moved in one step 40 ms past each second (release 8c plan, Task 18): the live row is drawn by the
+        // working line's redraw, every 80 ms (SPIN_MS), which last fired before a step's end, so a step to the second itself
+        // left the screen showing under it.
+        vi.advanceTimersByTime(1_040);
+        await tick();
         expect(live(app, full)).toEqual(["● Running 1 shell command · 1s", "  ⎿  $ git status (1s)", working]);
-        await spin(2_000);
+        vi.advanceTimersByTime(2_000);
+        await tick();
         expect(live(app, full)).toEqual(["● Running 1 shell command · 3s", "  ⎿  $ git status (3s)", working]);
         expect(app.lastFrame()).not.toContain("Searched for"); // nothing said until the run ends
         shell.end();
@@ -10762,7 +10758,7 @@ describe("App's MCP", () => {
       const r = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
       return r.slice(r.indexOf("> go"));
     };
-    expect(rows(first.app).slice(0, 6)).toEqual(["> go", "Read 1 file", '● mcp__s__echo {"text":"hi"}', "  ⎿ You allowed this.", "  ⎿ ok", "done"]);
+    expect(rows(first.app).slice(0, 6)).toEqual(["> go", "Read 1 file", '● s echo {"text":"hi"}', "  ⎿ You allowed this.", "  ⎿ ok", "done"]);
     const file = sessionPaths(sessions, first.session.id).file;
     first.app.unmount();
     // Resumed, the asked line keeps its row; the answer line was the window's, not the conversation's.
@@ -10775,11 +10771,30 @@ describe("App's MCP", () => {
       return m;
     };
     const again = await resumed();
-    expect(rows(again.app).slice(0, 5)).toEqual(["> go", "Read 1 file", '● mcp__s__echo {"text":"hi"}', "  ⎿ ok", "done"]);
+    expect(rows(again.app).slice(0, 5)).toEqual(["> go", "Read 1 file", '● s echo {"text":"hi"}', "  ⎿ ok", "done"]);
     again.app.unmount();
     writeFileSync(file, readFileSync(file, "utf8").split("\n").filter((l) => !l.includes('"t":"asked"')).join("\n"));
     const before = await resumed();
     expect(rows(before.app).slice(0, 3)).toEqual(["> go", "Read 1 file, called s", "done"]);
+  });
+
+  // Release 8c plan, choice 68 and Task 18: an MCP call's row names its server and its tool as the server gives them, as
+  // the request offered them, a server and a tool whose names held "." among them; the saved session keeps the full name.
+  it("names an MCP call's server and tool on its row as the server gives them, the saved session keeping the full name", async () => {
+    const { config, servers } = await mcpSetup();
+    const results = { "foo.bar": { content: [{ type: "text", text: "set" }] } };
+    const c = await config("my.s", { tools: [tool("foo.bar")], results }, { safe: "my_s", alwaysLoad: true });
+    const { app, mcp, session, sessions } = await mount([callTool("c1", "mcp__my_s__foo_bar", { x: 1 }), reply("finished")], { mcp: servers([c]), save: true });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["my.s ready"]));
+    await type(app, "go");
+    await soon(() => expect(flat(app)).toContain('Allow my.s: foo.bar {"x":1}?'));
+    const r = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
+    expect(r.slice(r.indexOf("> go"), r.indexOf("> go") + 2)).toEqual(["> go", '● my.s foo.bar {"x":1}']);
+    await press(app, "y");
+    await shows(app, "finished");
+    const done = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
+    expect(done.slice(done.indexOf("> go"), done.indexOf("finished") + 1)).toEqual(["> go", '● my.s foo.bar {"x":1}', "  ⎿ You allowed this.", "  ⎿ ok", "finished"]);
+    expect(readFileSync(sessionPaths(sessions, session.id).file, "utf8")).toContain('"name":"mcp__my_s__foo_bar"');
   });
 
   // Release 8c plan, Task 11: Sign in and Sign out from /mcp, on the fake sign-in service of tests/mcp/fake.ts, the browser

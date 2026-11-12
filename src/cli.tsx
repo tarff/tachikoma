@@ -91,7 +91,7 @@ import { App } from "./tui/App.js";
 import { NOT_GONE } from "./tui/app/constants.js";
 import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
-import { conversationLines, serverNames } from "./tui/fold.js";
+import { conversationLines, mcpNames } from "./tui/fold.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
 import { programRunning } from "./tui/owner.js";
@@ -884,7 +884,7 @@ if (parsed.print !== undefined) {
       // Task 6), its tool rows folded as they were live (release 8c plan, Task 15).
       intro={[
         ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
-        ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, server: serverNames(servers) }),
+        ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers) }),
         ...said.map((l) => ({ ...l, color: "gray" as const })),
       ]}
       pictures={pictures}
