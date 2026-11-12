@@ -163,7 +163,9 @@ export interface Read {
   name?: string;
   firstPrompt?: string;
   damaged: number;
-  unfinished: { id: string; description: string }[];
+  // The subagents, and the background commands, `kind: "command"`, that had not ended when the session did (background
+  // commands plan, choice 15).
+  unfinished: ({ kind?: undefined; id: string; description: string } | { kind: "command"; id: string; command: string })[];
   // From the whole file, before and after its shortenings (release 8a plan, choice 6).
   prompts: string[];
   calls: { name: string; input: unknown }[];
@@ -226,6 +228,8 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     const prompts: string[] = [];
     const calls: { name: string; input: unknown }[] = [];
     const subagents: Extract<Line, { t: "subagent" }>[] = [];
+    const commands: Extract<Line, { t: "command" }>[] = [];
+    const ended = new Set<string>(); // the commands with a command-ended line
     const used: number[] = [];
     const said = lines.flatMap((l) => (l.t === "message" ? [l.message] : []));
     // Each rewrite a PreToolUse hook made, by its call's id, under the message it follows, its call's reply, so the record
@@ -263,12 +267,16 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       if (l.t === "asked") asked.add(l.id);
       if (l.t === "message") for (const p of l.message.parts) if (p.type === "tool_call") asked.delete(p.id);
       if (l.t === "subagent") subagents.push(l);
+      if (l.t === "command") commands.push(l);
+      if (l.t === "command-ended") ended.add(l.id);
       if ("message" in l) for (const p of l.message.parts) if (p.type === "image") used.push(p.id);
     }
     const subagentsDir = pathsOf(file).subagents;
-    // The numbers to hand out next follow every one used, in a line or by a file whose line a crash lost (choices 4, 5).
+    // The numbers to hand out next follow every one used, in a line or by a file whose line a crash lost (choices 4, 5);
+    // a background command's id too, as commands share the ids with subagents (background commands plan, choice 15).
     const nextPicture = Math.max(0, ...used, ...numbered(pictures, /^(\d+)\.(png|jpg|gif|webp)$/)) + 1;
-    const nextTask = Math.max(0, ...subagents.map((s) => Number(/^t(\d+)$/.exec(s.id)?.[1] ?? 0)), ...numbered(subagentsDir, /^t(\d+)\.jsonl$/)) + 1;
+    const ids = [...subagents, ...commands].map((s) => Number(/^t(\d+)$/.exec(s.id)?.[1] ?? 0));
+    const nextTask = Math.max(0, ...ids, ...numbered(subagentsDir, /^t(\d+)\.jsonl$/)) + 1;
     // Each reply with the tools and system prompt it was saved under; pair() keeps a reply as the same object.
     const restored = history.map((h) => ({ m: restore(h.m, pictures), under: madeUnder(h.system, h.tools) }));
     const savedUnder = new Map(restored.map((h) => [h.m, h]));
@@ -286,8 +294,12 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       name,
       firstPrompt: prompts[0],
       damaged,
-      // A subagent's file is named after its id (release 8a plan, Task 5: `<id>/subagents/<tN>.jsonl`).
-      unfinished: subagents.filter((s) => !finished(path.join(subagentsDir, `${s.id}.jsonl`))).map(({ id, description }) => ({ id, description })),
+      // A subagent's file is named after its id (release 8a plan, Task 5: `<id>/subagents/<tN>.jsonl`); a command's ending
+      // is a line in this file (background commands plan, choice 15).
+      unfinished: [
+        ...subagents.filter((s) => !finished(path.join(subagentsDir, `${s.id}.jsonl`))).map(({ id, description }) => ({ id, description })),
+        ...commands.filter((c) => !ended.has(c.id)).map(({ id, command }) => ({ kind: "command" as const, id, command })),
+      ],
       prompts,
       calls,
       nextPicture,

@@ -9,6 +9,7 @@ import { projectFile } from "../src/core/datadir.js";
 import { readInstructions } from "../src/core/instructions.js";
 import { PermissionGate } from "../src/core/permissions.js";
 import { listSessions, openSession, sessionsDir } from "../src/core/sessions.js";
+import { Tasks } from "../src/core/tasks.js";
 import type { Message, ToolSpec } from "../src/core/types.js";
 import type { ExecResult, Executor } from "../src/exec/executor.js";
 import { CommandLog } from "../src/exec/log.js";
@@ -52,8 +53,9 @@ import {
   systemAgain,
   WindowSessions,
 } from "../src/clilib.js";
+import { shellTools } from "../src/tools/commands.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
-import { FakeProvider, removeTree, tempContext } from "./helpers.js";
+import { FakeProvider, removeTree, standInRun, tempContext } from "./helpers.js";
 
 describe("the instruction files on screen", () => {
   const home = path.resolve("/home/me");
@@ -957,6 +959,94 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       o.reported();
       expect(readdirSync(dir)).not.toContain("strange");
       expect(readdirSync(dir).filter((n) => n.startsWith("planted"))).toEqual([]);
+    });
+
+    // Background commands plan, choice 15 (design, "Resume"): a command that had not ended is reported once, as an
+    // unfinished subagent is, its `command-ended` line written into the session's own transcript once it has been told.
+    describe("a background command that had not ended", () => {
+      const command = (id: string, text: string) => ({ t: "command", at, id, command: text });
+      const notEnded = (id: string, text: string) => `Command ${id} (${text}) had not ended when the session ended; it is not running in this session.`;
+      const endings = (file: string) => lines(file).filter((l) => l.t === "command-ended");
+
+      it("is told the model once, cut as a first line cuts a command, and one that ended is not", () => {
+        const long = "x".repeat(1_200);
+        const file = saved(dir, "running", [
+          ...talk("running", "go"),
+          command("t1", "npm test"),
+          { t: "command-ended", at, id: "t1", state: "done" },
+          command("t2", "npm run dev"),
+          command("t3", long),
+        ]);
+        const o = open("running");
+        expect(o.lost).toEqual([notEnded("t2", "npm run dev"), notEnded("t3", `${"x".repeat(1_000)}… [+200 chars]`)]);
+        expect(o.conversation.nextTask).toBe(4);
+        // Not told yet: a resume left before the next request reports them again.
+        o.release();
+        const again = open("running");
+        expect(again.lost).toHaveLength(2);
+        again.reported();
+        expect(endings(file)).toMatchObject([{ id: "t1", state: "done" }, { id: "t2", state: "lost" }, { id: "t3", state: "lost" }]);
+        again.release();
+        expect(open("running").lost).toEqual([]);
+      });
+
+      // As the subagents' path writes only an id Tasks gives (resumed's reported).
+      it("writes no ending line for an id Tasks never gives", () => {
+        const file = saved(dir, "oddid", [...talk("oddid", "go"), command("odd", "npm run dev")]);
+        open("oddid").reported();
+        expect(endings(file)).toEqual([]);
+      });
+
+      // --fork-session's copy holds the command line, so it is told there once; the original keeps its own to tell.
+      it("is told once in a --fork-session copy, which marks it there and not in the original", () => {
+        const original = saved(dir, "forkcmd", [...talk("forkcmd", "go"), command("t1", "npm run dev")]);
+        const fork = open("forkcmd", { fork: true });
+        expect(fork.lost).toEqual([notEnded("t1", "npm run dev")]);
+        fork.reported();
+        expect(endings(fork.conversation.transcript!.file)).toMatchObject([{ id: "t1", state: "lost" }]);
+        fork.release();
+        expect(open(fork.conversation.id).lost).toEqual([]);
+        expect(endings(original)).toEqual([]);
+        expect(open("forkcmd").lost).toEqual([notEnded("t1", "npm run dev")]);
+      });
+
+      // /branch's copy, as WindowSessions hands its lost lines out.
+      it("is told once in /branch's copy, which marks it there and not in the original", () => {
+        const original = saved(dir, "branchcmd", [...talk("branchcmd", "go"), command("t1", "npm run dev")]);
+        const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, SAVED);
+        onTestFinished(() => w.release());
+        const next = w.branch("branchcmd", "fake:a", "a branch");
+        if ("problem" in next) throw new Error(next.problem);
+        w.switched(next);
+        expect(w.lost()).toEqual([notEnded("t1", "npm run dev")]);
+        expect(w.lost()).toEqual([]);
+        expect(endings(next.conversation.transcript!.file)).toMatchObject([{ id: "t1", state: "lost" }]);
+        expect(endings(original)).toEqual([]);
+      });
+
+      // Design, "Resume": an old "Started t2" in the history never names new work, so stop_task t2 finds no task t2.
+      it("leaves its id to no new command, so stop_task answers that there is no such task", async () => {
+        const input = { command: "npm run dev", background: true };
+        const call: Message = { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "shell", input }] };
+        const result: Message = { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "Started t2 in the background.", isError: false }] };
+        const subagent = { t: "subagent", at, id: "t1", description: "look around", file: "t1.jsonl" };
+        const history = [message(prompt("go")), subagent, message(call), command("t2", "npm run dev"), message(result), message(said("Done."))];
+        saved(dir, "started", [start("started"), ...history]);
+        const o = open("started");
+        const ctx = await tempContext();
+        onTestFinished(() => removeTree(ctx.root));
+        const executor: Executor = {
+          exec: () => Promise.reject(new Error("exec is not used here")),
+          start: () => standInRun(new Promise(() => {})),
+        };
+        const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: [], ctx: { ...ctx, executor } });
+        onTestFinished(() => void tasks.stop());
+        tasks.from(o.conversation.nextTask); // as Session.load does
+        const tools = shellTools(tasks, { shell: "PowerShell", headless: false });
+        const use = (name: string, input: unknown) => tools.find((t) => t.spec.name === name)!.run(input, { ...ctx, executor });
+        expect(await use("shell", { command: "npm run dev", background: true })).toBe("Started t3 in the background.");
+        expect(await use("stop_task", { id: "t2" })).toBe("No task t2.");
+      });
     });
 
     it("refuses a session it cannot read, in the approved line, leaving no lock or copy behind, a copy it made removed", () => {

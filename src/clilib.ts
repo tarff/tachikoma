@@ -14,6 +14,7 @@ import { type Line, pathsOf, type Read, readTranscript, Transcript } from "./cor
 import { errorText, madeUnder, type Message, type ToolSpec } from "./core/types.js";
 import { gitBash } from "./exec/env.js";
 import type { Executor } from "./exec/executor.js";
+import { headCommand } from "./exec/log.js";
 import type { Answers } from "./mcp/answers.js";
 import { type ServerConfig, variables } from "./mcp/config.js";
 import { SEARCH } from "./mcp/search.js";
@@ -709,7 +710,8 @@ export function chooseSession(
 }
 
 // A session opened for this window: the conversation for Session.load; the grey lines to say, one that names the session
-// cut to the screen's width; the lines for the model about subagents whose answers were lost, which go into its next
+// cut to the screen's width; the lines for the model about subagents whose answers were lost and background commands
+// that had not ended, which go into its next
 // request as waiting text does, with `reported` to call once they have been handed out; and its lock's release.
 export interface Opened {
   conversation: Conversation;
@@ -795,7 +797,8 @@ export function openSaved(dir: string, id: string, o: { fork: boolean; copy?: st
 // with it; no `tools` line, which the session's first request writes when its tools differ from those the history was
 // last saved under, so a reply is sent with its thinking only under its own tools (release 8c plan, choice 46). Once
 // the lost lines have been handed to the model (`reported`), `lost` goes into
-// each unfinished subagent's file, so it is reported once (user, 2026-11-06: "Report once"). A session saved under
+// each unfinished subagent's file, and each unended command's `command-ended` line, so it is reported once (user,
+// 2026-11-06: "Report once"; background commands plan, choice 15). A session saved under
 // another sandbox setting than this launch's, `prompt.box`, has a system prompt naming another shell and project root,
 // so this launch's, `prompt.full`, takes its place and is written in a `system` line, the replies keeping their
 // thinking only under it (release 8a final review, user, 2026-11-07: "Rebuild it", "Save the setting"). The setting is
@@ -814,8 +817,14 @@ export function resumed(
   const system = rebuilt ? o.prompt.full : read.system;
   // Each in the subagents folder, as tasks.ts names a subagent's file, made inside the private sessions folder; an id
   // from the file is used only when it is one Tasks gives, so no line can lead the write elsewhere.
+  // A command's ending goes into the session's own transcript, a fork's or a branch's copy included, as its command line
+  // is there (background commands plan, choice 15).
   const reported = () => {
     for (const u of read.unfinished.filter((u) => /^t\d+$/.test(u.id))) {
+      if (u.kind === "command") {
+        transcript.write({ t: "command-ended", id: u.id, state: "lost" });
+        continue;
+      }
       const file = path.join(pathsOf(transcript.file).subagents, `${u.id}.jsonl`);
       new Transcript(file, transcript.pictures, { inherits: true }).write({ t: "ended", state: "lost" });
     }
@@ -856,7 +865,12 @@ export function resumed(
       tools: read.tools, // the tools saved last, which its replies were made under (Task 6b's quality review; choice 46)
     },
     lines,
-    lost: read.unfinished.map((u) => `Subagent ${u.id} (${u.description}) had not finished when the session ended; its answer was lost.`),
+    // A command cut as every first line naming one cuts it (background commands plan, choice 24).
+    lost: read.unfinished.map((u) =>
+      u.kind === "command"
+        ? `Command ${u.id} (${headCommand(u.command)}) had not ended when the session ended; it is not running in this session.`
+        : `Subagent ${u.id} (${u.description}) had not finished when the session ended; its answer was lost.`,
+    ),
     reported,
     release: s.release,
   };
@@ -886,7 +900,8 @@ export class WindowSessions {
     this.#lost = [...(open?.lost ?? [])];
   }
 
-  // The lost lines, once, for the model's next request, as waiting text goes; their subagents are then marked reported.
+  // The lost lines, once, for the model's next request, as waiting text goes; their subagents and commands are then
+  // marked reported.
   lost(): string[] {
     const now = this.#lost.splice(0);
     if (now.length) this.#open?.reported();

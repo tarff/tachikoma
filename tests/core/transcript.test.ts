@@ -477,6 +477,43 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect(read(p).nextTask).toBe(8);
   });
 
+  // Background commands plan, choice 15: a command's id is one of the session's ids too, so a resume never gives it again.
+  it("numbers the next task past every command line as well as every subagent line", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "subagent", id: "t1", description: "one", file: "t1.jsonl" });
+    t.write({ t: "command", id: "t2", command: "npm run dev" });
+    expect(read(p).nextTask).toBe(3);
+  });
+
+  // Choice 15: a command with no ending line had not ended when the session did; one that ended in any way has.
+  it("lists the commands with no ending line, marked as commands, beside the unfinished subagents", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "subagent", id: "t1", description: "never started", file: "t1.jsonl" });
+    for (const [n, state] of [[2, "done"], [3, "failed"], [4, "stopped"], [5, "lost"], [6, null]] as const) {
+      t.write({ t: "command", id: `t${n}`, command: `run ${n}` });
+      if (state) t.write({ t: "command-ended", id: `t${n}`, state });
+    }
+    expect(read(p).unfinished).toEqual([
+      { id: "t1", description: "never started" },
+      { kind: "command", id: "t6", command: "run 6" },
+    ]);
+  });
+
+  // A damaged command line is skipped as any damaged line is: never listed, and its id never counted.
+  it("drops a damaged command line, listing nothing for it and counting no id of it", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    appendFileSync(p.file, `${JSON.stringify({ t: "command", at: "2026-11-13T00:00:00.000Z", command: "npm test" })}\n`); // no id
+    appendFileSync(p.file, `${JSON.stringify({ t: "command", at: "2026-11-13T00:00:00.000Z", id: "t9" })}\n`); // no command
+    const r = read(p);
+    expect([r.damaged, r.unfinished, r.nextTask]).toEqual([2, [], 1]);
+  });
+
   it("lists the subagents whose files hold no final answer", async () => {
     const p = place();
     const t = new Transcript(p.file, p.pictures);
