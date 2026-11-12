@@ -821,6 +821,10 @@ search, always on", "Own lookup tool, every provider")
         result row (finding 5). Only the screen is wrong: nothing runs that was not allowed.
       - Esc pressed while the tokens are being written, a single file write, keeps them: the
         screen says the server needs sign-in, and the next start is signed in (Task 20's review).
+      - An opened folded row's result rows that land below a view scrolled back are not counted in
+        `↓ N new lines`, as a click's are not; a view whose top row is inside the row moves to the
+        row's first line when a result comes, as at a click; and a text selection below the row
+        stays where it was when the row grows (Task 21's review).
 
 ## Lines this plan adds
 

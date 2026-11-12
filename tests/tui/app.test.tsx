@@ -2454,12 +2454,42 @@ describe("App's live folded row", () => {
     }
     shell.end();
     await waitFor(() => lead.asked.length === 2);
-    await tick();
+    await until(app, "  ⎿ ok");
     const after = open ? ["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ ok", "● shell npm test", "  ⎿ ok"] : ["Read 2 files", "● shell npm test", "  ⎿ ok"];
     expect(shown(app).slice(row, row + after.length + 1)).toEqual([...after, ""]);
     lead.answer("done");
     await until(app, "done");
     expect(shown(app).slice(row, row + after.length + 1)).toEqual([...after, "done"]);
+  });
+
+  // A press held on a folded row below an opened one, which the opened row's results move down before the release, still
+  // opens that row (Task 21's review).
+  it("opens the folded row a press was held on when an opened row above it grows before the release", async () => {
+    const lead = new Held();
+    const shell = heldShell();
+    const ran: string[] = [];
+    const executor: Executor = { exec: (...args) => (ran.push("ran"), shell.executor.exec(...args)) };
+    const { app, ctx, mouse } = await mount([], { lead, full: true, mode: "never", executor });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    writeFileSync(path.join(ctx.root, "b.txt"), "b\n");
+    await type(app, "look");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "shell", { command: "npm test" }), callTool("c3", "read_file", { path: "b.txt" }), callTool("c4", "shell", { command: "npm run build" })));
+    await until(app, "● shell npm run build");
+    await pointer(mouse, ...click(3, shown(app).indexOf("Read 1 file")));
+    await until(app, "● read_file a.txt");
+    const b = shown(app).indexOf("Read 1 file");
+    await pointer(mouse, at("press", 3, b));
+    shell.end();
+    await waitFor(() => ran.length === 2);
+    shell.end();
+    await waitFor(() => lead.asked.length === 2);
+    await until(app, "  ⎿ ok");
+    await pointer(mouse, at("release", 3, b));
+    await until(app, "● read_file b.txt");
+    expect(shown(app)).not.toContain("Read 1 file");
+    lead.answer("done");
+    await until(app, "done");
   });
 
   // The results' rows put above them move the view held below the opened row and a waiting question's detail with their

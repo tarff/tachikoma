@@ -223,6 +223,9 @@ export const mouse = (ui: UI, fns: Fns) => {
     const inside = at !== null && at.line >= from && at.line < to;
     if (at) ui.view.current = { ...ui.view.current, at: inside ? { line: from, offset: 0 } : { line: moved(at.line), offset: at.offset } };
     for (const q of ui.questions.current) if (q.detail) q.detail = [moved(q.detail[0]), moved(q.detail[1])];
+    // A press held on a row below, which a result can move before its release, still opens that row (Task 21's review).
+    const held = ui.held.current;
+    if (held?.fold !== undefined) held.fold = moved(held.fold);
     // The rows under the pointer have moved, so a quick next press is a click of its own, never a double-click on them.
     ui.lastPress.current = null;
     ui.rerender((n) => n + 1);
