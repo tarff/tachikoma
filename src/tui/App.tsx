@@ -780,11 +780,11 @@ export function App(props: AppProps) {
   // While the first prompt waits for the MCP servers, the waiting line names them (release 8c plan, choice 25), already
   // escaped (Servers, waitingFor); a hook's statusMessage first, as SessionStart's hooks are waited for before them.
   const servers = ui.session.waitingFor();
-  // While the shell tool holds a foreground command, the first key that moves it to the background in the phase drawn, as
-  // the table spells it, and none when the action is unbound (background commands plan, Task 10; choices 20 and 33); the
-  // working line's redraws show it once held.
+  // While the shell tool holds a foreground command, the key that moves it to the background with the keys in force in the
+  // phase drawn, Task first (keyRouting.ts, route), spelled as the window spells keys, and none when the action is unbound
+  // (background commands plan, Task 10; choices 20, 33 and 34); the working line's redraws show it once held.
   const moveKey = ui.tasks.holding
-    ? ui.table.keysFor("task:background", "Task").find((k) => ui.table.acts(k, "task:background", contextsOf(d ? "detail" : menu ? "menu" : "prompt", ui.fullNow.current, false, true)))
+    ? named(ui.table, "task:background", "Task", ["ctrl+b"], ["Task", ...contextsOf(ui.happening(() => menu !== null).phase.kind, ui.fullNow.current)])[0]
     : undefined;
   const workingLine = ui.busy && (
     <WorkingLine

@@ -151,13 +151,10 @@ export const PHASE_CONTEXTS: Record<Phase["kind"], Context[]> = {
 };
 // In full screen Scroll comes after the phase's own context, so that context's bindings win (the detail view's Home and
 // End stay transcript:top and transcript:bottom); in the model list only for the wheel, which scrolls the conversation
-// there while keys do not (release 5 plan, choice 3). In classic mode Scroll is never in force. While the shell tool holds
-// a foreground command (`held`), Task comes first wherever Global is in force, so Ctrl+B moves it, and is free otherwise
-// (background commands plan, choice 20).
-export const contextsOf = (kind: Phase["kind"], full: boolean, wheel = false, held = false): Context[] => {
+// there while keys do not (release 5 plan, choice 3). In classic mode Scroll is never in force.
+export const contextsOf = (kind: Phase["kind"], full: boolean, wheel = false): Context[] => {
   const c = PHASE_CONTEXTS[kind];
-  const all: Context[] = full && c.length && (kind !== "picker" || wheel) ? [...c.slice(0, -1), "Scroll", "Global"] : c;
-  return held && all.length ? ["Task", ...all] : all;
+  return full && c.length && (kind !== "picker" || wheel) ? [...c.slice(0, -1), "Scroll", "Global"] : c;
 };
 // The actions the prompt runs as commands (keys.ts); Global's toggles and Scroll's actions run so everywhere.
 export const ACTIONS: Record<string, Command> = {

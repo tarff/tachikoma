@@ -37,7 +37,10 @@ export const keyRouting = (ui: UI, fns: Fns) => {
       !stroke.ctrl &&
       !stroke.alt &&
       (v.pending !== "" || v.count !== "" || (stroke.key === "escape" && v.mode !== "NORMAL"));
-    const contexts = contextsOf(kind, ui.fullNow.current, false, ui.tasks.holding !== undefined); // Task while held (choice 20)
+    // While the shell tool holds a foreground command, Task comes first, so its key moves it (background commands plan,
+    // choice 20); otherwise Task is not in force.
+    const c = contextsOf(kind, ui.fullNow.current);
+    const contexts: Context[] = ui.tasks.holding ? ["Task", ...c] : c;
     return fns.lookUp(stroke, contexts, (field && printable(stroke)) || toVim ? ch : null, kind === "question");
   };
   // A stroke in the table (release 6 plan, Task 6): a chord under way first, so one ending in a plain letter completes

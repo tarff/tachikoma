@@ -38,8 +38,8 @@ describe("workingText", () => {
 
   // Background commands plan, Task 10 (the user's choice 33): the key that moves a held foreground command, last.
   it("ends with the key that moves a running command to the background, after the stop key when there is one", () => {
-    expect(workingText("Working", 1_000, spend, "Esc", "ctrl+b")).toBe("⠹ Working · 1s · ↓ 0 tokens · $0.00 · Esc to stop · ctrl+b to run in background");
-    expect(workingText("Working", 1_000, null, undefined, "ctrl+g")).toBe("⠹ Working · 1s · ctrl+g to run in background");
+    expect(workingText("Working", 1_000, spend, "Esc", "Ctrl+B")).toBe("⠹ Working · 1s · ↓ 0 tokens · $0.00 · Esc to stop · Ctrl+B to run in background");
+    expect(workingText("Working", 1_000, null, undefined, "Ctrl+G")).toBe("⠹ Working · 1s · Ctrl+G to run in background");
   });
 });
 

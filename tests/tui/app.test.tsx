@@ -42,6 +42,7 @@ import { editFileTool } from "../../src/tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import type { Event as HookEvent, Hook, HooksConfig } from "../../src/hooks/config.js";
 import { Hooks } from "../../src/hooks/hooks.js";
+import { readKeybindings } from "../../src/keybindings.js";
 import { History } from "../../src/tui/history.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import type { ModelGroup } from "../../src/providers/models.js";
@@ -49,7 +50,6 @@ import { OpenAIProvider } from "../../src/providers/openai.js";
 import { judgeOf } from "../../src/safety/judge.js";
 import { dangers, NO_RULES } from "../../src/safety/rules.js";
 import type { Manifest } from "../../src/sandbox/snapshot.js";
-import { readKeybindings } from "../../src/keybindings.js";
 import { readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
@@ -2093,15 +2093,16 @@ describe("App's background commands", () => {
 
   // Background commands plan, Task 10 (choice 20): Ctrl+B is Task's task:background, in force only while the shell tool
   // holds a foreground command, which it moves; the working line names the key while it can, as the keys file binds it,
-  // for every command, folded or not (the user's choice 33).
+  // for every command, folded or not (the user's choice 33), spelled as the window spells keys (choice 34).
   const CTRL_B = "\u0002";
   const moved = { type: "tool_result", callId: "c1", output: "Moved to the background as t1 by the user.", isError: false };
-  const taskKeys = (keys: Record<string, string | null>) => {
-    const read = readKeybindings(JSON.stringify({ bindings: [{ context: "Task", bindings: keys }] }));
+  const keysFile = (context: string, keys: Record<string, string | null>) => {
+    const read = readKeybindings(JSON.stringify({ bindings: [{ context, bindings: keys }] }));
     if ("problem" in read) throw new Error(read.problem);
     expect(read.problems).toEqual([]);
     return read.table;
   };
+  const taskKeys = (keys: Record<string, string | null>) => keysFile("Task", keys);
 
   it("moves the running foreground command to the background on Ctrl+B: the model hears the user moved it, and the panel shows it", async () => {
     const { executor } = held();
@@ -2139,7 +2140,7 @@ describe("App's background commands", () => {
   // A command with a row of its own has no live row; the working line names the key all the same, in either view.
   it.each([false, true])("ends the working line with the key while a command of its own row is held, until it ends (full screen: %s)", async (full) => {
     const { app, lead, runs } = await holding("npm test", { full });
-    await until(app, hint("ctrl+b"));
+    await until(app, hint("Ctrl+B"));
     expect(app.lastFrame()).toContain("● shell npm test");
     runs[0]!.end(0);
     await waitFor(() => lead.asked.length === 2); // the turn goes on, its working line without the key
@@ -2149,7 +2150,7 @@ describe("App's background commands", () => {
 
   it("names the key on the working line, not on the live row, for a folded command, and drops it once the command is moved", async () => {
     const { app, lead } = await holding("git status");
-    await until(app, hint("ctrl+b"));
+    await until(app, hint("Ctrl+B"));
     expect(app.lastFrame()).toContain("  ⎿  $ git status\n");
     await press(app, CTRL_B);
     await waitFor(() => lead.asked.length === 2);
@@ -2160,7 +2161,7 @@ describe("App's background commands", () => {
 
   it("names a keys file's Ctrl+G on the working line, and moves the command on it, Ctrl+B doing nothing", async () => {
     const { app, lead, tasks } = await holding("npm test", { bindings: taskKeys({ "ctrl+b": null, "ctrl+g": "task:background" }) });
-    await until(app, hint("ctrl+g"));
+    await until(app, hint("Ctrl+G"));
     await press(app, CTRL_B);
     expect(tasks.holding).toBeDefined();
     expect(tasks.all).toEqual([]);
@@ -2171,14 +2172,19 @@ describe("App's background commands", () => {
 
   it("names no key on the working line when a keys file sets task:background's to null, and Ctrl+B moves nothing", async () => {
     const { app, tasks } = await holding("npm test", { bindings: taskKeys({ "ctrl+b": null }) });
-    await until(app, "Esc to stop\n");
+    // A frame drawn after the hold was set: the spinner moves at each of the working line's redraws.
+    const before = app.lastFrame();
+    await waitFor(() => app.lastFrame() !== before);
+    expect(app.lastFrame()).toContain("Esc to stop\n");
     await press(app, CTRL_B);
     expect(tasks.holding).toBeDefined();
     expect(tasks.all).toEqual([]);
     expect(app.lastFrame()).not.toContain("to run in background");
   });
 
-  it("names no key while the command's approval question is open, and names it once the command runs", async () => {
+  // The question is drawn in the working line's place, so what is tested is that nothing is held while it is open: the
+  // hold, and the hint with it, starts once it is answered.
+  it("holds nothing while the command's approval question is open, and names the key once the command runs", async () => {
     const { executor } = held();
     const lead = new Held();
     const { app, tasks } = await mount([], { lead, executor });
@@ -2187,9 +2193,39 @@ describe("App's background commands", () => {
     lead.answer(callTool("c1", "shell", { command: "npm test" }));
     await until(app, "Allow run: npm test?");
     expect(tasks.holding).toBeUndefined();
-    expect(app.lastFrame()).not.toContain("to run in background");
     await press(app, "y");
-    await until(app, hint("ctrl+b"));
+    await until(app, hint("Ctrl+B"));
+  });
+
+  // Task is in force only while a command is held: a keys file's Chat binding of Ctrl+B acts at other times, and the
+  // command's move wins while it is held.
+  it("gives Ctrl+B to a Chat binding with nothing held, and to the move while a command is held", async () => {
+    const { executor } = held();
+    const lead = new Held();
+    const { app, tasks } = await mount([], { lead, executor, mode: "never", bindings: keysFile("Chat", { "ctrl+b": "chat:stash" }) });
+    await press(app, "ab", CTRL_B);
+    expect(app.lastFrame()).toMatch(/^›$/m); // stashed
+    expect(app.lastFrame()).toContain("Stashed");
+    await type(app, "go");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(callTool("c1", "shell", { command: "npm test" }));
+    await waitFor(() => tasks.holding !== undefined);
+    await press(app, "cd", CTRL_B);
+    await waitFor(() => lead.asked.length === 2);
+    expect(lead.asked[1]!.messages.at(-1)!.parts).toEqual([moved]);
+    expect(app.lastFrame()).toContain("› cd\n"); // not stashed
+  });
+
+  // In the detail view the working line stays under it, with the key, which moves the command there too.
+  it("names the key on the working line under the detail view, and moves the command on it there", async () => {
+    const { app, lead } = await holding("npm test", { full: true });
+    await press(app, "\u000f"); // Ctrl+O
+    await until(app, "q Esc close");
+    await until(app, hint("Ctrl+B"));
+    await press(app, CTRL_B);
+    await waitFor(() => lead.asked.length === 2);
+    expect(lead.asked[1]!.messages.at(-1)!.parts).toEqual([moved]);
+    expect(app.lastFrame()).toContain("q Esc close");
   });
 });
 
