@@ -1130,8 +1130,9 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
   });
 });
 
-// Choice 21, with background commands (plan, Task 3): a command run through start, foreground or background, gets the
-// network line when it fails, in its result and in its log, so a background ending carries it too.
+// Release 7 plan, choice 21, with background commands (background commands plan, Task 3): a command run through start,
+// foreground or background, gets the network line when it fails, in its result and in its log, so a background ending
+// carries it too.
 describe("networkNoted's start", () => {
   const LINE = "(The box's network is off, so nothing in it can reach the internet. To allow it, launch with --network on.)";
   const inner = (result: ExecResult, printed: string): Executor => ({

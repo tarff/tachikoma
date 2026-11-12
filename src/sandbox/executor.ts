@@ -260,22 +260,22 @@ export class DockerExecutor implements Executor {
   // `start` plus the signal, as the host's exec is (background commands plan, Task 3): an abort stops the command, and
   // once inGroup's kill has run in the box rejects `Cancelled`, or the sandbox's failure when it could not reach the box
   // (choice 87). A broken box, or an abort before the call, starts nothing.
-  exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult> {
-    if (this.state.broken) return Promise.reject(this.state.broken);
-    if (signal?.aborted) return Promise.reject(new Error("Cancelled"));
+  async exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult> {
+    if (this.state.broken) throw this.state.broken;
+    if (signal?.aborted) throw new Error("Cancelled");
     const run = this.start(command, cwd);
-    if (!signal) return run.done;
     const onAbort = () => run.stop();
-    signal.addEventListener("abort", onAbort, { once: true });
+    signal?.addEventListener("abort", onAbort, { once: true });
     // start calls the DockerRun before it returns (the count's read), and a run that answers at once, as a test's
     // stand-in does, can abort the signal inside that call, before the listener above was added.
-    if (signal.aborted) run.stop();
-    return run.done
-      .then((r) => {
-        if (signal.aborted) throw new Error("Cancelled");
-        return r;
-      })
-      .finally(() => signal.removeEventListener("abort", onAbort));
+    if (signal?.aborted) run.stop();
+    try {
+      const r = await run.done;
+      if (signal?.aborted) throw new Error("Cancelled"); // even when start gave the real exit code (below)
+      return r;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   // The command in its own group in the box, each piece it prints going to the log as it arrives (background commands
@@ -296,8 +296,8 @@ export class DockerExecutor implements Executor {
       const before = state.oomKills;
       const got = await inGroup(this.run, this.id, ["-w", cwd], "bash -c", command, { signal, cut: true, data: (text) => log.add(text) });
       if ("unreached" in got) throw state.fail(got.unreached);
-      // A stop that came just as the command ended is still a stop, as on the host (local.ts, start).
-      if ("cancelled" in got || signal.aborted) return killed;
+      if ("cancelled" in got) return killed;
+      // A stop during the checks below comes after the command's end: start gives its real exit code, exec Cancelled.
       // A failure may be Docker's own: the box is asked whether it still runs, and if not, Docker's words are given.
       if (got.code !== 0) {
         const gone = await state.gone();
@@ -312,6 +312,8 @@ export class DockerExecutor implements Executor {
       // hold a process the limit killed, against the count before it: a kill by the limit in a process left running by an
       // earlier command, found after a later failure, is laid on that later one. Without the file (cgroup v1), or for a
       // command whose count before it could not be read, OOMKilled is the only sign, after a 137 only, with that flaw.
+      // With background commands running side by side, a long-running command that fails can also be blamed for a kill
+      // by the limit in another command started after it: a known limit.
       if (got.code !== 0 && (await state.outOfMemory(before, got.code))) {
         const line = `(Stopped: the command used more than ${state.memoryLine()})`;
         stderr += `${newline(stderr)}${line}`;

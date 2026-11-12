@@ -551,10 +551,10 @@ export async function sandboxStart(
   };
 }
 
-// Choice 21: with the box's network off, a failed command's result gets one more line. Which failures were the network's
-// cannot be told, so every failure gets it. A command run through start, as the shell tool runs every command from the
-// background commands plan's Task 5 on, gets it in its result and in its log, so a background command's ending says it;
-// one that was stopped did not fail, and gets nothing.
+// Release 7 plan, choice 21: with the box's network off, a failed command's result gets one more line. Which failures
+// were the network's cannot be told, so every failure gets it. A command run through start, as the shell tool runs
+// every command from the background commands plan's Task 5 on, gets it in its result and in its log, so a background
+// command's ending says it; one that was stopped did not fail, and gets nothing.
 export function networkNoted(executor: Executor): Executor {
   const line = "(The box's network is off, so nothing in it can reach the internet. To allow it, launch with --network on.)";
   const after = (text: string) => `${text && !text.endsWith("\n") ? "\n" : ""}${line}`;

@@ -455,14 +455,19 @@ describe("DockerExecutor with a stand-in Docker", () => {
     return { run, release: () => release() };
   };
 
+  // Until Docker's run of the command (the `-w` exec) is recorded: the command is started.
+  const started = async (fake: ReturnType<typeof fakeDocker>) => {
+    while (!fake.calls.some((c) => c[1] === "-w")) await new Promise((resolve) => setImmediate(resolve));
+  };
+
   it("start streams each piece Docker gives into the log in order, before the end, with exec's arguments", async () => {
     const fake = answering(() => ok());
     const docker = holding(fake, ["a", "b", "c"], { code: 0, out: "ac", err: "b" });
     const box = await DockerExecutor.start(OPTS, docker.run);
     const running = box.start("npm run dev", "/work/src");
     let ended = false;
-    void running.done.finally(() => (ended = true));
-    await new Promise((resolve) => setImmediate(resolve)); // the command is started
+    void running.done.catch(() => {}).finally(() => (ended = true));
+    await started(fake);
     expect(running.log.kept()).toBe("abc");
     expect(ended).toBe(false);
     docker.release();
@@ -478,7 +483,7 @@ describe("DockerExecutor with a stand-in Docker", () => {
     const docker = holding(fake, ["serving\n"], ok());
     const box = await DockerExecutor.start(OPTS, docker.run);
     const running = box.start("npm run dev", "/work");
-    await new Promise((resolve) => setImmediate(resolve)); // the command is started
+    await started(fake);
     running.stop();
     expect(await running.done).toEqual({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
     expect(fake.calls).toContainEqual(["exec", "b0x", "bash", "-c", expect.stringContaining("kill -KILL")]);
@@ -514,7 +519,7 @@ describe("DockerExecutor with a stand-in Docker", () => {
     const docker = holding(fake, ["make: *** [build] Killed"], { code: 2, out: "", err: "make: *** [build] Killed" });
     const box = await DockerExecutor.start({ ...OPTS, limits: { memory: 512 * MB, cpus: 1, pids: 64 } }, docker.run);
     const running = box.start("make build", "/work");
-    await new Promise((resolve) => setImmediate(resolve)); // the command is started
+    await started(fake);
     docker.release();
     expect((await running.done).stderr).toBe(`make: *** [build] Killed\n${MEMORY_LINE}`);
     expect(running.log.kept()).toBe(`make: *** [build] Killed\n${MEMORY_LINE}`);
@@ -537,7 +542,7 @@ describe("DockerExecutor with a stand-in Docker", () => {
     const box = await DockerExecutor.start(OPTS, docker.run);
     const esc = new AbortController();
     const running = box.exec("sleep 600", "/work", esc.signal);
-    await new Promise((resolve) => setImmediate(resolve)); // the command is started
+    await started(fake);
     esc.abort();
     await expect(running).rejects.toThrow("Cancelled");
     expect(fake.calls).toContainEqual(["exec", "b0x", "bash", "-c", expect.stringContaining("kill -KILL")]);
