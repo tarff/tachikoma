@@ -301,8 +301,8 @@ Each is marked in its task. The user approves them with the plan.
    of both streams as it arrives, decoded as UTF-8 per stream. `DockerExecutor.start` holds its own
    abort controller, which `stop()` aborts, so `inGroup`'s kill in the box runs as for Esc. The
    memory-limit line goes into the log too, so an ending's message carries it.
-4. **The read position and the fit** (Task 1): one function, `deliver(head, log)`, builds every
-   delivery: its first line, the dropped note when output was dropped before the position, the
+4. **The read position and the fit** (Task 1): one function, `deliver(head, log, id)`, builds
+   every delivery: its first line, the dropped note when output was dropped before the position, the
    oldest unread output that fits, and the more note when some is left. Its room is
    `MAX_TOOL_OUTPUT` less the head and both notes written with the largest numbers the log can
    give, so no delivery is ever longer than 30,000.
@@ -463,8 +463,8 @@ export function deliver(head: string, log: CommandLog, id: string): string;
 
 **Tests:** a 40,000-character command in the head: the delivery is at most 30,000, keeps the id
 and the state, and gives output; add and keep the newest 30,000; read since the last read; a
-read after a drop gives the dropped note and the right count; a full log with a long head: the delivery is at most 30,000, it
-ends with the more note, the next delivery starts where it stopped, and the last character added
+read after a drop gives the dropped note and the right count; a full log with a long head: the
+delivery is at most 30,000, it ends with the more note, the next delivery starts where it stopped, and the last character added
 arrives on one of them, never twice; `kept()` between two reads changes neither; with nothing new,
 `No new output.`
 
@@ -625,8 +625,8 @@ Commit: `feat: the shell tool starts commands in the background and moves long o
 **Files:** modify `src/tools/commands.ts`; tests in `tests/tools/commands.test.ts`.
 
 **Behaviour** (design, "What the model gets"; choices 7, 14):
-- `shell_output {id}`: no question (design). For a command, `deliver(<first line>, log)`, the
-  first lines from "Lines"; on an ended command it also calls `tasks.told(id)`. For a subagent,
+- `shell_output {id}`: no question (design). For a command, `deliver(<first line>, log, id)`,
+  the first lines from "Lines"; on an ended command it also calls `tasks.told(id)`. For a subagent,
   and for an id not in the list, their lines.
 - `stop_task {id}`: no question. A running command or subagent is stopped with `by: "tool"`:
   `Stopped <id>.`; an ended one, `<id> is not running.`; no such id, `No task <id>.`
@@ -803,3 +803,25 @@ Commit: `feat: -p waits for background commands; Ctrl-C, a hook's stop or a fail
 7. `/clear` while one runs: the refusal line.
 
 Commit: `docs: background commands in the README`.
+
+## As built
+
+What changed from the plan while building, for the later tasks and the reviewers.
+
+- **Task 1:** `CommandLog` also has `read(room)`, which only `deliver` calls. The caller keeps a
+  head short: a head near 30,000 would leave no room, so Task 4 cuts choice 23's error text as
+  `headCommand` cuts a command.
+- **Task 2:** a command that cannot be spawned at all (a NUL character in it) makes `start` throw
+  at once; a spawn error reported later rejects `done` (choice 23). Callers of `start` handle both.
+- **Task 3, the network line (choice 26, added):** `networkNoted` (release 7 plan, choice 21) also
+  wraps `start`. A command that ends with a non-zero code gets the network-off line in `done`'s
+  `stderr` and in its log, so a background command's ending carries it, and a foreground one keeps
+  it once Task 5 runs every command through `start`. A stopped command gets no line.
+- **Task 3, a stopped command's output:** the box's `done` for a stopped command has empty
+  `stdout` and `stderr` (Docker gives each stream only at its end); the host's keeps what it
+  collected. **A stopped command's output is always read from its log, never from `done`.**
+  The box's `stop()` settles `done` after the kill has run in the box (release 7 plan, choice 87).
+- **Task 3, memory blame:** with commands running side by side, a long-running command that fails
+  can be given the memory line for a kill by the limit in another command; a known limit.
+- **The release checklist** gains a run of the real-Docker cases in
+  `tests/sandbox/executor.test.ts` with Docker Desktop up, as CI (`windows-latest`) skips them.
