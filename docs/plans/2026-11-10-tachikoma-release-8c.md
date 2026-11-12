@@ -754,9 +754,23 @@ search, always on", "Own lookup tool, every provider")
         line's `elapsed` writes them. Its redraws are the working line's, every 80 ms while a turn
         runs, so no timer of its own.
       - An MCP call's `⎿` line is the tool part of its full name, which is the server's own name
-        unless that held characters made `_` (servers.ts).
+        unless that held characters made `_` (servers.ts); choice 68 makes it the server's own.
       - `Listing <path>` has no call to set it: Tachikoma has no list tool, and a shell `ls` is a
         shell command, `Running ...`.
+68. **Names and times on screen read as people write them** (Task 17's reviews, 2026-11-12: the
+    user, "Everything should be in the readable format", chose every on-screen row; Task 18):
+    - **An MCP call's row** names the server and the tool as the server gives them, escaped:
+      `● tradingview chart_set_symbol {"symbol":"BTCUSDT"}`, not
+      `● mcp__tradingview__chart_set_symbol {...}`. So do the rows of a folded row clicked open,
+      the subagent panel's latest call and the live row's `⎿` line. The input stays JSON, as the
+      permission question shows it.
+    - **A name no longer offered** (a resumed session after the server changed or went): the
+      server's name from the settings entry whose safe name matches, else the safe one, and the
+      tool part of the full name.
+    - **A shell command's seconds** past a minute read `1m 5s`, as the working line's.
+    - **Unchanged:** hooks, saved sessions, `/export` files and the model keep the full
+      `mcp__<server>__<tool>` name, which hooks match on; the permission question already reads
+      `Allow tradingview: chart_set_symbol {...}?`.
 
 ## Lines this plan adds
 
@@ -836,8 +850,9 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | A project's entry reading a provider key (choice 64) | `<file>: "<name>" reads ${<VAR>}, a provider key, which a project's servers are never given; it was left out` |
 | A folded tool row (grey; choice 65) | `Searched for <n> pattern(s), read <n> file(s), listed <n> director(y/ies), called <name>` (` <n> times` from 2), `ran <n> shell command(s)`: only the kinds present, in this order, the first word capitalised |
 | Show tools (choice 66) | `<name>'s tools:` then one row per tool, `  <tool>` |
-| The live folded row, top line (grey; choice 67) | `● Reading <path>`, `● Listing <path>`, `● Calling <name>`, `● Running <n> shell command(s) · <s>s`, `● Searching for <n> pattern(s)` |
-| The live folded row, under it (grey; choice 67) | `  ⎿  "<pattern>"`, `  ⎿  <path>`, `  ⎿  <tool>`, `  ⎿  $ <command> (<s>s)` |
+| The live folded row, top line (grey; choice 67) | `● Reading <path>`, `● Listing <path>`, `● Calling <name>`, `● Running <n> shell command(s) · <time>`, `● Searching for <n> pattern(s)`; `<time>` as the working line writes it, `<s>s` or from a minute `<m>m <s>s` (choice 68) |
+| The live folded row, under it (grey; choice 67) | `  ⎿  "<pattern>"`, `  ⎿  <path>`, `  ⎿  <tool>` (the server's own name; choice 68), `  ⎿  $ <command> (<time>)` |
+| An MCP call's row (choice 68) | `● <name> <tool> <input as JSON>`, `<tool>` as the server gives it, escaped |
 
 ## Task 1: The library, and measuring the user's servers
 
@@ -1666,6 +1681,24 @@ question, at Esc and at the turn's end; `--classic` draws it and says the finish
 the real `onMessage` path.
 
 Commit: `feat: the folded row shows while its calls run`.
+
+## Task 18: Readable names on screen, and Task 17's review points (choice 68)
+
+**Files:** `src/tui/describe.ts` (`callRow`), `src/tui/fold.ts`, `src/tui/TaskPanel.tsx`, the
+lookup from a full name to the server's and tool's own names (`src/mcp/servers.ts`, which keeps
+each offered name's owner), the places that pass it, tests.
+
+**What changes:** choice 68's rows. With it, Task 17's quality review points: the live row's two
+lines kept and cleared together (its `⎿` line no longer kept after the run ends); a call started
+after an asked one sets the live row again once the question ends the run; fold.test.ts's paths
+written with real backslashes; the seconds test moves the fake clock in one step past each second,
+with its comment saying why (the 80 ms redraw).
+
+**Tests:** an MCP call's own row, an opened folded row, the subagent panel and the live row each
+show `<name> <tool>` word for word, a tool whose name held `.` among them; a name no longer offered
+falls back as choice 68 says; hooks and `/export` still get the full name; `1m 5s` in the live row.
+
+Commit: `fix: MCP calls on screen by their own names; live row review points`.
 
 **After Tasks 15 and 16:** a spec and quality review each, the touched files' tests, the full
 suite once, `dist` rebuilt, and a short terminal re-check with the user: a folded row (reads, a
