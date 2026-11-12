@@ -267,7 +267,9 @@ export class DockerExecutor implements Executor {
     if (!signal) return run.done;
     const onAbort = () => run.stop();
     signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) run.stop(); // an abort while start ran, before the listener was there
+    // start calls the DockerRun before it returns (the count's read), and a run that answers at once, as a test's
+    // stand-in does, can abort the signal inside that call, before the listener above was added.
+    if (signal.aborted) run.stop();
     return run.done
       .then((r) => {
         if (signal.aborted) throw new Error("Cancelled");

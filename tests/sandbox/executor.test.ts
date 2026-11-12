@@ -501,6 +501,7 @@ describe("DockerExecutor with a stand-in Docker", () => {
     expect(await running.done).toEqual({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
     expect(reads).toBe(2);
     expect(fake.calls.some((c) => c[1] === "-w")).toBe(false);
+    await box.stop();
   });
 
   it("start adds the memory limit's line to stderr and to the log (choice 3)", async () => {
@@ -527,6 +528,20 @@ describe("DockerExecutor with a stand-in Docker", () => {
     const message = "The sandbox stopped working: spawn docker EACCES. Shell and file tools are off until Tachikoma is launched again.";
     await expect(box.start("npm run dev", "/work").done).rejects.toThrow(message);
     expect(() => box.start("echo again", "/work")).toThrow(message);
+    await box.stop();
+  });
+
+  it("exec's Esc while the command runs kills its group in the box and says Cancelled", async () => {
+    const fake = answering(() => ok());
+    const docker = holding(fake, [], ok());
+    const box = await DockerExecutor.start(OPTS, docker.run);
+    const esc = new AbortController();
+    const running = box.exec("sleep 600", "/work", esc.signal);
+    await new Promise((resolve) => setImmediate(resolve)); // the command is started
+    esc.abort();
+    await expect(running).rejects.toThrow("Cancelled");
+    expect(fake.calls).toContainEqual(["exec", "b0x", "bash", "-c", expect.stringContaining("kill -KILL")]);
+    await box.stop();
   });
 
   it("takes Docker's warnings on stderr as no failure when the box starts", async () => {
@@ -714,6 +729,19 @@ for i in range(${box.limits.pids + 1}): subprocess.Popen(['sleep', '600'], stdou
     const running = box.exec("sleep 600", "/work", stop.signal);
     stop.abort();
     await expect(running).rejects.toThrow("Cancelled");
+    expect(await processes(box)).not.toMatch(SLEEPING);
+  });
+
+  // Background commands plan, Task 3: the real docker run streams each piece into the log as it arrives (choice 3).
+  it("start streams output into the log before the end, and its stop leaves nothing running", async (ctx) => {
+    const box = await realBox(ctx);
+    const running = box.start("echo ready; sleep 600", "/work");
+    let ended = false;
+    void running.done.catch(() => {}).finally(() => (ended = true)); // a command that ends early stops the wait
+    while (!ended && !running.log.kept().includes("ready")) await new Promise((resolve) => setImmediate(resolve)); // lets docker's output in
+    expect(ended).toBe(false);
+    running.stop();
+    expect(await running.done).toEqual({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
     expect(await processes(box)).not.toMatch(SLEEPING);
   });
 
