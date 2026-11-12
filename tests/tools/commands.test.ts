@@ -240,6 +240,17 @@ describe("the shell tool, in the foreground", () => {
     tasks.stop();
   });
 
+  // The line names the timeout in whole seconds, rounded up, so a short one never reads 0s.
+  it("rounds a timeout that is not a whole number of seconds up in its line", async () => {
+    const { call, tasks, reached } = await setup();
+    fakeTimers();
+    const out = call({ command: "npm test", timeout: 1_500 });
+    await reached();
+    vi.advanceTimersByTime(1_500);
+    expect(await out).toBe("Command did not complete within its 2s timeout and was moved to the background as t1.");
+    tasks.stop();
+  });
+
   it("tells -p's task list the command moved, so it gets the moved limit", async () => {
     const { call, tasks, reached } = await setup({ headless: true, limits: { started: 600_000, moved: 600_000, most: 7_200_000 } });
     const adopt = vi.spyOn(tasks, "adopt");
@@ -253,7 +264,9 @@ describe("the shell tool, in the foreground", () => {
   });
 
   // Choice 12: a model that sleeps is waiting on purpose, so the command stops at its timeout instead of moving.
-  it.each(["sleep 5", "  sleep 5", "sleep;echo hi", "Start-Sleep 5", "start-sleep -s 5"])("stops %j at its timeout with the sleep line", async (command) => {
+  // PowerShell's sleep is Start-Sleep, and it ignores letter case, so the rule does too.
+  const stopped = ["sleep 5", "  sleep 5", "sleep\t5", "sleep;echo hi", "Sleep 5", "SLEEP 5", "Start-Sleep 5", "start-sleep -s 5"];
+  it.each(stopped)("stops %j at its timeout with the sleep line", async (command) => {
     const { call, started, tasks, reached } = await setup();
     fakeTimers();
     const out = call({ command, timeout: 3_000 });
@@ -285,6 +298,25 @@ describe("the shell tool, in the foreground", () => {
     expect(await out).toBe("Moved to the background as t1 by the user.");
     expect([tasks.get("t1")!.state, started[0]!.run.stop.mock.calls.length]).toEqual(["running", 0]);
     expect([tasks.holding, tasks.moveForeground(), vi.getTimerCount()]).toEqual([undefined, false, 0]);
+    tasks.stop();
+  });
+
+  // The design, "Where they show and how they stop": Esc leaves a background command running, a moved one too. The tool's
+  // Esc listener goes with the move, so it is checked as well as what Esc does.
+  it("leaves a moved command running when Esc comes after the move", async () => {
+    const { call, started, tasks, reached } = await setup();
+    const stop = new AbortController();
+    const added = vi.spyOn(stop.signal, "addEventListener");
+    const removed = vi.spyOn(stop.signal, "removeEventListener");
+    const out = call({ command: "npm run dev" }, stop.signal);
+    await reached();
+    tasks.moveForeground();
+    expect(await out).toBe("Moved to the background as t1 by the user.");
+    const listener = (calls: unknown[][]) => calls.filter(([type]) => type === "abort").map(([, f]) => f);
+    expect(listener(removed.mock.calls)).toEqual(listener(added.mock.calls).slice(-1)); // the tool's own, added last
+    stop.abort();
+    await new Promise((r) => setImmediate(r));
+    expect([started[0]!.run.stop.mock.calls.length, tasks.get("t1")!.state]).toEqual([0, "running"]);
     tasks.stop();
   });
 
@@ -332,8 +364,8 @@ describe("the shell tool, in the foreground", () => {
     const { call, started } = await setup();
     const stop = new AbortController();
     stop.abort();
-    await expect(call({ command: "npm test" }, stop.signal)).rejects.toThrow();
-    await expect(call({ command: "npm test", background: true }, stop.signal)).rejects.toThrow();
+    await expect(call({ command: "npm test" }, stop.signal)).rejects.toThrow("Cancelled");
+    await expect(call({ command: "npm test", background: true }, stop.signal)).rejects.toThrow("Cancelled");
     expect(started).toEqual([]);
   });
 });

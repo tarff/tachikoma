@@ -12,6 +12,7 @@ import { projectFile } from "../src/core/datadir.js";
 import { openSession, sessionsDir } from "../src/core/sessions.js";
 import { readTranscript } from "../src/core/transcript.js";
 import { onPath } from "../src/exec/env.js";
+import { shellFor } from "../src/exec/local.js";
 import { answersFor } from "../src/mcp/answers.js";
 import { AuthStore, McpAuth } from "../src/mcp/auth.js";
 import { readProjectFile, readServers } from "../src/mcp/config.js";
@@ -844,6 +845,18 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     "  --fork-session    with -c or -r, open a copy of the session and leave the saved one as it was",
     "",
   ].join("\n");
+
+  // Background commands plan, Task 5: the lead's shell tool, made in cli.tsx, names the host's shell, and keeps its place
+  // after edit_file. The box's says bash (copy mode's -p run, below).
+  it("with -p, gives the lead the shell tool after edit_file, naming the host's shell", async () => {
+    const { proj, data } = place();
+    const { url, sent } = await standIn();
+    const r = await tachiLater("-p", "hi", where(proj, data, url));
+    expect(r.code).toBe(0);
+    const tools = (sent[0] as unknown as { tools: { function: { name: string; description: string } }[] }).tools.map((t) => t.function);
+    expect(tools.map((t) => t.name).slice(0, 6)).toEqual(["read_file", "write_file", "edit_file", "shell", "find_files", "search_files"]);
+    expect(tools[3]!.description).toMatch(new RegExp(`^Run a command with ${shellFor().name} in the project root and return its output\\. `));
+  });
 
   // Release 8a plan, Task 13 (user, 2026-11-06: "Show the line, send anyway"): a summary for the /autocompact size that
   // fails, the request then sent as it is and answered, fails no -p run. The first reply reports a million prompt tokens,
@@ -1810,8 +1823,13 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     mkdirSync(proj);
     mkdirSync(empty);
     writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const sent: { tools: { function: { name: string; description: string } }[] }[] = []; // each request, for its tools
     const server = http.createServer((req, res) => {
-      req.resume().on("end", () => {
+      let asked = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (asked += d));
+      req.on("end", () => {
+        sent.push(JSON.parse(asked));
         if (change) for (const session of readdirSync(path.join(data, "copies"))) writeFileSync(path.join(data, "copies", session, "work", "new.txt"), "made-up\n");
         const message = { role: "assistant", content: "done" };
         const body = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [{ index: 0, finish_reason: "stop", message }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
@@ -1839,13 +1857,16 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
       child.on("error", reject);
       child.on("close", resolve);
     });
-    return { code, stdout, stderr, proj, copies: path.join(data, "copies") };
+    return { code, stdout, stderr, proj, copies: path.join(data, "copies"), sent };
   }
 
   it("answers, then names the copy kept for review on stderr, keeping it and leaving the folder untouched", async () => {
     const r = await copyRun("ok", true);
     expect(r.stdout).toBe("done\n");
     expect(r.code).toBe(0);
+    // In the box the shell tool says bash, whatever the host (background commands plan, Task 5; cli.tsx).
+    const shell = r.sent[0]!.tools.find((t) => t.function.name === "shell")!;
+    expect(shell.function.description).toMatch(/^Run a command with bash in the project root and return its output\. /);
     const lines = r.stderr.trimEnd().split("\n");
     expect(lines[0]).toBe(`Copying ${r.proj} for the sandbox...`); // not a terminal, so not grey
     expect(lines[1]).toBe("Starting the sandbox...");

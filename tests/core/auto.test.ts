@@ -224,8 +224,13 @@ describe("auto mode, in a session", () => {
 });
 
 // The shell tool as cli.tsx makes it (background commands plan, Task 5); its task list's own context starts nothing here.
-const lead = { root: tmpdir(), executor: new LocalExecutor(), workspace: new LocalWorkspace(tmpdir()), gate: new PermissionGate("never", async () => false) };
-const [shellTool] = shellTools(new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: [], ctx: lead }), {
+const leadCtx = {
+  root: tmpdir(),
+  executor: new LocalExecutor(),
+  workspace: new LocalWorkspace(tmpdir()),
+  gate: new PermissionGate("never", async () => false),
+};
+const [shellTool] = shellTools(new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: [], ctx: leadCtx }), {
   shell: shellFor().name,
   headless: false,
 });

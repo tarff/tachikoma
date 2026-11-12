@@ -12,12 +12,15 @@ const MOST_FOREGROUND = 600_000;
 const MOST_TIMEOUT = 7_200_000;
 
 // Choice 12: a model that sleeps is waiting on purpose, so its command stops at its timeout instead of moving. The first
-// word is read after leading spaces, up to a space or `;`: `sleep` in any shell, or PowerShell's Start-Sleep, whose
-// names take any letter case.
+// word is read after leading spaces, up to a space or `;`: `sleep` or PowerShell's Start-Sleep, in any letter case, as
+// PowerShell takes `sleep` as Start-Sleep and ignores letter case in both.
 const sleeps = (command: string) => {
-  const first = /^\s*([^\s;]*)/.exec(command)![1]!;
-  return first === "sleep" || first.toLowerCase() === "start-sleep";
+  const first = /^\s*([^\s;]*)/.exec(command)![1]!.toLowerCase();
+  return first === "sleep" || first === "start-sleep";
 };
+
+// How a foreground command's wait ended (firstOf).
+type Way = { end: ExecResult } | "cancelled" | "timeout" | "moved";
 
 // The shell tool for the shell its commands run in: the host's (shellFor), or bash in the box (release 7 plan, Task 16).
 // A foreground command runs until its end, Esc, its timeout or Ctrl+B; a background one joins the task list at once
@@ -82,11 +85,11 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
 
   // The first of the command's end, Esc, the timeout and Ctrl+B (choice 9's hold, which tasks.moveForeground() calls).
   // A run that fails rejects with its error, as exec did. The timer, the listener and the hold go on every way out.
-  function firstOf(run: Running, ms: number, signal: AbortSignal | undefined): Promise<{ end: ExecResult } | "cancelled" | "timeout" | "moved"> {
+  function firstOf(run: Running, ms: number, signal: AbortSignal | undefined): Promise<Way> {
     let timer: NodeJS.Timeout | undefined;
     let onAbort = () => {};
     const hold = { move: () => {} };
-    return new Promise<{ end: ExecResult } | "cancelled" | "timeout" | "moved">((resolve, reject) => {
+    return new Promise<Way>((resolve, reject) => {
       run.done.then((end) => resolve({ end }), reject);
       onAbort = () => resolve("cancelled");
       signal?.addEventListener("abort", onAbort, { once: true });
