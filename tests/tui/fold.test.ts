@@ -280,3 +280,85 @@ describe("the open run", () => {
     expect(plain(conversationLines(history, opts()))).toEqual(["> go", "Read 2 files, called s", "done"]);
   });
 });
+
+// Release 8c plan, choice 67 and Task 17: while a run's calls go, its live row names the work in the present tense, as
+// Claude Code's does; once the run ends it goes, and the finished row is said in its place.
+describe("the open run's live row", () => {
+  const texts = (ls: Line[]) => ls.map((l) => l.text);
+  it("says each call's top line and ⎿ line as it starts, a search setting the top line only as the run's first", () => {
+    const run = new OpenRun(opts());
+    const tv = call("m", "mcp__tradingview__quote_get", { symbol: "X" });
+    const find = call("f", "find_files", { pattern: "*.ts" });
+    const grep = call("g", "search_files", { pattern: "endRun" });
+    lines(reply(grep, find, read("r", "src\tui\fold.ts"), call("s", "search_files", { pattern: "x" }), tv, sh("c", "git status\necho more")), undefined, run);
+    expect(run.live(0)).toEqual([]); // no call has started
+    run.start("g", 0);
+    expect(run.live(0)).toEqual([gray("● Searching for 1 pattern"), gray('  ⎿  "endRun"')]);
+    run.start("f", 0);
+    expect(texts(run.live(0))).toEqual(["● Searching for 2 patterns", '  ⎿  "*.ts"']);
+    run.start("r", 0);
+    expect(texts(run.live(0))).toEqual(["● Reading src\tui\fold.ts", "  ⎿  src\tui\fold.ts"]);
+    run.start("s", 0); // a search after a read leaves it on top
+    expect(texts(run.live(0))).toEqual(["● Reading src\tui\fold.ts", '  ⎿  "x"']);
+    run.start("m", 0);
+    expect(texts(run.live(0))).toEqual(["● Calling tradingview", "  ⎿  quote_get"]);
+    run.start("c", 1_000); // the command's first line only; its seconds from 1 s
+    expect(texts(run.live(1_999))).toEqual(["● Running 1 shell command", "  ⎿  $ git status"]);
+    expect(texts(run.live(2_000))).toEqual(["● Running 1 shell command · 1s", "  ⎿  $ git status (1s)"]);
+    expect(texts(run.live(13_500))).toEqual(["● Running 1 shell command · 12s", "  ⎿  $ git status (12s)"]);
+    run.finished("c", 14_000); // its seconds stop with it
+    expect(texts(run.live(20_000))).toEqual(["● Running 1 shell command · 13s", "  ⎿  $ git status (13s)"]);
+    // The run's said: the live row goes.
+    expect(texts(run.end())).toEqual(["Searched for 3 patterns, read 1 file, called tradingview, ran 1 shell command"]);
+    expect(run.live(20_000)).toEqual([]);
+  });
+
+  it("counts the run's shell commands, names a server as its row does, and searches first again in a new run", () => {
+    const run = new OpenRun(opts());
+    lines(reply(sh("a", "ls"), call("m", "mcp__plugin_mempalace_mempalace__search", {})), undefined, run);
+    run.start("a", 0);
+    run.finished("a", 10);
+    run.start("m", 10);
+    expect(texts(run.live(10))).toEqual(["● Calling plugin:mempalace:mempalace", "  ⎿  search"]);
+    lines(results(ok("a"), ok("m")), undefined, run);
+    lines(reply(sh("b", "cat a.txt")), undefined, run);
+    run.start("b", 0);
+    expect(texts(run.live(65_000))).toEqual(["● Running 2 shell commands · 1m 5s", "  ⎿  $ cat a.txt (1m 5s)"]); // as the working line counts
+    lines(reply(text("Done.")), undefined, run);
+    expect(run.live(0)).toEqual([]);
+    lines(reply(read("r"), call("f", "find_files", { pattern: "*.ts" })), undefined, run);
+    run.start("r", 0);
+    run.start("f", 0);
+    expect(texts(run.live(0))).toEqual(["● Reading a.txt", '  ⎿  "*.ts"']);
+    run.question(undefined);
+    lines(reply(call("f2", "find_files", { pattern: "*.md" })), undefined, run);
+    run.start("f2", 0);
+    expect(texts(run.live(0))).toEqual(["● Searching for 1 pattern", '  ⎿  "*.md"']);
+  });
+
+  // tool_search sets neither line; a call of its own row, or a subagent's, is no call of the run.
+  it("draws nothing for tool_search, a call of its own row or a call not in the run", () => {
+    const run = new OpenRun(opts());
+    lines(reply(call("t", "tool_search", { query: "x" }), sh("w", "rm x")), undefined, run);
+    run.start("t", 0);
+    run.start("w", 0);
+    run.start("elsewhere", 0);
+    expect(run.live(0)).toEqual([]);
+    lines(reply(call("t2", "tool_search", { query: "y" }), read("r")), undefined, run);
+    run.start("r", 0);
+    run.start("t2", 0);
+    expect(texts(run.live(0))).toEqual(["● Reading a.txt", "  ⎿  a.txt"]);
+  });
+
+  // A question ends the run before its call: the live row goes with it, and a call after it starts a new one.
+  it("goes at a question, and comes back for the calls after the asked one", () => {
+    const run = new OpenRun(opts());
+    lines(reply(read("r"), call("m", "mcp__s__echo", {}), read("r2", "b.txt")), undefined, run);
+    run.start("r", 0);
+    run.start("m", 0);
+    expect(texts(run.question("m").lines)).toEqual(["Read 1 file", "● mcp__s__echo {}"]);
+    expect(run.live(0)).toEqual([]);
+    run.start("r2", 0);
+    expect(texts(run.live(0))).toEqual(["● Reading b.txt", "  ⎿  b.txt"]);
+  });
+});

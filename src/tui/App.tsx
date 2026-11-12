@@ -32,7 +32,7 @@ import { useAppState } from "./app/state.js";
 import { type Bindings, keyText } from "./bindings.js";
 import { type Clipboard, imagePaths } from "./clipboard.js";
 import { Conversation } from "./Conversation.js";
-import { brief, describe, type Line } from "./describe.js";
+import { brief, describe, type Line, screen as escaped } from "./describe.js";
 import { DetailView, keyRow, searchFor } from "./DetailView.js";
 import { Field } from "./Field.js";
 import { History } from "./history.js";
@@ -333,11 +333,13 @@ export function App(props: AppProps) {
     };
     const onToolStart = ({ id, name, input }: Events["tool-start"][0]) => {
       ui.calls.current.push({ id, name, target: brief(name, input) });
+      ui.run.start(id, Date.now()); // the open run's live row (release 8c plan, choice 67; Task 17)
       ui.rerender((n) => n + 1);
     };
     const onToolEnd = ({ id, outcome }: Events["tool-end"][0]) => {
       const call = ui.calls.current.find((c) => c.id === id);
       if (call) call.outcome = outcome;
+      ui.run.finished(id, Date.now());
       ui.rerender((n) => n + 1);
     };
     // A background subagent's ending is shown when it comes; its answer is read at once when idle.
@@ -563,6 +565,9 @@ export function App(props: AppProps) {
   // form's field over them: the picker phase (phase.ts).
   const picking = ui.picker !== null || ui.sessions !== null || ui.mcpList || ui.form !== null;
   const menu = picking || ui.question || d ? null : fns.menuFor(prompt);
+  // The open run's live row, above the working line where the prompt is drawn (release 8c plan, choice 67; Task 17): it
+  // takes no click, and its seconds grow with the working line's redraws, every SPIN_MS while a turn runs.
+  const liveRow = picking || ui.question || d ? [] : ui.run.live(ui.now).map(escaped);
   if (menu?.kind !== "path") ui.listed.current = null;
 
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the
@@ -666,6 +671,7 @@ export function App(props: AppProps) {
     cursorRow: laid.places.get(prompt.cursor)!.row,
     promptTop: ui.promptTop.current,
     working: ui.busy,
+    liveRows: liveRow.length,
     toolLine: !picking && ui.shownSegments.includes("tools") && ui.calls.current.length > 0,
     detail: d !== null,
     hint: hintFor(1) !== null, // whether there is a hint does not depend on the rows left (usualHint)
@@ -901,6 +907,11 @@ export function App(props: AppProps) {
         workingLine // the working line stays under the detail view while a turn runs (release 5 plan, choice 12)
       ) : (
         <>
+          {liveRow.map((l, i) => (
+            <Text key={`r${i}`} color={l.color} wrap="truncate-end">
+              {l.text}
+            </Text>
+          ))}
           {workingLine}
           <TodoList rows={todoShown} />
           {queued.map((row, i) => (

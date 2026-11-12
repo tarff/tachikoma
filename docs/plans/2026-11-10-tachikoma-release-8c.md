@@ -743,6 +743,20 @@ search, always on", "Own lookup tool, every provider")
       key). tool_search sets neither line; a run of only tool_search has no live row.
     - **Clicks:** the finished row opens with a click, as choice 65 built ("and clickable": the
       user's note on Claude Code's finished row); the live row takes no click.
+    - **As built** (Task 17, 2026-11-12):
+      - The live row is drawn above the working line, only where the prompt is drawn (not under a
+        question, a list or the detail view), and the frame counts its two rows (layout.ts,
+        `liveRows`). In full screen a short conversation leaves blank rows between its last line
+        and the live row, as the live part sits at the bottom.
+      - A search sets the top line while only searches have set it (`Searching for 2 patterns` for
+        two searches first); a call that is not a search ends that.
+      - A shell call's seconds stop when it ends; past a minute they read `1m 5s`, as the working
+        line's `elapsed` writes them. Its redraws are the working line's, every 80 ms while a turn
+        runs, so no timer of its own.
+      - An MCP call's `⎿` line is the tool part of its full name, which is the server's own name
+        unless that held characters made `_` (servers.ts).
+      - `Listing <path>` has no call to set it: Tachikoma has no list tool, and a shell `ls` is a
+        shell command, `Running ...`.
 
 ## Lines this plan adds
 

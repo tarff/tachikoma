@@ -82,6 +82,7 @@ const base: FrameIn = {
   cursorRow: 0,
   promptTop: 0,
   working: false,
+  liveRows: 0,
   toolLine: false,
   detail: false,
   hint: true,
@@ -345,6 +346,12 @@ describe("frame", () => {
       // In classic mode it takes one of the prompt's.
       expect(frame({ ...tall, full: false })).toMatchObject({ promptSpace: 9, promptShown: 9, promptFirst: 0 });
       expect(frame({ ...tall, full: false, working: true })).toMatchObject({ promptSpace: 8, promptShown: 8, promptFirst: 1 });
+    });
+
+    // Release 8c plan, choice 67 and Task 17: the open run's live row, two rows above the working line.
+    it("the open run's live row takes its rows above the prompt, as the working line does", () => {
+      expect(frame({ ...tall, working: true, liveRows: 2 })).toMatchObject({ promptSpace: 5, promptShown: 5, viewHeight: 1, promptFirst: 4 });
+      expect(frame({ ...tall, full: false, working: true, liveRows: 2 })).toMatchObject({ promptSpace: 6, promptShown: 6, promptFirst: 3 });
     });
 
     it("a tool line takes a row under the status line, where there is room for it, the hint and the cursor's row", () => {

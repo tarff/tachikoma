@@ -5,7 +5,8 @@ import { safeName } from "../mcp/config.js";
 import { SEARCH } from "../mcp/search.js";
 import type { Servers } from "../mcp/servers.js";
 import { type Shell, split } from "../safety/split.js";
-import { callRow, describe, type Line, resultRow } from "./describe.js";
+import { brief, callRow, describe, type Line, resultRow } from "./describe.js";
+import { elapsed } from "./WorkingLine.js";
 
 // Folded tool rows, as Claude Code's (release 8c plan, choice 65; Task 15): calls with no text between them that only
 // read, search, list or run a read-only command are one grey row of counts, said once the run ends, so no row is ever
@@ -177,6 +178,14 @@ export class OpenRun {
   // The calls of the latest reply with rows of their own, until its results come (question, `under`).
   #rowed = new Set<string>();
   #resulted = false;
+  // The live row (release 8c plan, choice 67; Task 17): its two lines as the run's calls last set them, the searches and
+  // shell commands started in the run, whether a search set the top line, and the latest shell call's start and end.
+  #top: ((now: number) => string) | null = null;
+  #under: (now: number) => string = () => "";
+  #searches = 0;
+  #shells = 0;
+  #searchTop = false;
+  #shell: { id: string; at: number; end?: number } | null = null;
 
   constructor(readonly options: FoldOptions) {}
 
@@ -196,6 +205,7 @@ export class OpenRun {
       return [...this.end(), callRow(c)];
     }
     // A new run starting says the failed rows waiting from a run said before it, as their calls ran first.
+    if (!this.#run.length) this.#quiet();
     const waiting = this.#run.length ? [] : this.#failed.splice(0);
     const kinds = kindOf(c, this.options.asked, false, this.options.shell);
     this.#run.push({ call: c, kinds });
@@ -254,6 +264,7 @@ export class OpenRun {
   // The run said, as one row, and emptied, then the rows of its calls that failed meanwhile. A run of only tool_search has
   // no row.
   end(): Line[] {
+    this.#quiet();
     if (!this.#run.length) return this.#failed.splice(0);
     const fold: Fold = { text: "", calls: this.#run, results: this.#results, open: false };
     this.#run = [];
@@ -262,6 +273,63 @@ export class OpenRun {
     const text = rowText(fold.calls, this.options.server);
     if (text !== null) fold.text = text;
     return [...(text === null ? [] : [foldRow(fold)]), ...this.#failed.splice(0)];
+  }
+
+  // A run's call starting sets the live row (choice 67): the top line names the work, a search only while searches alone
+  // set it, so a search after a read leaves `Reading <path>` on top; the ⎿ line is the newest call's detail, as describe's
+  // brief gives it. A shell call's seconds count from `at`. tool_search sets neither; a call of no open run, nothing.
+  start(id: string, at: number): void {
+    const c = this.#run.findLast((x) => x.call.id === id)?.call;
+    if (!c || c.name === SEARCH) return;
+    const detail = brief(c.name, c.input) ?? JSON.stringify(c.input);
+    const s = (n: number) => (n === 1 ? "" : "s");
+    if (c.name === "find_files" || c.name === "search_files") {
+      const n = ++this.#searches;
+      if (this.#top === null || this.#searchTop) {
+        this.#top = () => `● Searching for ${n} pattern${s(n)}`;
+        this.#searchTop = true;
+      }
+      this.#under = () => `  ⎿  "${detail}"`;
+      return;
+    }
+    this.#searchTop = false;
+    if (c.name === "shell") {
+      const n = ++this.#shells;
+      const shell: { id: string; at: number; end?: number } = (this.#shell = { id, at });
+      // The whole seconds since it started, until it ended, from 1 s, as the working line counts its own (WorkingLine.tsx).
+      const time = (now: number) => {
+        const ms = (shell.end ?? now) - shell.at;
+        return ms < 1000 ? null : elapsed(ms);
+      };
+      this.#top = (now) => `● Running ${n} shell command${s(n)}${time(now) === null ? "" : ` · ${time(now)}`}`;
+      this.#under = (now) => `  ⎿  $ ${detail}${time(now) === null ? "" : ` (${time(now)})`}`;
+    } else if (isMcp(c.name)) {
+      const safe = safeOf(c.name);
+      this.#top = () => `● Calling ${visible(this.options.server(safe))}`;
+      this.#under = () => `  ⎿  ${c.name.slice(`mcp__${safe}__`.length)}`;
+    } else {
+      this.#top = () => `● Reading ${detail}`;
+      this.#under = () => `  ⎿  ${detail}`;
+    }
+  }
+
+  // A shell call ending stops its seconds.
+  finished(id: string, at: number): void {
+    if (this.#shell?.id === id) this.#shell.end = at;
+  }
+
+  // The live row's two grey lines, while the run holds a call that set them; none otherwise.
+  live(now: number): Line[] {
+    if (!this.#run.length || this.#top === null) return [];
+    return [this.#top(now), this.#under(now)].map((text) => ({ text, color: "gray", oneLine: true }));
+  }
+
+  // The live row gone, as its run ends or a new one starts.
+  #quiet(): void {
+    this.#top = null;
+    this.#searches = this.#shells = 0;
+    this.#searchTop = false;
+    this.#shell = null;
   }
 }
 

@@ -58,6 +58,7 @@ import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
+import { SPIN_MS } from "../../src/tui/WorkingLine.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
 
@@ -2314,6 +2315,126 @@ describe("App's folded tool rows", () => {
     expect(shown(app).slice(row, row + 2)).toEqual(["Read 2 files", "Both read."]);
     await pointer(mouse, ...click(3, row + 1)); // a row of no fold does nothing
     expect(shown(app).slice(row, row + 2)).toEqual(["Read 2 files", "Both read."]);
+  });
+});
+
+// Release 8c plan, choice 67 and Task 17: while the open run's calls go, its live row is drawn in the live part of the
+// screen, above the working line; when the run ends it goes, and the finished row is said in its place, once.
+describe("App's live folded row", () => {
+  const rows = (app: ReturnType<typeof render>, full: boolean) =>
+    stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
+  // The live row's two lines and the row under them, or none.
+  const live = (app: ReturnType<typeof render>, full = false) => {
+    const r = rows(app, full);
+    const at = r.findIndex((x) => /^● (Reading|Searching|Running|Calling) /.test(x));
+    return at === -1 ? [] : r.slice(at, at + 3);
+  };
+  const said = (app: ReturnType<typeof render>, row: string) => rows(app, false).filter((r) => r.startsWith(row)).length;
+  const working = expect.stringContaining("Esc to stop");
+  // A shell whose command runs until the test ends it.
+  const heldShell = () => {
+    let end = () => {};
+    const executor: Executor = {
+      exec: () => new Promise((resolve) => (end = () => resolve({ code: 0, signal: null, stdout: "", stderr: "" }))),
+    };
+    return { executor, end: () => end() };
+  };
+  const both = (...calls: Turn[]): Turn => ({ parts: calls.flatMap((c) => c.parts), usage });
+  // The fake clock moved on by `ms`, a working line's spin at a time, the screen drawn after each: moved on in one go, the
+  // screen drew only the first spins' time (seen in this test).
+  const spin = async (ms: number) => {
+    for (let t = 0; t < ms; t += SPIN_MS) {
+      vi.advanceTimersByTime(SPIN_MS);
+      await tick();
+    }
+  };
+
+  it.each([true, false])("draws the run's live row as its calls go, then says the finished row once at the text (full screen: %s)", async (full) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      await inColour(async () => {
+        const lead = new Held();
+        const shell = heldShell();
+        const { app, ctx } = await mount([], { lead, full, mode: "never", executor: shell.executor });
+        writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+        await type(app, "look");
+        await waitFor(() => lead.asked.length === 1);
+        lead.answer(callTool("c1", "read_file", { path: "a.txt" }));
+        await waitFor(() => lead.asked.length === 2);
+        expect(live(app, full)).toEqual(["● Reading a.txt", "  ⎿  a.txt", working]);
+        expect(app.lastFrame()).toContain("\u001b[90m● Reading a.txt");
+        // A search after a read keeps the read on top.
+        lead.answer(both(callTool("c2", "find_files", { pattern: "*.txt" }), callTool("c3", "shell", { command: "git status\ngit log" })));
+        await until(app, "$ git status");
+        expect(live(app, full)).toEqual(["● Running 1 shell command", "  ⎿  $ git status", working]);
+        await spin(1_000);
+        expect(live(app, full)).toEqual(["● Running 1 shell command · 1s", "  ⎿  $ git status (1s)", working]);
+        await spin(2_000);
+        expect(live(app, full)).toEqual(["● Running 1 shell command · 3s", "  ⎿  $ git status (3s)", working]);
+        expect(app.lastFrame()).not.toContain("Searched for"); // nothing said until the run ends
+        shell.end();
+        await waitFor(() => lead.asked.length === 3);
+        lead.answer("They match.");
+        await until(app, "They match.");
+        expect(live(app, full)).toEqual([]);
+        expect(said(app, "Searched for 1 pattern, read 1 file, ran 1 shell command")).toBe(1);
+        const r = rows(app, full);
+        expect(r[r.indexOf("They match.") - 1]).toBe("Searched for 1 pattern, read 1 file, ran 1 shell command");
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a search first as its top line, and takes the live row away at a question, the finished row said once", async () => {
+    const lead = new Held();
+    const { ran, executor } = noShell();
+    const { app, ctx } = await mount([], { lead, executor });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    await type(app, "look");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(callTool("c1", "search_files", { pattern: "endRun" }));
+    await waitFor(() => lead.asked.length === 2);
+    expect(live(app)).toEqual(["● Searching for 1 pattern", '  ⎿  "endRun"', working]);
+    lead.answer(callTool("c2", "shell", { command: "git status" }));
+    await until(app, "Allow run: git status?");
+    expect(live(app)).toEqual([]);
+    await press(app, "y");
+    await waitFor(() => lead.asked.length === 3);
+    lead.answer("done");
+    await until(app, "done");
+    expect(said(app, "Searched for 1 pattern")).toBe(1);
+    expect(ran).toEqual(["git status"]);
+  });
+
+  // At Esc, and at a turn that ends with no text, its reply empty.
+  it.each([true, false])("takes the live row away at the turn's end, the finished row said once (Esc: %s)", async (esc) => {
+    const lead = new Held();
+    const { app, ctx } = await mount([], { lead });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    await type(app, "look");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(callTool("c1", "read_file", { path: "a.txt" }));
+    await waitFor(() => lead.asked.length === 2);
+    expect(live(app)).toEqual(["● Reading a.txt", "  ⎿  a.txt", working]);
+    if (esc) await press(app, "\u001b");
+    else lead.answer({ parts: [], usage });
+    await gone(app, "Esc to stop");
+    expect(live(app)).toEqual([]);
+    expect(said(app, "Read 1 file")).toBe(1);
+  });
+
+  // tool_search sets neither line, so a run of only tool_search draws nothing.
+  it("draws no live row for tool_search alone", async () => {
+    const lead = new Held();
+    const { app } = await mount([], { lead });
+    await type(app, "find a tool");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(callTool("t1", "tool_search", { query: "quote" }));
+    await waitFor(() => lead.asked.length === 2);
+    const r = rows(app, false);
+    expect(r[r.indexOf("> find a tool") + 1]).toEqual(working);
+    expect(app.lastFrame()).not.toContain("⎿  ");
   });
 });
 
