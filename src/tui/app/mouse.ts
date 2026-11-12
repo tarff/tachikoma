@@ -1,7 +1,7 @@
 import type { Fns } from "../App.js";
 import { screen as escaped } from "../describe.js";
 import { move } from "../editor.js";
-import { foldRow, openRows } from "../fold.js";
+import { type Fold, foldRow, openRows } from "../fold.js";
 import type { Mouse } from "../input.js";
 import type { Scroll } from "../keys.js";
 import { layout, placeOn, scroll as windowOf } from "../layout.js";
@@ -200,17 +200,22 @@ export const mouse = (ui: UI, fns: Fns) => {
     ui.rerender((n) => n + 1);
   };
   // A click on a folded tool row opens it in place into its calls' rows, and a click on one of those closes it again; each
-  // keeps its own state (release 8c plan, choice 65). The lines after it move, so the view held below it and a question's
-  // detail move with their own lines.
+  // keeps its own state (release 8c plan, choice 65).
   const toggleFold = (line: number) => {
-    const { kept } = ui;
-    const fold = kept.lines[line]?.fold;
+    const fold = ui.kept.lines[line]?.fold;
     if (!fold) return;
-    let from = line;
-    let to = line + 1;
-    while (from > 0 && kept.lines[from - 1]!.fold === fold) from--;
-    while (to < kept.lines.length && kept.lines[to]!.fold === fold) to++;
     fold.open = !fold.open;
+    putFold(fold);
+  };
+  // A folded row's lines put again as it now is: open, its calls' rows with the results come so far; closed, its own row.
+  // A click puts them, and so does a result for an open row's call, so it shows under its call as it comes (choice 70;
+  // App.tsx, onMessage). An open row is in `kept`, as only a click in full screen opens one. The lines after it move, so
+  // the view held below it and a question's detail move with their own lines.
+  const putFold = (fold: Fold) => {
+    const { kept } = ui;
+    const to = kept.lines.findLastIndex((l) => l.fold === fold) + 1;
+    let from = to - 1;
+    while (from > 0 && kept.lines[from - 1]!.fold === fold) from--;
     const put = (fold.open ? openRows(fold, ui.run.options.names) : [foldRow(fold)]).map(escaped);
     kept.replace(from, to - from, put);
     const moved = (n: number) => (n >= to ? n + put.length - (to - from) : Math.min(n, from));
@@ -236,5 +241,5 @@ export const mouse = (ui: UI, fns: Fns) => {
     h.copy = true;
     ui.rerender((n) => n + 1);
   };
-  return { scroll, selected, copy, onMouse, cellAt, textRows, pressAt, clickAt, toggleFold, dragTo };
+  return { scroll, selected, copy, onMouse, cellAt, textRows, pressAt, clickAt, toggleFold, putFold, dragTo };
 };

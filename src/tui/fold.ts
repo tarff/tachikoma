@@ -182,6 +182,7 @@ export class OpenRun {
   #results = new Map<string, Line>();
   #failed: Line[] = []; // the rows of calls that failed, said where the open run ends
   #said = new Map<string, Fold>(); // the said runs' calls still waiting for their results
+  #filled = new Set<Fold>(); // the said runs a result came for since `filled` last gave them
   // The calls of the latest reply with rows of their own, until its results come (question, `under`).
   #rowed = new Set<string>();
   #resulted = false;
@@ -231,6 +232,7 @@ export class OpenRun {
     if (!call) return null;
     this.#said.delete(r.callId);
     (fold?.results ?? this.#results).set(r.callId, resultRow(r));
+    if (fold) this.#filled.add(fold);
     if (kindOf(call, this.options.asked, r.isError, this.options.shell)[0] !== "own") return [];
     if (i >= 0) {
       this.#run.splice(i, 1);
@@ -238,6 +240,14 @@ export class OpenRun {
     }
     this.#failed.push(callRow(call, this.options.names), resultRow(r));
     return [];
+  }
+
+  // The said runs a result came for since last asked, each once, so an open one's lines are put again and the result
+  // shows under its call (release 8c plan, choice 70; Task 21; App.tsx, onMessage).
+  filled(): Fold[] {
+    const folds = [...this.#filled];
+    this.#filled.clear();
+    return folds;
   }
 
   // A question opens, and "ends the run before its call" (choice 65): the run's calls before the asked one are said, and

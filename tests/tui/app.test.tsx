@@ -2432,6 +2432,69 @@ describe("App's live folded row", () => {
     expect(r[r.indexOf("> find a tool") + 1]).toEqual(working);
     expect(app.lastFrame()).not.toContain("⎿  ");
   });
+
+  // The outside review's finding 6 (release 8c plan, choice 70; Task 21): a reply's results come only once all its calls
+  // end, so a folded row is often said, and clicked open, before them. Opened, each shows under its call as it comes;
+  // closed, the row stays one row.
+  it.each([true, false])("shows the results in a folded row opened before they come, a closed one staying one row (opened: %s)", async (open) => {
+    const lead = new Held();
+    const shell = heldShell();
+    const { app, ctx, mouse } = await mount([], { lead, full: true, mode: "never", executor: shell.executor });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    writeFileSync(path.join(ctx.root, "b.txt"), "b\n");
+    await type(app, "look");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "b.txt" }), callTool("c3", "shell", { command: "npm test" })));
+    await until(app, "● shell npm test");
+    const row = shown(app).indexOf("Read 2 files");
+    expect(shown(app)[row + 1]).toBe("● shell npm test");
+    if (open) {
+      await pointer(mouse, ...click(3, row));
+      expect(shown(app).slice(row, row + 4)).toEqual(["● read_file a.txt", "● read_file b.txt", "● shell npm test", ""]);
+    }
+    shell.end();
+    await waitFor(() => lead.asked.length === 2);
+    await tick();
+    const after = open ? ["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ ok", "● shell npm test", "  ⎿ ok"] : ["Read 2 files", "● shell npm test", "  ⎿ ok"];
+    expect(shown(app).slice(row, row + after.length + 1)).toEqual([...after, ""]);
+    lead.answer("done");
+    await until(app, "done");
+    expect(shown(app).slice(row, row + after.length + 1)).toEqual([...after, "done"]);
+  });
+
+  // The results' rows put above them move the view held below the opened row and a waiting question's detail with their
+  // own lines: the shown question's heading stays on the top row, and the next one's is brought there when it shows.
+  it("moves the view held below an opened folded row and a waiting question's detail with their lines as its results come", async () => {
+    const lead = new Held();
+    const shell = heldShell();
+    const { app, ctx, mouse, ask } = await mount([], { lead, full: true, mode: "never", executor: shell.executor });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    writeFileSync(path.join(ctx.root, "b.txt"), "b\n");
+    await type(app, "look");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "b.txt" }), callTool("c3", "shell", { command: "npm test" })));
+    await until(app, "● shell npm test");
+    await pointer(mouse, ...click(3, shown(app).indexOf("Read 2 files")));
+    await until(app, "● read_file b.txt");
+    const detail = (name: string) => Array.from({ length: 100 }, (_, i) => `${name} ${i}.`).join("\n");
+    const first = ask("write a.txt", detail("a"), asker("t2 (a)").owner);
+    await until(app, "Allow t2 (a) to write a.txt? [y/n]");
+    const second = ask("write b.txt", detail("b"), asker("t3 (b)").owner);
+    await tick();
+    expect(shown(app)[0]).toBe("┌ write a.txt (100 lines)");
+    shell.end();
+    await waitFor(() => lead.asked.length === 2);
+    await tick();
+    expect(shown(app)[0]).toBe("┌ write a.txt (100 lines)");
+    await press(app, "y");
+    expect(await first).toBe(true);
+    await until(app, "Allow t3 (b) to write b.txt? [y/n]");
+    expect(shown(app)[0]).toBe("┌ write b.txt (100 lines)");
+    await press(app, "y");
+    expect(await second).toBe(true);
+    lead.answer("done");
+    await gone(app, "Esc to stop");
+  });
 });
 
 describe("App's to-do list", () => {

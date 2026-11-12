@@ -301,6 +301,23 @@ describe("the open run", () => {
     expect(run.question("m2")).toMatchObject({ under: true });
   });
 
+  // The outside review's finding 6 (release 8c plan, choice 70; Task 21): a said run a result comes for is given once, so
+  // an open row's lines can be put again, a failed call's red row under it as a click would show it; a result for a run
+  // not said yet, or for a call of its own row, gives none.
+  it("gives each said run a result came for once, and none for a run not said yet or a call of its own row", () => {
+    const run = new OpenRun(opts());
+    const said = lines(reply(read("r1"), read("r2", "b.txt"), sh("x", "npm test")), undefined, run);
+    const fold = said[0]!.fold!;
+    expect(run.filled()).toEqual([]);
+    lines(results(ok("r1"), failed("r2", "gone"), ok("x")), undefined, run);
+    expect(run.filled().map((f) => f === fold)).toEqual([true]);
+    expect(run.filled()).toEqual([]);
+    expect(openRows(fold, opts().names).map((l) => l.text)).toEqual(["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ gone"]);
+    lines(reply(read("r3")), undefined, run);
+    lines(results(ok("r3")), undefined, run);
+    expect(run.filled()).toEqual([]);
+  });
+
   // A resumed conversation folds as the live one did: an asked call, by its saved mark, keeps its own row.
   it("folds a resumed conversation, an asked MCP call keeping its row", () => {
     const history: Message[] = [

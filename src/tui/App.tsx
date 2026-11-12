@@ -176,7 +176,7 @@ export interface Fns {
   promptKey: KeyRoutingArea["promptKey"]; vimTakes: KeyRoutingArea["vimTakes"]; staleVim: KeyRoutingArea["staleVim"];
   vimFirst: KeyRoutingArea["vimFirst"]; dropRemap: KeyRoutingArea["dropRemap"]; freshText: KeyRoutingArea["freshText"];
   detailKey: KeyRoutingArea["detailKey"]; remember: KeyRoutingArea["remember"]; forget: KeyRoutingArea["forget"];
-  scroll: MouseArea["scroll"]; selected: MouseArea["selected"]; copy: MouseArea["copy"]; onMouse: MouseArea["onMouse"]; toggleFold: MouseArea["toggleFold"];
+  scroll: MouseArea["scroll"]; selected: MouseArea["selected"]; copy: MouseArea["copy"]; onMouse: MouseArea["onMouse"]; toggleFold: MouseArea["toggleFold"]; putFold: MouseArea["putFold"];
   cellAt: MouseArea["cellAt"]; textRows: MouseArea["textRows"]; pressAt: MouseArea["pressAt"];
   clickAt: MouseArea["clickAt"]; dragTo: MouseArea["dragTo"];
   run: PromptKeysArea["run"]; command: PromptKeysArea["command"]; send: PromptKeysArea["send"];
@@ -297,10 +297,12 @@ export function App(props: AppProps) {
     // question's answer to go under (release 7 plan, choice 66). With more such calls than one, none does: an earlier call
     // that asks nothing prints nothing before the last one's question, and its result comes first, so each answer names its
     // call and each result keeps its place (choice 67). The quiet calls go to the open run, saying nothing and no result
-    // row until their row is said (release 8c plan, Task 15), so they come between nothing. An answered call's id is let go
-    // with its result, as a provider may use an id again.
+    // row until their row is said (release 8c plan, Task 15), so they come between nothing; a folded row clicked open
+    // before its results came is put again, so each shows under its call (choice 70; Task 21). An answered call's id is
+    // let go with its result, as a provider may use an id again.
     const onMessage = (m: Message) => {
       latest.current.say(...describe(m, ui.answered.current, ui.run));
+      for (const fold of ui.run.filled()) if (fold.open) latest.current.putFold(fold);
       for (const p of m.parts) if (p.type === "tool_result") ui.answered.current.delete(p.callId);
       const last = m.parts.at(-1);
       const rows = m.parts.filter((p) => p.type === "tool_call" && ui.run.own(p));
@@ -539,7 +541,7 @@ export function App(props: AppProps) {
   // (state.ts).
   const handlers = {
     say: fns.say, note: fns.note, noteAlone: fns.noteAlone, endRun: fns.endRun, closeDetail: fns.closeDetail, comeBack: fns.comeBack,
-    next: fns.next, lookUpWindow: fns.lookUpWindow, onMouse: fns.onMouse, onSettings: fns.onSettings,
+    next: fns.next, lookUpWindow: fns.lookUpWindow, onMouse: fns.onMouse, putFold: fns.putFold, onSettings: fns.onSettings,
     onKeys: fns.onKeys, settle: fns.settle, dropChord: fns.dropChords,
   };
   const latest = useRef(handlers);
