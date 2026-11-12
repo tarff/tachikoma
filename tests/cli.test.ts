@@ -592,6 +592,53 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(sent[1]!.messages.at(-1)).toMatchObject({ role: "tool", content: told });
   });
 
+  // Background commands plan, Task 11 (design, "With -p"): after its answer the run waits while a background command runs,
+  // and the command's ending gets a turn, whose answer is printed too. The lead is a stand-in served on the loopback
+  // address, as above; a PreToolUse hook of the test's own allows the command, as -p asks nobody. Its own limit: the run
+  // pays the -p start of about 7.5 s ("Before you start").
+  it("with -p, waits for a background command and prints the answer its ending gets too", { timeout: 60_000 }, async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-wait-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    const script = path.join(top, "allow.cjs");
+    const allow = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } };
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify(allow))});`);
+    const hooks = { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const command = `node -e "setTimeout(() => console.log('done'), 300)"`;
+    const sent: { messages: { role: string; content?: unknown }[] }[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const request = JSON.parse(body) as (typeof sent)[number];
+        sent.push(request);
+        const first = !request.messages.some((m) => m.role === "tool");
+        const ending = JSON.stringify(request.messages.at(-1)).includes("Background command t1");
+        const call = { id: "c1", type: "function", function: { name: "shell", arguments: JSON.stringify({ command, background: true }) } };
+        const said = ending ? "It printed done." : "Started it.";
+        const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: said };
+        const choice = { index: 0, finish_reason: first ? "tool_calls" : "stop", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "run it in the background", env);
+    expect(r).toMatchObject({ code: 0, stdout: "Started it.\nIt printed done.\n" });
+    expect(sent).toHaveLength(3);
+    expect(sent[1]!.messages.at(-1)).toMatchObject({ role: "tool", content: "Started t1 in the background." });
+    expect(JSON.stringify(sent[2]!.messages.at(-1))).toContain(`Background command t1 (${command.replaceAll('"', '\\"')}) ended with exit code 0:\\ndone`);
+  });
+
   // Release 8b plan, Task 8 and choice 9: a prompt a UserPromptSubmit hook blocked, and any hook's continue: false, end a
   // -p run with exit code 1 and the grey line as a note on its error output; with --json, as a hook-note line of its own
   // (the user's choice, 2026-11-09). The lead is the stand-in above, which asks to read a file, then answers.

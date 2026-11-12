@@ -11,6 +11,9 @@ const DEFAULT_TIMEOUT = 120_000;
 const MOST_FOREGROUND = 600_000;
 // The most a timeout can ask for at all, a -p background limit's most: "up to a maximum of 2 hours" (the same page).
 export const MOST_TIMEOUT = 7_200_000;
+// Under -p, a background start's limit when no timeout is given, and a moved command's from the move: for a -p run given
+// its prompt as text "both defaults are 10 minutes" (the same page, "Time limit for background commands").
+export const HEADLESS_LIMIT = 600_000;
 
 // Choice 12: a model that sleeps is waiting on purpose, so its command stops at its timeout instead of moving. The first
 // word is read after leading spaces, up to a space or `;`: `sleep` or PowerShell's Start-Sleep, in any letter case, as

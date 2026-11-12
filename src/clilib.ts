@@ -5,11 +5,13 @@ import { constants } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { privateDir } from "./auth/private.js";
+import type { Bus } from "./core/bus.js";
 import { type Instructions, type Reached, readInstructions, type Where } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
-import { type Conversation, Session, type SessionOptions } from "./core/session.js";
+import { type Conversation, type Ended, Session, type SessionOptions } from "./core/session.js";
 import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
+import type { CommandTask, Tasks } from "./core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "./core/transcript.js";
 import { errorText, madeUnder, type Message, type ToolSpec } from "./core/types.js";
 import { gitBash } from "./exec/env.js";
@@ -259,6 +261,57 @@ export function turnAnswer(before: Message | undefined, messages: Message[]): st
   const last = messages.at(-1);
   if (!last || last === before || last.role !== "assistant") return undefined;
   return last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
+}
+
+// Claude Code's headless page, "Background tasks at exit": -p's waiting line after 5 s (background commands plan, "Numbers
+// in this plan").
+const WAITING_LINE_MS = 5_000;
+
+// -p's wait after its first answer (background commands design, "With -p", "How the wait ends"; plan, choices 21 and 25):
+// while a background command runs or an ending waits, each ending gets a turn, its answer printed as the first's. It ends
+// once everything has ended, at Ctrl-C (`signal`), at a failed call (`failed`), or at a turn whose result ended the run,
+// which it returns. However it ends, what is left stops as the window's close stops it, unrecorded, so a resume says it
+// was not running (choice 29, the user's); its time limit's timer goes with it, so nothing holds the process open.
+// `waitingLine` is given only when stderr is a terminal: the line is said once, after 5 s of waiting.
+export async function waitForBackground(
+  session: Session,
+  tasks: Tasks,
+  signal: AbortSignal,
+  opts: { bus: Bus; failed: () => boolean; answer: (before: Message | undefined) => void; waitingLine?: (line: string) => void },
+): Promise<Ended | void> {
+  const running = () => tasks.all.filter((t): t is CommandTask => t.kind === "command" && t.state === "running");
+  let said = false;
+  // Until the list changes or Ctrl-C, the waiting line's timer and both listeners gone either way.
+  const change = () =>
+    new Promise<void>((resolve) => {
+      const say = () => {
+        said = true;
+        opts.waitingLine!(`Waiting for background work to finish: ${running().map((t) => `${t.id} (${visible(headCommand(t.command))})`).join(", ")}`);
+      };
+      const timer = opts.waitingLine && !said ? setTimeout(say, WAITING_LINE_MS) : undefined;
+      const done = () => {
+        clearTimeout(timer);
+        opts.bus.off("tasks", done);
+        signal.removeEventListener("abort", done);
+        resolve();
+      };
+      opts.bus.on("tasks", done);
+      signal.addEventListener("abort", done);
+    });
+  try {
+    while (!signal.aborted && !opts.failed() && (tasks.wakes() || running().length)) {
+      if (!tasks.wakes()) {
+        await change();
+        continue;
+      }
+      const before = session.messages.at(-1);
+      const ended = await session.send("", signal);
+      opts.answer(before);
+      if (ended) return ended;
+    }
+  } finally {
+    tasks.close();
+  }
 }
 
 // A reader such as `head` that stops early is a normal end, not a crash.

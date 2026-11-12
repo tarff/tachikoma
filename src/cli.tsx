@@ -50,6 +50,7 @@ import {
   stopSoon,
   systemAgain,
   turnAnswer,
+  waitForBackground,
   WindowSessions,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
@@ -58,10 +59,11 @@ import { attachErrorLog } from "./core/errorlog.js";
 import { type Reached, readInstructions } from "./core/instructions.js";
 import { type Ask, PermissionGate, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
+import type { Ended } from "./core/session.js";
 import { type Row, sessionsDir, sweep } from "./core/sessions.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
-import { errorText, type Provider } from "./core/types.js";
+import { errorText, type Message, type Provider } from "./core/types.js";
 import { LocalExecutor, LocalWorkspace, shellFor } from "./exec/local.js";
 import { Hooks } from "./hooks/hooks.js";
 import { pathsFor } from "./hooks/tools.js";
@@ -83,7 +85,7 @@ import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
 import { shellOf } from "./safety/split.js";
 import { hooksOf, loadSettings, SETTINGS, shownFile } from "./settings.js";
-import { shellTools } from "./tools/commands.js";
+import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "./tools/commands.js";
 import { delegateTool } from "./tools/delegate.js";
 import { editFileTool } from "./tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
@@ -691,6 +693,8 @@ const tasks = new Tasks({
   hooks,
   paths,
   mcp: servers, // each subagent's own MCP tools, its trusted read-only ones only (Task 7)
+  // A background command's time limit, under -p only (background commands plan, choice 8 and Task 11).
+  ...(interactive ? {} : { limits: { started: HEADLESS_LIMIT, moved: HEADLESS_LIMIT, most: MOST_TIMEOUT } }),
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus. In the box the shell tool says
 // bash, whatever the host. The shell tool keeps its place after edit_file, so the order the model sees is as before,
@@ -781,26 +785,39 @@ if (parsed.print !== undefined) {
   for (const line of said) console.error(gray(line.text));
   session.load(opened.conversation);
   session.start(source);
-  // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us.
-  // A second Ctrl-C gets Node's default and ends at once.
+  // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us. The first Ctrl-C stops
+  // the turn, or the wait for background commands; a second ends at once through process.exit, so the exit handlers still
+  // stop the commands and the box (background commands plan, choice 22; design, "How the wait ends").
   const stop = new AbortController();
-  process.once("SIGINT", () => stop.abort());
+  process.on("SIGINT", () => (stop.signal.aborted ? quit() : stop.abort()));
   // A prompt a UserPromptSubmit hook blocked, and a hook's continue: false, end the run with exit code 1, as its work was
   // cut short (release 8b plan, Task 8 and choice 9). Only the reply this turn added is printed (turnAnswer): a blocked
   // prompt, one a stop left unsent, and one stopped while it waited for SessionStart or the MCP servers add none, so a
   // resumed session's last answer is not printed as this run's (release 8c plan, Task 9's review); a stop later in the
-  // turn prints the answer it came after, as a Stop hook's does (release 8b plan, Task 9).
-  const before = session.messages.at(-1);
-  const ended = await session.send(parsed.print, stop.signal);
-  // Read now: a Ctrl-C during SessionEnd or copy mode's step below comes after the run's work, so it does not mark the run
-  // stopped (Task 10's code review).
-  const aborted = stop.signal.aborted;
-  const text = parsed.json ? undefined : turnAnswer(before, session.messages);
-  if (text !== undefined) {
+  // turn prints the answer it came after, as a Stop hook's does (release 8b plan, Task 9). Each later turn's answer is
+  // printed so too (background commands plan, Task 11).
+  const printAnswer = (before: Message | undefined) => {
+    const text = parsed.json ? undefined : turnAnswer(before, session.messages);
+    if (text === undefined) return;
     const { out, note } = headlessAnswer(text, { raw: parsed.raw === true, tty: process.stdout.isTTY === true });
     console.log(out);
     if (note) console.error(note);
-  }
+  };
+  const before = session.messages.at(-1);
+  const first = await session.send(parsed.print, stop.signal);
+  printAnswer(before);
+  // Then the wait while background commands run, a turn for each ending, unless the first turn ended the run; either way
+  // what is left stops as the window's close stops it (background commands design, "With -p"; plan, choices 25 and 29).
+  // The waiting line only on a terminal, grey as the launch's lines.
+  let later: Ended | void = undefined;
+  if (first === undefined) {
+    const waitingLine = process.stderr.isTTY ? { waitingLine: (line: string) => console.error(gray(line)) } : {};
+    later = await waitForBackground(session, tasks, stop.signal, { bus, failed: () => failed, answer: printAnswer, ...waitingLine });
+  } else tasks.close();
+  const ended = first ?? later;
+  // Read now: a Ctrl-C during SessionEnd or copy mode's step below comes after the run's work, so it does not mark the run
+  // stopped (Task 10's code review).
+  const aborted = stop.signal.aborted;
   // The run's session ends here, after its answer, however its turn ended, a stop by Ctrl-C too (release 8b plan, Task 10).
   // Then the MCP servers stop, after SessionEnd, whose mcp_tool hooks call them (release 8c plan, Task 8's code review).
   await session.end("other");
