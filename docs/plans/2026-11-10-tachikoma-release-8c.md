@@ -762,7 +762,9 @@ search, always on", "Own lookup tool, every provider")
     - **An MCP call's row** names the server and the tool as the server gives them, escaped:
       `● tradingview chart_set_symbol {"symbol":"BTCUSDT"}`, not
       `● mcp__tradingview__chart_set_symbol {...}`. So do the rows of a folded row clicked open,
-      the subagent panel's latest call and the live row's `⎿` line. The input stays JSON, as the
+      the subagent panel's latest call, the live row's `⎿` line, the tool line under the prompt
+      (`✓ tradingview chart_set_symbol ×1`) and the full record Ctrl+O and `/tasks <id>` open (the
+      user's answer to Task 18's report, 2026-11-12: "both readable"). The input stays JSON, as the
       permission question shows it.
     - **A name no longer offered** (a resumed session after the server changed or went): the
       server's name from the settings entry whose safe name matches, else the safe one, and the
@@ -774,12 +776,13 @@ search, always on", "Own lookup tool, every provider")
     - **As built** (Task 18, 2026-11-12):
       - The names come from `Servers.owner`, the server and tool the last offer gave a full name; the
         window's open run carries the lookup (`FoldOptions.names`, which replaces `server`), and the
-        panel, `/tasks` and a click that opens a row use the run's. A conversation resumed at the
-        launch is drawn before any offer, so its rows take the fallback: a tool whose name held `.`
-        reads with `_` there (`foo_bar`); rows said after the next request read `foo.bar`.
-      - Not in the rows above, so still the full name: the tool line under the prompt
-        (`✓ mcp__<server>__<tool> ×1`) and Ctrl+O's and `/tasks t3`'s full record, which `/export`'s
-        text gives.
+        panel, the tool line, Ctrl+O, `/tasks` and a click that opens a row use the run's. A
+        conversation resumed at the launch is drawn before any offer, so its rows take the fallback:
+        a tool whose name held `.` reads with `_` there (`foo_bar`); rows said after the next
+        request read `foo.bar`.
+      - The full record and `/export` share `callText` (exportText.ts); Ctrl+O and `/tasks <id>`
+        pass it the name on screen, `/export` and a shortening's text for the model pass none, so
+        they keep the full name.
 
 ## Lines this plan adds
 
@@ -862,6 +865,8 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | The live folded row, top line (grey; choice 67) | `● Reading <path>`, `● Listing <path>`, `● Calling <name>`, `● Running <n> shell command(s) · <time>`, `● Searching for <n> pattern(s)`; `<time>` as the working line writes it, `<s>s` or from a minute `<m>m <s>s` (choice 68) |
 | The live folded row, under it (grey; choice 67) | `  ⎿  "<pattern>"`, `  ⎿  <path>`, `  ⎿  <tool>` (the server's own name; choice 68), `  ⎿  $ <command> (<time>)` |
 | An MCP call's row (choice 68) | `● <name> <tool> <input as JSON>`, `<tool>` as the server gives it, escaped |
+| The tool line under the prompt, an MCP call (choice 68) | `◐ <name> <tool>` while it runs, `✓ <name> <tool> ×<n>` (and `✗`, `⊘`) once done |
+| Ctrl+O's and `/tasks <id>`'s full record, an MCP call (choice 68) | `● <name> <tool> <input as indented JSON>` then `  ⎿ <result>`; `/export` keeps `● mcp__<server>__<tool> ...` |
 
 ## Task 1: The library, and measuring the user's servers
 

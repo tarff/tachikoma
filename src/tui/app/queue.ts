@@ -477,7 +477,7 @@ export const queue = (ui: UI, fns: Fns) => {
   };
   // `/tasks t3`'s record: the subagent's tool calls and answer in full.
   const recordOf = (t: Task): Line[] => {
-    const calls = callLines(t.messages);
+    const calls = callLines(t.messages, ui.run.options.names);
     const end = t.state === "done" ? `Answer:\n${t.answer}` : t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)";
     return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
   };

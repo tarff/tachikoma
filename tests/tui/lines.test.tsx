@@ -56,6 +56,15 @@ describe("toolParts", () => {
     expect(toolParts(calls).map((p) => [p.color, p.whole])).toEqual([["yellow", false], ["green", false], ["green", false], ["red", true], ["gray", true]]);
   });
 
+  // Release 8c plan, choice 68 (Task 18, the user's answer, 2026-11-12): an MCP call by its server and tool as the server
+  // gives them, escaped; without the window's names, the safe server and the full name's tool part.
+  it("names an MCP call by its server and tool as the server gives them", () => {
+    const names = (full: string) => (full === "mcp__my_tv__foo_bar" ? { server: "my.tv", tool: "foo\u0007.bar" } : { server: "?", tool: "?" });
+    const dotted = [call("mcp__my_tv__foo_bar", "ok"), call("mcp__my_tv__foo_bar", undefined, null)];
+    expect(toolParts(dotted, names).map((p) => `${p.mark} ${p.rest}`)).toEqual(["◐ my.tv foo\\u0007.bar", "✓ my.tv foo\\u0007.bar ×1"]);
+    expect(shown([call("mcp__tradingview__chart_set_symbol", "ok")])).toEqual(["✓ tradingview chart_set_symbol ×1"]);
+  });
+
   it("escapes what the model named, and has nothing to show with no calls", () => {
     expect(shown([call("x\u001b[2J", undefined, "a\rb")])).toEqual(["◐ x\\u001b[2J a␍b"]);
     expect(toolParts([])).toEqual([]);

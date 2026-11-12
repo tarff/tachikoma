@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { exportText } from "../../src/core/exportText.js";
 import type { Message } from "../../src/core/types.js";
 import type { Event, Hook } from "../../src/hooks/config.js";
 import type { Run } from "../../src/hooks/hooks.js";
 import type { Ran } from "../../src/hooks/run.js";
-import { lastTurn, describe as lines } from "../../src/tui/describe.js";
+import { callLines, lastTurn, describe as lines } from "../../src/tui/describe.js";
 
 describe("describe", () => {
   // Release 8b design, "What a hook's answer does": the user does not see a hook's text for the model in the conversation.
@@ -182,5 +183,21 @@ describe("lastTurn", () => {
       "◆ PostToolUseFailure hook check.sh for delegate · exit 1 · 12 ms",
       "◆ SessionStart hook check.sh · exit 0 · 12 ms",
     ]);
+  });
+
+  // Release 8c plan, choice 68 (Task 18, the user's answer, 2026-11-12): Ctrl+O's and /tasks <id>'s full record names an
+  // MCP call by its server and tool as the server gives them, as its row does; /export keeps the full name (exportText).
+  it("names an MCP call in the full record by its server and tool as the server gives them", () => {
+    const messages: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "go" }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "mcp__my_tv__foo_bar", input: { x: 1 } }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "set", isError: false }] },
+    ];
+    const names = (full: string) => (full === "mcp__my_tv__foo_bar" ? { server: "my.tv", tool: "foo.bar" } : { server: "?", tool: "?" });
+    const record = '● my.tv foo.bar {\n  "x": 1\n}\n  ⎿ set';
+    expect(lastTurn(messages, [], names)).toEqual([{ text: "Last turn: 1 tool call", color: "gray" }, { text: record, color: "gray" }]);
+    expect(callLines(messages, names)).toEqual([{ text: record, color: "gray" }]);
+    expect(callLines(messages)[0]!.text).toBe('● my_tv foo_bar {\n  "x": 1\n}\n  ⎿ set'); // without the window's names
+    expect(exportText(messages, "fake:a")).toContain('● mcp__my_tv__foo_bar {\n  "x": 1\n}\n  ⎿ set');
   });
 });

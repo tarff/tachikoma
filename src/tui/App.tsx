@@ -959,7 +959,7 @@ export function App(props: AppProps) {
           running: ui.tasks.running,
         }}
       />
-      {tooled && <ToolLine calls={ui.calls.current} />}
+      {tooled && <ToolLine calls={ui.calls.current} names={ui.run.options.names} />}
     </>
   );
 }

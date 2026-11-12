@@ -115,11 +115,12 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
 // the turn going (release 8b plan, Task 9's code review).
 // `runs`: the turn's hook runs (hooks.ts, Hooks.runs), listed after the calls (release 8b plan, choice 24); before the
 // first turn, SessionStart's, after the line saying there is none (the user's choice, 2026-11-10; final review).
-export function lastTurn(messages: Message[], runs: readonly Run[] = []): Line[] {
+// `names`: an MCP call's server and tool, as its row names them (choice 68).
+export function lastTurn(messages: Message[], runs: readonly Run[] = [], names?: McpNames): Line[] {
   const feedback = (m: Message) => m.parts[0]?.type === "text" && m.parts[0].from === "hooks" && m.parts[0].text.startsWith(`${FEEDBACK}\n`);
   const start = messages.findLastIndex((m) => m.role === "user" && !m.parts.some((p) => p.type === "tool_result") && !feedback(m));
   if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "gray" }, ...runs.map(runLine)];
-  const calls = callLines(messages.slice(start));
+  const calls = callLines(messages.slice(start), names);
   return [{ text: `Last turn: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`, color: "gray" }, ...calls, ...runs.map(runLine)];
 }
 
@@ -156,9 +157,10 @@ function runLine(r: Run): Line {
   return { text: [head, ...under.map((u) => `  ⎿ ${u}`)].join("\n"), color: "gray" };
 }
 
-// Each tool call in `messages`, with its full input and result, grey: for Ctrl+O and `/tasks t3`.
-export function callLines(messages: Message[]): Line[] {
+// Each tool call in `messages`, with its full input and result, grey: for Ctrl+O and `/tasks t3`, an MCP call named by
+// its server and tool as its row is (release 8c plan, Task 18; choice 68).
+export function callLines(messages: Message[], names?: McpNames): Line[] {
   const parts = messages.flatMap((m) => m.parts);
   const results = new Map(parts.flatMap((p) => (p.type === "tool_result" ? [[p.callId, p.output] as const] : [])));
-  return parts.flatMap((c) => (c.type === "tool_call" ? [{ text: callText(c, results.get(c.id)), color: "gray" }] : []));
+  return parts.flatMap((c) => (c.type === "tool_call" ? [{ text: callText(c, results.get(c.id), shownName(c.name, names)), color: "gray" }] : []));
 }

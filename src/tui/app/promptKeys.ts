@@ -35,7 +35,7 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     // hook runs after its calls (release 8b plan, choice 24).
     if (c === "lastTurn") {
       const s = ui.summary.current;
-      const lines = s === null ? lastTurn(ui.session.messages, ui.hooks?.runs) : [gray(SHORTEN_WORDS.summary), gray(s)];
+      const lines = s === null ? lastTurn(ui.session.messages, ui.hooks?.runs, ui.run.options.names) : [gray(SHORTEN_WORDS.summary), gray(s)];
       return ui.fullNow.current ? fns.openDetail(lines) : fns.show(...lines);
     }
     if (c === "todos") return void (ui.todos.current.hidden = !ui.todos.current.hidden);

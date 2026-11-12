@@ -10794,6 +10794,10 @@ describe("App's MCP", () => {
     await shows(app, "finished");
     const done = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
     expect(done.slice(done.indexOf("> go"), done.indexOf("finished") + 1)).toEqual(["> go", '● my.s foo.bar {"x":1}', "  ⎿ You allowed this.", "  ⎿ ok", "finished"]);
+    // So do the tool line under the prompt and Ctrl+O's full record (the user's answer, 2026-11-12).
+    expect(done.at(-1)).toBe("✓ my.s foo.bar ×1");
+    await press(app, "\u000f");
+    await shows(app, 'Last turn: 1 tool call\n● my.s foo.bar {\n  "x": 1\n}\n  ⎿ set');
     expect(readFileSync(sessionPaths(sessions, session.id).file, "utf8")).toContain('"name":"mcp__my_s__foo_bar"');
   });
 

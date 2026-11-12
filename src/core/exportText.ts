@@ -1,9 +1,10 @@
 import { marker, type Message, type ToolCall } from "./types.js";
 
 // A tool call with its full input, and its result under it, as Ctrl+O shows it (tui/describe.ts, callLines), and so as
-// /export writes it (release 8a plan, choice 27). A call of a turn still running may have no result yet.
-export const callText = (c: ToolCall, result: string | undefined) =>
-  `● ${c.name} ${JSON.stringify(c.input, null, 2)}\n  ⎿ ${result ?? "(not finished)"}`;
+// /export writes it (release 8a plan, choice 27). A call of a turn still running may have no result yet. `name`: the
+// call's name as the screen shows it, which Ctrl+O gives (release 8c plan, Task 18; choice 68); /export keeps the full one.
+export const callText = (c: ToolCall, result: string | undefined, name = c.name) =>
+  `● ${name} ${JSON.stringify(c.input, null, 2)}\n  ⎿ ${result ?? "(not finished)"}`;
 
 // The conversation as text to read, for /export (choice 27): a heading line per message, "You:" or "Tachikoma (<lead>):",
 // then its text, each picture as its marker and each call as Ctrl+O shows it. A reply is headed with the lead that wrote
