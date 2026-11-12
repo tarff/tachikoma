@@ -825,3 +825,12 @@ What changed from the plan while building, for the later tasks and the reviewers
   can be given the memory line for a kill by the limit in another command; a known limit.
 - **The release checklist** gains a run of the real-Docker cases in
   `tests/sandbox/executor.test.ts` with Docker Desktop up, as CI (`windows-latest`) skips them.
+- **Task 4:** `answering()` gives `{ id, kind }[]`, so choice 19's label can tell a command from a
+  subagent. `told(id)` drops every waiting entry for the id, a stop's note too, so the model never
+  hears of one end twice. A command killed by a signal with nothing unread says `Background
+  command <id> (<command>) was killed by <signal>, with no new output.`, as the exit-code line
+  does. A failed run or a limit stop with nothing unread ends with `No new output.` The `command`
+  and `command-ended` kinds were added to `Line` and `valid()` here; Task 7 does the reading side.
+- **A subagent stopped by `stop_task` (choice 27, the user's, 2026-11-13):** the next turn says
+  `Background task <id> (<description>) was stopped by stop_task before it finished.`; a stop by
+  the user keeps today's `... was stopped by the user before it finished.` Task 6 builds it.
