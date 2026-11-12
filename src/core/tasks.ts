@@ -158,7 +158,11 @@ export class Tasks {
     opts.signal?.addEventListener("abort", () => stop.abort(), { once: true });
     this.#stops.set(id, { stop, byUser: false });
     // `done` is set just below, before anything reads it.
-    const t = { kind: "subagent", id, description: opts.description ?? task, task, model: provider.id, background: opts.background, state: "waiting", started: Date.now(), output: 0, cost: 0, costUnknown: false, lastTool: null, shown: true, messages: [] } as Omit<SubagentTask, "done"> as SubagentTask;
+    const made = {
+      kind: "subagent", id, description: opts.description ?? task, task, model: provider.id, background: opts.background, state: "waiting",
+      started: Date.now(), output: 0, cost: 0, costUnknown: false, lastTool: null, shown: true, messages: [],
+    };
+    const t = made as Omit<SubagentTask, "done"> as SubagentTask;
     this.all.push(t);
     t.done = this.#run(t, provider, this.#fallback, stop.signal);
     this.#changed();
@@ -382,9 +386,9 @@ export class Tasks {
     return { state: "failed", text: failure?.message ?? "it ended without an answer" };
   }
 
-  // A command that came to its end by itself (choice 5). One the list stopped was taken then, so the end its stop settles
-  // `done` with changes nothing. With nothing unread the line is the plan's own, in place of deliver's "No new output."
-  // ("Lines this plan adds").
+  // A command that came to its end by itself (choice 5). A command the list already stopped or timed out has had its
+  // ending recorded, so the end its kill settles `done` with is ignored. With nothing unread the line is the plan's own,
+  // in place of deliver's "No new output." ("Lines this plan adds").
   #exited(t: CommandTask, r: ExecResult): void {
     if (t.state !== "running") return;
     t.code = r.code;

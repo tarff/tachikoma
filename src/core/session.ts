@@ -11,7 +11,7 @@ import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
 import { type Ask, Declined, type PermissionGate, StoppedFirst, visible } from "./permissions.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
-import type { Task } from "./tasks.js";
+import type { SubagentTask, Task } from "./tasks.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
 import {
   type CompletionRequest,
@@ -1168,8 +1168,7 @@ export class Session {
     // purpose, as that choice says. Crons Tachikoma has none of (design).
     // A command's own entry is choice 17's (background commands plan).
     const background_tasks = (this.opts.tasks?.all ?? [])
-      .filter((t) => t.kind === "subagent")
-      .filter((t) => t.background && (t.state === "running" || t.state === "waiting"))
+      .filter((t): t is SubagentTask => t.kind === "subagent" && t.background && (t.state === "running" || t.state === "waiting"))
       .map((t) => ({ id: t.id, type: "agent", status: "running", description: t.description, agent_type: "Explore" }));
     try {
       if (this.opts.subagent) {

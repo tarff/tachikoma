@@ -172,7 +172,16 @@ export const queue = (ui: UI, fns: Fns) => {
         return fns.say({ text: `${command} takes nothing after it.`, color: "red" });
       ui.abort.current = new AbortController();
       const turn = !account && !listing;
-      const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(ui.tasks.answering().map((a) => a.id))}` : turn ? "Working" : "Reading the model lists";
+      const label =
+        account === "login"
+          ? "Waiting for the browser"
+          : account
+            ? "Signing out"
+            : answers
+              ? `Reading ${names(ui.tasks.answering().map((a) => a.id))}`
+              : turn
+                ? "Working"
+                : "Reading the model lists";
       ui.doing.current = { label, at: Date.now(), from: turn ? { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } : null };
       if (turn) {
         ui.calls.current = [];
@@ -379,7 +388,10 @@ export const queue = (ui: UI, fns: Fns) => {
       const subagents = ui.tasks.all.filter((t) => t.kind === "subagent"); // a command's rows are choice 18's (background commands plan)
       if (!subagents.length) return [gray("No subagents yet.")];
       const now = Date.now();
-      return [gray(`Subagents: ${subagents.length}`), ...subagents.flatMap((t) => taskRow(t, now, ui.run.options.names)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
+      return [
+        gray(`Subagents: ${subagents.length}`),
+        ...subagents.flatMap((t) => taskRow(t, now, ui.run.options.names)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true })),
+      ];
     }
     if (verb === "stop" && !rest.length) {
       if (id === undefined) return [gray(ui.tasks.stop() ? "Stopped every subagent." : "No subagent is running.")];

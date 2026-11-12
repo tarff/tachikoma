@@ -52,7 +52,8 @@ describe("Tasks", () => {
     expect(worker.asked[0]!.system).toBe("sub");
     expect(worker.asked[0]!.tools.map((s) => s.name)).toEqual(["read_file"]);
     expect(worker.asked[0]!.messages).toEqual([{ role: "user", parts: [{ type: "text", text: "find the login code" }] }]);
-    expect((tasks.all as SubagentTask[]).map((x) => [x.id, x.state, x.model])).toEqual([["t1", "running", "fake:held"]]);
+    expect(tasks.all).toEqual([t]);
+    expect([t.id, t.state, t.model]).toEqual(["t1", "running", "fake:held"]);
     worker.answer("It is in src/auth.ts:12");
     expect(await t.done).toEqual({ state: "done", text: "It is in src/auth.ts:12" });
     expect(tasks.all[0]!.state).toBe("done");
@@ -745,6 +746,18 @@ describe("Tasks, background commands", () => {
     expect(saved.lines.filter((l) => (l as { t: string }).t === "command-ended")).toEqual(
       ["t1", "t4", "t2", "t3"].map((id) => ({ t: "command-ended", id, state: "stopped" })),
     );
+  });
+
+  it("clears a -p command's time limit when the user stops it", async () => {
+    const { tasks } = await setup(new Held(), { limits });
+    fakeTimers();
+    const c = command();
+    tasks.adopt(c.run, { command: "npm run dev" });
+    expect(tasks.stop("t1")).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(600_000 + 1);
+    expect(tasks.take()).toEqual(["Background command t1 (npm run dev) was stopped by the user."]);
+    expect(c.stop).toHaveBeenCalledTimes(1);
   });
 
   it("gives a command no time limit outside -p", async () => {
