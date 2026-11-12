@@ -1,0 +1,378 @@
+import { existsSync, readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import type { Mode } from "../../src/core/permissions.js";
+import { type CommandTask, Tasks } from "../../src/core/tasks.js";
+import type { ExecResult, Executor, Running } from "../../src/exec/executor.js";
+import { LocalExecutor } from "../../src/exec/local.js";
+import { CommandLog, deliver } from "../../src/exec/log.js";
+import { shellTools } from "../../src/tools/commands.js";
+import { shellText } from "../../src/tools/shell.js";
+import { InvalidInput } from "../../src/tools/tool.js";
+import { Bus, FakeProvider, tempContext } from "../helpers.js";
+
+// Background commands plan, Task 5: the shell tool starts a command in the background, or runs it in the foreground until
+// its end, Esc, its timeout or Ctrl+B. The executor is a stand-in whose start gives a command the test drives, so no
+// command runs here but the one real case at the end.
+
+// A command the test drives: it prints into its log, ends, fails, and a stop ends it at once as killed, as the executors'
+// stop does (choice 1).
+function driven() {
+  const log = new CommandLog();
+  let s!: { end: (r: ExecResult) => void; fail: (err: Error) => void };
+  const done = new Promise<ExecResult>((end, fail) => (s = { end, fail }));
+  const stop = vi.fn(() => s.end({ code: null, signal: "SIGKILL", stdout: "", stderr: "" }));
+  const run: Running = { log, done, stop };
+  const end = (r: Partial<ExecResult> = {}) => s.end({ code: 0, signal: null, stdout: "", stderr: "", ...r });
+  return { run, stop, end, fail: (err: Error) => s.fail(err) };
+}
+
+type Limits = { started: number; moved: number; most: number };
+async function setup(opts: { headless?: boolean; mode?: Mode; answers?: boolean[]; limits?: Limits; start?: () => Running } = {}) {
+  const ctx = await tempContext(opts.mode ?? "never", opts.answers ?? []);
+  const started: { command: string; cwd: string; run: ReturnType<typeof driven> }[] = [];
+  const executor: Executor = {
+    exec: () => Promise.reject(new Error("exec is not used here")),
+    start: (command, cwd) => {
+      if (opts.start) return opts.start();
+      const run = driven();
+      started.push({ command, cwd, run });
+      return run.run;
+    },
+  };
+  const tasks = new Tasks({
+    bus: new Bus(),
+    max: 8,
+    worker: () => new FakeProvider("w", []),
+    system: "sub",
+    tools: [],
+    ctx: { ...ctx, executor },
+    ...(opts.limits ? { limits: opts.limits } : {}),
+  });
+  const tools = shellTools(tasks, { shell: "PowerShell", headless: opts.headless ?? false });
+  const reports: unknown[] = [];
+  const call = (input: unknown, signal?: AbortSignal) =>
+    tools[0]!.run(input, { ...ctx, executor, report: (p) => reports.push(p), ...(signal ? { signal } : {}) });
+  // The gate answers in promises and the stand-in at once, so a call reaches its wait within a few turns of the loop.
+  // setImmediate, which the fake timers below leave real.
+  const reached = async () => {
+    for (let i = 0; i < 100 && !tasks.holding && !tasks.all.length; i++) await new Promise((r) => setImmediate(r));
+  };
+  return { ctx, tasks, tools, started, reports, call, reached };
+}
+
+// Only the timers: the gate's questions and setImmediate stay real.
+const fakeTimers = () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => void vi.useRealTimers());
+};
+
+// Whether a promise has settled, without waiting for it.
+const settled = async (p: Promise<unknown>) => {
+  let done = false;
+  p.then(
+    () => (done = true),
+    () => (done = true),
+  );
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+  return done;
+};
+
+describe("the shell tool", () => {
+  it("is the only tool for now, and tells the model of the timeout, the move and background starts in the plan's words", async () => {
+    const { tasks } = await setup();
+    const tools = shellTools(tasks, { shell: "bash", headless: false });
+    expect(tools.map((t) => t.spec.name)).toEqual(["shell"]);
+    expect(tools[0]!.spec.description).toBe(
+      "Run a command with bash in the project root and return its output. " +
+        'A command still running after "timeout" milliseconds (120000 when not given, at most 600000) moves to the background, unless it starts with sleep. ' +
+        'With "background": true it starts in the background at once, for a dev server, a watch build or a long test run; ' +
+        "read its output with shell_output and stop it with stop_task. You are told when a background command ends.",
+    );
+    expect(tools[0]!.parallel).toBeUndefined();
+  });
+
+  // Choice 11: from 1 ms to 2 hours, a whole number.
+  it.each([0, 1.5, 7_200_001])("refuses a timeout of %s as invalid input and starts nothing", async (timeout) => {
+    const { call, started } = await setup();
+    await expect(call({ command: "npm test", timeout })).rejects.toBeInstanceOf(InvalidInput);
+    expect(started).toEqual([]);
+  });
+});
+
+describe("the shell tool, a background start", () => {
+  // Choice 13: the question says it runs in the background, so the user, the judge and auto mode see it.
+  it("asks with the background in its question, starts the command, and gives the model its id", async () => {
+    const { call, ctx, started, tasks, reports } = await setup({ mode: "project", answers: [true] });
+    expect(await call({ command: "npm run dev", background: true })).toBe("Started t1 in the background.");
+    expect(ctx.asked).toEqual(["run in the background: npm run dev"]);
+    expect(started.map((s) => [s.command, s.cwd])).toEqual([["npm run dev", ctx.root]]);
+    const t = tasks.get("t1") as CommandTask;
+    expect([t.kind, t.command, t.state, t.run]).toEqual(["command", "npm run dev", "running", started[0]!.run.run]);
+    expect(tasks.holding).toBeUndefined();
+    expect(reports).toEqual([]); // hooks get its text (Task 8)
+    tasks.stop();
+  });
+
+  it("starts nothing when the user declines", async () => {
+    const { call, started, tasks } = await setup({ mode: "project", answers: [false] });
+    await expect(call({ command: "npm run dev", background: true })).rejects.toThrow("The user declined: run in the background: npm run dev");
+    expect([started, tasks.all]).toEqual([[], []]);
+  });
+
+  // Release 7 plan, Task 8: the gate's dangerous-command check reads the command of a background start too.
+  it("gives the dangerous-command check its command, which refuses it, and starts nothing", async () => {
+    const push = "git push --force";
+    const { call, started, tasks } = await setup({ mode: "never" });
+    await expect(call({ command: push, background: true })).rejects.toThrow(
+      `Not allowed: this command matches the dangerous-command check (rewriting or deleting git history: ${push}).`,
+    );
+    expect([started, tasks.all]).toEqual([[], []]);
+  });
+
+  // The design, "What the model gets": a window's background command has no time limit, as in Claude Code's terminal.
+  it("gives a window's background start no time limit, whatever its timeout", async () => {
+    const { call, started, tasks } = await setup({ headless: false });
+    const adopt = vi.spyOn(tasks, "adopt");
+    fakeTimers();
+    expect(await call({ command: "npm run dev", background: true, timeout: 5_000 })).toBe("Started t1 in the background.");
+    expect(adopt.mock.calls[0]![1]).toEqual({ command: "npm run dev" });
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(7_200_000);
+    expect([started[0]!.run.stop.mock.calls.length, tasks.get("t1")!.state]).toEqual([0, "running"]);
+    tasks.stop();
+  });
+
+  it("gives a -p background start its timeout as its limit", async () => {
+    const { call, started, tasks } = await setup({ headless: true, limits: { started: 600_000, moved: 600_000, most: 7_200_000 } });
+    const adopt = vi.spyOn(tasks, "adopt");
+    fakeTimers();
+    expect(await call({ command: "npm run e2e", background: true, timeout: 5_000 })).toBe("Started t1 in the background.");
+    expect(adopt.mock.calls[0]![1]).toEqual({ command: "npm run e2e", limit: 5_000 });
+    vi.advanceTimersByTime(5_000);
+    expect([started[0]!.run.stop.mock.calls.length, tasks.get("t1")!.state]).toEqual([1, "stopped"]);
+  });
+
+  // As Built, Task 2: a command that cannot be spawned makes start throw at once.
+  it("ends with start's error when the command cannot start, and adopts nothing", async () => {
+    const { call, tasks } = await setup({
+      start: () => {
+        throw new Error("spawn failed");
+      },
+    });
+    await expect(call({ command: "npm run dev", background: true })).rejects.toThrow("spawn failed");
+    expect(tasks.all).toEqual([]);
+  });
+});
+
+describe("the shell tool, in the foreground", () => {
+  it("returns a command's end as it always has, its report unchanged, and adopts nothing", async () => {
+    const { call, started, tasks, reports, reached } = await setup({ mode: "project", answers: [true] });
+    fakeTimers();
+    const out = call({ command: "echo hi" });
+    await reached();
+    expect(tasks.holding).toBeDefined();
+    started[0]!.run.end({ stdout: "hi\n", stderr: "warn\n" });
+    expect(await out).toBe(shellText({ code: 0, signal: null, stdout: "hi\n", stderr: "warn\n" }));
+    expect(reports).toEqual([{ stdout: "hi\n", stderr: "warn\n", code: 0 }]);
+    expect([tasks.all, tasks.holding, vi.getTimerCount()]).toEqual([[], undefined, 0]);
+  });
+
+  it("throws a failing command's result, after reporting it", async () => {
+    const { call, started, tasks, reports, reached } = await setup();
+    const out = call({ command: "exit 3" });
+    await reached();
+    started[0]!.run.end({ code: 3, stderr: "bad\n" });
+    await expect(out).rejects.toThrow(shellText({ code: 3, signal: null, stdout: "", stderr: "bad\n" }));
+    expect(reports).toEqual([{ stdout: "", stderr: "bad\n", code: 3 }]);
+    expect(tasks.holding).toBeUndefined();
+  });
+
+  // As Built, Task 2: a spawn error reported later rejects done, and the tool ends with it, as exec did.
+  it("ends with the error when the command's run fails, and clears its hold and timer", async () => {
+    const { call, started, tasks, reached } = await setup();
+    fakeTimers();
+    const out = call({ command: "npm test" });
+    await reached();
+    started[0]!.run.fail(new Error("spawn powershell.exe ENOENT"));
+    await expect(out).rejects.toThrow("spawn powershell.exe ENOENT");
+    expect([tasks.all, tasks.holding, vi.getTimerCount()]).toEqual([[], undefined, 0]);
+  });
+
+  it("ends with start's error when the command cannot start, and holds nothing", async () => {
+    const { call, tasks } = await setup({
+      start: () => {
+        throw new Error("spawn failed");
+      },
+    });
+    fakeTimers();
+    await expect(call({ command: "npm test" })).rejects.toThrow("spawn failed");
+    expect([tasks.all, tasks.holding, vi.getTimerCount()]).toEqual([[], undefined, 0]);
+  });
+
+  it("moves a command still running at the default 120 s to the background, saying so", async () => {
+    const { call, started, tasks, reached } = await setup();
+    fakeTimers();
+    const out = call({ command: "npm test" });
+    await reached();
+    vi.advanceTimersByTime(120_000 - 1);
+    expect(await settled(out)).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(await out).toBe("Command did not complete within its 120s timeout and was moved to the background as t1.");
+    const t = tasks.get("t1") as CommandTask;
+    expect([t.command, t.state, t.run, started[0]!.run.stop.mock.calls.length]).toEqual(["npm test", "running", started[0]!.run.run, 0]);
+    expect([tasks.holding, vi.getTimerCount()]).toEqual([undefined, 0]);
+    tasks.stop();
+  });
+
+  // The plan's numbers: a foreground timeout over ten minutes is cut to ten, as Claude Code caps it.
+  it("cuts a 700,000 ms timeout to 600,000, and its line says 600s", async () => {
+    const { call, started, tasks, reached } = await setup();
+    fakeTimers();
+    const out = call({ command: "npm run build", timeout: 700_000 });
+    await reached();
+    vi.advanceTimersByTime(600_000 - 1);
+    expect(await settled(out)).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(await out).toBe("Command did not complete within its 600s timeout and was moved to the background as t1.");
+    expect(started[0]!.run.stop).not.toHaveBeenCalled();
+    tasks.stop();
+  });
+
+  it("tells -p's task list the command moved, so it gets the moved limit", async () => {
+    const { call, tasks, reached } = await setup({ headless: true, limits: { started: 600_000, moved: 600_000, most: 7_200_000 } });
+    const adopt = vi.spyOn(tasks, "adopt");
+    fakeTimers();
+    const out = call({ command: "npm test", timeout: 5_000 });
+    await reached();
+    vi.advanceTimersByTime(5_000);
+    expect(await out).toBe("Command did not complete within its 5s timeout and was moved to the background as t1.");
+    expect(adopt.mock.calls[0]![1]).toEqual({ command: "npm test", moved: true });
+    tasks.stop();
+  });
+
+  // Choice 12: a model that sleeps is waiting on purpose, so the command stops at its timeout instead of moving.
+  it.each(["sleep 5", "  sleep 5", "sleep;echo hi", "Start-Sleep 5", "start-sleep -s 5"])("stops %j at its timeout with the sleep line", async (command) => {
+    const { call, started, tasks, reached } = await setup();
+    fakeTimers();
+    const out = call({ command, timeout: 3_000 });
+    await reached();
+    vi.advanceTimersByTime(3_000);
+    await expect(out).rejects.toThrow(
+      "Stopped: the command did not complete within its 3s timeout. A command that starts with sleep is stopped at its timeout, not moved to the background.",
+    );
+    expect([started[0]!.run.stop.mock.calls.length, tasks.all, tasks.holding, vi.getTimerCount()]).toEqual([1, [], undefined, 0]);
+  });
+
+  it.each(["sleeper 5", "echo hi; sleep 5", "Start-Sleeper 5"])("moves %j at its timeout, as it does not start with sleep", async (command) => {
+    const { call, tasks, reached } = await setup();
+    fakeTimers();
+    const out = call({ command, timeout: 3_000 });
+    await reached();
+    vi.advanceTimersByTime(3_000);
+    expect(await out).toBe("Command did not complete within its 3s timeout and was moved to the background as t1.");
+    tasks.stop();
+  });
+
+  // Choice 9: Ctrl+B calls tasks.moveForeground(), which the tool's hold answers.
+  it("moves the command to the background on Ctrl+B, saying the user moved it", async () => {
+    const { call, started, tasks, reached } = await setup();
+    fakeTimers();
+    const out = call({ command: "npm run dev" });
+    await reached();
+    expect(tasks.moveForeground()).toBe(true);
+    expect(await out).toBe("Moved to the background as t1 by the user.");
+    expect([tasks.get("t1")!.state, started[0]!.run.stop.mock.calls.length]).toEqual(["running", 0]);
+    expect([tasks.holding, tasks.moveForeground(), vi.getTimerCount()]).toEqual([undefined, false, 0]);
+    tasks.stop();
+  });
+
+  // The design, "A command that runs long": what was printed before a move is not lost. Task 6 tests this through
+  // shell_output itself; here, what a read of the moved command's log gives.
+  it("keeps what the command printed before the move for the first read", async () => {
+    const { call, started, tasks, reached } = await setup();
+    fakeTimers();
+    const out = call({ command: "npm test" });
+    await reached();
+    started[0]!.run.run.log.add("compiling\n");
+    vi.advanceTimersByTime(120_000);
+    await out;
+    started[0]!.run.run.log.add("12 passed\n");
+    const t = tasks.get("t1") as CommandTask;
+    expect(deliver("t1 is still running.", t.run.log, "t1")).toBe("t1 is still running.\ncompiling\n12 passed\n");
+    tasks.stop();
+  });
+
+  it("stops the command on Esc and throws Cancelled, adopting nothing", async () => {
+    const { call, started, tasks, reached } = await setup();
+    fakeTimers();
+    const stop = new AbortController();
+    const out = call({ command: "npm test" }, stop.signal);
+    await reached();
+    stop.abort();
+    await expect(out).rejects.toThrow("Cancelled");
+    expect([started[0]!.run.stop.mock.calls.length, tasks.all, tasks.holding, vi.getTimerCount()]).toEqual([1, [], undefined, 0]);
+  });
+
+  // Release 7 plan, choice 87: an Esc whose kill cannot reach the box ends with the sandbox's failure, as exec did.
+  it("ends with the run's failure when its stop on Esc fails", async () => {
+    const { call, started, tasks, reached } = await setup();
+    const stop = new AbortController();
+    const out = call({ command: "npm test" }, stop.signal);
+    await reached();
+    const failure = "The sandbox stopped working: Esc could not reach the box (made up).";
+    started[0]!.run.stop.mockImplementation(() => started[0]!.run.fail(new Error(failure)));
+    stop.abort();
+    await expect(out).rejects.toThrow(failure);
+    expect([tasks.all, tasks.holding]).toEqual([[], undefined]);
+  });
+
+  it("starts nothing when the turn was stopped before the call", async () => {
+    const { call, started } = await setup();
+    const stop = new AbortController();
+    stop.abort();
+    await expect(call({ command: "npm test" }, stop.signal)).rejects.toThrow();
+    await expect(call({ command: "npm test", background: true }, stop.signal)).rejects.toThrow();
+    expect(started).toEqual([]);
+  });
+});
+
+// The one real case: a node script that prints, then waits, moved by Ctrl+B once its line is in the log. The script
+// records its pid, so the test stops it whatever happened.
+describe("the shell tool on the host", () => {
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it("moves a running command with what it printed so far in its log", async () => {
+    const ctx = await tempContext();
+    const source = `require("fs").writeFileSync("pid", String(process.pid)); console.log("before"); setTimeout(() => {}, 60000);`;
+    await writeFile(path.join(ctx.root, "script.js"), source);
+    const pidFile = path.join(ctx.root, "pid");
+    onTestFinished(() => {
+      const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0;
+      if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL");
+    });
+    const local = new LocalExecutor();
+    let run: Running | undefined;
+    const executor: Executor = { exec: (...args) => local.exec(...args), start: (...args) => (run = local.start(...args)) };
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: [], ctx: { ...ctx, executor } });
+    onTestFinished(() => void tasks.stop());
+    const [shell] = shellTools(tasks, { shell: "PowerShell", headless: false });
+    const node = process.platform === "win32" ? `& "${process.execPath}"` : `"${process.execPath}"`;
+    const out = shell!.run({ command: `${node} script.js` }, { ...ctx, executor });
+    for (let i = 0; i < 200 && !run?.log.kept().includes("before"); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(tasks.moveForeground()).toBe(true);
+    expect(await out).toBe("Moved to the background as t1 by the user.");
+    const t = tasks.get("t1") as CommandTask;
+    expect(t.run).toBe(run);
+    expect(deliver("t1 is still running.", t.run.log, "t1")).toMatch(/^t1 is still running\.\nbefore\r?\n$/);
+    expect(t.state).toBe("running");
+  }, 15_000);
+});

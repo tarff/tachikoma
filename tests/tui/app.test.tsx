@@ -22,7 +22,7 @@ import { approveOf, mcpTools } from "../../src/mcp/tools.js";
 import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { system32 } from "../../src/exec/env.js";
 import type { Executor } from "../../src/exec/executor.js";
-import { LocalWorkspace } from "../../src/exec/local.js";
+import { LocalWorkspace, shellFor } from "../../src/exec/local.js";
 import type { Workspace } from "../../src/exec/workspace.js";
 import { Session, type SessionOptions } from "../../src/core/session.js";
 import { projectFile } from "../../src/core/datadir.js";
@@ -36,7 +36,9 @@ import { readTranscript, sessionPaths, Transcript } from "../../src/core/transcr
 import type { CompletionRequest, Message, Provider, Turn } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
+import { shellTools } from "../../src/tools/commands.js";
 import { delegateTool } from "../../src/tools/delegate.js";
+import { editFileTool } from "../../src/tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import type { Event as HookEvent, Hook, HooksConfig } from "../../src/hooks/config.js";
 import { Hooks } from "../../src/hooks/hooks.js";
@@ -58,7 +60,7 @@ import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
-import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, texts, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, standInRun, tempContext, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
@@ -126,6 +128,10 @@ const sharedHome = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
 const unsavedTop = mkdtempSync(path.join(tmpdir(), "tachi-app-data-"));
 afterAll(() => removeTree(unsavedTop));
 const unsaved = () => new WindowSessions(path.join(unsavedTop, "data", "sessions"), { project: "", version: "test", tools: [] }, { box: false, full: "" });
+
+// The lead's tools as cli.tsx makes them: the shell tool, made over the task list, keeps its place after edit_file
+// (background commands plan, Task 5).
+const leadTools = (tasks: Tasks) => TOOLS.flatMap((t) => (t === editFileTool ? [t, ...shellTools(tasks, { shell: shellFor().name, headless: false })] : [t]));
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
@@ -216,7 +222,7 @@ async function mount(
   // As cli.tsx makes them: one Pictures for the session and the App (leadSession), the window's sessions, and the inbox,
   // the lost subagents' lines first.
   const pictures = opts.pictures ?? new Pictures();
-  const tools = [...TOOLS, delegateTool(tasks, { headless: false })];
+  const tools = [...leadTools(tasks), delegateTool(tasks, { headless: false })];
   const start = { project: ctx.root, version: "test", tools: tools.map((t) => t.spec) };
   const opened = opts.save ? newSaved(sessions, { id: randomUUID(), ...start, lead: lead.id, print: false, system: "t", box: false }) : undefined;
   const windowSessions = new WindowSessions(sessions, start, { box: false, full: "t" }, opened);
@@ -1922,12 +1928,10 @@ describe("App's questions", () => {
 function noShell() {
   const ran: string[] = [];
   const executor: Executor = {
-    exec: async (command) => {
+    exec: () => Promise.reject(new Error("exec is not used here")),
+    start: (command) => {
       ran.push(command);
-      return { code: 0, signal: null, stdout: "", stderr: "" };
-    },
-    start: () => {
-      throw new Error("start is not used here");
+      return standInRun(Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }));
     },
   };
   return { ran, executor };
@@ -2337,10 +2341,8 @@ describe("App's live folded row", () => {
   const heldShell = () => {
     let end = () => {};
     const executor: Executor = {
-      exec: () => new Promise((resolve) => (end = () => resolve({ code: 0, signal: null, stdout: "", stderr: "" }))),
-      start: () => {
-        throw new Error("start is not used here");
-      },
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: () => standInRun(new Promise((resolve) => (end = () => resolve({ code: 0, signal: null, stdout: "", stderr: "" })))),
     };
     return { executor, end: () => end() };
   };
@@ -2474,7 +2476,7 @@ describe("App's live folded row", () => {
     const lead = new Held();
     const shell = heldShell();
     const ran: string[] = [];
-    const executor: Executor = { exec: (...args) => (ran.push("ran"), shell.executor.exec(...args)), start: shell.executor.start };
+    const executor: Executor = { exec: shell.executor.exec, start: (...args) => (ran.push("ran"), shell.executor.start(...args)) };
     const { app, ctx, mouse } = await mount([], { lead, full: true, mode: "never", executor });
     writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
     writeFileSync(path.join(ctx.root, "b.txt"), "b\n");
@@ -2958,7 +2960,7 @@ describe("App in full screen", () => {
     const bus = new Bus();
     const ctx = await tempContext();
     const tasks = new Tasks({ bus, max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx });
-    const session = new Session({ lead: new FakeProvider("a", []), tools: TOOLS, system: "t", ctx, bus });
+    const session = new Session({ lead: new FakeProvider("a", []), tools: leadTools(tasks), system: "t", ctx, bus });
     const screen = new Screen(
       () => {},
       () => {},
@@ -4876,7 +4878,7 @@ async function onTerminal(
   let ask: (s: string, d?: string, o?: Owner) => Promise<boolean> = async () => false;
   const gate = new PermissionGate("ask", (s, d, o) => ask(s, d, o));
   const tasks = new Tasks({ bus, max: 8, worker: () => worker, system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
-  const tools = [...TOOLS, delegateTool(tasks, { headless: false })];
+  const tools = [...leadTools(tasks), delegateTool(tasks, { headless: false })];
   const session = new Session({ lead, tools, system: "t", ctx: { ...ctx, gate }, bus, inbox: () => tasks.take() });
   const screen = new Screen(record, () => {});
   if (!opts.classic) screen.enter();

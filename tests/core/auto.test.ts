@@ -8,15 +8,15 @@ import { Session } from "../../src/core/session.js";
 import { type SubagentTask, Tasks } from "../../src/core/tasks.js";
 import type { Message, Provider, Turn } from "../../src/core/types.js";
 import type { Executor } from "../../src/exec/executor.js";
-import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
+import { LocalExecutor, LocalWorkspace, shellFor } from "../../src/exec/local.js";
 import { judgeOf, type Verdict } from "../../src/safety/judge.js";
+import { shellTools } from "../../src/tools/commands.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { editFileTool, readFileTool } from "../../src/tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import { searchFilesTool } from "../../src/tools/search.js";
-import { shellTool } from "../../src/tools/shell.js";
 import type { Tool } from "../../src/tools/tool.js";
-import { Bus, FakeProvider, callTool, collectErrors, reply, texts, usage } from "../helpers.js";
+import { Bus, FakeProvider, callTool, collectErrors, reply, standInRun, texts, usage } from "../helpers.js";
 
 // Release 7 plan, Task 10: auto mode in the gate. Reads and project edits pass, dangers ask the user, and the judge
 // decides the rest; after 3 refusals in a row or 20 in the session auto mode pauses (choice 8); an answer counts only if
@@ -56,7 +56,8 @@ async function setup(lead: FakeProvider, judge: Provider | undefined, opts: { he
   );
   const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate };
   const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx });
-  const tools = [...TOOLS, delegateTool(tasks, { headless: opts.headless ?? false })];
+  const headless = opts.headless ?? false;
+  const tools = [...TOOLS, ...shellTools(tasks, { shell: shellFor().name, headless }), delegateTool(tasks, { headless })];
   session = new Session({ lead, tools, system: "t", ctx, bus, inbox: () => tasks.take() });
   return { root, elsewhere, bus, errors, asked, gate, session, tasks, out: (name: string) => path.join(elsewhere, name) };
 }
@@ -222,6 +223,13 @@ describe("auto mode, in a session", () => {
   });
 });
 
+// The shell tool as cli.tsx makes it (background commands plan, Task 5); its task list's own context starts nothing here.
+const lead = { root: tmpdir(), executor: new LocalExecutor(), workspace: new LocalWorkspace(tmpdir()), gate: new PermissionGate("never", async () => false) };
+const [shellTool] = shellTools(new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: [], ctx: lead }), {
+  shell: shellFor().name,
+  headless: false,
+});
+
 // Release 7 plan, Task 10: each tool gives the gate the turn's signal, so stopping the turn while the judge is out runs
 // nothing. The judge records the signal it was given and says yes after the stop, whatever the signal says, and the
 // executor records what reaches it, so an action that ran would show.
@@ -230,7 +238,7 @@ describe("auto mode, the turn's signal from each tool", () => {
     ["read_file, outside the project", readFileTool, (elsewhere) => ({ path: path.join(elsewhere, "notes.txt") })],
     ["edit_file", editFileTool, (elsewhere) => ({ path: path.join(elsewhere, "notes.txt"), old_text: "old", new_text: "new" })],
     ["search_files", searchFilesTool, (elsewhere) => ({ pattern: "old", path: elsewhere })],
-    ["shell", shellTool, () => ({ command: "echo hi" })],
+    ["shell", shellTool!, () => ({ command: "echo hi" })],
   ];
   it.each(cases)("%s: stopping the turn while the judge is out rejects with the stop and runs nothing", async (_, tool, input) => {
     const root = await mkdtemp(path.join(tmpdir(), "tachi-"));
@@ -242,10 +250,8 @@ describe("auto mode, the turn's signal from each tool", () => {
     const gate = new PermissionGate("auto", async () => false, undefined, { root, judge });
     const ran: string[] = [];
     const executor: Executor = {
-      exec: async (command) => (ran.push(`exec ${command}`), { code: 0, signal: null, stdout: "", stderr: "" }),
-      start: () => {
-        throw new Error("start is not used here");
-      },
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: (command) => (ran.push(`start ${command}`), standInRun(Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }))),
     };
     // The project's files as the host has them, but that reads, writes and searches are recorded and never made.
     const workspace = Object.assign(new LocalWorkspace(root), {

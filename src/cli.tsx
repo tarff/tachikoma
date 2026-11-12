@@ -62,7 +62,7 @@ import { type Row, sessionsDir, sweep } from "./core/sessions.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
 import { errorText, type Provider } from "./core/types.js";
-import { LocalExecutor, LocalWorkspace } from "./exec/local.js";
+import { LocalExecutor, LocalWorkspace, shellFor } from "./exec/local.js";
 import { Hooks } from "./hooks/hooks.js";
 import { pathsFor } from "./hooks/tools.js";
 import { readKeybindings } from "./keybindings.js";
@@ -83,9 +83,10 @@ import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
 import { shellOf } from "./safety/split.js";
 import { hooksOf, loadSettings, SETTINGS, shownFile } from "./settings.js";
+import { shellTools } from "./tools/commands.js";
 import { delegateTool } from "./tools/delegate.js";
+import { editFileTool } from "./tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
-import { shellTool } from "./tools/shell.js";
 import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
 import { NOT_GONE } from "./tui/app/constants.js";
@@ -692,9 +693,11 @@ const tasks = new Tasks({
   mcp: servers, // each subagent's own MCP tools, its trusted read-only ones only (Task 7)
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus. In the box the shell tool says
-// bash, whatever the host.
+// bash, whatever the host. The shell tool keeps its place after edit_file, so the order the model sees is as before
+// (background commands plan, Task 5).
+const commandTools = shellTools(tasks, { shell: box ? "bash" : shellFor().name, headless: !interactive });
 const tools = [
-  ...TOOLS.map((t) => (box && t === shellTool ? box.shellTool : t)),
+  ...TOOLS.flatMap((t) => (t === editFileTool ? [t, ...commandTools] : [t])),
   todoTool((items) => bus.emit("todo", items)),
   delegateTool(tasks, { headless: !interactive }),
 ];

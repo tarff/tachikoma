@@ -30,8 +30,6 @@ import { heldLine, type ImageIo, prepareImage } from "./sandbox/image.js";
 import { CASE_REFUSED, ignoresCase, liveMounts, type Mount, sessionSettings } from "./sandbox/mounts.js";
 import { MANIFEST, type Manifest, PENDING, removeCopySync, snapshot } from "./sandbox/snapshot.js";
 import type { SandboxLimits, Settings } from "./settings.js";
-import { shellToolOf } from "./tools/shell.js";
-import type { Tool } from "./tools/tool.js";
 import { screen } from "./tui/describe.js";
 import { gitBranch } from "./tui/git.js";
 import { Pictures } from "./tui/pictures.js";
@@ -403,7 +401,6 @@ export interface Started {
   system: string;
   subagentSystem: string;
   gate: { root: string; home: string; shell: Shell };
-  shellTool: Tool;
   protection: Protection;
   lines: string[];
   copy?: Copied;
@@ -539,7 +536,6 @@ export async function sandboxStart(
     system: systemPrompt(BOX_ROOT, "linux", "bash"),
     subagentSystem: subagentPrompt(BOX_ROOT),
     gate: { root: BOX_ROOT, home: BOX_HOME, shell: shellOf("box") },
-    shellTool: shellToolOf("bash"),
     protection: boxProtection(root, protectionOf(ready.git)),
     lines: [
       visible(line),

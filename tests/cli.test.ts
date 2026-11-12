@@ -1541,7 +1541,6 @@ describe("live link's launch, with a stand-in Docker", () => {
     expect(started.system).toContain("Shell commands run with bash on linux.");
     expect(started.subagentSystem).toContain("The project root is /work.");
     expect(started.gate).toEqual({ root: "/work", home: "/tmp", shell: "bash" });
-    expect(started.shellTool.spec.description).toContain("with bash");
   });
 
   it("starts with the network on as bridge, saying so", async () => {

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, onTestFinished, type TestContext, vi }
 import { sandboxReady, sandboxStart, type Started } from "../../src/clilib.js";
 import { PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
+import { Tasks } from "../../src/core/tasks.js";
 import type { CompletionRequest, Turn } from "../../src/core/types.js";
 import { onPath } from "../../src/exec/env.js";
 import { gitSettings, hasSubmodules } from "../../src/safety/gitconfig.js";
@@ -14,8 +15,8 @@ import { judgeOf } from "../../src/safety/judge.js";
 import { dockerState } from "../../src/sandbox/docker.js";
 import { boxLimits, dockerRoom } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
+import { shellTools } from "../../src/tools/commands.js";
 import { TOOLS } from "../../src/tools/index.js";
-import { shellTool } from "../../src/tools/shell.js";
 import { Bus, callTool, FakeProvider, removeTree, reply } from "../helpers.js";
 
 const TEST_LABEL = { "tachikoma.test": "1" }; // the plan's rule for every container a test starts
@@ -102,9 +103,12 @@ function headless(started: Started, lead: FakeProvider, judge: FakeProvider) {
     judge: judgeOf(judge, () => session, "", bus),
   });
   gate.protection = started.protection;
-  const tools = TOOLS.map((t) => (t === shellTool ? started.shellTool : t));
   const { root, executor, workspace } = started;
-  const session: Session = new Session({ lead, tools, system: started.system, ctx: { root, executor, workspace, gate }, bus });
+  const ctx = { root, executor, workspace, gate };
+  // The box's shell tool, made as cli.tsx makes it over a task list (background commands plan, Task 5).
+  const tasks = new Tasks({ bus, max: 8, worker: () => lead, system: started.subagentSystem, tools: [], ctx });
+  const tools = [...TOOLS, ...shellTools(tasks, { shell: "bash", headless: true })];
+  const session: Session = new Session({ lead, tools, system: started.system, ctx, bus });
   return session;
 }
 

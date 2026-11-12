@@ -5,11 +5,11 @@ import { Bus } from "../../src/core/bus.js";
 import { PermissionGate } from "../../src/core/permissions.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { errorOf, fromClaude, outputFrom, pathsFor, responseOf, toClaude } from "../../src/hooks/tools.js";
+import { shellTools } from "../../src/tools/commands.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { writeFileTool } from "../../src/tools/files.js";
 import { SUBAGENT_TOOLS } from "../../src/tools/index.js";
-import { shellTool } from "../../src/tools/shell.js";
-import { FakeProvider, reply, tempContext } from "../helpers.js";
+import { FakeProvider, reply, standInRun, tempContext } from "../helpers.js";
 
 // No hook runs here, and no path is opened but the test's own folder (release 8b plan, "Rules for every task").
 const HOST = pathsFor("/proj", null, "linux");
@@ -319,12 +319,12 @@ describe("report: the parts the tools give", () => {
     const ctx = await tempContext("never");
     const parts: unknown[] = [];
     const executor = {
-      exec: async () => ({ code: 1, signal: null, stdout: "out\n", stderr: "err\n" }),
-      start: () => {
-        throw new Error("start is not used here");
-      },
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: () => standInRun(Promise.resolve({ code: 1, signal: null, stdout: "out\n", stderr: "err\n" })),
     };
-    await expect(shellTool.run({ command: "false" }, { ...ctx, executor, report: (p) => parts.push(p) })).rejects.toThrow("exit code: 1");
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: [], ctx: { ...ctx, executor } });
+    const [shellTool] = shellTools(tasks, { shell: "sh", headless: false });
+    await expect(shellTool!.run({ command: "false" }, { ...ctx, executor, report: (p) => parts.push(p) })).rejects.toThrow("exit code: 1");
     expect(parts).toEqual([{ stdout: "out\n", stderr: "err\n", code: 1 }]);
     expect(errorOf("shell", "", parts[0])).toMatch(/^Exit code 1\n/);
   });

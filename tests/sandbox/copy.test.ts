@@ -7,14 +7,15 @@ import { afterEach, describe, expect, it, onTestFinished, type TestContext, vi }
 import { sandboxReady, sandboxStart, type Started } from "../../src/clilib.js";
 import { PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
+import { Tasks } from "../../src/core/tasks.js";
 import { onPath } from "../../src/exec/env.js";
 import { gitSettings } from "../../src/safety/gitconfig.js";
 import { type ReviewIo, reviewCommand } from "../../src/sandbox/copies.js";
 import { docker, dockerState } from "../../src/sandbox/docker.js";
 import { boxLimits, dockerRoom } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
+import { shellTools } from "../../src/tools/commands.js";
 import { TOOLS } from "../../src/tools/index.js";
-import { shellTool } from "../../src/tools/shell.js";
 import { Bus, callTool, FakeProvider, removeTree, reply } from "../helpers.js";
 
 const TEST_LABEL = { "tachikoma.test": "1" }; // the plan's rule for every container a test starts
@@ -94,9 +95,12 @@ describe("a session in the box with copy mode, in real Docker", { timeout: 0 }, 
     const gate = new PermissionGate("never", async () => false, "Not allowed in -p mode, where nobody can approve it", { ...started.gate, headless: true });
     gate.protection = started.protection;
     const lead = new FakeProvider("lead", [callTool("c1", "shell", { command: "echo hi > a.txt" }), reply("done")]);
-    const tools = TOOLS.map((t) => (t === shellTool ? started.shellTool : t));
     const { root, executor, workspace } = started;
-    await new Session({ lead, tools, system: started.system, ctx: { root, executor, workspace, gate }, bus }).send("make a.txt", AbortSignal.timeout(600_000));
+    const on = { root, executor, workspace, gate };
+    // The box's shell tool, made as cli.tsx makes it over a task list (background commands plan, Task 5).
+    const tasks = new Tasks({ bus, max: 8, worker: () => lead, system: started.subagentSystem, tools: [], ctx: on });
+    const tools = [...TOOLS, ...shellTools(tasks, { shell: "bash", headless: true })];
+    await new Session({ lead, tools, system: started.system, ctx: on, bus }).send("make a.txt", AbortSignal.timeout(600_000));
     const folder = path.join(w.data, "copies", session);
     expect(readFileSync(path.join(folder, "work", "a.txt"), "utf8")).toBe("hi\n");
     expect(readdirSync(w.root)).toEqual(["notes.txt"]);
