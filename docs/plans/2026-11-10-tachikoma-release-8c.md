@@ -801,6 +801,24 @@ search, always on", "Own lookup tool, every provider")
     line, those after a `|` among them, must still be on the lists, or the call keeps its own row.
     Known limit (Task 19's review): a group's own commands count each, `(cat a; ls) | grep x` being
     a file and a directory.
+70. **The outside review of PR #17** (docs/plans/2026-11-12-pr-17-review.md, checked against the
+    code 2026-11-12; the user chose "Fix 1, 2, 3, 6"):
+    - **Fixed** (Task 20):
+      - A resume or `/branch` leaves out older reasoning as the live session does: only
+        Anthropic's. Kimi's, OpenRouter's and Ollama's reasoning stays on their replies, as Kimi
+        needs it sent back with a tool call (finding 1).
+      - Sign-in uses the metadata address the server gave in its first "sign in" reply, so a server
+        that gives it only there can be signed in to (finding 2).
+      - A sign-in stopped with Esc saves no tokens, even when the token request was already on its
+        way (finding 3).
+    - **Fixed** (Task 21): a folded row clicked open while its calls run shows each result as it
+      comes, not only after it is closed and opened again (finding 6).
+    - **Known limits:**
+      - A server that cancels its request to open a link leaves the question up until it is
+        answered, and later forms wait behind it (finding 4). Few servers ask to open links.
+      - A PreToolUse hook that answers `ask` for tool search or a subagent, while another call runs
+        beside it, has its question pinned on the other call; declining it can hide that call's
+        result row (finding 5). Only the screen is wrong: nothing runs that was not allowed.
 
 ## Lines this plan adds
 
@@ -1747,6 +1765,38 @@ counts both; `cat a | python` keeps its own row; `ls | grep x && cat b` counts t
 the read; split's existing tests unchanged.
 
 Commit: `fix: a pipeline folds as one command`.
+
+## Task 20: The outside review's resume and sign-in points (choice 70)
+
+**Files:** `src/core/transcript.ts` (the resume's `keepThinking`), `src/core/session.ts` and
+`src/core/types.ts` (one rule for which replies' reasoning is left out, shared by both),
+`src/mcp/auth.ts` (`signIn`, `saveTokens`), tests.
+
+**What changes:** finding 1: the resume leaves out only Anthropic's older reasoning, by the same
+rule as the live session. Finding 2: the sign-in's first step is given the metadata address the
+server's first 401 gave, which the startup's client kept. Finding 3: tokens arriving after Esc
+are not saved.
+
+**Tests:** a resume after the tools changed keeps a Kimi (OpenAI-format) reply's reasoning and
+drops an Anthropic reply's, as the live session would send them; a sign-in whose server gives its
+metadata only in the 401 reaches the sign-in service; Esc while the token request is out saves
+nothing, and the next start still needs sign-in.
+
+Commit: `fix: resume keeps other providers' reasoning; sign-in keeps the 401's address and saves nothing after Esc`.
+
+## Task 21: An opened folded row shows results as they come (choice 70)
+
+**Files:** `src/tui/fold.ts`, `src/tui/App.tsx`, `src/tui/app/mouse.ts` (the lines a fold puts on
+screen, shared by a click and a result), tests.
+
+**What changes:** finding 6: when a result arrives for a call in a folded row that is open, its
+lines are put again, as a click puts them, so the result shows under its call.
+
+**Tests:** a fold opened before its results come shows each one as it arrives (full screen, the
+real `onMessage` path); a closed fold stays one row; the view held below it and a question's
+detail move with their lines.
+
+Commit: `fix: an opened folded row shows results as they come`.
 
 **After Tasks 15 and 16:** a spec and quality review each, the touched files' tests, the full
 suite once, `dist` rebuilt, and a short terminal re-check with the user: a folded row (reads, a
