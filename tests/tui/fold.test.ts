@@ -76,7 +76,8 @@ describe("folded tool rows", () => {
       expect(ps(line)).toEqual(["ran"]);
     }
     // Mixed kinds of the read, list and search lists: each command its own; with one of the "ran" list among them, ran.
-    expect(bash("ls | wc -l")).toEqual(["list", "read"]);
+    // A pipeline is one command, of its first command's kind (choice 69).
+    expect(bash("ls | wc -l")).toEqual(["list"]);
     expect(bash("cd src && cat a")).toEqual(["ran"]);
     // Each list is its own shell's: bash's head and PowerShell's where are on no list of the other.
     expect(ps("head a")).toBeNull();
@@ -143,6 +144,34 @@ describe("folded tool rows", () => {
       expect([line, shellKinds(line, "bash")]).toEqual([line, null]);
     }
     for (const line of ["date", "date -u", "date +%s", "printf x"]) expect(shellKinds(line, "bash")).toEqual(["ran"]);
+  });
+
+  // Release 8c plan, choice 69 and Task 19: the commands after a | only work on the one before's output, so a pipeline is
+  // one command of its first command's kind; every command on the line must still be on the lists.
+  it("counts a pipeline once, by its first command's kind", () => {
+    const row = (line: string, shell: "bash" | "powershell") => words([sh("c", line)], shell);
+    expect(row("Get-ChildItem -Recurse node_modules -File | Measure-Object -Property Length -Sum", "powershell")).toBe("Listed 1 directory");
+    expect(row("grep x src | head", "bash")).toBe("Searched for 1 pattern");
+    expect(row("cat a | wc -l", "bash")).toBe("Read 1 file");
+    expect(row("git log | head", "bash")).toBe("Ran 1 shell command");
+    expect(row("grep x src |& head", "bash")).toBe("Searched for 1 pattern");
+    expect(row("Select-String x src | Measure-Object", "powershell")).toBe("Searched for 1 pattern");
+    expect(row("gc a | Measure-Object -Line", "powershell")).toBe("Read 1 file");
+    expect(row("git log | Select-String fix", "powershell")).toBe("Ran 1 shell command");
+    // A string written in the line is no command, so the one it is piped into is the pipeline's first.
+    expect(row("'x' | Select-String x", "powershell")).toBe("Searched for 1 pattern");
+    // ;, && and || join commands, each counted as before.
+    expect(row("cat a && ls", "bash")).toBe("Read 1 file, listed 1 directory");
+    expect(row("gc a && ls", "powershell")).toBe("Read 1 file, listed 1 directory");
+    expect(row("cat a; ls", "bash")).toBe("Read 1 file, listed 1 directory");
+    expect(row("cat a || ls", "bash")).toBe("Read 1 file, listed 1 directory");
+    expect(row("gc a || ls", "powershell")).toBe("Read 1 file, listed 1 directory");
+    expect(row("ls | grep x && cat b", "bash")).toBe("Read 1 file, listed 1 directory");
+    expect(row("ls | sls x && gc b", "powershell")).toBe("Read 1 file, listed 1 directory");
+    // A command after a | on no list keeps the call its own row.
+    expect(shellKinds("cat a | python", "bash")).toBeNull();
+    expect(shellKinds("gc a | python", "powershell")).toBeNull();
+    expect(kindOf(sh("c", "cat a | python"), new Set(), false, "bash")).toEqual(["own"]);
   });
 
   // The user's choice, 2026-11-12 (decision A): PowerShell's cd, pwd and echo are Set-Location's, Get-Location's and

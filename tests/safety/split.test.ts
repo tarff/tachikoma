@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Shell, shellOf, split } from "../../src/safety/split.js";
+import { pipedInto, type Shell, shellOf, split } from "../../src/safety/split.js";
 
 // Each line: the shell, the command line, and each command's words in the order they are found, or why the line cannot be read.
 const TABLE: [Shell, string, string[][] | string][] = [
@@ -1159,6 +1159,18 @@ describe("split", () => {
     expect(texts("env -i rm -rf  ~ 2>&1", "bash")).toEqual(["env -i rm -rf  ~ 2>&1", "rm -rf  ~"]);
     expect(texts('for f in x; do rm "$f"; done', "bash")).toEqual(["for f in x", 'rm "$f"']);
     expect(texts("& 'git' status", "powershell")).toEqual(["'git' status"]);
+  });
+
+  // Release 8c plan, Task 19; choice 69: the folded rows count a pipeline once, so each command says whether a command
+  // before it in its pipeline feeds it; || is no pipe, and a PowerShell string piped in is no command.
+  it("says which commands take another's output through a |", () => {
+    const fed = (line: string, shell: Shell) => {
+      const result = split(line, shell);
+      return "all" in result ? result.all.map(pipedInto) : result;
+    };
+    expect(fed("a | b |& c || d && e; f | g", "bash")).toEqual([false, true, true, false, false, false, true]);
+    expect(fed("a | b || c && d; e | f", "powershell")).toEqual([false, true, false, false, false, true]);
+    expect(fed("'x' | b | c", "powershell")).toEqual([false, true]);
   });
 });
 

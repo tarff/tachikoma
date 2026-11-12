@@ -4,7 +4,7 @@ import { isMcp } from "../hooks/tools.js";
 import { safeName } from "../mcp/config.js";
 import { SEARCH } from "../mcp/search.js";
 import type { Servers } from "../mcp/servers.js";
-import { type Shell, split } from "../safety/split.js";
+import { pipedInto, type Shell, split } from "../safety/split.js";
 import { brief, callRow, describe, type Line, type McpNames, resultRow, safeNames } from "./describe.js";
 import { elapsed } from "./WorkingLine.js";
 
@@ -101,6 +101,8 @@ function writesOrRuns(line: string, shell: Shell): boolean {
 // A shell line's kinds: one for a line whose commands are all of one kind of the read, list and search lists, each
 // command's for a mix of them, and "ran" for one with any of the "ran" list among them; null when it is its own row
 // (measured on Claude Code: `cat a && cat b` = Read 1 file, `cd ... && git log` = Ran 1 shell command, `rm` kept its row).
+// A pipeline counts once, by its first command's kind; the commands after a | are still checked against the lists
+// (release 8c plan, Task 19; choice 69).
 export function shellKinds(line: string, shell: Shell): Listed[] | null {
   if (writesOrRuns(line, shell)) return null;
   const s = split(line, shell);
@@ -108,7 +110,8 @@ export function shellKinds(line: string, shell: Shell): Listed[] | null {
   const kinds = s.all.map((c) => (c.words.length ? commandKind(c.words, shell) : null));
   if (kinds.some((k) => k === null)) return null;
   if (kinds.includes("ran")) return ["ran"];
-  return new Set(kinds).size === 1 ? [kinds[0]!] : (kinds as Listed[]);
+  const counted = (kinds as Listed[]).filter((_, i) => !pipedInto(s.all[i]!));
+  return new Set(counted).size === 1 ? [counted[0]!] : counted;
 }
 
 // A call's kinds (Task 15): one for most; a shell line's from shellKinds. A call that asked the user a question, whatever
