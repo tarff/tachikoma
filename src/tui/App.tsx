@@ -19,7 +19,7 @@ import type { Shell } from "../safety/split.js";
 import { SETTINGS, type Settings, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
 import type { TodoItem } from "../tools/todo.js";
-import { characters, FROM, gray, isFile, type Question, SHORTEN_WORDS, STOPPING, visualSelection } from "./app/constants.js";
+import { characters, contextsOf, FROM, gray, isFile, type Question, SHORTEN_WORDS, STOPPING, visualSelection } from "./app/constants.js";
 import { handover } from "./app/handover.js";
 import { keyRouting } from "./app/keyRouting.js";
 import { liveEdits } from "./app/liveEdits.js";
@@ -571,8 +571,13 @@ export function App(props: AppProps) {
   const picking = ui.picker !== null || ui.sessions !== null || ui.mcpList || ui.form !== null;
   const menu = picking || ui.question || d ? null : fns.menuFor(prompt);
   // The open run's live row, above the working line where the prompt is drawn (release 8c plan, choice 67; Task 17): it
-  // takes no click, and its seconds grow with the working line's redraws, every SPIN_MS while a turn runs.
-  const liveRow = picking || ui.question || d ? [] : ui.run.live(ui.now).map(escaped);
+  // takes no click, and its seconds grow with the working line's redraws, every SPIN_MS while a turn runs. While the shell
+  // tool holds a foreground command, its line names the first key that moves it to the background, as the table spells
+  // it, and none when the action is unbound (background commands plan, Task 10; choice 20); the redraws show it once held.
+  const moveKey = ui.tasks.holding
+    ? ui.table.keysFor("task:background", "Task").find((k) => ui.table.acts(k, "task:background", contextsOf(menu ? "menu" : "prompt", ui.fullNow.current, false, true)))
+    : undefined;
+  const liveRow = picking || ui.question || d ? [] : ui.run.live(ui.now, moveKey).map(escaped);
   if (menu?.kind !== "path") ui.listed.current = null;
 
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the

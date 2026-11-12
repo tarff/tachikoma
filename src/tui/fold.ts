@@ -189,7 +189,7 @@ export class OpenRun {
   // The live row (release 8c plan, choice 67; Task 17): its two lines as the run's calls last set them, kept and cleared
   // together (Task 18), the searches and shell commands started in the run, whether a search set the top line, and the
   // run's calls started, each with its start and end, for a shell's seconds.
-  #live: { top: (now: number) => string; under: (now: number) => string } | null = null;
+  #live: { top: (now: number) => string; under: (now: number, moveKey?: string) => string } | null = null;
   #searches = 0;
   #shells = 0;
   #searchTop = false;
@@ -319,9 +319,11 @@ export class OpenRun {
         const ms = (started.end ?? now) - started.at;
         return ms < 1000 ? null : elapsed(ms);
       };
+      // While it runs and can be moved, the line ends with the key that moves it (background commands plan, Task 10).
+      const hint = (moveKey?: string) => (moveKey !== undefined && started.end === undefined ? ` (${moveKey} to run in background)` : "");
       this.#live = {
         top: (now) => `● Running ${n} shell command${s(n)}${time(now) === null ? "" : ` · ${time(now)}`}`,
-        under: (now) => `  ⎿  $ ${detail}${time(now) === null ? "" : ` (${time(now)})`}`,
+        under: (now, moveKey) => `  ⎿  $ ${detail}${time(now) === null ? "" : ` (${time(now)})`}${hint(moveKey)}`,
       };
     } else if (isMcp(c.name)) {
       // The server and the tool as the server gives them (choice 68).
@@ -336,10 +338,12 @@ export class OpenRun {
     if (started) started.end = at;
   }
 
-  // The live row's two grey lines, while the run holds a call that set them; none otherwise.
-  live(now: number): Line[] {
+  // The live row's two grey lines, while the run holds a call that set them; none otherwise. `moveKey`: the key that moves
+  // the foreground command to the background, as the table spells it, while the shell tool holds one (background
+  // commands plan, Task 10).
+  live(now: number, moveKey?: string): Line[] {
     if (!this.#run.length || this.#live === null) return [];
-    return [this.#live.top(now), this.#live.under(now)].map((text) => ({ text, color: "gray", oneLine: true }));
+    return [this.#live.top(now), this.#live.under(now, moveKey)].map((text) => ({ text, color: "gray", oneLine: true }));
   }
 
   // The live row gone, as its run ends or a new one starts.

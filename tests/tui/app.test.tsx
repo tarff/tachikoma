@@ -49,6 +49,7 @@ import { OpenAIProvider } from "../../src/providers/openai.js";
 import { judgeOf } from "../../src/safety/judge.js";
 import { dangers, NO_RULES } from "../../src/safety/rules.js";
 import type { Manifest } from "../../src/sandbox/snapshot.js";
+import { readKeybindings } from "../../src/keybindings.js";
 import { readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
@@ -2089,6 +2090,72 @@ describe("App's background commands", () => {
     await press(app, "/", "t", "a");
     expect(app.lastFrame()).toContain("  /tasks  List subagents and background commands; /tasks t1 shows one, /tasks stop stops them\n");
   });
+
+  // Background commands plan, Task 10 (choice 20): Ctrl+B is Task's task:background, in force only while the shell tool
+  // holds a foreground command, which it moves; the live shell row names the key while it can, as the keys file binds it.
+  const CTRL_B = "\u0002";
+  const moved = { type: "tool_result", callId: "c1", output: "Moved to the background as t1 by the user.", isError: false };
+  const taskKeys = (keys: Record<string, string | null>) => {
+    const read = readKeybindings(JSON.stringify({ bindings: [{ context: "Task", bindings: keys }] }));
+    if ("problem" in read) throw new Error(read.problem);
+    expect(read.problems).toEqual([]);
+    return read.table;
+  };
+
+  it("moves the running foreground command to the background on Ctrl+B: the model hears the user moved it, and the panel shows it", async () => {
+    const { executor } = held();
+    const lead = new FakeProvider("a", [callTool("c1", "shell", { command: "npm test" }), reply("moved it")]);
+    const { app, tasks } = await mount([], { lead, executor, mode: "never" });
+    await type(app, "go");
+    await waitFor(() => tasks.holding !== undefined);
+    await press(app, CTRL_B);
+    await until(app, "moved it");
+    expect(lead.seen[1]!.at(-1)!.parts).toEqual([moved]);
+    expect(app.lastFrame()).toMatch(/›\n◐ t1 npm test\n  ⎿ shell · \d+s\n/);
+    expect(tasks.all.map((t) => [t.id, t.state])).toEqual([["t1", "running"]]);
+  });
+
+  it("does nothing on Ctrl+B with no command running", async () => {
+    const { app, tasks } = await mount([]);
+    await press(app, "ab", CTRL_B, "c");
+    expect(app.lastFrame()).toContain("› abc\n");
+    expect(tasks.all).toEqual([]);
+  });
+
+  it.each([
+    ["Ctrl+B by default", undefined, "ctrl+b", CTRL_B],
+    ["a keys file's Ctrl+G", { "ctrl+b": null, "ctrl+g": "task:background" }, "ctrl+g", "\u0007"],
+  ])("names %s on the live shell row while the command is held, and moves it on that key alone", async (_, keys, name, key) => {
+    const { executor } = held();
+    const lead = new FakeProvider("a", [callTool("c1", "shell", { command: "git log" }), reply("moved it")]);
+    const { app, tasks } = await mount([], { lead, executor, mode: "never", ...(keys ? { bindings: taskKeys(keys) } : {}) });
+    await type(app, "go");
+    await until(app, `  ⎿  $ git log (${name} to run in background)\n`);
+    if (key !== CTRL_B) {
+      await press(app, CTRL_B);
+      expect(tasks.holding).toBeDefined();
+      expect(tasks.all).toEqual([]);
+    }
+    await press(app, key);
+    await until(app, "moved it");
+    expect(lead.seen[1]!.at(-1)!.parts).toEqual([moved]);
+    expect(app.lastFrame()).not.toContain("to run in background");
+  });
+
+  it("names no key on the live shell row when a keys file sets task:background's to null, and Ctrl+B moves nothing", async () => {
+    const { executor } = held();
+    const lead = new Held();
+    const { app, tasks } = await mount([], { lead, executor, mode: "never", bindings: taskKeys({ "ctrl+b": null }) });
+    await type(app, "go");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(callTool("c1", "shell", { command: "git log" }));
+    await waitFor(() => tasks.holding !== undefined);
+    await until(app, "  ⎿  $ git log\n");
+    await press(app, CTRL_B);
+    expect(tasks.holding).toBeDefined();
+    expect(tasks.all).toEqual([]);
+    expect(app.lastFrame()).not.toContain("to run in background");
+  });
 });
 
 // A subagent that asks: its name, its stop signal, and whether it was stopped.
@@ -2594,7 +2661,7 @@ describe("App's live folded row", () => {
       await inColour(async () => {
         const lead = new Held();
         const shell = heldShell();
-        const { app, ctx } = await mount([], { lead, full, mode: "never", executor: shell.executor });
+        const { app, ctx, tasks } = await mount([], { lead, full, mode: "never", executor: shell.executor });
         writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
         await type(app, "look");
         await waitFor(() => lead.asked.length === 1);
@@ -2605,16 +2672,22 @@ describe("App's live folded row", () => {
         // A search after a read keeps the read on top.
         lead.answer(both(callTool("c2", "find_files", { pattern: "*.txt" }), callTool("c3", "shell", { command: "git status\ngit log" })));
         await until(app, "$ git status");
-        expect(live(app, full)).toEqual(["● Running 1 shell command", "  ⎿  $ git status", working]);
+        // Held by the shell tool, the command can be moved, and its ⎿ line ends with the key that does it (background
+        // commands plan, Task 10), drawn at the working line's next redraw.
+        await waitFor(() => tasks.holding !== undefined);
+        vi.advanceTimersByTime(80);
+        await tick();
+        const hint = " (ctrl+b to run in background)";
+        expect(live(app, full)).toEqual(["● Running 1 shell command", `  ⎿  $ git status${hint}`, working]);
         // The fake clock moved in one step 40 ms past each second (release 8c plan, Task 18): the live row is drawn by the
         // working line's redraw, every 80 ms (SPIN_MS), which last fired before a step's end, so a step to the second itself
         // left the screen showing under it.
         vi.advanceTimersByTime(1_040);
         await tick();
-        expect(live(app, full)).toEqual(["● Running 1 shell command · 1s", "  ⎿  $ git status (1s)", working]);
+        expect(live(app, full)).toEqual(["● Running 1 shell command · 1s", `  ⎿  $ git status (1s)${hint}`, working]);
         vi.advanceTimersByTime(2_000);
         await tick();
-        expect(live(app, full)).toEqual(["● Running 1 shell command · 3s", "  ⎿  $ git status (3s)", working]);
+        expect(live(app, full)).toEqual(["● Running 1 shell command · 3s", `  ⎿  $ git status (3s)${hint}`, working]);
         expect(app.lastFrame()).not.toContain("Searched for"); // nothing said until the run ends
         shell.end();
         await waitFor(() => lead.asked.length === 3);
