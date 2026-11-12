@@ -10,6 +10,8 @@ import { readInstructions } from "../src/core/instructions.js";
 import { PermissionGate } from "../src/core/permissions.js";
 import { listSessions, openSession, sessionsDir } from "../src/core/sessions.js";
 import type { Message, ToolSpec } from "../src/core/types.js";
+import type { ExecResult, Executor } from "../src/exec/executor.js";
+import { CommandLog } from "../src/exec/log.js";
 import type { Hook } from "../src/hooks/config.js";
 import { type Answers, answersFor } from "../src/mcp/answers.js";
 import type { ServerConfig } from "../src/mcp/config.js";
@@ -33,6 +35,7 @@ import {
   leadOf,
   leadSession,
   mcpLines,
+  networkNoted,
   newSaved,
   openSaved,
   prose,
@@ -1124,5 +1127,34 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     const { session, pictures } = leadSession({ lead: new FakeProvider("a", []), tools: [], system: "s", ctx, bus: new Bus() });
     session.load({ id: "x", messages: [], system: "s", prompts: [], calls: [], nextPicture: 4, nextTask: 1 });
     expect(pictures.next()).toBe(4);
+  });
+});
+
+// Choice 21, with background commands (plan, Task 3): a command run through start, foreground or background, gets the
+// network line when it fails, in its result and in its log, so a background ending carries it too.
+describe("networkNoted's start", () => {
+  const LINE = "(The box's network is off, so nothing in it can reach the internet. To allow it, launch with --network on.)";
+  const inner = (result: ExecResult, printed: string): Executor => ({
+    exec: () => Promise.reject(new Error("exec is not used here")),
+    start: () => {
+      const log = new CommandLog();
+      log.add(printed);
+      return { log, done: Promise.resolve(result), stop: () => {} };
+    },
+  });
+
+  it("adds the line to a failed command's stderr and to its log", async () => {
+    const err = "curl: (6) Could not resolve host";
+    const running = networkNoted(inner({ code: 6, signal: null, stdout: "", stderr: err }, err)).start("curl x", "/work");
+    expect((await running.done).stderr).toBe(`${err}\n${LINE}`);
+    expect(running.log.kept()).toBe(`${err}\n${LINE}`);
+  });
+
+  it("adds nothing to a command that succeeds, or to one that was stopped", async () => {
+    for (const result of [{ code: 0, signal: null }, { code: null, signal: "SIGKILL" as const }]) {
+      const running = networkNoted(inner({ ...result, stdout: "ok\n", stderr: "" }, "ok\n")).start("echo ok", "/work");
+      expect((await running.done).stderr).toBe("");
+      expect(running.log.kept()).toBe("ok\n");
+    }
   });
 });

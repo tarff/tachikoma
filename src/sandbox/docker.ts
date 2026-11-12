@@ -6,8 +6,10 @@ import { commandEnv, onPath } from "../exec/env.js";
 import { collect, killTree } from "../exec/local.js";
 
 // One docker run: its exit code and output, or "missing" when no docker program is on PATH. `line` gets each line of
-// stdout and stderr as it comes, for a build's progress; `input` goes to its stdin. With `cut`, each stream keeps only
-// what a tool's output keeps (local.ts, collect), so a command in the box cannot fill the host's memory with output.
+// stdout and stderr as it comes, for a build's progress; `data` gets each piece of either as it arrives, decoded per
+// stream, for a background command's log (background commands plan, choice 3); `input` goes to its stdin. With `cut`,
+// each stream keeps only what a tool's output keeps (local.ts, collect), so a command in the box cannot fill the host's
+// memory with output.
 // With `tree`, on Windows a stop ends docker's whole process tree (local.ts, killTree), not docker alone: `docker
 // build` runs the buildx plugin as a child program, and neither gets the terminal's Ctrl-C, as both start without a
 // console window; when docker alone was ended, buildx went on to finish the build and save the image (measured
@@ -15,7 +17,7 @@ import { collect, killTree } from "../exec/local.js";
 // was measured, which would slow every stop of a command in the box (choice 125).
 export type DockerRun = (
   args: string[],
-  opts?: { line?: (line: string) => void; input?: Buffer; signal?: AbortSignal; cut?: boolean; tree?: boolean },
+  opts?: { line?: (line: string) => void; data?: (text: string) => void; input?: Buffer; signal?: AbortSignal; cut?: boolean; tree?: boolean },
 ) => Promise<{ code: number; out: string; err: string } | "missing">;
 
 // The real docker, by its full path (onPath), never by its bare name, with the environment commands get, without the API
@@ -48,10 +50,12 @@ export const docker: DockerRun = (args, opts = {}) => {
     child.stdout!.setEncoding("utf8").on("data", (d: string) => {
       if (!outCut) out += d;
       outLines?.add(d);
+      opts.data?.(d);
     });
     child.stderr!.setEncoding("utf8").on("data", (d: string) => {
       if (!errCut) err += d;
       errLines?.add(d);
+      opts.data?.(d);
     });
     // A docker that exits before reading all its stdin makes the write fail; its exit code says what went wrong.
     child.stdin?.on("error", () => {}).end(opts.input);

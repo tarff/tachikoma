@@ -437,6 +437,98 @@ describe("DockerExecutor with a stand-in Docker", () => {
     await box.stop();
   });
 
+  // Background commands plan, Task 3 (choice 3): start runs what exec runs, and streams it into a log.
+  const MEMORY_LINE = `(Stopped: the command used more than the box's memory limit of 512m. "sandboxLimits" in settings.json changes it.)`;
+  // Docker's run of the command (the `-w` exec), held until the test lets it end, or rejecting when the stop's signal
+  // aborts, as the real run does; every other call goes to `fake`.
+  const holding = (fake: ReturnType<typeof fakeDocker>, pieces: string[], end: Answer) => {
+    let release: () => void = () => {};
+    const run: DockerRun = (args, opts) => {
+      if (args[1] !== "-w") return fake.run(args, opts);
+      void fake.run(args, opts); // recorded
+      for (const piece of pieces) opts?.data?.(piece);
+      return new Promise((resolve, reject) => {
+        release = () => resolve(end);
+        opts?.signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+      });
+    };
+    return { run, release: () => release() };
+  };
+
+  it("start streams each piece Docker gives into the log in order, before the end, with exec's arguments", async () => {
+    const fake = answering(() => ok());
+    const docker = holding(fake, ["a", "b", "c"], { code: 0, out: "ac", err: "b" });
+    const box = await DockerExecutor.start(OPTS, docker.run);
+    const running = box.start("npm run dev", "/work/src");
+    let ended = false;
+    void running.done.finally(() => (ended = true));
+    await new Promise((resolve) => setImmediate(resolve)); // the command is started
+    expect(running.log.kept()).toBe("abc");
+    expect(ended).toBe(false);
+    docker.release();
+    expect(await running.done).toEqual({ code: 0, signal: null, stdout: "ac", stderr: "b" });
+    const at = fake.calls.findIndex((c) => c[0] === "exec" && c[1] === "-w");
+    expect(fake.calls[at]).toEqual(["exec", "-w", "/work/src", "b0x", "bash", "-c", expect.stringContaining("setsid"), "_", "npm run dev"]);
+    expect(fake.options[at]).toMatchObject({ cut: true, data: expect.any(Function) });
+    await box.stop();
+  });
+
+  it("start's stop kills the command's group in the box and settles done as a kill, keeping the log", async () => {
+    const fake = answering(() => ok());
+    const docker = holding(fake, ["serving\n"], ok());
+    const box = await DockerExecutor.start(OPTS, docker.run);
+    const running = box.start("npm run dev", "/work");
+    await new Promise((resolve) => setImmediate(resolve)); // the command is started
+    running.stop();
+    expect(await running.done).toEqual({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
+    expect(fake.calls).toContainEqual(["exec", "b0x", "bash", "-c", expect.stringContaining("kill -KILL")]);
+    expect(running.log.kept()).toBe("serving\n");
+    await box.stop();
+  });
+
+  it("start's stop while the count is read, before the command reaches the box, runs nothing", async () => {
+    let reads = 0;
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args.includes("/sys/fs/cgroup/memory.events")) {
+        return ++reads === 1 ? { code: 1, out: "", err: "Error response from daemon: busy\n" } : ok("oom_kill 0\n");
+      }
+      return ok();
+    });
+    const box = await DockerExecutor.start(OPTS, fake.run);
+    const running = box.start("npm run dev", "/work");
+    running.stop();
+    expect(await running.done).toEqual({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
+    expect(reads).toBe(2);
+    expect(fake.calls.some((c) => c[1] === "-w")).toBe(false);
+  });
+
+  it("start adds the memory limit's line to stderr and to the log (choice 3)", async () => {
+    let reads = 0;
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args.includes("/sys/fs/cgroup/memory.events")) return ok(`oom_kill ${reads++ === 0 ? 0 : 1}\n`);
+      return ok("true\n");
+    });
+    const docker = holding(fake, ["make: *** [build] Killed"], { code: 2, out: "", err: "make: *** [build] Killed" });
+    const box = await DockerExecutor.start({ ...OPTS, limits: { memory: 512 * MB, cpus: 1, pids: 64 } }, docker.run);
+    const running = box.start("make build", "/work");
+    await new Promise((resolve) => setImmediate(resolve)); // the command is started
+    docker.release();
+    expect((await running.done).stderr).toBe(`make: *** [build] Killed\n${MEMORY_LINE}`);
+    expect(running.log.kept()).toBe(`make: *** [build] Killed\n${MEMORY_LINE}`);
+    await box.stop();
+  });
+
+  it("start rejects done with the sandbox's failure when Docker cannot be reached, and throws at once after it", async () => {
+    const fake = answering(() => ok());
+    const run: DockerRun = (args, opts) => (args[1] === "-w" ? Promise.reject(new Error("spawn docker EACCES")) : fake.run(args, opts));
+    const box = await DockerExecutor.start(OPTS, run);
+    const message = "The sandbox stopped working: spawn docker EACCES. Shell and file tools are off until Tachikoma is launched again.";
+    await expect(box.start("npm run dev", "/work").done).rejects.toThrow(message);
+    expect(() => box.start("echo again", "/work")).toThrow(message);
+  });
+
   it("takes Docker's warnings on stderr as no failure when the box starts", async () => {
     const warning = "WARNING: Your kernel does not support swap limit capabilities or the cgroup is not mounted. Memory limited without swap.\n";
     const fake = fakeDocker((args) => (args[0] === "run" ? { code: 0, out: "b0x\n", err: warning } : ok("oom_kill 0\n")));
