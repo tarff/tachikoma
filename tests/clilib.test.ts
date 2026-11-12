@@ -990,11 +990,15 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
         expect(open("running").lost).toEqual([]);
       });
 
-      // As the subagents' path writes only an id Tasks gives (resumed's reported).
-      it("writes no ending line for an id Tasks never gives", () => {
+      // A command's id names no file, only a line in the session's own transcript, so even one Tasks never gives is marked.
+      it("marks a command whose id Tasks never gives, so it too is told only once", () => {
         const file = saved(dir, "oddid", [...talk("oddid", "go"), command("odd", "npm run dev")]);
-        open("oddid").reported();
-        expect(endings(file)).toEqual([]);
+        const o = open("oddid");
+        expect(o.lost).toEqual([notEnded("odd", "npm run dev")]);
+        o.reported();
+        expect(endings(file)).toMatchObject([{ id: "odd", state: "lost" }]);
+        o.release();
+        expect(open("oddid").lost).toEqual([]);
       });
 
       // --fork-session's copy holds the command line, so it is told there once; the original keeps its own to tell.
@@ -1042,8 +1046,8 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
         const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: [], ctx: { ...ctx, executor } });
         onTestFinished(() => void tasks.stop());
         tasks.from(o.conversation.nextTask); // as Session.load does
-        const tools = shellTools(tasks, { shell: "PowerShell", headless: false });
-        const use = (name: string, input: unknown) => tools.find((t) => t.spec.name === name)!.run(input, { ...ctx, executor });
+        const shell = shellTools(tasks, { shell: "PowerShell", headless: false });
+        const use = (name: string, input: unknown) => shell.find((t) => t.spec.name === name)!.run(input, { ...ctx, executor });
         expect(await use("shell", { command: "npm run dev", background: true })).toBe("Started t3 in the background.");
         expect(await use("stop_task", { id: "t2" })).toBe("No task t2.");
       });

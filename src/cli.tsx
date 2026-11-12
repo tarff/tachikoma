@@ -713,9 +713,9 @@ const opened = saved
       name,
     );
 const said = [...opened.lines, ...(leadLine ? [{ text: leadLine }] : [])].map((l) => ({ ...l, text: visible(l.text) }));
-// The subagents a crash cut short reach the model with its next request, as waiting answers do (release 8a design,
-// "Resuming"), and are marked reported once handed out: the window's session's, which /clear, /resume and /branch switch
-// (release 8a plan, Task 7).
+// The subagents a crash cut short, and the background commands that had not ended (background commands plan, choice 15),
+// reach the model with its next request, as waiting answers do (release 8a design, "Resuming"), and are marked reported
+// once handed out: the window's session's, which /clear, /resume and /branch switch (release 8a plan, Task 7).
 const windowSessions = new WindowSessions(sessions, { project: root, version: VERSION, tools: specs }, { box: box !== undefined, full: system }, opened);
 const { session, pictures } = leadSession({
   lead,

@@ -711,8 +711,8 @@ export function chooseSession(
 
 // A session opened for this window: the conversation for Session.load; the grey lines to say, one that names the session
 // cut to the screen's width; the lines for the model about subagents whose answers were lost and background commands
-// that had not ended, which go into its next
-// request as waiting text does, with `reported` to call once they have been handed out; and its lock's release.
+// that had not ended, which go into its next request as waiting text does, with `reported` to call once they have been
+// handed out; and its lock's release.
 export interface Opened {
   conversation: Conversation;
   lines: { text: string; oneLine?: boolean }[];
@@ -796,9 +796,9 @@ export function openSaved(dir: string, id: string, o: { fork: boolean; copy?: st
 // choice 4). It writes `-n`'s name; a `lead` line when this launch leads with another model, so the next resume opens
 // with it; no `tools` line, which the session's first request writes when its tools differ from those the history was
 // last saved under, so a reply is sent with its thinking only under its own tools (release 8c plan, choice 46). Once
-// the lost lines have been handed to the model (`reported`), `lost` goes into
-// each unfinished subagent's file, and each unended command's `command-ended` line, so it is reported once (user,
-// 2026-11-06: "Report once"; background commands plan, choice 15). A session saved under
+// the lost lines have been handed to the model (`reported`), each one told is marked, so it is reported once (user,
+// 2026-11-06: "Report once"): a subagent by a `lost` line in its own file, a command that had not ended by a
+// `command-ended` line in this session's transcript (background commands plan, choice 15). A session saved under
 // another sandbox setting than this launch's, `prompt.box`, has a system prompt naming another shell and project root,
 // so this launch's, `prompt.full`, takes its place and is written in a `system` line, the replies keeping their
 // thinking only under it (release 8a final review, user, 2026-11-07: "Rebuild it", "Save the setting"). The setting is
@@ -818,13 +818,14 @@ export function resumed(
   // Each in the subagents folder, as tasks.ts names a subagent's file, made inside the private sessions folder; an id
   // from the file is used only when it is one Tasks gives, so no line can lead the write elsewhere.
   // A command's ending goes into the session's own transcript, a fork's or a branch's copy included, as its command line
-  // is there (background commands plan, choice 15).
+  // is there; its id names no file, so any id is written (background commands plan, choice 15).
   const reported = () => {
-    for (const u of read.unfinished.filter((u) => /^t\d+$/.test(u.id))) {
+    for (const u of read.unfinished) {
       if (u.kind === "command") {
         transcript.write({ t: "command-ended", id: u.id, state: "lost" });
         continue;
       }
+      if (!/^t\d+$/.test(u.id)) continue;
       const file = path.join(pathsOf(transcript.file).subagents, `${u.id}.jsonl`);
       new Transcript(file, transcript.pictures, { inherits: true }).write({ t: "ended", state: "lost" });
     }

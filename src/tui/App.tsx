@@ -491,8 +491,9 @@ export function App(props: AppProps) {
       ui.bus.off("mcp-note", onMcpNote);
       unbindForms?.();
       // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
-      // Ink ending on a drawing error would leave with nothing on screen.
-      ui.tasks.stop();
+      // Ink ending on a drawing error would leave with nothing on screen. Commands stop unrecorded, so a resume reports
+      // them (background commands plan, choice 29, the user's).
+      ui.tasks.close();
       ui.abort.current?.abort();
       ui.saved.release(); // the window leaves its session (release 8a plan, choice 8)
     };

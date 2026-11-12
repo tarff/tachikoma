@@ -574,7 +574,7 @@ export const queue = (ui: UI, fns: Fns) => {
   const leave = () => {
     if (ui.leaving.current) return;
     ui.leaving.current = true;
-    ui.tasks.stop();
+    ui.tasks.close(); // commands too, unrecorded, so a resume reports them (background commands plan, choice 29, the user's)
     ui.rerender((n) => n + 1);
     const c = ui.copy;
     void (c ? review(c) : Promise.resolve())

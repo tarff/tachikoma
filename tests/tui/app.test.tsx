@@ -9088,6 +9088,35 @@ describe("App's sessions", () => {
     expect(readFileSync(path.join(sessionPaths(dir, first.session.id).subagents, "t1.jsonl"), "utf8")).toContain('"state":"lost"');
   });
 
+  // Background commands plan, choice 29 (the user's): a command still running as the window closes stops with no ending
+  // written, so a resume tells the model of it once; one stop_task or /tasks stop stopped before the close is not told.
+  it("tells the model once, on resume, of a background command running as the window closed, and of none stopped before", async () => {
+    const executor: Executor = { exec: () => Promise.reject(new Error("exec is not used here")), start: () => standInRun(new Promise(() => {})) };
+    const start = (id: string, command: string) => callTool(id, "shell", { command, background: true });
+    const stopTask = callTool("c4", "stop_task", { id: "t2" });
+    const turns = [start("c1", "npm run dev"), start("c2", "npm test"), start("c3", "npm run watch"), stopTask, reply("started")];
+    const first = await saved(turns, { mode: "never", executor });
+    await type(first.app, "start them");
+    await until(first.app, "started");
+    await type(first.app, "/tasks stop t3");
+    await until(first.app, "Stopped t3.");
+    await type(first.app, "/exit");
+    await expectExited(first.app);
+    expect(first.tasks.all.map((t) => [t.id, t.state])).toEqual([["t1", "stopped"], ["t2", "stopped"], ["t3", "stopped"]]);
+    const lead = new FakeProvider("a", [reply("ok")]);
+    const { app } = await saved([], { lead, mode: "never", executor });
+    await type(app, "/resume");
+    await until(app, "start them");
+    await press(app, "\r");
+    await until(app, "Resumed: start them.");
+    await type(app, "go on");
+    await until(app, "ok");
+    const lost = "Command t1 (npm run dev) had not ended when the session ended; it is not running in this session.";
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([{ type: "text", text: "go on" }, note(lost)]);
+    const again = readTranscript(fileOf(first.session.id), sessionPaths(dir, first.session.id).pictures);
+    expect("problem" in again ? again.problem : again.unfinished).toEqual([]); // told, so a later resume says nothing
+  });
+
   it("drops a resumed session's lost subagents unsaid on /clear, so the new conversation never hears of them", async () => {
     const first = await saved([reply("noted")]);
     await type(first.app, "search again");

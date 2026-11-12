@@ -221,6 +221,18 @@ export class Tasks {
     return any;
   }
 
+  // The window or the session is closing: everything stops, as stop() stops it, but a command's ending is not recorded
+  // and no note is left, as no turn follows to say it, so a resume tells the model once that it had not ended, which is
+  // true (background commands plan, choice 29, the user's). Subagents stop as stop() stops them (release 8a).
+  close(): void {
+    for (const t of this.all) {
+      if (t.kind !== "command" || t.state !== "running") continue;
+      t.run.stop();
+      this.#ended(t, "stopped");
+    }
+    this.stop();
+  }
+
   // Ctrl+B: the foreground command moves to the background (choice 9). False when none runs.
   moveForeground(): boolean {
     if (!this.holding) return false;
@@ -402,7 +414,7 @@ export class Tasks {
     t.signal = r.signal;
     const head = `Background command ${t.id} (${headCommand(t.command)}) ${r.code !== null ? `ended with exit code ${r.code}` : `was killed by ${r.signal}`}`;
     const text = () => (t.run.log.unread() ? deliver(`${head}:`, t.run.log, t.id) : `${head}, with no new output.`);
-    this.#ended(t, r.code === 0 ? "done" : "failed", text, true);
+    this.#ended(t, r.code === 0 ? "done" : "failed", { text, wake: true });
   }
 
   // Choice 23. The error is cut as a command is, so the head stays short and the output has room (As built, Task 1).
@@ -410,7 +422,7 @@ export class Tasks {
     if (t.state !== "running") return;
     t.error = headCommand(errorText(err));
     const head = `Background command ${t.id} (${headCommand(t.command)}) failed: ${t.error}`;
-    this.#ended(t, "failed", () => deliver(head, t.run.log, t.id), true);
+    this.#ended(t, "failed", { text: () => deliver(head, t.run.log, t.id), wake: true });
   }
 
   // The -p limit (choice 8), in the design's words ("With -p"), the output read from the log, as the box's `done` has
@@ -419,7 +431,7 @@ export class Tasks {
     t.stoppedBy = "limit";
     t.run.stop();
     const head = `Background command "${headCommand(t.command)}" was stopped after reaching its background time limit`;
-    this.#ended(t, "stopped", () => deliver(head, t.run.log, t.id), true);
+    this.#ended(t, "stopped", { text: () => deliver(head, t.run.log, t.id), wake: true });
   }
 
   // Said at the next turn without starting one, as a stopped subagent's note is (choice 7).
@@ -427,16 +439,19 @@ export class Tasks {
     t.stoppedBy = by;
     t.run.stop();
     const text = `Background command ${t.id} (${headCommand(t.command)}) was stopped by ${by === "user" ? "the user" : "stop_task"}.`;
-    this.#ended(t, "stopped", text, false);
+    this.#ended(t, "stopped", { text, wake: false });
   }
 
-  #ended(t: CommandTask, state: "done" | "failed" | "stopped", text: string | (() => string), wake: boolean): void {
+  // `said`: the ending's entry for the lead, with its line written; none for a close (choice 29, the user's).
+  #ended(t: CommandTask, state: "done" | "failed" | "stopped", said?: { text: string | (() => string); wake: boolean }): void {
     clearTimeout(this.#timers.get(t.id));
     this.#timers.delete(t.id);
     t.state = state;
     t.ended = Date.now();
-    this.opts.transcript?.()?.write({ t: "command-ended", id: t.id, state });
-    this.#inbox.push({ id: t.id, kind: "command", text, wake });
+    if (said) {
+      this.opts.transcript?.()?.write({ t: "command-ended", id: t.id, state });
+      this.#inbox.push({ id: t.id, kind: "command", ...said });
+    }
     this.#changed();
   }
 

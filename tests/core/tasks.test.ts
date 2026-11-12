@@ -572,6 +572,32 @@ describe("Tasks, background commands", () => {
     ]);
   });
 
+  // Choice 29, the user's: closing stops every command and subagent, but writes no ending line and leaves no note for a
+  // command, so a resume reports it; one stopped before keeps its ending. The -p limit's timer goes too.
+  it("stops everything on close, writing no ending line and leaving no note for a command still running", async () => {
+    fakeTimers();
+    const saved = lead();
+    const worker = new Held();
+    const { tasks } = await setup(worker, { transcript: saved.transcript, limits });
+    const [a, b] = [command(), command()];
+    const [ta, tb] = [tasks.adopt(a.run, { command: "npm run dev" }), tasks.adopt(b.run, { command: "npm test" })];
+    const sub = tasks.start("find x", { background: true });
+    tasks.stop("t2");
+    tasks.take();
+    tasks.close();
+    await Promise.all([ta.done, tb.done, sub.done]);
+    expect(a.stop).toHaveBeenCalled();
+    expect([ta.state, tb.state, sub.state, tasks.running]).toEqual(["stopped", "stopped", "stopped", 0]);
+    expect(saved.lines.filter((l) => (l as { t: string }).t.startsWith("command"))).toEqual([
+      { t: "command", id: "t1", command: "npm run dev" },
+      { t: "command", id: "t2", command: "npm test" },
+      { t: "command-ended", id: "t2", state: "stopped" },
+    ]);
+    expect(tasks.take()).toEqual(["Background task t3 (find x) was stopped by the user before it finished."]); // as release 8a
+    vi.advanceTimersByTime(limits.most);
+    expect(tasks.take()).toEqual([]);
+  });
+
   it("wakes the lead when a command ends, its entry holding the output since the last read", async () => {
     const { tasks } = await setup(new Held());
     const c = command();

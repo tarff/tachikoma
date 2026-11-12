@@ -514,6 +514,17 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect([r.damaged, r.unfinished, r.nextTask]).toEqual([2, [], 1]);
   });
 
+  // A damaged ending line ends nothing: its command is still one that had not ended.
+  it("keeps a command whose ending line is damaged among the unfinished", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "command", id: "t2", command: "npm run dev" });
+    appendFileSync(p.file, `${JSON.stringify({ t: "command-ended", at: "2026-11-13T00:00:00.000Z", id: "t2", state: "bogus" })}\n`);
+    const r = read(p);
+    expect([r.damaged, r.unfinished]).toEqual([1, [{ kind: "command", id: "t2", command: "npm run dev" }]]);
+  });
+
   it("lists the subagents whose files hold no final answer", async () => {
     const p = place();
     const t = new Transcript(p.file, p.pictures);
