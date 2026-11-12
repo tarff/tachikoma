@@ -719,6 +719,30 @@ search, always on", "Own lookup tool, every provider")
     tool's own name (`quote_get`), as the server gives it, escaped. Choice 27's "by their full
     names" is replaced; hooks' matchers still use the full `mcp__<server>__<tool>` name, which the
     README says.
+67. **The folded row shows while its calls run** (the terminal re-check, 2026-11-12: "it needs to
+    show as its working not after"; Task 17). Claude Code 2.1.322, measured in
+    the user's terminal on this session's own calls: while a run's calls go, one live row names
+    the work in the present tense (`● Reading src\tui\fold.ts`, with the running search's pattern
+    under it, `⎿  "endRun"`; then `Running <the command's description> · 9s`, with
+    `⎿  $ <command> (9s)` under it); once they are done it is the finished row of choice 65
+    (`Searched for 1 pattern, read 1 file, ran 1 shell command`). The user chose "Like Claude
+    Code":
+    - **The live row** sits where the open run's row will go, at the conversation's end, in full
+      screen and in `--classic` (it is drawn in the live part of the screen, so nothing said is
+      ever changed); when the run ends it goes and the finished row is said in its place, as
+      today. Two lines, grey:
+      - the top line, set by each quiet call as it starts: `Reading <path>`, `Listing <path>`,
+        `Calling <name>` (the server, as choice 65 names it), `Running <n> shell command(s) ·
+        <s>s`; a search sets it only when it is the run's first call, as `Searching for <n>
+        pattern(s)` (the two samples: a search after a read left `Reading <path>` on top);
+      - the `⎿` line, the newest call's detail: a search's pattern in quotes, a read's or list's
+        path, an MCP call's tool, a shell command as `$ <command> (<s>s)`, first line only.
+      The shell tool has no description, so its top line counts the run's commands. `<s>` is the
+      whole seconds since the call started, shown from 1 s, as the working line counts its own
+      (Claude Code's `(ctrl+b to run in background)` is left out: Tachikoma's shell has no such
+      key). tool_search sets neither line; a run of only tool_search has no live row.
+    - **Clicks:** the finished row opens with a click, as choice 65 built ("and clickable": the
+      user's note on Claude Code's finished row); the live row takes no click.
 
 ## Lines this plan adds
 
@@ -798,6 +822,8 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | A project's entry reading a provider key (choice 64) | `<file>: "<name>" reads ${<VAR>}, a provider key, which a project's servers are never given; it was left out` |
 | A folded tool row (grey; choice 65) | `Searched for <n> pattern(s), read <n> file(s), listed <n> director(y/ies), called <name>` (` <n> times` from 2), `ran <n> shell command(s)`: only the kinds present, in this order, the first word capitalised |
 | Show tools (choice 66) | `<name>'s tools:` then one row per tool, `  <tool>` |
+| The live folded row, top line (grey; choice 67) | `● Reading <path>`, `● Listing <path>`, `● Calling <name>`, `● Running <n> shell command(s) · <s>s`, `● Searching for <n> pattern(s)` |
+| The live folded row, under it (grey; choice 67) | `  ⎿  "<pattern>"`, `  ⎿  <path>`, `  ⎿  <tool>`, `  ⎿  $ <command> (<s>s)` |
 
 ## Task 1: The library, and measuring the user's servers
 
@@ -1608,6 +1634,24 @@ escaped; `Left out:` is unchanged. The README's `/mcp` paragraph says the rows a
 names and that hooks match the full `mcp__<server>__<tool>` name.
 
 Commit: `feat: /mcp Show tools lists each tool by its own name`.
+
+## Task 17: The folded row while its calls run (choice 67)
+
+**Files:** `src/tui/fold.ts` (the open run's live lines), `src/tui/App.tsx` and the live part of
+the screen beside the working line, tests.
+
+**What changes:** while `OpenRun` holds calls, the window draws choice 67's two lines from it in
+the live part of the screen, at the conversation's end, redrawn as calls start and once a second
+for a shell's seconds; nothing goes into the said rows until the run ends, as today. Esc, a
+question, text and the turn's end remove the live row as they end the run today.
+
+**Tests:** each top line and `⎿` line word for word; a search after a read keeps `Reading <path>`
+on top; a search first shows `Searching for 1 pattern`; a shell call's seconds grow (fake timers);
+tool_search alone draws nothing; the live row goes and the finished row is said once at text, at a
+question, at Esc and at the turn's end; `--classic` draws it and says the finished row alike; with
+the real `onMessage` path.
+
+Commit: `feat: the folded row shows while its calls run`.
 
 **After Tasks 15 and 16:** a spec and quality review each, the touched files' tests, the full
 suite once, `dist` rebuilt, and a short terminal re-check with the user: a folded row (reads, a
