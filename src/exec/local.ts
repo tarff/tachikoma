@@ -98,6 +98,8 @@ export class LocalExecutor implements Executor {
     });
   }
 
+  // A command that cannot be spawned at all (a NUL character in it: Node's spawn throws ERR_INVALID_ARG_VALUE at once)
+  // makes start throw, and the caller catches that; a spawn error reported later rejects `done` (choice 23).
   start(command: string, cwd: string): Running {
     const [file, ...args] = shellFor().argv(command);
     // No stdin: a command waiting for input would otherwise wait forever.

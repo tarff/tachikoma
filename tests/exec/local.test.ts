@@ -168,7 +168,10 @@ describe("LocalExecutor.start", () => {
     const root = await script(`${pidLine} process.stdout.write("first"); setTimeout(() => {}, 60000);`);
     const run = new LocalExecutor().start("node script.js", root);
     let ended = false;
-    void run.done.then(() => (ended = true));
+    void run.done.then(
+      () => (ended = true),
+      () => {},
+    );
     const pid = await readPid(path.join(root, "pid"));
     killAfter(pid);
     for (let i = 0; i < 100 && run.log.kept() !== "first"; i++) await new Promise((r) => setTimeout(r, 50));
@@ -185,7 +188,7 @@ describe("LocalExecutor.start", () => {
     expect(alive(pid)).toBe(true);
 
     run.stop();
-    run.stop(); // a second stop does nothing
+    run.stop(); // a second stop is harmless
     expect(await run.done).toEqual({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
     for (let i = 0; i < 40 && alive(pid); i++) await new Promise((r) => setTimeout(r, 50));
     expect(alive(pid)).toBe(false);
@@ -202,9 +205,15 @@ describe("LocalExecutor.start", () => {
         `require("child_process").spawn(process.execPath, ["grandchild.js"], { stdio: "inherit", detached: process.platform === "win32" }).unref();`,
     );
     const run = new LocalExecutor().start("node launcher.js", root);
+    let ended = false;
+    void run.done.then(
+      () => (ended = true),
+      () => {},
+    );
     const pid = await readPid(path.join(root, "pid"));
     killAfter(pid);
     expect(pid).toBeGreaterThan(0);
+    expect(ended).toBe(false);
 
     run.stop();
     expect(await run.done).toMatchObject({ code: null, signal: "SIGKILL", stdout: "launched" });
@@ -225,7 +234,9 @@ describe("LocalExecutor.start", () => {
     expect(pid).toBeGreaterThan(0);
     expect((await run.done).code).toBe(0); // the shell has returned
 
-    run.stop(); // taskkill, when it runs, has finished by the time stop returns (spawnSync in killTree)
+    // The shell has exited, so killTree does not run taskkill (it does only while the shell is alive), and the program
+    // lives on: the known limit.
+    run.stop();
     expect(alive(pid)).toBe(true);
   }, 15_000);
 });
