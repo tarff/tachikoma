@@ -61,7 +61,11 @@ export type Line<M = SavedMessage> =
   | { t: "loaded"; at: string; names: string[] }
   // A call the user was shown a question for, whatever the answer, written as the question opens, so a resumed conversation
   // keeps its row unfolded as the live one did (release 8c plan, Task 15).
-  | { t: "asked"; at: string; id: string };
+  | { t: "asked"; at: string; id: string }
+  // A background command as it joins the task list, and how it ended, `lost` by a resume that told the model it had not
+  // ended (background commands plan, choice 15).
+  | { t: "command"; at: string; id: string; command: string }
+  | { t: "command-ended"; at: string; id: string; state: "done" | "failed" | "stopped" | "lost" };
 
 // Omit on a union keeps only the shared fields, so each variant is omitted on its own, as boxWorkspace.ts:106 does.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -380,6 +384,8 @@ function valid(l: unknown): l is Line {
   if (r.t === "rewritten") return strings("id") && typeof r.input === "object" && r.input !== null && !Array.isArray(r.input);
   if (r.t === "loaded") return Array.isArray(r.names) && r.names.every((n) => typeof n === "string");
   if (r.t === "asked") return strings("id");
+  if (r.t === "command") return strings("id", "command");
+  if (r.t === "command-ended") return strings("id") && (r.state === "done" || r.state === "failed" || r.state === "stopped" || r.state === "lost");
   return false;
 }
 

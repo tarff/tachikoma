@@ -105,7 +105,7 @@ describe("todoRows", () => {
 describe("taskRows", () => {
   const now = 1_000_000;
   const task = (over: Partial<Task>): Task =>
-    ({ id: "t2", description: "find the login code", task: "In the project, find the login code.", model: "anthropic:claude-haiku-5-5", background: true, state: "running", started: now - 12_000, output: 1_234, cost: 0.0123, costUnknown: false, lastTool: { name: "read_file", input: { path: "src/auth/oauth.ts" } }, shown: true, messages: [], done: Promise.resolve({ state: "done", text: "" }), ...over }) as Task;
+    ({ kind: "subagent", id: "t2", description: "find the login code", task: "In the project, find the login code.", model: "anthropic:claude-haiku-5-5", background: true, state: "running", started: now - 12_000, output: 1_234, cost: 0.0123, costUnknown: false, lastTool: { name: "read_file", input: { path: "src/auth/oauth.ts" } }, shown: true, messages: [], done: Promise.resolve({ state: "done", text: "" }), ...over }) as Task;
   const shown = (tasks: Task[], rows = 10) => taskRows(tasks, rows, now).map((r) => `${r.mark} ${r.text}`);
 
   it("shows a running subagent's number and description, then under it its model, time, tokens, cost and latest tool call", () => {

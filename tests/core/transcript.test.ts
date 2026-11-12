@@ -291,6 +291,21 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect([r.asked, r.damaged]).toEqual([["c1", "c2"], 1]);
   });
 
+  // Background commands plan, choice 15: a command's line and its ending line are kinds of their own, read back whole; one
+  // without its id is damaged, as any other is. Task 7 reads them.
+  it("keeps a command's line and its ending line, dropping one without an id as damaged", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "command", id: "t1", command: "npm run dev" });
+    for (const state of ["done", "failed", "stopped", "lost"] as const) t.write({ t: "command-ended", id: "t1", state });
+    expect(read(p).damaged).toBe(0);
+    appendFileSync(p.file, `${JSON.stringify({ t: "command", at: "2026-11-13T00:00:00.000Z", command: "npm test" })}\n`);
+    appendFileSync(p.file, `${JSON.stringify({ t: "command-ended", at: "2026-11-13T00:00:00.000Z", state: "done" })}\n`);
+    appendFileSync(p.file, `${JSON.stringify({ t: "command-ended", at: "2026-11-13T00:00:00.000Z", id: "t1", state: "waiting" })}\n`);
+    expect(read(p).damaged).toBe(3);
+  });
+
   // The quality review's finding 5: a later call with an asked call's id is another call, asked only by a mark after it.
   it("lets an asked mark go when a later message has a call of its id", async () => {
     const p = place();

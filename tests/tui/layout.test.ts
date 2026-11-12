@@ -98,6 +98,7 @@ const base: FrameIn = {
   askedNote: false,
 };
 const subagent = (id: string): Task => ({
+  kind: "subagent",
   id,
   description: "look around",
   task: "look around",

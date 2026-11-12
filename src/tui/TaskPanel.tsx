@@ -1,6 +1,6 @@
 import { Text } from "ink";
 import { visible } from "../core/permissions.js";
-import type { Task, TaskState } from "../core/tasks.js";
+import type { SubagentTask, Task, TaskState } from "../core/tasks.js";
 import { brief, type McpNames, shownName } from "./describe.js";
 import { costText, k } from "./StatusLine.js";
 import { elapsed } from "./WorkingLine.js";
@@ -27,7 +27,7 @@ const live = (t: Task) => t.state === "running" || t.state === "waiting";
 // escaped, and a description is kept to its first line. `now` is the screen's clock, which may have
 // last ticked just before a subagent started. `names`: an MCP call's server and tool (describe.ts; choice 68).
 export function taskRows(tasks: Task[], rows: number, now: number, names?: McpNames): TaskRow[] {
-  const on = tasks.filter((t) => t.shown);
+  const on = tasks.filter((t): t is SubagentTask => t.kind === "subagent" && t.shown); // a command's rows are choice 18's (background commands plan)
   const ordered = [...on.filter(live), ...on.filter((t) => !live(t))];
   if (ordered.length * 2 <= rows) return ordered.flatMap((t) => taskRow(t, now, names));
   if (rows <= 0) return [];
@@ -38,7 +38,7 @@ export function taskRows(tasks: Task[], rows: number, now: number, names?: McpNa
 // One subagent's two lines, for the panel and for /tasks: its number and description, then under it
 // its model, time, tokens and cost, and while it runs its latest tool call, an MCP call's by its server and tool as the
 // server gives them (release 8c plan, Task 18; choice 68).
-export function taskRow(t: Task, now: number, names?: McpNames): TaskRow[] {
+export function taskRow(t: SubagentTask, now: number, names?: McpNames): TaskRow[] {
   const head = { ...MARKS[t.state], text: `${t.id} ${visible(t.description.split(/\r?\n/)[0] ?? "")}` };
   const model = visible(t.model.slice(t.model.indexOf(":") + 1));
   if (t.state === "waiting") return [head, { mark: " ", text: `⎿ ${model} · waiting`, color: "gray" }];

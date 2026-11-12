@@ -1166,7 +1166,9 @@ export class Session {
     const last_assistant_message = reply.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
     // Each background subagent running or waiting, as choice 21 gives it: one waiting for a place is reported "running" on
     // purpose, as that choice says. Crons Tachikoma has none of (design).
+    // A command's own entry is choice 17's (background commands plan).
     const background_tasks = (this.opts.tasks?.all ?? [])
+      .filter((t) => t.kind === "subagent")
       .filter((t) => t.background && (t.state === "running" || t.state === "waiting"))
       .map((t) => ({ id: t.id, type: "agent", status: "running", description: t.description, agent_type: "Explore" }));
     try {

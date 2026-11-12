@@ -10,7 +10,7 @@ import { type Protection, visible } from "../../core/permissions.js";
 import { cannot, truncate } from "../../core/session.js";
 import { listSessions } from "../../core/sessions.js";
 import { CANCELLED } from "../../core/shorten.js";
-import type { Task } from "../../core/tasks.js";
+import type { SubagentTask } from "../../core/tasks.js";
 import { errorText, type Part, type Picture, type Provider } from "../../core/types.js";
 import { hookName } from "../../hooks/answer.js";
 import { limitOf } from "../../hooks/hooks.js";
@@ -86,11 +86,13 @@ export const queue = (ui: UI, fns: Fns) => {
     ui.view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     void fns.submit(joined(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command), "\n\n"));
   };
+  // The subagent of that id, for its record; a command's record is choice 18's (background commands plan).
+  const subagent = (id: string) => ui.tasks.all.find((t): t is SubagentTask => t.kind === "subagent" && t.id === id);
   // The subagent whose record `text` opens in the detail view: in full screen, `/tasks t3` with a subagent of that id
   // (perform, below).
   const recordToOpen = (text: string) => {
     const [first = "", ...words] = text.split(/\s+/);
-    return ui.fullNow.current && first.toLowerCase() === "/tasks" && words.length === 1 ? ui.tasks.all.find((t) => t.id === words[0]) : undefined;
+    return ui.fullNow.current && first.toLowerCase() === "/tasks" && words.length === 1 ? subagent(words[0]!) : undefined;
   };
 
   // True when it opened the model list.
@@ -170,7 +172,7 @@ export const queue = (ui: UI, fns: Fns) => {
         return fns.say({ text: `${command} takes nothing after it.`, color: "red" });
       ui.abort.current = new AbortController();
       const turn = !account && !listing;
-      const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(ui.tasks.answering())}` : turn ? "Working" : "Reading the model lists";
+      const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(ui.tasks.answering().map((a) => a.id))}` : turn ? "Working" : "Reading the model lists";
       ui.doing.current = { label, at: Date.now(), from: turn ? { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } : null };
       if (turn) {
         ui.calls.current = [];
@@ -374,9 +376,10 @@ export const queue = (ui: UI, fns: Fns) => {
     const none = (id: string): Line => ({ text: `No subagent ${id}. /tasks lists them.`, color: "red" });
     const [verb, id, ...rest] = words;
     if (verb === undefined) {
-      if (!ui.tasks.all.length) return [gray("No subagents yet.")];
+      const subagents = ui.tasks.all.filter((t) => t.kind === "subagent"); // a command's rows are choice 18's (background commands plan)
+      if (!subagents.length) return [gray("No subagents yet.")];
       const now = Date.now();
-      return [gray(`Subagents: ${ui.tasks.all.length}`), ...ui.tasks.all.flatMap((t) => taskRow(t, now, ui.run.options.names)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
+      return [gray(`Subagents: ${subagents.length}`), ...subagents.flatMap((t) => taskRow(t, now, ui.run.options.names)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
     }
     if (verb === "stop" && !rest.length) {
       if (id === undefined) return [gray(ui.tasks.stop() ? "Stopped every subagent." : "No subagent is running.")];
@@ -384,7 +387,7 @@ export const queue = (ui: UI, fns: Fns) => {
       return [gray(ui.tasks.stop(id) ? `Stopped ${id}.` : `${id} is not running.`)];
     }
     if (id !== undefined) return [{ text: "Usage: /tasks, /tasks <number>, /tasks stop [<number>]", color: "red" }];
-    const t = ui.tasks.all.find((x) => x.id === verb);
+    const t = subagent(verb);
     return t ? fns.recordOf(t) : [none(verb)];
   };
   // `/hooks`: the hooks in force, read-only, by event in the file's order, each by its name (answer.ts, hookName), then
@@ -476,7 +479,7 @@ export const queue = (ui: UI, fns: Fns) => {
     }
   };
   // `/tasks t3`'s record: the subagent's tool calls and answer in full.
-  const recordOf = (t: Task): Line[] => {
+  const recordOf = (t: SubagentTask): Line[] => {
     const calls = callLines(t.messages, ui.run.options.names);
     const end = t.state === "done" ? `Answer:\n${t.answer}` : t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)";
     return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];

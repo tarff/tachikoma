@@ -12,7 +12,7 @@ import { type Ask, Declined, type Judge, PermissionGate } from "../../src/core/p
 import { type Conversation, Session, truncateLeaving, UNSAVED } from "../../src/core/session.js";
 import { CANCELLED, INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
-import { Tasks } from "../../src/core/tasks.js";
+import { type SubagentTask, Tasks } from "../../src/core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
 import { type CompletionRequest, type Message, type Part, type Provider, sentAll, type Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
@@ -2827,7 +2827,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const shape = /^(x+)\n\[cut: (\d+) more characters\]\nt1 was stopped by a hook: enough$/.exec(r!.output.slice(head.length));
     expect([r!.output.startsWith(head), r!.output.length <= MAX_TOOL_OUTPUT, shape !== null]).toEqual([true, true, true]);
     expect(shape![1]!.length + Number(shape![2])).toBe(long.length); // the cut's count is the characters left out
-    expect(s.tasks!.all[0]!.answer).toBe(`${long}\n${line}`);
+    expect((s.tasks!.all[0] as SubagentTask).answer).toBe(`${long}\n${line}`);
   });
 
   // Task 9's code review: a stop that comes as the Stop hooks answer, or while they run, sends nothing more.
@@ -2869,7 +2869,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(s.tasks!.stop("t1")).toBe(true);
     await sent;
     expect(s.results()).toEqual([{ output: "t1 was stopped by the user before it finished.", isError: false }]);
-    expect([worker.asked.length, s.tasks!.all[0]!.messages, s.tasks!.all[0]!.state]).toEqual([0, [], "stopped"]);
+    expect([worker.asked.length, (s.tasks!.all[0] as SubagentTask).messages, s.tasks!.all[0]!.state]).toEqual([0, [], "stopped"]);
   });
 
   // Task 7's build: a subagent a hook stops ends as stopped, with its own result, never as failed. At SubagentStop the stop
@@ -2887,7 +2887,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const s = await setup({ mode: "never", root, says, turns: [look, reply("ok")], worker });
     expect(await s.session.send("go")).toBeUndefined();
     expect(s.results()).toEqual([{ output: result, isError: false }]);
-    expect(s.tasks!.all.map((t) => [t.state, t.answer])).toEqual([["stopped", result]]);
+    expect((s.tasks!.all as SubagentTask[]).map((t) => [t.state, t.answer])).toEqual([["stopped", result]]);
     expect([s.lead.seen.length, s.errors]).toEqual([2, []]);
     expect(s.notes).toEqual([`t1: A ${event} hook stopped the turn${reason ? `: ${reason}` : "."}`]);
   });

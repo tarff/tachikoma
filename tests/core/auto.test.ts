@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { type Action, type Judge, PermissionGate, StoppedFirst } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
-import { Tasks } from "../../src/core/tasks.js";
+import { type SubagentTask, Tasks } from "../../src/core/tasks.js";
 import type { Message, Provider, Turn } from "../../src/core/types.js";
 import type { Executor } from "../../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
@@ -216,7 +216,7 @@ describe("auto mode, in a session", () => {
     const lead = new FakeProvider("lead", [calls(["delegate", { description: "look", task: "find the notes" }]), reply("done")]);
     const s = await setup(lead, j, { worker });
     await s.session.send("find the notes");
-    expect(s.tasks.all.map((t) => [t.state, t.answer])).toEqual([["done", "found nothing"]]);
+    expect((s.tasks.all as SubagentTask[]).map((t) => [t.state, t.answer])).toEqual([["done", "found nothing"]]);
     expect(s.errors).toEqual([{ kind: "judge", attempted: "t1: request to fake:judge", message: "judge down", lead: "fake:judge" }]);
     expect(worker.seen.at(-1)!.at(-1)!.parts).toMatchObject([{ type: "tool_result", output: "The judge refused: the judge could not be reached: judge down" }]);
   });
