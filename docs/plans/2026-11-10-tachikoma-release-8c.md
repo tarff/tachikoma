@@ -791,6 +791,14 @@ search, always on", "Own lookup tool, every provider")
         already covered: the call after it starts once the question ends and sets the live row then
         (fold.test.ts, "comes back for the calls after the asked one"). Task 17's review point is
         met by that, so the replay built at first was taken out (Task 18's review).
+69. **Commands joined by `|` count once, by the first one's kind** (the terminal re-check,
+    2026-11-12: `Get-ChildItem -Recurse node_modules -File | Measure-Object -Property Length -Sum`
+    folded as `Read 1 file, listed 1 directory`; the user approved this; Task 19). The commands after
+    a `|` only work on the one before's output, so a pipeline is one command of its first
+    command's kind: that line is `Listed 1 directory`, `grep x src | head` is `Searched for 1
+    pattern`, `cat a | wc -l` is `Read 1 file`, `git log | head` is `Ran 1 shell command`.
+    Unchanged: commands joined by `;` or `&&` count as choice 65 says, and every command on the
+    line, those after a `|` among them, must still be on the lists, or the call keeps its own row.
 
 ## Lines this plan adds
 
@@ -1722,6 +1730,21 @@ show `<name> <tool>` word for word, a tool whose name held `.` among them; a nam
 falls back as choice 68 says; hooks and `/export` still get the full name; `1m 5s` in the live row.
 
 Commit: `fix: MCP calls on screen by their own names; live row review points`.
+
+## Task 19: A pipeline folds as one command (choice 69)
+
+**Files:** `src/safety/split.ts` (each command says whether it was read after a `|`, which the
+reader already knows), `src/tui/fold.ts` (`shellKinds`), tests.
+
+**What changes:** `shellKinds` counts each pipeline by its first command's kind; the commands after
+a `|` are still checked against the lists, and still make the call `ran` or its own row as today.
+The safety checks that read `split` are unchanged.
+
+**Tests:** the four lines of choice 69 word for word, in bash and PowerShell; `cat a && ls` still
+counts both; `cat a | python` keeps its own row; `ls | grep x && cat b` counts the pipeline and
+the read; split's existing tests unchanged.
+
+Commit: `fix: a pipeline folds as one command`.
 
 **After Tasks 15 and 16:** a spec and quality review each, the touched files' tests, the full
 suite once, `dist` rebuilt, and a short terminal re-check with the user: a folded row (reads, a
