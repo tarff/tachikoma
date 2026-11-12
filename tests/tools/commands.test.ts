@@ -3,8 +3,8 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
-import type { Provider } from "../../src/core/types.js";
 import { type CommandTask, Tasks } from "../../src/core/tasks.js";
+import type { Provider } from "../../src/core/types.js";
 import type { ExecResult, Executor, Running } from "../../src/exec/executor.js";
 import { LocalExecutor } from "../../src/exec/local.js";
 import { CommandLog, deliver } from "../../src/exec/log.js";
@@ -31,7 +31,7 @@ function driven() {
 
 type Limits = { started: number; moved: number; most: number };
 async function setup(
-  opts: { headless?: boolean; mode?: Mode; answers?: boolean[]; limits?: Limits; start?: () => Running; worker?: Provider } = {},
+  opts: { headless?: boolean; mode?: Mode; answers?: boolean[]; limits?: Limits; start?: () => Running; worker?: Provider; max?: number } = {},
 ) {
   const ctx = await tempContext(opts.mode ?? "never", opts.answers ?? []);
   const started: { command: string; cwd: string; run: ReturnType<typeof driven> }[] = [];
@@ -46,7 +46,7 @@ async function setup(
   };
   const tasks = new Tasks({
     bus: new Bus(),
-    max: 8,
+    max: opts.max ?? 8,
     worker: () => opts.worker ?? new FakeProvider("w", []),
     system: "sub",
     tools: [],
@@ -71,6 +71,11 @@ async function setup(
 const fakeTimers = () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   onTestFinished(() => void vi.useRealTimers());
+};
+
+// Until the worker has been asked `n` times, so a subagent is in the middle of its request. setImmediate, as `reached`.
+const asked = async (worker: Held, n: number) => {
+  for (let i = 0; i < 100 && worker.asked.length < n; i++) await new Promise((r) => setImmediate(r));
 };
 
 // Whether a promise has settled, without waiting for it.
@@ -417,12 +422,16 @@ describe("shell_output", () => {
     expect(tasks.take()).toEqual([]);
   });
 
-  it("says a stopped command was stopped, with what it printed before, and the next turn says nothing of the stop", async () => {
+  // Choice 28, the user's: the line says who stopped it, so the model hears of the stop once, with who did it.
+  it("says who stopped a command, with what it printed before, and the next turn says nothing of the stop", async () => {
     const { call, use, started, tasks } = await setup();
     await call({ command: "npm run dev", background: true });
+    await call({ command: "npm run watch", background: true });
     started[0]!.run.run.log.add("ready\n");
     tasks.stop("t1");
-    expect(await use("shell_output", { id: "t1" })).toBe("t1 was stopped.\nready\n");
+    await use("stop_task", { id: "t2" });
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 was stopped by the user.\nready\n");
+    expect(await use("shell_output", { id: "t2" })).toBe("t2 was stopped by stop_task.\nNo new output.");
     expect(tasks.take()).toEqual([]);
   });
 
@@ -474,10 +483,12 @@ describe("stop_task", () => {
   });
 
   // Choice 27, the user's: a subagent stop_task stopped says so, and a stop by the user keeps its words (tasks.test.ts).
-  it("stops a background subagent, whose answer and next-turn line say stop_task stopped it", async () => {
+  it("stops a background subagent in the middle of its request, whose answer and next-turn line say stop_task stopped it", async () => {
     const worker = new Held();
     const { use, tasks } = await setup({ worker });
     const t = tasks.start("find x", { background: true });
+    await asked(worker, 1);
+    expect(t.state).toBe("running");
     expect(await use("stop_task", { id: "t1" })).toBe("Stopped t1.");
     expect(await t.done).toEqual({ state: "stopped", text: "t1 was stopped by stop_task before it finished." });
     expect(tasks.wakes()).toBe(false);
@@ -485,10 +496,43 @@ describe("stop_task", () => {
     expect(await use("stop_task", { id: "t1" })).toBe("t1 is not running.");
   });
 
+  it("stops a background subagent waiting for a place, and the one running keeps on", async () => {
+    const worker = new Held();
+    const { use, tasks } = await setup({ worker, max: 1 });
+    const first = tasks.start("find x", { background: true });
+    const second = tasks.start("find y", { background: true });
+    await asked(worker, 1);
+    expect([first.state, second.state]).toEqual(["running", "waiting"]);
+    expect(await use("stop_task", { id: "t2" })).toBe("Stopped t2.");
+    expect(await second.done).toEqual({ state: "stopped", text: "t2 was stopped by stop_task before it finished." });
+    expect(tasks.take()).toEqual(["Background task t2 (find y) was stopped by stop_task before it finished."]);
+    expect([first.state, worker.asked.length]).toEqual(["running", 1]);
+    tasks.stop();
+  });
+
+  // The first stop's words stand: a subagent still ending after a user's stop is not running for stop_task.
+  it("leaves a subagent the user stopped to the user's words, answering stop_task that it is not running", async () => {
+    const worker = new Held();
+    const { use, tasks } = await setup({ worker });
+    const t = tasks.start("find x", { background: true });
+    await asked(worker, 1);
+    expect(tasks.stop("t1")).toBe(true);
+    expect(t.state).toBe("running"); // still ending
+    expect(await use("stop_task", { id: "t1" })).toBe("t1 is not running.");
+    expect(await t.done).toEqual({ state: "stopped", text: "t1 was stopped by the user before it finished." });
+    expect(tasks.take()).toEqual(["Background task t1 (find x) was stopped by the user before it finished."]);
+  });
+
   it("answers an id not in the list", async () => {
     const { use } = await setup();
     expect(await use("stop_task", { id: "t9" })).toBe("No task t9.");
   });
+});
+
+// As the shell tool's command, an empty id is refused as invalid input.
+it.each(["shell_output", "stop_task"])("%s refuses an empty id as invalid input", async (name) => {
+  const { use } = await setup();
+  await expect(use(name, { id: "" })).rejects.toBeInstanceOf(InvalidInput);
 });
 
 // The one real case: a node script that prints, then waits, moved by Ctrl+B once its line is in the log. The script

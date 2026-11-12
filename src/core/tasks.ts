@@ -59,10 +59,9 @@ export interface CommandTask {
   shown: boolean;
   code?: number | null; // as it ended by itself
   signal?: NodeJS.Signals | null;
-  // For shell_output's first line (background commands plan, Task 6): a stop at the -p time limit, told apart from a stop
-  // by the user or stop_task, and a failed run's error (choice 23), cut as a command is in a first line (choice 24).
-  limited?: true;
-  error?: string;
+  // These two give shell_output's first line (background commands plan, Task 6).
+  stoppedBy?: "user" | "tool" | "limit"; // who stopped it, said in that line (choice 28, the user's), or the -p limit (choice 8)
+  error?: string; // a rejected run's error, cut as a command is (choices 23, 24)
   run: Running;
   done: Promise<void>;
 }
@@ -211,6 +210,8 @@ export class Tasks {
         if (t.kind === "command") this.#stopCommand(t, by);
         else {
           const s = this.#stops.get(t.id)!;
+          // Still ending after an earlier stop: that stop's words stand, and this one stops nothing (Task 6's code review).
+          if (s.stop.signal.aborted) continue;
           s.by = by;
           s.stop.abort();
         }
@@ -415,14 +416,15 @@ export class Tasks {
   // The -p limit (choice 8), in the design's words ("With -p"), the output read from the log, as the box's `done` has
   // none for a stopped command (As built, Task 3).
   #limit(t: CommandTask): void {
+    t.stoppedBy = "limit";
     t.run.stop();
-    t.limited = true;
     const head = `Background command "${headCommand(t.command)}" was stopped after reaching its background time limit`;
     this.#ended(t, "stopped", () => deliver(head, t.run.log, t.id), true);
   }
 
   // Said at the next turn without starting one, as a stopped subagent's note is (choice 7).
   #stopCommand(t: CommandTask, by: "user" | "tool"): void {
+    t.stoppedBy = by;
     t.run.stop();
     const text = `Background command ${t.id} (${headCommand(t.command)}) was stopped by ${by === "user" ? "the user" : "stop_task"}.`;
     this.#ended(t, "stopped", text, false);

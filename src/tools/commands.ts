@@ -110,7 +110,7 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
   const shellOutput = defineTool(
     "shell_output",
     "Read what a background command has printed since you last read it, and whether it has ended. Give its id, such as t4.",
-    z.object({ id: z.string() }),
+    z.object({ id: z.string().min(1) }),
     async ({ id }) => {
       const t = tasks.get(id);
       if (!t) return `No task ${id}.`;
@@ -124,7 +124,7 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
   const stopTask = defineTool(
     "stop_task",
     "Stop a background command or a background subagent by its id, such as t4.",
-    z.object({ id: z.string() }),
+    z.object({ id: z.string().min(1) }),
     async ({ id }) => {
       if (!tasks.get(id)) return `No task ${id}.`;
       return tasks.stop(id, "tool") ? `Stopped ${id}.` : `${id} is not running.`;
@@ -135,10 +135,12 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
 }
 
 // shell_output's first line, by the command's state ("Lines this plan adds"). A failed run's line follows choice 23's
-// ending line (background commands plan, Task 6).
+// ending line (background commands plan, Task 6); a stop names who stopped it (background commands plan, choice 28
+// (the user's)).
 function firstLine(t: CommandTask): string {
   if (t.state === "running") return `${t.id} is still running.`;
-  if (t.state === "stopped") return t.limited ? `${t.id} was stopped after reaching its background time limit.` : `${t.id} was stopped.`;
+  if (t.stoppedBy === "limit") return `${t.id} was stopped after reaching its background time limit.`;
+  if (t.stoppedBy) return `${t.id} was stopped by ${t.stoppedBy === "user" ? "the user" : "stop_task"}.`;
   if (t.error !== undefined) return `${t.id} failed: ${t.error}`;
-  return t.code !== null && t.code !== undefined ? `${t.id} ended with exit code ${t.code}.` : `${t.id} was killed by ${t.signal}.`;
+  return t.code !== null ? `${t.id} ended with exit code ${t.code}.` : `${t.id} was killed by ${t.signal}.`;
 }
