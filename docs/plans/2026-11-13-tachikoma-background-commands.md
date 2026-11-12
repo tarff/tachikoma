@@ -417,7 +417,7 @@ task's id, `<command>` the command as given, escaped on screen.
 | A long command in a first line (choice 24) | its first 1,000 characters, then `… [+<n> chars]` |
 | Stopped (to the model, at the next turn) | `Background command <id> (<command>) was stopped by the user.` / `Background command <id> (<command>) was stopped by stop_task.` |
 | The `-p` limit (to the model, design) | `Background command "<command>" was stopped after reaching its background time limit` then the unread output |
-| Resume (grey, once) | `Command <id> (<command>) had not ended when the session ended; it is not running in this session.` (design) |
+| Resume (to the model, once, as a lost subagent's; As built, Task 7) | `Command <id> (<command>) had not ended when the session ended; it is not running in this session.` (design) |
 | Hook rewrite of `timeout` | `"timeout" must be a whole number of milliseconds from 1 to 7200000` |
 | `/tasks` heading | `Tasks: <n>` |
 | `/tasks` with none | `No subagents or commands yet.` |
@@ -855,3 +855,18 @@ What changed from the plan while building, for the later tasks and the reviewers
 - **`shell_output` says who stopped a command (choice 28, the user's, 2026-11-13):** its first
   line is `<id> was stopped by the user.` or `<id> was stopped by stop_task.`, in place of `<id>
   was stopped.`, as the read takes away the stop's next-turn note that would have said who.
+- **Task 7:** the resume line goes to the model with the next request and is not shown on screen,
+  as the design says ("reported once, as an unfinished subagent is") and as release 8a's lost
+  subagent line is; the table's "grey" was wrong. Its command is cut by `headCommand`. The lost
+  lines list the subagents, then the commands. Only a command's entry in `unfinished` carries
+  `kind`. A fork's copy reports and marks it in the copy; the original still reports it once.
+  A command's id needs no `^t\d+$` check, as it names no file; a subagent's still does.
+- **A command stopped because the session ends is reported on resume (choice 29, the user's,
+  2026-11-13):** the window's close stops each running command without writing its
+  `command-ended` line, so a resume tells the model once, with the resume line, that it is not
+  running; before, its stop note waited for a turn that never came. A stop by `/tasks stop` or
+  `stop_task` is written as before. Task 11 uses the same stop when `-p` ends with commands
+  running. Subagents keep release 8a's way.
+- **Known limit, older than this plan:** `reported()` runs when the waiting text is taken, before
+  the message carrying it is saved, so a crash between the two drops the line for good. The
+  subagent path has had it since release 8a; the window is a moment.
