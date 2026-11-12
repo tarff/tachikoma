@@ -834,3 +834,13 @@ What changed from the plan while building, for the later tasks and the reviewers
 - **A subagent stopped by `stop_task` (choice 27, the user's, 2026-11-13):** the next turn says
   `Background task <id> (<description>) was stopped by stop_task before it finished.`; a stop by
   the user keeps today's `... was stopped by the user before it finished.` Task 6 builds it.
+- **Task 5:** `shellTools` gives only the shell tool until Task 6 adds the other two; the first
+  read after a move is tested through the moved task's log with `deliver`, and Task 6 tests it
+  through `shell_output`. After a stop (Esc or the `sleep` rule) the tool waits for the run's
+  `done` before it throws, as `exec` did, so in the box Esc answers only once the kill there has
+  run, and a box that cannot be reached gives the sandbox's error, not `Cancelled` (release 7,
+  choice 87). The seconds in a timeout's line are rounded up, so none says `0s`. The `sleep` rule
+  reads any whitespace as a space and ignores letter case for `sleep` too, as PowerShell's `sleep`
+  is `Start-Sleep`'s alias. The tests' stand-in executors answer through `start`
+  (`standInRun`, `tests/helpers.ts`). `exec` now has one caller in `src`, the box's node check
+  (`clilib.ts`); it stays, as `Executor` needs it and its tests show `start` plus a signal.
