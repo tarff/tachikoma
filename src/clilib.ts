@@ -813,7 +813,7 @@ export function resumed(
     }
   };
   // The history under the tools it was last saved under, which hold tool_search and the MCP tools once a request has
-  // offered them: a reply made under others, or under another system prompt, goes without its thinking here, and the
+  // offered them: an Anthropic reply made under others or another system prompt goes without its thinking here, and the
   // session's first request leaves out the rest's when its own tools differ, writing its tools line then (release 8c
   // plan, Task 9; choice 46). Its line is said only when Tachikoma's own tools changed, for a reply the session would send
   // without its thinking, Anthropic's (session.ts, #kept); a changed set of MCP tools says nothing, as servers come and go.

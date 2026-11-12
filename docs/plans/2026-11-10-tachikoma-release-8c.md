@@ -819,6 +819,8 @@ search, always on", "Own lookup tool, every provider")
       - A PreToolUse hook that answers `ask` for tool search or a subagent, while another call runs
         beside it, has its question pinned on the other call; declining it can hide that call's
         result row (finding 5). Only the screen is wrong: nothing runs that was not allowed.
+      - Esc pressed while the tokens are being written, a single file write, keeps them: the
+        screen says the server needs sign-in, and the next start is signed in (Task 20's review).
 
 ## Lines this plan adds
 

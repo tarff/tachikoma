@@ -337,7 +337,7 @@ describe("signing in to a remote MCP server", () => {
     const signing = servers.signIn("om", t.io(true, esc.signal));
     await vi.waitFor(() => expect(t.fake.seen.grants).toEqual(["authorization_code"]), WAIT);
     esc.abort();
-    await expect(signing).rejects.toThrow();
+    await expect(signing).rejects.toBe(esc.signal.reason);
     t.fake.answer();
     await vi.waitFor(() => expect(saving).toHaveBeenCalled(), WAIT);
     await saving.mock.results[0]!.value;
