@@ -427,7 +427,8 @@ task's id, `<command>` the command as given, escaped on screen.
 | `/tasks <id>`'s record for a command | `<id> (<command>), <state>: shell command`; once ended, `shell_output`'s first line; the dropped note when output was dropped; then the output kept, or `(no output yet)`, `(no output)` once ended (choice 31) |
 | The wake's label (choice 19) | `Reading <id>'s output`; mixed `Reading <ids>'s answer(s) and <ids>'s output` |
 | `/clear`, `/resume`, `/branch` refused | `<command> waits until no subagent or command is running: <ids> still running. /tasks stop stops them.` |
-| The live shell row's hint | ` (<key> to run in background)` after the command, `<key>` the bound key, as `ctrl+b` (design) |
+| The Ctrl+B hint (choices 33, 34) | ` · <key> to run in background` at the working line's end, after ` · <stop> to stop`, `<key>` the bound key spelled as the window spells keys, as `Ctrl+B` |
+| The `?` list's line (choice 32) | `<key>  move a running command to the background` |
 | `-p`'s waiting line (stderr, a terminal only, after 5 s, design) | `Waiting for background work to finish: <id> (<command>)`, several joined by `, ` |
 | The `/tasks` menu note | `List subagents and background commands; /tasks t1 shows one, /tasks stop stops them` |
 | `--help`'s `/tasks` line | `/tasks lists subagents and background commands (/tasks t1 shows one, /tasks stop stops them)` |
@@ -893,3 +894,20 @@ What changed from the plan while building, for the later tasks and the reviewers
   copied), then `[<n> earlier characters were dropped]` when the log took in more than it keeps,
   then the output kept; with none, `(no output yet)` while it runs and `(no output)` once ended.
   Before, a failed run, a kill and a non-zero exit read alike, and dropped output went unsaid.
+- **The `?` list names Ctrl+B (choice 32, the user's, 2026-11-13):** `<key>  move a running
+  command to the background`, a line of its own after the to-do list's, showing the bound key
+  and left out when the action is unbound. The plan had no words for it.
+- **The hint is on the working line (choice 33, the user's, 2026-11-13):** only a folded
+  read-only command (`git status`, `ls`) has a live row; any other command, and any that asked,
+  has a row of its own in the scrollback, which cannot change, so the planned live-row hint would
+  never show for `npm test`, `ping` or a dev server. The working line ends with ` · <key> to run
+  in background` instead, for every held command, and the live row is as before Task 10; `fold.ts`
+  is unchanged. It shows only while the command is held, after its question, and in the detail
+  view's working line too.
+- **The hint spells the key as the window does (choice 34, the user's, 2026-11-13):** `Ctrl+B`,
+  as `Esc to stop` beside it and the `?` list spell keys, not the design's `ctrl+b`.
+- **Task 10:** `Task` is put first in the keys in force, in every phase, while a command is held,
+  a question's too; otherwise it is not in force, so Ctrl+B is free (a keys file can bind it in
+  Chat). The hint's key is read with the keys in force in the phase drawn. Adding a key in a
+  keys-file `Task` block keeps Ctrl+B, as in Claude Code; `"ctrl+b": null` drops it. The terminal
+  checklist's step 4 sees the hint on the working line.
