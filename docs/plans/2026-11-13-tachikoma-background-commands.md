@@ -404,7 +404,7 @@ task's id, `<command>` the command as given, escaped on screen.
 | A `sleep` command at its timeout (to the model, an error) | `Stopped: the command did not complete within its <n>s timeout. A command that starts with sleep is stopped at its timeout, not moved to the background.` |
 | The question for a background start | `run in the background: <command>` |
 | `shell_output`'s description | `Read what a background command has printed since you last read it, and whether it has ended. Give its id, such as t4.` |
-| `shell_output`'s first line | `<id> is still running.` / `<id> ended with exit code <n>.` / `<id> was killed by <signal>.` / `<id> was stopped.` / `<id> was stopped after reaching its background time limit.` |
+| `shell_output`'s first line | `<id> is still running.` / `<id> ended with exit code <n>.` / `<id> was killed by <signal>.` / `<id> was stopped by the user.` / `<id> was stopped by stop_task.` (choice 28) / `<id> failed: <error>` (As built, Task 6) / `<id> was stopped after reaching its background time limit.` |
 | No new output (after the first line) | `No new output.` |
 | The dropped note | `[<n> earlier characters were dropped]` (design) |
 | The more note | `[<n> more characters: shell_output <id> gives them]` (design) |
@@ -834,7 +834,7 @@ What changed from the plan while building, for the later tasks and the reviewers
 - **A subagent stopped by `stop_task` (choice 27, the user's, 2026-11-13):** the next turn says
   `Background task <id> (<description>) was stopped by stop_task before it finished.`; a stop by
   the user keeps today's `... was stopped by the user before it finished.` Task 6 builds it.
-- **Task 5:** `shellTools` gives only the shell tool until Task 6 adds the other two; the first
+- **Task 5:** `shellTools` gave only the shell tool until Task 6 added the other two; the first
   read after a move is tested through the moved task's log with `deliver`, and Task 6 tests it
   through `shell_output`. After a stop (Esc or the `sleep` rule) the tool waits for the run's
   `done` before it throws, as `exec` did, so in the box Esc answers only once the kill there has
@@ -844,3 +844,14 @@ What changed from the plan while building, for the later tasks and the reviewers
   is `Start-Sleep`'s alias. The tests' stand-in executors answer through `start`
   (`standInRun`, `tests/helpers.ts`). `exec` now has one caller in `src`, the box's node check
   (`clilib.ts`); it stays, as `Executor` needs it and its tests show `start` plus a signal.
+- **Task 6:** the three tools sit after `edit_file` as `shell, shell_output, stop_task`.
+  `shell_output`'s first line for a stop needs to know who stopped it, so `CommandTask` gains
+  `stoppedBy?: "user" | "tool" | "limit"`, set by `#stopCommand` and the limit (choice 28). A run whose `done` rejected (choice 23) has no first
+  line in "Lines"; it is `<id> failed: <error>`, choice 23's pattern, the error cut as there and
+  kept on the task (`error?`). The subagents' stop record holds who stopped one (`by`), for choice
+  27. `No task <id>.`, `<id> is not running.` and the subagent line are answers, not errors.
+  A second stop of a subagent still unwinding from the first changes nothing, so the first
+  stopper's words stand (Task 6's code review).
+- **`shell_output` says who stopped a command (choice 28, the user's, 2026-11-13):** its first
+  line is `<id> was stopped by the user.` or `<id> was stopped by stop_task.`, in place of `<id>
+  was stopped.`, as the read takes away the stop's next-turn note that would have said who.
