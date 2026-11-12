@@ -183,7 +183,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   it("lists --classic and /screen in the help", () => {
     const help = tachi("--help").stdout;
     expect(help).toMatch(/^ {2}--classic /m);
-    expect(help).toMatch(/\/screen switches between full\s+screen\s+and\s+classic/);
+    expect(help).toMatch(/\/screen\s+switches\s+between\s+full\s+screen\s+and\s+classic/);
   });
 
   it("lists tachi review in the help", () => {
@@ -192,7 +192,7 @@ describe("tachi", { timeout: 15_000 }, () => {
 
   it("lists /settings, /keybindings and /vim in the help", () => {
     const help = tachi("--help").stdout;
-    expect(help).toMatch(/\/settings opens the settings file in your editor,\s+\/keybindings opens the\s+keys file in your editor/);
+    expect(help).toMatch(/\/settings\s+opens\s+the\s+settings\s+file\s+in\s+your\s+editor,\s+\/keybindings\s+opens\s+the\s+keys\s+file\s+in\s+your\s+editor/);
     expect(help).toMatch(/\/vim\s+switches\s+vim\s+mode\s+in\s+this\s+window,/);
   });
 
