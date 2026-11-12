@@ -98,6 +98,19 @@ describe("deliver", () => {
     expect(output(delivery, head)).toMatch(/^x+$/);
   });
 
+  it("a delivery whose two counts have as many digits as the total is exactly 30,000 characters", () => {
+    const log = new CommandLog();
+    // 45,000 added: 15,000 dropped. A head of 10,500 leaves room for under 20,000, so over 10,000 stay unread: both counts
+    // have five digits, as the total does, so the room the notes were given is all used.
+    log.add("x".repeat(45_000));
+    const head = "h".repeat(10_500);
+    const delivery = deliver(head, log, "t4");
+    expect(delivery.startsWith(`${head}\n${dropped(15_000)}\n`)).toBe(true);
+    expect(log.unread()).toBeGreaterThanOrEqual(10_000);
+    expect(delivery.endsWith(`\n${more(log.unread())}`)).toBe(true);
+    expect(delivery.length).toBe(MAX_TOOL_OUTPUT);
+  });
+
   it("a full log with a long head comes in parts that fit, each starting where the last stopped, the newest character once", () => {
     const log = new CommandLog();
     // More than the log keeps, so the first part also carries the dropped note; Z is the last character added.

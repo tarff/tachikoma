@@ -21,7 +21,8 @@ export class CommandLog {
   // Counted, as `added` is, over every character ever added, so a read past dropped output knows how many it missed.
   private position = 0;
 
-  // MAX_TOOL_OUTPUT, the cap a tool's output has today, Claude Code's (background commands plan, choice 4).
+  // MAX_TOOL_OUTPUT: Claude Code's cap on a tool's output, which the session already uses (background commands plan,
+  // choice 4).
   constructor(private readonly keep: number = MAX_TOOL_OUTPUT) {}
 
   add(text: string): void {
@@ -57,7 +58,9 @@ export class CommandLog {
 
 // Every delivery to the model, a shell_output read or an ending's message, is built here, so none is longer than the
 // session's cut and the cut never loses its end. Its room is MAX_TOOL_OUTPUT less the head and both notes written with
-// as many digits as the log's total, the largest either count can be (background commands plan, choice 4).
+// as many digits as the log's total, the largest either count can be (background commands plan, choice 4). The caller
+// keeps `head` short: a head near 30,000 would leave no room, so no output and a more note on every read. Every command
+// in a head goes through headCommand, and Task 4 cuts choice 23's error text too.
 export function deliver(head: string, log: CommandLog, id: string): string {
   if (log.unread() === 0) return `${head}\nNo new output.`;
   const most = "9".repeat(String(log.total).length);
