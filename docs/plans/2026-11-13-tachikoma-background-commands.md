@@ -867,6 +867,18 @@ What changed from the plan while building, for the later tasks and the reviewers
   running; before, its stop note waited for a turn that never came. A stop by `/tasks stop` or
   `stop_task` is written as before. Task 11 uses the same stop when `-p` ends with commands
   running. Subagents keep release 8a's way.
+- **Task 8:** `shell_output` has an entry of its own in the hooks' table, under its own name with
+  `id`, so a hook's rewrite of it is taken; as an unknown tool a rewrite would be refused with
+  "Tachikoma takes rewrites only for its own tools", which is untrue of it. Hooks are sent the
+  same either way. `timeout`'s range comes from the shell tool's own constant. A hook's
+  `updatedToolOutput` for a background start or a move is taken only in Bash's `{ stdout, stderr }`
+  shape, not as the text it was sent, as Claude Code checks it against the tool's own shape and as
+  a background `delegate`'s start does (choice 13); a known limit.
+- **The system prompt's command line (choice 30, the user's, 2026-11-13):** "Commands get no
+  input and have no time limit, so do not start servers, watchers or anything interactive: it
+  would never return." becomes `Commands get no input, so do not start anything interactive.
+  Start a server or a watcher with background: true.` A session saved before keeps its own system
+  prompt when resumed, as every saved session does (release 8a).
 - **Known limit, older than this plan:** `reported()` runs when the waiting text is taken, before
   the message carrying it is saved, so a crash between the two drops the line for good. The
   subagent path has had it since release 8a; the window is a moment.
