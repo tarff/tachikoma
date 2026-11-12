@@ -3,7 +3,7 @@ import { MAX_TOOL_OUTPUT } from "./executor.js";
 // Claude Code's hooks reference, Stop input: a background task's command is cut at 1,000 characters. A delivery's first
 // line cuts its command the same way, so the id and the state always fit and output always has room (background
 // commands plan, choice 24).
-const HEAD_COMMAND = 1_000;
+export const HEAD_COMMAND = 1_000;
 
 export function headCommand(command: string): string {
   return command.length <= HEAD_COMMAND ? command : `${command.slice(0, HEAD_COMMAND)}… [+${command.length - HEAD_COMMAND} chars]`;

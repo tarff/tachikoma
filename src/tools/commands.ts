@@ -10,7 +10,7 @@ import { defineTool, type Tool, type ToolContext } from "./tool.js";
 const DEFAULT_TIMEOUT = 120_000;
 const MOST_FOREGROUND = 600_000;
 // The most a timeout can ask for at all, a -p background limit's most: "up to a maximum of 2 hours" (the same page).
-const MOST_TIMEOUT = 7_200_000;
+export const MOST_TIMEOUT = 7_200_000;
 
 // Choice 12: a model that sleeps is waiting on purpose, so its command stops at its timeout instead of moving. The first
 // word is read after leading spaces, up to a space or `;`: `sleep` or PowerShell's Start-Sleep, in any letter case, as
