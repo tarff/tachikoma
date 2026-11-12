@@ -21,7 +21,7 @@ import { Servers } from "../../src/mcp/servers.js";
 import { approveOf, mcpTools } from "../../src/mcp/tools.js";
 import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { system32 } from "../../src/exec/env.js";
-import type { Executor } from "../../src/exec/executor.js";
+import type { Executor, Running } from "../../src/exec/executor.js";
 import { LocalWorkspace, shellFor } from "../../src/exec/local.js";
 import type { Workspace } from "../../src/exec/workspace.js";
 import { Session, type SessionOptions } from "../../src/core/session.js";
@@ -1575,7 +1575,7 @@ describe("App's queue", () => {
     await until(app, "last");
     release();
     expect(prompts(session)).toEqual(["one", "two", "three"]);
-    expect(app.lastFrame()).toMatch(/boom[\s\S]*No subagents yet.[\s\S]*> three/);
+    expect(app.lastFrame()).toMatch(/boom[\s\S]*No subagents or commands yet.[\s\S]*> three/);
   });
 
   it("brings the queue back into the prompt on Ctrl-C, after what is typed, one entry a line, and sends nothing more", async () => {
@@ -1795,14 +1795,14 @@ describe("App's background subagents", () => {
     const lead = new FakeProvider("a", [bg("c1", "find x"), reply("started it"), reply("next")]);
     const { app } = await mount([], { lead, worker: new FakeProvider("w", [reply("found")]) });
     await type(app, "/tasks");
-    await until(app, "No subagents yet.");
+    await until(app, "No subagents or commands yet.");
     await type(app, "go");
     await until(app, "started it");
     await type(app, "more");
     await until(app, "next");
     await type(app, "/tasks");
-    await until(app, "Subagents: 1");
-    expect(app.lastFrame()).toMatch(/Subagents: 1\n✓ t1 find x\n  ⎿ w · \d+s · ↓ 5 tokens · \$0\.00 \+ \?\n/);
+    await until(app, "Tasks: 1");
+    expect(app.lastFrame()).toMatch(/Tasks: 1\n✓ t1 find x\n  ⎿ w · \d+s · ↓ 5 tokens · \$0\.00 \+ \?\n/);
   });
 
   it("prints a subagent's tool calls and answer in full with /tasks t1", async () => {
@@ -1815,7 +1815,7 @@ describe("App's background subagents", () => {
     expect(app.lastFrame()).toContain('● find_files {\n  "pattern": "*.ts"\n}\n  ⎿ No files match *.ts');
     expect(app.lastFrame()).toContain("Answer:\nIt is in a.ts");
     await type(app, "/tasks t9");
-    await until(app, "No subagent t9. /tasks lists them.");
+    await until(app, "No task t9. /tasks lists them.");
   });
 
   it("stops one subagent with /tasks stop t1, or all with /tasks stop", async () => {
@@ -1829,10 +1829,10 @@ describe("App's background subagents", () => {
     await type(app, "/tasks stop t1");
     await until(app, "t1 is not running.");
     await type(app, "/tasks stop");
-    await until(app, "Stopped every subagent.");
+    await until(app, "Stopped every subagent and command.");
     expect(tasks.all[1]!.state).toBe("stopped");
     await type(app, "/tasks stop");
-    await until(app, "No subagent is running.");
+    await until(app, "No subagent or command is running.");
   });
 
   for (const [way, keys] of [
@@ -1849,6 +1849,196 @@ describe("App's background subagents", () => {
       await waitFor(() => tasks.all[0]!.state === "stopped");
     });
   }
+});
+
+// Background commands plan, Task 9 (choices 18, 19): a background command in the panel and /tasks, its arrival line, the
+// wake that reads its ending, and the waits. Nothing runs: each start is a stand-in run the test adds output to and ends.
+describe("App's background commands", () => {
+  const start = (id: string, command: string) => callTool(id, "shell", { command, background: true });
+  const bg = (id: string, task: string) => callTool(id, "delegate", { description: task, task, background: true });
+  const note = (text: string) => ({ type: "text", text, from: "tasks" });
+  // Each command started, as its run and a way to end it with an exit code.
+  const held = () => {
+    const runs: { run: Running; end: (code: number) => void }[] = [];
+    const executor: Executor = {
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: () => {
+        let end = (_code: number) => {};
+        const run = standInRun(new Promise((resolve) => (end = (code) => resolve({ code, signal: null, stdout: "", stderr: "" }))));
+        runs.push({ run, end });
+        return run;
+      },
+    };
+    return { runs, executor };
+  };
+  const three = {
+    parts: [...start("c1", "npm run dev\nnext line").parts, ...start("c2", "npm test").parts, ...start("c3", "npm run \u001b[2Jwatch").parts],
+    usage,
+  };
+
+  it("shows each command in the panel by its first line, escaped, then its exit code once ended, and says each ending as a subagent's", async () => {
+    const { runs, executor } = held();
+    const lead = new FakeProvider("a", [three, reply("started"), reply("one"), reply("two")]);
+    const { app } = await mount([], { lead, executor, mode: "never" });
+    await type(app, "go");
+    await until(app, "started");
+    expect(app.lastFrame()).toMatch(/›\n◐ t1 npm run dev\n  ⎿ shell · \d+s\n◐ t2 npm test\n  ⎿ shell · \d+s\n◐ t3 npm run \\u001b\[2Jwatch\n  ⎿ shell · \d+s\n/);
+    runs[0]!.end(0);
+    await until(app, "one");
+    expect(app.lastFrame()).toContain("t1 finished");
+    runs[1]!.end(1);
+    await until(app, "two");
+    expect(app.lastFrame()).toContain("t2 failed");
+    await type(app, "/tasks stop t3");
+    await until(app, "t3 stopped");
+    expect(app.lastFrame()).toMatch(
+      /›\n✓ t1 npm run dev\n  ⎿ shell · exit code 0 · \d+s\n✗ t2 npm test\n  ⎿ shell · exit code 1 · \d+s\n⊘ t3 npm run \\u001b\[2Jwatch\n  ⎿ shell · \d+s\n/,
+    );
+  });
+
+  it("lists commands beside subagents with /tasks, and prints a command's kept output with /tasks t1, leaving the model's place", async () => {
+    const { runs, executor } = held();
+    const lead = new FakeProvider("a", [start("c1", "npm run dev"), bg("c2", "find x"), reply("started")]);
+    const { app } = await mount([], { lead, executor, mode: "never", worker: new Held("fake:w") });
+    await type(app, "/tasks");
+    await until(app, "No subagents or commands yet.");
+    await type(app, "go");
+    await until(app, "started");
+    await type(app, "/tasks");
+    await until(app, "Tasks: 2");
+    expect(app.lastFrame()).toMatch(/Tasks: 2\n◐ t1 npm run dev\n  ⎿ shell · \d+s\n◐ t2 find x\n  ⎿ w · \d+s · ↓ 0 tokens · \$0\.00\n/);
+    await type(app, "/tasks t1");
+    await until(app, "t1 (npm run dev), running: shell command\n(no output yet)");
+    runs[0]!.run.log.add("listening on 3000\nready");
+    await type(app, "/tasks t1");
+    await until(app, "t1 (npm run dev), running: shell command\nlistening on 3000\nready");
+    expect(runs[0]!.run.log.unread()).toBe(runs[0]!.run.log.total); // shell_output still gives it all
+    await type(app, "/tasks t9");
+    await until(app, "No task t9. /tasks lists them.");
+  });
+
+  it("opens a command's record in the detail view with /tasks t1 in full screen, putting nothing in the conversation", async () => {
+    const { runs, executor } = held();
+    const { app } = await mount([start("c1", "npm run dev"), reply("started")], { executor, mode: "never", full: true });
+    await type(app, "go");
+    await until(app, "started");
+    runs[0]!.run.log.add("ready");
+    await type(app, "/tasks t1");
+    await until(app, "t1 (npm run dev), running: shell command");
+    expect(shown(app).slice(0, 3)).toEqual(["t1 (npm run dev), running: shell command", "ready", ""]);
+    await press(app, "q");
+    expect(app.lastFrame()).not.toContain("running: shell command");
+    expect(runs[0]!.run.log.unread()).toBe(5);
+  });
+
+  it("stops a command with /tasks stop t1, or every one with /tasks stop, and the model hears of each at the next turn", async () => {
+    const { executor } = held();
+    const both = { parts: [...start("c1", "npm run dev").parts, ...start("c2", "npm run watch").parts], usage };
+    const lead = new FakeProvider("a", [both, reply("started"), reply("noted")]);
+    const { app, tasks } = await mount([], { lead, executor, mode: "never" });
+    await type(app, "go");
+    await until(app, "started");
+    await type(app, "/tasks stop t1");
+    await until(app, "Stopped t1.");
+    expect(tasks.all.map((t) => t.state)).toEqual(["stopped", "running"]);
+    await type(app, "/tasks stop t1");
+    await until(app, "t1 is not running.");
+    await type(app, "/tasks stop");
+    await until(app, "Stopped every subagent and command.");
+    expect(tasks.all[1]!.state).toBe("stopped");
+    await type(app, "/tasks stop");
+    await until(app, "No subagent or command is running.");
+    await type(app, "next");
+    await until(app, "noted");
+    expect(lead.seen[2]!.at(-1)!.parts).toEqual([
+      { type: "text", text: "next" },
+      note("Background command t1 (npm run dev) was stopped by the user."),
+      note("Background command t2 (npm run watch) was stopped by the user."),
+    ]);
+  });
+
+  it("reads an ending that comes while the lead is idle in a turn of its own, as reading the command's output, and tells the model once", async () => {
+    const { runs, executor } = held();
+    const lead = new Held("fake:a");
+    const { app } = await mount([], { lead, executor, mode: "never" });
+    await type(app, "go");
+    lead.answer(start("c1", "npm test"));
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer("started it");
+    await until(app, "started it");
+    runs[0]!.run.log.add("12 passed");
+    runs[0]!.end(0);
+    await until(app, "Reading t1's output");
+    expect(app.lastFrame()).toContain("t1 finished");
+    expect(lead.asked[2]!.messages.at(-1)!.parts).toEqual([note("Background command t1 (npm test) ended with exit code 0:\n12 passed")]);
+    lead.answer("t1 passed");
+    await until(app, "t1 passed");
+    await type(app, "more");
+    await waitFor(() => lead.asked.length === 4);
+    expect(lead.asked[3]!.messages.at(-1)!.parts).toEqual([{ type: "text", text: "more" }]);
+    expect(lead.asked[3]!.messages.filter((m) => m.parts.some((p) => p.type === "text" && p.from === "tasks"))).toHaveLength(1);
+  });
+
+  it("names a subagent's answer, then a command's output, when both wake the lead in one turn", async () => {
+    const { runs, executor } = held();
+    const worker = new Held("fake:w");
+    const lead = new Held("fake:a");
+    const { app, tasks } = await mount([], { lead, worker, executor, mode: "never" });
+    await type(app, "go");
+    lead.answer(start("c1", "npm test"));
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer(bg("c2", "find x"));
+    await waitFor(() => lead.asked.length === 3 && worker.asked.length === 1); // the lead's last request, already sent
+    worker.answer("found");
+    runs[0]!.end(0);
+    await waitFor(() => tasks.all.every((t) => t.state === "done"));
+    lead.answer("started both");
+    await until(app, "Reading t2's answer and t1's output");
+    const notes = lead.asked[3]!.messages.at(-1)!.parts;
+    expect(notes).toHaveLength(2);
+    expect(notes).toEqual(
+      expect.arrayContaining([
+        note("Background task t2 (find x) finished:\nfound"),
+        note("Background command t1 (npm test) ended with exit code 0, with no new output."),
+      ]),
+    );
+  });
+
+  it("leaves a background command running when Esc stops the turn, and stops it on /exit", async () => {
+    const { executor } = held();
+    const lead = new Held("fake:a");
+    const { app, tasks } = await mount([], { lead, executor, mode: "never" });
+    await type(app, "go");
+    lead.answer(start("c1", "npm run dev"));
+    await waitFor(() => lead.asked.length === 2);
+    await press(app, "\u001b");
+    await gone(app, "Esc to stop");
+    expect(tasks.all[0]!.state).toBe("running");
+    await type(app, "/exit");
+    await expectExited(app);
+    expect(tasks.all[0]!.state).toBe("stopped");
+  });
+
+  it("refuses /clear in red while a command runs, naming it, and takes it once the command is stopped", async () => {
+    await inColour(async () => {
+      const { executor } = held();
+      const { app } = await mount([start("c1", "npm run dev"), reply("started")], { executor, mode: "never" });
+      await type(app, "go");
+      await until(app, "started");
+      await type(app, "/clear");
+      await until(app, "\u001b[31m/clear waits until no subagent or command is running: t1 still running. /tasks stop stops them.");
+      await type(app, "/tasks stop");
+      await until(app, "Stopped every subagent and command.");
+      await type(app, "/clear");
+      await until(app, "Started a new session");
+    });
+  });
+
+  it("says what /tasks does in the / menu", async () => {
+    const { app } = await mount([]);
+    await press(app, "/", "t", "a");
+    expect(app.lastFrame()).toContain("  /tasks  List subagents and background commands; /tasks t1 shows one, /tasks stop stops them\n");
+  });
 });
 
 // A subagent that asks: its name, its stop signal, and whether it was stopped.
@@ -3753,7 +3943,7 @@ describe("App's clicks in full screen", () => {
     await tick();
     expect(app.lastFrame()).toContain("\n› /m\n");
     expect(app.lastFrame()).not.toContain("No models");
-    expect(app.lastFrame()).not.toContain("No subagents yet.");
+    expect(app.lastFrame()).not.toContain("No subagents or commands yet.");
   });
 
   it("runs a / command clicked in the menu, as Enter does", async () => {
@@ -3762,7 +3952,7 @@ describe("App's clicks in full screen", () => {
     const row = shown(app).findIndex((r) => r.startsWith("  /tasks  "));
     expect(row).toBeGreaterThan(-1);
     await pointer(mouse, ...click(4, row));
-    await until(app, "No subagents yet.");
+    await until(app, "No subagents or commands yet.");
     expect(app.lastFrame()).toContain("\n›\n"); // the prompt emptied, as Enter leaves it
   });
 
@@ -4326,7 +4516,7 @@ describe("App's detail view in full screen", () => {
     await press(app, "q");
     expect(app.lastFrame()).not.toContain("t1 (find x), done");
     await type(app, "/tasks t9");
-    await until(app, "No subagent t9. /tasks lists them.");
+    await until(app, "No task t9. /tasks lists them.");
     expect(app.lastFrame()).toContain("›");
   });
 
@@ -5618,10 +5808,10 @@ describe("App's /screen", () => {
     await type(app, "/screen");
     await until(app, "screen is now classic");
     await type(app, "/tasks");
-    await until(app, "No subagents yet.");
+    await until(app, "No subagents or commands yet.");
     await type(app, "/screen");
     await until(app, "screen is now full");
-    expect(shown(app).slice(0, 8)).toEqual(["> hi", "alpha", "beta", "screen is now classic", "No subagents yet.", "screen is now full", "", ""]);
+    expect(shown(app).slice(0, 8)).toEqual(["> hi", "alpha", "beta", "screen is now classic", "No subagents or commands yet.", "screen is now full", "", ""]);
   });
 
   // Found at Task 14's spec review: a switch holds the queue as a turn does. What is sent while it runs waits for it, and a
@@ -9198,7 +9388,7 @@ describe("App's sessions", () => {
     await until(app, "Started a new session");
     expect(tasks.all).toEqual([]);
     await type(app, "/tasks");
-    await until(app, "No subagents yet.");
+    await until(app, "No subagents or commands yet.");
   });
 
   it("lets the last conversation's finished subagents go from /tasks on /resume", async () => {
@@ -9281,7 +9471,7 @@ describe("App's sessions", () => {
       await until(app, "started it");
       const own = session.id;
       await type(app, command);
-      await until(app, `\u001b[31m${command} waits until no subagent is running: t1 still running. /tasks stop stops them.`);
+      await until(app, `\u001b[31m${command} waits until no subagent or command is running: t1 still running. /tasks stop stops them.`);
       expect(session.id).toBe(own);
     });
   });
@@ -9308,7 +9498,7 @@ describe("App's sessions", () => {
     await type(app, "go");
     await until(app, "started it");
     await type(app, "/tasks stop");
-    await until(app, "Stopped every subagent.");
+    await until(app, "Stopped every subagent and command.");
     await waitFor(() => tasks.all[0]!.state === "stopped");
     await type(app, "/clear");
     await until(app, "Started a new session");

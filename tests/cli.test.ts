@@ -1192,9 +1192,10 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   // Release 8b plan, Task 12: /hooks among the commands, in the user's words (2026-11-10), after the /tasks part.
   // Release 8c plan, Task 10: /mcp after the /hooks part, in the plan's words.
+  // Background commands plan, Task 9: /tasks lists both kinds, in the plan's words.
   it("lists /hooks in the help, after /tasks, and /mcp after it", () => {
     expect(tachi("--help").stdout).toContain(
-      "subagents (/tasks t1 shows one, /tasks stop stops them), /hooks lists the hooks in force,\n/mcp lists the MCP servers, /errors summarises the error log,",
+      "/tasks lists\nsubagents and background commands (/tasks t1 shows one, /tasks stop stops them), /hooks lists\nthe hooks in force, /mcp lists the MCP servers, /errors summarises the error log,",
     );
   });
 });

@@ -10,7 +10,7 @@ import { type Protection, visible } from "../../core/permissions.js";
 import { cannot, truncate } from "../../core/session.js";
 import { listSessions } from "../../core/sessions.js";
 import { CANCELLED } from "../../core/shorten.js";
-import type { SubagentTask } from "../../core/tasks.js";
+import type { Task } from "../../core/tasks.js";
 import { errorText, type Part, type Picture, type Provider } from "../../core/types.js";
 import { hookName } from "../../hooks/answer.js";
 import { limitOf } from "../../hooks/hooks.js";
@@ -86,13 +86,11 @@ export const queue = (ui: UI, fns: Fns) => {
     ui.view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     void fns.submit(joined(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command), "\n\n"));
   };
-  // The subagent of that id, for its record; a command's record is choice 18's (background commands plan).
-  const subagent = (id: string) => ui.tasks.all.find((t): t is SubagentTask => t.kind === "subagent" && t.id === id);
-  // The subagent whose record `text` opens in the detail view: in full screen, `/tasks t3` with a subagent of that id
-  // (perform, below).
+  // The subagent or command whose record `text` opens in the detail view: in full screen, `/tasks t3` with a task of that
+  // id (perform, below; background commands plan, Task 9).
   const recordToOpen = (text: string) => {
     const [first = "", ...words] = text.split(/\s+/);
-    return ui.fullNow.current && first.toLowerCase() === "/tasks" && words.length === 1 ? subagent(words[0]!) : undefined;
+    return ui.fullNow.current && first.toLowerCase() === "/tasks" && words.length === 1 ? ui.tasks.get(words[0]!) : undefined;
   };
 
   // True when it opened the model list.
@@ -178,7 +176,7 @@ export const queue = (ui: UI, fns: Fns) => {
           : account
             ? "Signing out"
             : answers
-              ? `Reading ${names(ui.tasks.answering().map((a) => a.id))}`
+              ? `Reading ${names(ui.tasks.answering())}`
               : turn
                 ? "Working"
                 : "Reading the model lists";
@@ -379,27 +377,29 @@ export const queue = (ui: UI, fns: Fns) => {
     return true;
   };
 
-  // `/tasks` lists the session's subagents, `/tasks t3` prints one's tool calls and answer in full,
-  // and `/tasks stop` stops all of them, or with a number one (release 4 design, "Background subagents").
+  // `/tasks` lists the session's subagents and background commands, `/tasks t3` prints one's tool calls and answer, or
+  // a command's output, in full, and `/tasks stop` stops all of them, or with a number one (release 4 design,
+  // "Background subagents"; background commands plan, choice 18). A command stopped here is told to the model at its next
+  // turn (tasks.ts, stop).
   const tasksCommand = (words: string[]): Line[] => {
-    const none = (id: string): Line => ({ text: `No subagent ${id}. /tasks lists them.`, color: "red" });
+    const none = (id: string): Line => ({ text: `No task ${id}. /tasks lists them.`, color: "red" });
     const [verb, id, ...rest] = words;
     if (verb === undefined) {
-      const subagents = ui.tasks.all.filter((t) => t.kind === "subagent"); // a command's rows are choice 18's (background commands plan)
-      if (!subagents.length) return [gray("No subagents yet.")];
+      const all = ui.tasks.all;
+      if (!all.length) return [gray("No subagents or commands yet.")];
       const now = Date.now();
       return [
-        gray(`Subagents: ${subagents.length}`),
-        ...subagents.flatMap((t) => taskRow(t, now, ui.run.options.names)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true })),
+        gray(`Tasks: ${all.length}`),
+        ...all.flatMap((t) => taskRow(t, now, ui.run.options.names)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true })),
       ];
     }
     if (verb === "stop" && !rest.length) {
-      if (id === undefined) return [gray(ui.tasks.stop() ? "Stopped every subagent." : "No subagent is running.")];
+      if (id === undefined) return [gray(ui.tasks.stop() ? "Stopped every subagent and command." : "No subagent or command is running.")];
       if (!ui.tasks.all.some((t) => t.id === id)) return [none(id)];
       return [gray(ui.tasks.stop(id) ? `Stopped ${id}.` : `${id} is not running.`)];
     }
     if (id !== undefined) return [{ text: "Usage: /tasks, /tasks <number>, /tasks stop [<number>]", color: "red" }];
-    const t = subagent(verb);
+    const t = ui.tasks.get(verb);
     return t ? fns.recordOf(t) : [none(verb)];
   };
   // `/hooks`: the hooks in force, read-only, by event in the file's order, each by its name (answer.ts, hookName), then
@@ -490,8 +490,10 @@ export const queue = (ui: UI, fns: Fns) => {
       fns.next();
     }
   };
-  // `/tasks t3`'s record: the subagent's tool calls and answer in full.
-  const recordOf = (t: SubagentTask): Line[] => {
+  // `/tasks t3`'s record: the subagent's tool calls and answer in full. A command's is the output its log keeps, read
+  // with kept(), which leaves the model's place, so shell_output still gives it all (background commands plan, Task 9).
+  const recordOf = (t: Task): Line[] => {
+    if (t.kind === "command") return [gray(`${t.id} (${visible(t.command)}), ${t.state}: shell command`), gray(t.run.log.kept() || "(no output yet)")];
     const calls = callLines(t.messages, ui.run.options.names);
     const end = t.state === "done" ? `Answer:\n${t.answer}` : t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)";
     return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
@@ -633,11 +635,12 @@ export const queue = (ui: UI, fns: Fns) => {
         c.ended(end.lines);
       });
     })().catch((err) => c.ended([visible(errorText(err)), kept(c.copy.session)]));
-  // /clear, /resume and /branch are refused while a subagent runs, so no answer can arrive in the wrong session (release 8a
-  // design, "Resuming"); during a turn they wait in the queue, as every command does. Null when none runs.
+  // /clear, /resume and /branch are refused while a subagent or a background command runs, so no answer or ending can
+  // arrive in the wrong session (release 8a design, "Resuming"; background commands design, confirmed); during a turn
+  // they wait in the queue, as every command does. Null when none runs.
   const subagentsRunning = (command: string): Line | null => {
     const ids = ui.tasks.all.filter((t) => t.state === "running" || t.state === "waiting").map((t) => t.id).join(", ");
-    return ids ? { text: `${command} waits until no subagent is running: ${ids} still running. /tasks stop stops them.`, color: "red" } : null;
+    return ids ? { text: `${command} waits until no subagent or command is running: ${ids} still running. /tasks stop stops them.`, color: "red" } : null;
   };
   // The window takes another session (release 8a plan, choice 15): the last one's shown calls, to-do list, answers and
   // tool line go, and the gauge's context, 0 until the next request. The subagents' waiting text is dropped: an answer

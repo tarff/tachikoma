@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import type { Key } from "ink";
 import type { Owner } from "../../core/permissions.js";
+import type { Task } from "../../core/tasks.js";
 import { SETTINGS } from "../../settings.js";
 import type { Context, Stroke } from "../bindings.js";
 import { imageReader, readImage } from "../clipboard.js";
@@ -89,8 +90,17 @@ export const SHORTEN_WORDS = {
 };
 // A number of tokens as the session's too-long line writes it, as providers/pictures.ts writes a number (session.ts).
 export const tokens = (n: number) => n.toLocaleString("en-US");
-// "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
-export const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
+// What a wake reads (background commands plan, choice 19), subagents first: "t3's answer", "t2, t3 and t4's answers",
+// "t4's output", "t3's answer and t4's output".
+export const names = (waiting: { id: string; kind: Task["kind"] }[]) => {
+  const listed = (ids: string[]) => (ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]);
+  const subagents = waiting.filter((w) => w.kind === "subagent").map((w) => w.id);
+  const commands = waiting.filter((w) => w.kind === "command").map((w) => w.id);
+  return [
+    ...(subagents.length ? [`${listed(subagents)}'s answer${subagents.length > 1 ? "s" : ""}`] : []),
+    ...(commands.length ? [`${listed(commands)}'s output`] : []),
+  ].join(" and ");
+};
 export const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
 export const gray = (text: string): Line => ({ text, color: "gray" });
 // Characters as a person sees them, as the prompt counts them (release 5 plan, choice 7), counted without an array of

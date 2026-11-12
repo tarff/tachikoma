@@ -344,7 +344,9 @@ export function App(props: AppProps) {
       ui.run.finished(id, Date.now());
       ui.rerender((n) => n + 1);
     };
-    // A background subagent's ending is shown when it comes; its answer is read at once when idle.
+    // A background subagent's or command's ending is shown when it comes, in the same words (background commands plan,
+    // Task 9): a command is `done` (finished) at exit code 0, `failed` at any other end of its own, `stopped` when stopped.
+    // Its answer or output is read at once when idle.
     const onTasks = () => {
       for (const t of ui.tasks.all) {
         if (!t.background || t.state === "running" || t.state === "waiting" || ui.announced.current.has(t.id)) continue;

@@ -38,7 +38,8 @@ const COMMANDS: { label: string; run: string; note: string }[] = [
   { label: "/export [file]", run: "/export", note: EXPORT_WORDS.note },
   { label: "/compact [words]", run: "/compact", note: SHORTEN_WORDS.compact },
   { label: "/autocompact <tokens>", run: "/autocompact", note: SHORTEN_WORDS.autocompact },
-  { label: "/tasks", run: "/tasks", note: "List the subagents; /tasks t1 shows one, /tasks stop stops them" },
+  // Background commands plan, "Lines this plan adds".
+  { label: "/tasks", run: "/tasks", note: "List subagents and background commands; /tasks t1 shows one, /tasks stop stops them" },
   { label: "/hooks", run: "/hooks", note: "List the hooks in force" }, // the user's words, 2026-11-10 (release 8b plan, Task 12)
   { label: "/mcp", run: "/mcp", note: "List the MCP servers" }, // release 8c plan, "Lines this plan adds"
   { label: "/errors", run: "/errors", note: "Summarise the error log" },
