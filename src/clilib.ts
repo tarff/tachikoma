@@ -287,8 +287,11 @@ export async function waitForBackground(
   // Until the list changes or Ctrl-C, the waiting line's timer and both listeners gone either way.
   const change = () =>
     new Promise<void>((resolve) => {
-      const line = () => `Waiting for background work to finish: ${running().map((t) => `${t.id} (${visible(headCommand(t.command))})`).join(", ")}`;
-      const timer = waitingLine && !said ? setTimeout(() => ((said = true), waitingLine(line())), WAITING_LINE_MS) : undefined;
+      const say = (line: (text: string) => void) => {
+        said = true;
+        line(`Waiting for background work to finish: ${running().map((t) => `${t.id} (${visible(headCommand(t.command))})`).join(", ")}`);
+      };
+      const timer = waitingLine && !said ? setTimeout(() => say(waitingLine), WAITING_LINE_MS) : undefined;
       const done = () => {
         clearTimeout(timer);
         opts.bus.off("tasks", done);
