@@ -170,10 +170,10 @@ export interface Read {
   box: boolean; // whether the sandbox was on: the last start or system line's setting
   loaded: string[]; // the MCP tools loaded through tool_search: the last loaded line's, kept by a shortening (release 8c plan, choice 41)
   asked: string[]; // the calls the user was asked about, from the whole file (release 8c plan, Task 15)
-  // The history for a launch with these tools and system prompt: a reply keeps its provider's own content only when the
+  // The history for a launch with these tools and system prompt: an Anthropic reply keeps its own content only when the
   // tools and system prompt it was saved under are these, as Anthropic refuses a thinking block once either changed
-  // before it (release 8a design, "Before the build", check 2; plan, choice 4). `dropped`: whether any reply's was left
-  // out.
+  // before it (release 8a design, "Before the build", check 2; plan, choice 4); other providers' replies keep theirs
+  // (release 8c plan, choice 70). `dropped`: whether any reply's was left out.
   withTools(tools: ToolSpec[], system: string): { messages: Message[]; dropped: boolean };
 }
 

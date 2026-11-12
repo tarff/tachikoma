@@ -80,11 +80,13 @@ export function madeUnder(system: string, tools: ToolSpec[]): string {
 // replies made under `now`: every reply at or before the last one made under anything else is sent without it, its
 // words, calls and results kept, so nothing is ever left out from the middle (release 8c plan, Task 6b's quality review:
 // the user's choice, "Drop older thinking"; release 8a design, "Before the build", check 2). `under` gives what a reply
-// was made under; `bound`, which replies' own content to leave out, every one's unless given.
-export function keepThinking(messages: Message[], under: (m: Message) => string | undefined, now: string, bound: (m: Message) => boolean = () => true): Message[] {
+// was made under. Only Anthropic's is left out: the OpenAI-format providers' own content is not bound so, and some of
+// them want a tool call's reasoning sent back with it. The live session and a resume both ask here, so they send the
+// same (release 8c plan, choice 70: the outside review of PR #17, finding 1).
+export function keepThinking(messages: Message[], under: (m: Message) => string | undefined, now: string): Message[] {
   const last = messages.findLastIndex((m) => m.role === "assistant" && under(m) !== now);
   return messages.map((m, i) => {
-    if (i > last || !m.native || !bound(m)) return m;
+    if (i > last || m.native?.provider !== "anthropic") return m;
     const { native: _, ...rest } = m;
     return rest;
   });

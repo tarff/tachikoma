@@ -816,11 +816,10 @@ export class Session {
   }
 
   // The history as a request under `tools` sends it: Anthropic's thinking only on the trailing run of replies made under
-  // them and this system prompt (keepThinking). Only Anthropic's is left out: the OpenAI-format providers' own content is
-  // not bound so, and some of them want a tool call's reasoning sent back with it.
+  // them and this system prompt (keepThinking).
   #kept(tools: ToolSpec[]): Message[] {
     const now = madeUnder(this.system, tools);
-    return keepThinking(this.messages, (m) => this.#under.get(m), now, (m) => m.native?.provider === "anthropic");
+    return keepThinking(this.messages, (m) => this.#under.get(m), now);
   }
 
   // The MCP tools for the request about to be made, taken once for it (choice 9).

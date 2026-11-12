@@ -250,12 +250,15 @@ export async function httpFake(dir: string, opts: FakeOptions = {}): Promise<{ u
 // false` gives no refresh tokens; `registration: false` publishes no registration, and "refused" publishes one that
 // answers 403, as Figma's does for an app it has not approved (choice 60); `metadata` "none" publishes no
 // sign-in details at all, and "elsewhere" publishes the service's metadata only at /elsewhere/metadata, for an entry's
-// authServerMetadataUrl.
-export async function signInFake(opts: { refresh?: false; registration?: false | "refused"; metadata?: "none" | "elsewhere" } = {}) {
+// authServerMetadataUrl; "challenge" names its discovery document only in the 401, at /challenge/resource, and the
+// service there is at /issuer, so nothing is found at the server's own well-known addresses (choice 70). `slow` holds
+// each code's tokens until `answer()`.
+export async function signInFake(opts: { refresh?: false; registration?: false | "refused"; metadata?: "none" | "elsewhere" | "challenge"; slow?: true } = {}) {
   const clients = new Map<string, { redirect_uris: string[] }>();
   const codes = new Map<string, { client: string; challenge: string; redirect: string }>();
   const live = new Set<string>();
   const refresh = new Set<string>();
+  const held: (() => void)[] = [];
   const seen = {
     registered: 0, grants: [] as string[], bearer: [] as (string | null)[], authorized: [] as URLSearchParams[],
     requests: [] as { path: string; headers: http.IncomingHttpHeaders }[],
@@ -271,13 +274,18 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
         res.writeHead(status, { "content-type": "application/json", connection: "close", ...headers }).end(JSON.stringify(value));
       seen.requests.push({ path: url.pathname, headers: req.headers });
       const metadata = {
-        issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`,
+        issuer: opts.metadata === "challenge" ? `${base}/issuer` : base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`,
         ...(opts.registration !== false && { registration_endpoint: `${base}/register` }),
         response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], grant_types_supported: ["authorization_code", "refresh_token"],
         token_endpoint_auth_methods_supported: ["none"],
       };
       if (opts.metadata === "none" && url.pathname.startsWith("/.well-known/")) return res.writeHead(404, { connection: "close" }).end();
       if (opts.metadata === "elsewhere" && url.pathname === "/elsewhere/metadata") return json(200, metadata);
+      if (opts.metadata === "challenge") {
+        if (url.pathname === "/challenge/resource") return json(200, { resource: `${base}/mcp`, authorization_servers: [`${base}/issuer`] });
+        if (url.pathname === "/.well-known/oauth-authorization-server/issuer") return json(200, metadata);
+        if (url.pathname.startsWith("/.well-known/")) return res.writeHead(404, { connection: "close" }).end();
+      }
       if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
         return json(200, { resource: `${base}${url.pathname.slice("/.well-known/oauth-protected-resource".length) || "/mcp"}`, authorization_servers: [base] });
       }
@@ -317,6 +325,7 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
           codes.delete(form.get("code") ?? "");
           const verified = c && createHash("sha256").update(form.get("code_verifier") ?? "").digest("base64url") === c.challenge;
           if (!c || !verified || c.redirect !== form.get("redirect_uri") || c.client !== form.get("client_id")) return json(400, { error: "invalid_grant" });
+          if (opts.slow) return void held.push(give);
           return give();
         }
         if (grant === "refresh_token" && refresh.delete(form.get("refresh_token") ?? "")) return give();
@@ -326,7 +335,7 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
         const bearer = req.headers.authorization ?? null;
         seen.bearer.push(bearer);
         if (!bearer || !live.has(bearer.replace(/^Bearer /, ""))) {
-          const resource = `${base}/.well-known/oauth-protected-resource${url.pathname}`;
+          const resource = opts.metadata === "challenge" ? `${base}/challenge/resource` : `${base}/.well-known/oauth-protected-resource${url.pathname}`;
           return json(401, { error: "invalid_token" }, { "www-authenticate": `Bearer resource_metadata="${resource}"` });
         }
         if (req.method !== "POST") return res.writeHead(405, { connection: "close" }).end();
@@ -355,6 +364,7 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
     seen,
     expire: () => live.clear(),
     revoke: () => refresh.clear(), // every refresh token given so far refused
+    answer: () => held.splice(0).forEach((give) => give()),
     // The user's browser: each redirect followed, to the sign-in's own address on this machine at the end. Nothing waits for
     // it, so a failure is dropped, as a browser's is.
     browser: (address: string): void => void fetch(address).then((r) => r.text()).catch(() => {}),

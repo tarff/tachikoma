@@ -540,6 +540,26 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect(kept(other, read(p))).toEqual([false, false, false, false, false, false]);
   });
 
+  // Release 8c plan, choice 70 (the outside review of PR #17, finding 1): as the live session does, only Anthropic's
+  // older thinking is left out; a Kimi reply keeps its reasoning, as Kimi wants it sent back with the reply's tool call.
+  it("leaves out only Anthropic's own content from replies saved under other tools, as the live session does", async () => {
+    const p = place();
+    const write = { name: "write_file", description: "Writes a file", inputSchema: { type: "object" } };
+    const other = [...start.tools, write];
+    const kimi: Message = { ...said("by Kimi"), native: { provider: "kimi", content: { reasoning_content: "think first" } } };
+    const claude: Message = { ...said("by Claude"), native: { provider: "anthropic", content: [{ type: "thinking", thinking: "hm" }] } };
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "message", message: prompt("one") });
+    t.write({ t: "message", message: kimi });
+    t.write({ t: "message", message: prompt("two") });
+    t.write({ t: "message", message: claude });
+    const r = read(p).withTools(other, start.system);
+    expect(r.messages.map((m) => m.native?.provider)).toEqual([undefined, "kimi", undefined, undefined]);
+    expect(r.messages[1]!.native!.content).toEqual({ reasoning_content: "think first" });
+    expect(r.dropped).toBe(true);
+  });
+
   // Release 8a final review (user, 2026-11-07: "Rebuild it", "Save the setting"): a system line, as a resume under another
   // sandbox setting writes, is the prompt and setting from then on, and a reply keeps its own content only under the
   // prompt it was saved under too.

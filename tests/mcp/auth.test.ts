@@ -313,6 +313,42 @@ describe("signing in to a remote MCP server", () => {
     expect(servers.list()[0]!.state).toEqual({ is: "failed", reason: `${t.fake.base} answered 401` });
   });
 
+  // Choice 70 (the outside review of PR #17, finding 2): a server that names its discovery document only in its 401 is
+  // signed in to through it, as the launch found it.
+  it("signs in through the discovery document the server's 401 named", async () => {
+    const t = await setup({ metadata: "challenge" });
+    const servers = t.make([remote("om", t.fake.url)]);
+    await servers.ready();
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    expect(await servers.signIn("om", t.io())).toBe(true);
+    expect(t.states(servers)).toEqual(["om ready"]);
+    expect(t.fake.seen.grants).toEqual(["authorization_code"]);
+  });
+
+  // Choice 70 (finding 3): Esc while the token request is out saves nothing when its tokens come after, so the server
+  // still needs sign-in, at the next start too.
+  it("saves no tokens that come after Esc", async () => {
+    const t = await setup({ slow: true });
+    const servers = t.make([remote("om", t.fake.url)]);
+    await servers.ready();
+    const saving = vi.spyOn(McpAuth.prototype, "saveTokens");
+    onTestFinished(() => saving.mockRestore());
+    const esc = new AbortController();
+    const signing = servers.signIn("om", t.io(true, esc.signal));
+    await vi.waitFor(() => expect(t.fake.seen.grants).toEqual(["authorization_code"]), WAIT);
+    esc.abort();
+    await expect(signing).rejects.toThrow();
+    t.fake.answer();
+    await vi.waitFor(() => expect(saving).toHaveBeenCalled(), WAIT);
+    await saving.mock.results[0]!.value;
+    expect(new AuthStore(t.data).get("om", t.fake.url)?.tokens).toBeUndefined();
+    expect(servers.signedIn("om")).toBe(false);
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    const next = t.make([remote("om", t.fake.url)]);
+    await next.ready();
+    expect(t.states(next)).toEqual(["om needs sign-in"]);
+  });
+
   // Choice 59: a sign-in lost mid-session, here a stale token with no refresh token to renew it.
   it("needs sign-in again when the sign-in is lost mid-session, and the call says so to the model", async () => {
     const t = await setup({ refresh: false });

@@ -157,12 +157,12 @@ export class McpAuth implements OAuthClientProvider {
   readonly #name: string;
   readonly #url: string;
   readonly #oauth: OAuthEntry | undefined;
-  readonly #attempt: { redirect: string; state: string; to?: URL } | undefined; // a sign-in's own, its address and state
+  readonly #attempt: { redirect: string; state: string; signal: AbortSignal; to?: URL } | undefined; // a sign-in's own: its address, state, Esc
   #verifier = "";
   #discovery: OAuthDiscoveryState | undefined;
   #refreshRead: string | undefined; // the refresh token last read, so a refused one drops only itself (invalidateCredentials)
 
-  constructor(store: AuthStore, config: ServerConfig, attempt?: { redirect: string; state: string }) {
+  constructor(store: AuthStore, config: ServerConfig, attempt?: { redirect: string; state: string; signal: AbortSignal }) {
     if (config.entry.kind === "stdio") throw new Error("only a remote server signs in");
     this.#store = store;
     this.#config = config;
@@ -223,7 +223,10 @@ export class McpAuth implements OAuthClientProvider {
     return tokens;
   }
 
+  // A sign-in stopped with Esc saves none, even those its token request, already on its way, brings after (choice 70:
+  // the outside review of PR #17, finding 3).
   saveTokens(tokens: StoredOAuthTokens): Promise<void> {
+    if (this.#attempt?.signal.aborted) return Promise.resolve();
     return this.#store.change(this.#name, this.#url, (kept) => ({ ...kept, tokens }));
   }
 
@@ -305,11 +308,14 @@ export class McpAuth implements OAuthClientProvider {
       if (fixed !== undefined && (err as NodeJS.ErrnoException).code === "EADDRINUSE") throw new Error(`port ${fixed}, the entry's callbackPort, is in use`);
       throw err;
     }
-    const attempt: { redirect: string; state: string; to?: URL } = { redirect: listener.redirectUri, state };
+    const attempt: { redirect: string; state: string; signal: AbortSignal; to?: URL } = { redirect: listener.redirectUri, state, signal: io.signal };
     const client = new McpAuth(this.#store, this.#config, attempt);
     const scope = this.#oauth?.scopes ? { scope: this.#oauth.scopes } : {};
+    // The discovery document the server's 401 named, which the library kept here as the launch tried it: a server may
+    // name it only there (choice 70: the outside review of PR #17, finding 2). The exchange uses the attempt's own.
+    const named = this.#discovery?.resourceMetadataUrl;
     try {
-      const first = stoppable(auth(client, { serverUrl: this.#url, ...scope }), io.signal).catch((err: unknown) => {
+      const first = stoppable(auth(client, { serverUrl: this.#url, ...(named && { resourceMetadataUrl: new URL(named) }), ...scope }), io.signal).catch((err: unknown) => {
         throw err instanceof RegistrationRejectedError && err.status === 403 ? new Error(REFUSED) : err;
       });
       if ((await first) === "AUTHORIZED") return true;
@@ -331,7 +337,8 @@ export class McpAuth implements OAuthClientProvider {
   }
 }
 
-// The library's requests take no signal, so Esc stops the wait for them; one still going finishes with nothing waiting.
+// The library's requests take no signal, so Esc stops the wait for them; one still going finishes with nothing waiting,
+// and its tokens are not saved (saveTokens).
 function stoppable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
