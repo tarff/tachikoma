@@ -11,8 +11,8 @@ import { cannot, truncate } from "../../core/session.js";
 import { listSessions } from "../../core/sessions.js";
 import { CANCELLED } from "../../core/shorten.js";
 import type { CommandTask, Task } from "../../core/tasks.js";
-import { droppedNote } from "../../exec/log.js";
 import { errorText, type Part, type Picture, type Provider } from "../../core/types.js";
+import { droppedNote } from "../../exec/log.js";
 import { hookName } from "../../hooks/answer.js";
 import { limitOf } from "../../hooks/hooks.js";
 import { KEYBINDINGS } from "../../keybindings.js";
@@ -658,12 +658,11 @@ export const queue = (ui: UI, fns: Fns) => {
     return ids ? { text: `${command} waits until no subagent or command is running: ${ids} still running. /tasks stop stops them.`, color: "red" } : null;
   };
   // The window takes another session (release 8a plan, choice 15): the last one's shown calls, to-do list, answers and
-  // tool line go, and the gauge's context, 0 until the next request. The subagents' waiting text is dropped: an answer
+  // tool line go, and the gauge's context, 0 until the next request. The tasks' waiting text is dropped: an answer
   // that wakes the lead was read in a turn of its own before this command ran (next), so what is left is a stopped
-  // subagent's or command's note, which belongs to the last conversation. The conversation is loaded first: a load
-  // refused, as one is while a turn runs (a prompt read with /resume in one read of the terminal starts its turn under
-  // the list), lets the next session go and leaves the turn's state as it was. Then the last session is let go, and
-  // the conversation drawn
+  // task's note, which belongs to the last conversation. The conversation is loaded first: a load refused, as one is
+  // while a turn runs (a prompt read with /resume in one read of the terminal starts its turn under the list), lets the
+  // next session go and leaves the turn's state as it was. Then the last session is let go, and the conversation drawn
   // as the launch draws a resumed one, and its lines said, so a saving failure the load reports comes first (Task 7). The
   // window's sandbox carries on: a copy-mode box is not started afresh, so its review at exit covers both sessions'
   // changes (Task 7). Another conversation's finished subagents leave /tasks and the panel. A branch is the same
