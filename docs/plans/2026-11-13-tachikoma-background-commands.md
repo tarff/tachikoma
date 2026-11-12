@@ -911,3 +911,14 @@ What changed from the plan while building, for the later tasks and the reviewers
   Chat). The hint's key is read with the keys in force in the phase drawn. Adding a key in a
   keys-file `Task` block keeps Ctrl+B, as in Claude Code; `"ctrl+b": null` drops it. The terminal
   checklist's step 4 sees the hint on the working line.
+- **Task 11:** `waitForBackground(first, session, tasks, signal, { bus, ... })` takes the first
+  turn's result and returns it at once when it ended the run, so the CLI always calls it and the
+  choice of whether to wait is in code the tests reach (Task 11's code review); it takes the bus,
+  as neither `Session` nor `Tasks` shows its own. Every way out ends in `tasks.close()` (choice
+  29), which also clears the `-p` limits' timers. The limits are `HEADLESS_LIMIT` (600,000, new in
+  `commands.ts`) for a start without a timeout and for a move, and `MOST_TIMEOUT` at most. The
+  waiting line is grey, as the launch's lines; its command is cut by `headCommand` and escaped; its
+  5 s count starts again at each change of the list, so it explains a silent wait, not one that
+  just printed an answer. Its terminal check (`process.stderr.isTTY`, in `cli.tsx`) has no test.
+  The second Ctrl-C goes through the CLI's `quit()` (`process.exit(130)`), untested, as a test
+  cannot send Ctrl-C to a spawned run on Windows.
