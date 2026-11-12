@@ -688,8 +688,8 @@ search, always on", "Own lookup tool, every provider")
         goes under its row only while no other call of the reply has a row of its own, whose
         result would come between (choice 67 of release 7).
       - An MCP tool's pictures end the run, as text does, so its row comes before them.
-      - A shell line of mixed read, list and search commands counts each command (`ls | wc -l` is
-        a directory and a file).
+      - A shell line of mixed read, list and search commands counts each command (`ls && wc -l a`
+        is a directory and a file); a pipeline counts once, by its first command (choice 69).
       - A run's call that fails once its run was said (a later call of the reply with its own row
         ended it) is said when the next run starts or ends, after the result rows said meanwhile
         and before the next run's row, so each result stays under its own call.
@@ -799,6 +799,8 @@ search, always on", "Own lookup tool, every provider")
     pattern`, `cat a | wc -l` is `Read 1 file`, `git log | head` is `Ran 1 shell command`.
     Unchanged: commands joined by `;` or `&&` count as choice 65 says, and every command on the
     line, those after a `|` among them, must still be on the lists, or the call keeps its own row.
+    Known limit (Task 19's review): a group's own commands count each, `(cat a; ls) | grep x` being
+    a file and a directory.
 
 ## Lines this plan adds
 
