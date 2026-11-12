@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readlinkSync } from "node:fs";
 import os from "node:os";
 import { commandEnv, onPath } from "../exec/env.js";
-import type { ExecResult, Executor } from "../exec/executor.js";
+import type { ExecResult, Executor, Running } from "../exec/executor.js";
 import type { SandboxLimits } from "../settings.js";
 import { docker, type DockerRun } from "./docker.js";
 import type { Mount } from "./mounts.js";
@@ -283,6 +283,11 @@ export class DockerExecutor implements Executor {
       stderr += `${stderr && !stderr.endsWith("\n") ? "\n" : ""}${line}`;
     }
     return { code: got.code, signal: null, stdout: got.out, stderr };
+  }
+
+  // Background commands plan, Task 3 builds the box's start; until then nothing calls it.
+  start(): Running {
+    throw new Error("The sandbox cannot start a command in the background yet (background commands plan, Task 3).");
   }
 
   // Removes the box. What it held that is kept lives in /work, a host folder (choice 18). A removal that fails leaves the

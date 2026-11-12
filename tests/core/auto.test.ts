@@ -243,6 +243,9 @@ describe("auto mode, the turn's signal from each tool", () => {
     const ran: string[] = [];
     const executor: Executor = {
       exec: async (command) => (ran.push(`exec ${command}`), { code: 0, signal: null, stdout: "", stderr: "" }),
+      start: () => {
+        throw new Error("start is not used here");
+      },
     };
     // The project's files as the host has them, but that reads, writes and searches are recorded and never made.
     const workspace = Object.assign(new LocalWorkspace(root), {

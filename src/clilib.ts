@@ -560,6 +560,7 @@ export function networkNoted(executor: Executor): Executor {
       const r = await executor.exec(command, cwd, signal);
       return r.code === 0 ? r : { ...r, stderr: `${r.stderr}${r.stderr && !r.stderr.endsWith("\n") ? "\n" : ""}${line}` };
     },
+    start: (command, cwd) => executor.start(command, cwd),
   };
 }
 

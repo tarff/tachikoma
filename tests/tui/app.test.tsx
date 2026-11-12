@@ -1926,6 +1926,9 @@ function noShell() {
       ran.push(command);
       return { code: 0, signal: null, stdout: "", stderr: "" };
     },
+    start: () => {
+      throw new Error("start is not used here");
+    },
   };
   return { ran, executor };
 }
@@ -2335,6 +2338,9 @@ describe("App's live folded row", () => {
     let end = () => {};
     const executor: Executor = {
       exec: () => new Promise((resolve) => (end = () => resolve({ code: 0, signal: null, stdout: "", stderr: "" }))),
+      start: () => {
+        throw new Error("start is not used here");
+      },
     };
     return { executor, end: () => end() };
   };
@@ -2468,7 +2474,7 @@ describe("App's live folded row", () => {
     const lead = new Held();
     const shell = heldShell();
     const ran: string[] = [];
-    const executor: Executor = { exec: (...args) => (ran.push("ran"), shell.executor.exec(...args)) };
+    const executor: Executor = { exec: (...args) => (ran.push("ran"), shell.executor.exec(...args)), start: shell.executor.start };
     const { app, ctx, mouse } = await mount([], { lead, full: true, mode: "never", executor });
     writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
     writeFileSync(path.join(ctx.root, "b.txt"), "b\n");

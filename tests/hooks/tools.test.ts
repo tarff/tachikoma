@@ -318,7 +318,12 @@ describe("report: the parts the tools give", () => {
   it("shell reports its output and exit code, on success and on failure", async () => {
     const ctx = await tempContext("never");
     const parts: unknown[] = [];
-    const executor = { exec: async () => ({ code: 1, signal: null, stdout: "out\n", stderr: "err\n" }) };
+    const executor = {
+      exec: async () => ({ code: 1, signal: null, stdout: "out\n", stderr: "err\n" }),
+      start: () => {
+        throw new Error("start is not used here");
+      },
+    };
     await expect(shellTool.run({ command: "false" }, { ...ctx, executor, report: (p) => parts.push(p) })).rejects.toThrow("exit code: 1");
     expect(parts).toEqual([{ stdout: "out\n", stderr: "err\n", code: 1 }]);
     expect(errorOf("shell", "", parts[0])).toMatch(/^Exit code 1\n/);
