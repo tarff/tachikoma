@@ -363,7 +363,7 @@ describe("report: the parts the tools give", () => {
     const started = await shellTool!.run({ command: "npm run dev", background: true }, run);
     const moved = await shellTool!.run({ command: "npm test", timeout: 1 }, run);
     expect(parts).toEqual([]);
-    expect([responseOf("shell", started as string, parts[0]), responseOf("shell", moved as string, parts[1])]).toEqual([
+    expect([started, moved]).toEqual([
       "Started t1 in the background.",
       "Command did not complete within its 1s timeout and was moved to the background as t2.",
     ]);

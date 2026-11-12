@@ -1948,6 +1948,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
         transcript: () => session.transcript, hooks: given,
       })
       : undefined;
+    // Every command a test starts is stopped when it finishes, a stand-in's too.
+    if (o.commands && tasks) onTestFinished(() => void tasks.stop());
     const shells = o.commands && tasks ? shellTools(tasks, { shell: "sh", headless }) : [shell];
     const session: Session = new Session({
       lead,
@@ -2100,7 +2102,6 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   it("starts a command in the background when a PreToolUse hook's rewrite adds run_in_background: true, asking that question", async () => {
     const says: Says[] = [{ names: ["Bash"], stdout: rewrite({ command: "npm run dev", run_in_background: true }) }];
     const s = await setup({ mode: "ask", says, turns: shellCall("npm run dev"), answers: [true], commands: endless });
-    onTestFinished(() => void s.tasks!.stop());
     await s.session.send("go");
     expect(s.asked).toEqual([{ summary: "run in the background: npm run dev" }]);
     expect(s.results()).toEqual([{ output: "Started t1 in the background.", isError: false }]);
@@ -2301,11 +2302,22 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   it("fires PostToolUse after a background start with the text the model reads", async () => {
     const turns = [callTool("c1", "shell", { command: "npm run dev", background: true }), reply("ok")];
     const s = await setup({ mode: "never", says: [{ event: "PostToolUse", names: ["Bash"], stdout: "" }], turns, commands: endless });
-    onTestFinished(() => void s.tasks!.stop());
     await s.session.send("go");
     const bash = { tool_name: "Bash", tool_input: { command: "npm run dev", run_in_background: true }, tool_use_id: "c1" };
     const fired = { ...bash, tool_response: "Started t1 in the background." };
     expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "PostToolUse", ...fired })]);
+  });
+
+  // Background commands plan, choice 12: a sleep stopped at its timeout is an error, so PostToolUseFailure gets its line.
+  it("fires PostToolUseFailure for a sleep stopped at its timeout, its error the sleep line", async () => {
+    const turns = [callTool("c1", "shell", { command: "sleep 5", timeout: 1 }), reply("ok")];
+    const s = await setup({ mode: "never", says: [{ event: "PostToolUseFailure", names: ["Bash"], stdout: "" }], turns, commands: endless });
+    await s.session.send("go");
+    const line = "Stopped: the command did not complete within its 1s timeout. " +
+      "A command that starts with sleep is stopped at its timeout, not moved to the background.";
+    const fired = { tool_name: "Bash", tool_input: { command: "sleep 5", timeout: 1 }, tool_use_id: "c1", error: line, is_interrupt: false };
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "PostToolUseFailure", ...fired })]);
+    expect([s.outcomes, s.tasks!.all]).toEqual([["failed"], []]);
   });
 
   it("fires PostToolUseFailure after a failed call, its error starting Exit code 1, and neither for a declined, unknown or schema-refused call", async () => {
@@ -2758,19 +2770,31 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   });
 
   // Background commands plan, choice 17: each running command as Claude Code's shell task, its description the command cut
-  // with the marker a delivery's first line uses (choice 24), its command cut at 1,000; one that ended is not sent.
+  // with the marker a delivery's first line uses (choice 24), its command cut at 1,000; one that ended or was stopped is not
+  // sent. Subagents and commands share one list, in the order they started.
   it("sends Stop each background command still running, in background_tasks, a long one cut at 1,000 characters", async () => {
     const long = `echo ${"a".repeat(1195)}`;
     expect(long).toHaveLength(1200);
     const background = (id: string, command: string) => callTool(id, "shell", { command, background: true });
-    const turns = [background("c1", "npm run dev"), background("c2", "done"), background("c3", long), reply("started them")];
-    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: "" }], turns, commands: endless });
-    onTestFinished(() => void s.tasks!.stop());
+    const turns = [
+      background("c1", "npm run dev"),
+      callTool("c2", "delegate", { description: "look", task: "find x", background: true }),
+      background("c3", "done"),
+      background("c4", long),
+      background("c5", "npm run watch"),
+      callTool("c6", "stop_task", { id: "t5" }),
+      reply("started them"),
+    ];
+    const worker = new Held("fake:w"); // never answers, so the subagent is still running at Stop
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: "" }], turns, commands: endless, worker });
     await s.session.send("go");
-    expect(s.tasks!.all.map((t) => t.state)).toEqual(["running", "done", "running"]);
+    expect(s.tasks!.all.map((t) => [t.kind, t.state])).toEqual([
+      ["command", "running"], ["subagent", "running"], ["command", "done"], ["command", "running"], ["command", "stopped"],
+    ]);
     const dev = { id: "t1", type: "shell", status: "running", description: "npm run dev", command: "npm run dev" };
-    const cut = { id: "t3", type: "shell", status: "running", description: `${long.slice(0, 1000)}… [+200 chars]`, command: long.slice(0, 1000) };
-    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "Stop", background_tasks: [dev, cut] })]);
+    const look = { id: "t2", type: "agent", status: "running", description: "look", agent_type: "Explore" };
+    const cut = { id: "t4", type: "shell", status: "running", description: `${long.slice(0, 1000)}… [+200 chars]`, command: long.slice(0, 1000) };
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "Stop", background_tasks: [dev, look, cut] })]);
   });
 
   it("fires SubagentStart before a subagent's first request, matched on Explore, its text at the start of the subagent's first message", async () => {
