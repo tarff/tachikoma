@@ -63,6 +63,7 @@ describe("toolParts", () => {
     const dotted = [call("mcp__my_tv__foo_bar", "ok"), call("mcp__my_tv__foo_bar", undefined, null)];
     expect(toolParts(dotted, names).map((p) => `${p.mark} ${p.rest}`)).toEqual(["◐ my.tv foo\\u0007.bar", "✓ my.tv foo\\u0007.bar ×1"]);
     expect(shown([call("mcp__tradingview__chart_set_symbol", "ok")])).toEqual(["✓ tradingview chart_set_symbol ×1"]);
+    expect(shown([call("mcp__tradingview", "failed")])).toEqual(["✗ tradingview ×1"]); // no tool part: the server alone (the review)
   });
 
   it("escapes what the model named, and has nothing to show with no calls", () => {

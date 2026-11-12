@@ -44,15 +44,16 @@ export function screen(l: Line): Line {
 export type McpNames = (full: string) => { server: string; tool: string };
 export const safeNames: McpNames = (full) => {
   const at = full.indexOf("__", 5); // the server part of mcp__<server>__<tool> holds no "__" (config.ts)
-  return { server: full.slice(5, at), tool: full.slice(at + 2) };
+  // A name with no tool part, which a model can make up (mcp__tradingview), is all server (Task 18's review).
+  return at === -1 ? { server: full.slice(5), tool: "" } : { server: full.slice(5, at), tool: full.slice(at + 2) };
 };
 
-// A call's name on screen: an MCP call's server and tool, a space between, any other tool's own name. Hooks, saved
-// sessions, /export and the model keep the full name (choice 68).
+// A call's name on screen: an MCP call's server and tool, a space between, or the server alone for a name with no tool
+// part; any other tool's own name. Hooks, saved sessions, /export and the model keep the full name (choice 68).
 export function shownName(name: string, names: McpNames = safeNames): string {
   if (!isMcp(name)) return name;
   const { server, tool } = names(name);
-  return `${server} ${tool}`;
+  return tool ? `${server} ${tool}` : server;
 }
 
 // A call's row and its result's, as the scrollback shows them unfolded (fold.ts opens a folded row into these).

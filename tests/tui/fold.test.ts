@@ -367,23 +367,6 @@ describe("the open run's live row", () => {
     run.start("r2", 0);
     expect(texts(run.live(0))).toEqual(["● Reading b.txt", "  ⎿  b.txt"]);
   });
-
-  // Task 17's quality review (release 8c plan, Task 18): calls can run out of order, so one after the asked call may have
-  // started before its question; once the question ends the run, the calls left in it set the live row again, a shell's
-  // seconds stopped where it ended.
-  it("sets the live row again from the calls after an asked one that started before its question", () => {
-    const run = new OpenRun(opts());
-    lines(reply(read("r"), call("m", "mcp__s__echo", {}), sh("c", "git status"), read("r2", "b.txt")), undefined, run);
-    run.start("r", 0);
-    run.start("c", 1_000);
-    run.finished("c", 3_500);
-    run.start("m", 4_000);
-    expect(texts(run.question("m").lines)).toEqual(["Read 1 file", "● s echo {}"]);
-    expect(texts(run.live(10_000))).toEqual(["● Running 1 shell command · 2s", "  ⎿  $ git status (2s)"]);
-    run.start("r2", 10_000);
-    expect(texts(run.live(10_000))).toEqual(["● Reading b.txt", "  ⎿  b.txt"]);
-    expect(texts(run.end())).toEqual(["Read 1 file, ran 1 shell command"]);
-  });
 });
 
 // Release 8c plan, choice 68 and Task 18: an MCP call on screen names its server and its tool as the server gives them, not
@@ -425,5 +408,8 @@ describe("an MCP call's names on screen", () => {
     expect(names("mcp__my_tv__gone")).toEqual({ server: "my_tv", tool: "gone" });
     expect(mcpNames()("mcp__a__b__c")).toEqual({ server: "a", tool: "b__c" }); // no servers at all
     expect(callRow(call("m", "mcp__b_d__x_y", {}))).toEqual(yellow("● b_d x_y {}")); // describe's rows without the window's names
+    // A name with no tool part, which a model can make up: the server alone (Task 18's review).
+    expect(names("mcp__tradingview")).toEqual({ server: "tradingview", tool: "" });
+    expect(callRow(call("m", "mcp__tradingview", {}), names)).toEqual(yellow("● tradingview {}"));
   });
 });

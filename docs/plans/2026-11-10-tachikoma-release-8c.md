@@ -783,6 +783,14 @@ search, always on", "Own lookup tool, every provider")
       - The full record and `/export` share `callText` (exportText.ts); Ctrl+O and `/tasks <id>`
         pass it the name on screen, `/export` and a shortening's text for the model pass none, so
         they keep the full name.
+      - A name with no tool part, which a model can make up (`mcp__tradingview`), shows the server
+        alone: `● tradingview {}`, `✗ tradingview ×1` (Task 18's review).
+      - A call after an asked one needs no replay: the session runs a reply's calls one after
+        another (only `delegate`, always its own row, and `tool_search`, which sets no live row, run
+        side by side), so no quiet call starts before an earlier call's question ends. That case is
+        already covered: the call after it starts once the question ends and sets the live row then
+        (fold.test.ts, "comes back for the calls after the asked one"). Task 17's review point is
+        met by that, so the replay built at first was taken out (Task 18's review).
 
 ## Lines this plan adds
 
@@ -1704,7 +1712,8 @@ each offered name's owner), the places that pass it, tests.
 
 **What changes:** choice 68's rows. With it, Task 17's quality review points: the live row's two
 lines kept and cleared together (its `⎿` line no longer kept after the run ends); a call started
-after an asked one sets the live row again once the question ends the run; fold.test.ts's paths
+after an asked one sets the live row again once the question ends the run (already so, as no quiet
+call starts before an earlier one's question ends; choice 68, "As built"); fold.test.ts's paths
 written with real backslashes; the seconds test moves the fake clock in one step past each second,
 with its comment saying why (the 80 ms redraw).
 

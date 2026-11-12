@@ -184,7 +184,7 @@ export class OpenRun {
   #resulted = false;
   // The live row (release 8c plan, choice 67; Task 17): its two lines as the run's calls last set them, kept and cleared
   // together (Task 18), the searches and shell commands started in the run, whether a search set the top line, and the
-  // run's calls started, each with its start and end, in the order they started.
+  // run's calls started, each with its start and end, for a shell's seconds.
   #live: { top: (now: number) => string; under: (now: number) => string } | null = null;
   #searches = 0;
   #shells = 0;
@@ -252,16 +252,9 @@ export class OpenRun {
     if (i >= 0) {
       call = this.#run[i]!.call;
       const after = this.#run.slice(i + 1);
-      // Calls run out of order, so those after it that started already set the live row again, in the order they started
-      // (Task 17's quality review; Task 18).
-      const started = [...this.#started].filter(([later]) => after.some((c) => c.call.id === later));
       this.#run = this.#run.slice(0, i);
       lines = this.end();
       this.#run = after;
-      for (const [later, s] of started) {
-        this.start(later, s.at);
-        if (s.end !== undefined) this.finished(later, s.end);
-      }
     } else {
       // A call of a run said already, one running beside the others (a known limit): still counted in its row.
       call = fold!.calls.find((c) => c.call.id === id)!.call;
