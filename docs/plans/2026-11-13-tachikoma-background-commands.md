@@ -424,7 +424,7 @@ task's id, `<command>` the command as given, escaped on screen.
 | `/tasks <id>` unknown | `No task <id>. /tasks lists them.` |
 | `/tasks stop` | `Stopped every subagent and command.` / `No subagent or command is running.` |
 | A command's panel rows | `<id> <command's first line>` and `⎿ shell · <time>`; ended `⎿ shell · exit code <n> · <time>` |
-| `/tasks <id>`'s record for a command | `<id> (<command>), <state>: shell command`, then the output kept, or `(no output yet)` |
+| `/tasks <id>`'s record for a command | `<id> (<command>), <state>: shell command`; once ended, `shell_output`'s first line; the dropped note when output was dropped; then the output kept, or `(no output yet)`, `(no output)` once ended (choice 31) |
 | The wake's label (choice 19) | `Reading <id>'s output`; mixed `Reading <ids>'s answer(s) and <ids>'s output` |
 | `/clear`, `/resume`, `/branch` refused | `<command> waits until no subagent or command is running: <ids> still running. /tasks stop stops them.` |
 | The live shell row's hint | ` (<key> to run in background)` after the command, `<key>` the bound key, as `ctrl+b` (design) |
@@ -882,3 +882,14 @@ What changed from the plan while building, for the later tasks and the reviewers
 - **Known limit, older than this plan:** `reported()` runs when the waiting text is taken, before
   the message carrying it is saved, so a crash between the two drops the line for good. The
   subagent path has had it since release 8a; the window is a moment.
+- **Task 9:** an ended command with no exit code (stopped, killed by a signal, or a run that
+  failed) has the running row's shape, `⎿ shell · <time>`; the panel's mark (⊘ grey, ✗ red) says
+  how it ended, so no new words. The record's `<state>` is the raw state, as a subagent's is. The
+  arrival words are the subagents': a command is `done` (`finished`) only at exit code 0; any
+  other end of its own is `failed`. `No task <id>. /tasks lists them.` is also `/tasks stop t9`'s
+  line. The refusal's helper is `stillRunning`, as it covers both kinds.
+- **A command's record says how it ended (choice 31, the user's, 2026-11-13):** under its first
+  line, an ended command's record has `shell_output`'s first line (`firstLine`, shared, not
+  copied), then `[<n> earlier characters were dropped]` when the log took in more than it keeps,
+  then the output kept; with none, `(no output yet)` while it runs and `(no output)` once ended.
+  Before, a failed run, a kill and a non-zero exit read alike, and dropped output went unsaid.
