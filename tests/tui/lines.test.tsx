@@ -35,6 +35,12 @@ describe("workingText", () => {
   it("leaves out the stop key when no key is bound to chat:cancel", () => {
     expect(workingText("Working", 1_000, null, undefined)).toBe("⠹ Working · 1s");
   });
+
+  // Background commands plan, Task 10 (the user's choice 33): the key that moves a held foreground command, last.
+  it("ends with the key that moves a running command to the background, after the stop key when there is one", () => {
+    expect(workingText("Working", 1_000, spend, "Esc", "ctrl+b")).toBe("⠹ Working · 1s · ↓ 0 tokens · $0.00 · Esc to stop · ctrl+b to run in background");
+    expect(workingText("Working", 1_000, null, undefined, "ctrl+g")).toBe("⠹ Working · 1s · ctrl+g to run in background");
+  });
 });
 
 describe("toolParts", () => {

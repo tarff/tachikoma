@@ -571,13 +571,8 @@ export function App(props: AppProps) {
   const picking = ui.picker !== null || ui.sessions !== null || ui.mcpList || ui.form !== null;
   const menu = picking || ui.question || d ? null : fns.menuFor(prompt);
   // The open run's live row, above the working line where the prompt is drawn (release 8c plan, choice 67; Task 17): it
-  // takes no click, and its seconds grow with the working line's redraws, every SPIN_MS while a turn runs. While the shell
-  // tool holds a foreground command, its line names the first key that moves it to the background, as the table spells
-  // it, and none when the action is unbound (background commands plan, Task 10; choice 20); the redraws show it once held.
-  const moveKey = ui.tasks.holding
-    ? ui.table.keysFor("task:background", "Task").find((k) => ui.table.acts(k, "task:background", contextsOf(menu ? "menu" : "prompt", ui.fullNow.current, false, true)))
-    : undefined;
-  const liveRow = picking || ui.question || d ? [] : ui.run.live(ui.now, moveKey).map(escaped);
+  // takes no click, and its seconds grow with the working line's redraws, every SPIN_MS while a turn runs.
+  const liveRow = picking || ui.question || d ? [] : ui.run.live(ui.now).map(escaped);
   if (menu?.kind !== "path") ui.listed.current = null;
 
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the
@@ -785,6 +780,12 @@ export function App(props: AppProps) {
   // While the first prompt waits for the MCP servers, the waiting line names them (release 8c plan, choice 25), already
   // escaped (Servers, waitingFor); a hook's statusMessage first, as SessionStart's hooks are waited for before them.
   const servers = ui.session.waitingFor();
+  // While the shell tool holds a foreground command, the first key that moves it to the background in the phase drawn, as
+  // the table spells it, and none when the action is unbound (background commands plan, Task 10; choices 20 and 33); the
+  // working line's redraws show it once held.
+  const moveKey = ui.tasks.holding
+    ? ui.table.keysFor("task:background", "Task").find((k) => ui.table.acts(k, "task:background", contextsOf(d ? "detail" : menu ? "menu" : "prompt", ui.fullNow.current, false, true)))
+    : undefined;
   const workingLine = ui.busy && (
     <WorkingLine
       label={
@@ -795,6 +796,7 @@ export function App(props: AppProps) {
             : ui.doing.current.label
       }
       stop={escFirst ? `${stop} ${stop}` : stop}
+      move={moveKey}
       ms={Math.max(0, ui.now - ui.doing.current.at)}
       spend={
         ui.doing.current.from && {
