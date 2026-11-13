@@ -41,7 +41,8 @@ export interface KeptLine {
 // columns, as wrap-ansi's TAB_SIZE (Ink's wrapping in classic mode) and terminals' default. They count from the row's
 // start, so each row stands on its own; classic counts from the line's start, which differs on a wrapped line's later
 // rows. A tab cut at a row's end does not carry its spaces to the next row either: "abcdefghi\tx" at 10 columns
-// has "      x" as its second row in classic, and "x" here.
+// has "      x" as its second row in classic, and "x" here. On an indented line's row (TUI design pass, Task 2) they count
+// from the indent here, as the text starts there, while classic hands the tab to the terminal, which counts from column 0.
 const TAB = 8;
 
 // Printable ASCII is one column a character, each its own grapheme, so its columns are counted without the segmenter

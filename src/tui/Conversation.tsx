@@ -76,7 +76,7 @@ function marked(rows: Rows, r: Row, marks: [Pos, Pos][]): ReactNode[] | null {
     const b = r.line === to.line ? to.offset : r.line < to.line ? Infinity : -Infinity;
     return a >= Math.min(b, r.end) || b <= r.start ? [] : [{ a, b }];
   });
-  if (!inside.length && !r.styles) return null;
+  if (!inside.length && !r.styles?.some((s) => s.end > r.start && s.start < r.end)) return null; // the line's spans: any on this row
   const chars = [...drawn(rows, r)].map((c) => ({
     offset: c.offset,
     text: c.text,
@@ -90,12 +90,16 @@ type Style = Omit<Span, "start" | "end">;
 const STYLE = ["color", "bg", "bold", "italic", "dim", "underline"] as const;
 
 // Characters in runs of one style and one reverse colouring: a run with neither as its text, a reversed one as a Text in
-// reverse, a styled one as a Run. A character's style is the spans' over it, a later span over an earlier one.
+// reverse, a styled one as a Run. A character's style is the spans' over it, a later span's fields over an earlier one's,
+// a field it leaves undefined keeping the earlier one's (Task 2's review).
 function runs(chars: Iterable<{ offset: number; text: string; inverse: boolean }>, spans: readonly Span[] = []): ReactNode[] {
   const parts: { text: string; style: Style; inverse: boolean }[] = [];
   for (const c of chars) {
     const style: Style = {};
-    for (const { start, end, ...s } of spans) if (c.offset >= start && c.offset < end) Object.assign(style, s);
+    for (const s of spans) {
+      if (c.offset < s.start || c.offset >= s.end) continue;
+      for (const k of STYLE) if (s[k] !== undefined) Object.assign(style, { [k]: s[k] });
+    }
     const last = parts.at(-1);
     if (last && last.inverse === c.inverse && STYLE.every((k) => last.style[k] === style[k])) last.text += c.text;
     else parts.push({ text: c.text, style, inverse: c.inverse });
@@ -148,8 +152,10 @@ function Band({ width, children }: { width: number; children: ReactNode }) {
 // A line as classic mode prints it, `columns` the screen's width (Task 2): in runs of its spans' styles; an indented one
 // in a row box, its lead (the first `indent` characters) in a box of its own and the rest in a box beside it that
 // wraps, so its later rows, wrapped or after a line break, start under the rest (choice P3), as view.ts wraps it in full
-// screen; a band line on the band colour the screen's width. A line with none of these prints as it did before.
-export function Printed({ line: l, columns }: { line: Line; columns: number }) {
+// screen; a band line on the band colour the screen's width. A line with none of these prints as it did before, but an
+// empty one is a space, as an empty Text takes no row and a gap or a band line must take one (Task 2's review).
+export function Printed({ line, columns }: { line: Line; columns: number }) {
+  const l = line.text ? line : { ...line, text: " " };
   const n = l.oneLine ? 0 : (l.indent ?? 0);
   const text = (from: number, to: number) => (
     <Text color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>

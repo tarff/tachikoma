@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { Static } from "ink";
 import { render } from "ink-testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ToolOutcome } from "../../src/core/bus.js";
@@ -220,6 +221,18 @@ describe("Printed", () => {
   it("prints a line without styles as before: its text in its colour", () => {
     expect(print({ text: "the quick\nbrown fox", color: "red" }, 10)).toEqual(["the quick", "brown fox"]);
   });
+
+  // Task 2's review: an empty line is one row, as Task 3's gaps and a message's band lines need.
+  it("prints an empty line as one row, a band one padded with the band colour", () =>
+    coloured(() => {
+      const items = [{ id: 1, text: "a" }, { id: 2, text: "" }, { id: 3, text: "b" }];
+      const app = render(<Static items={items}>{(l) => <Printed key={l.id} line={l} columns={6} />}</Static>);
+      mounted.push(app);
+      expect(app.lastFrame()!.split("\n").map(plain).slice(0, 3)).toEqual(["a", "", "b"]);
+      const band = print({ text: "", band: true }, 6);
+      expect(band.map(plain)).toEqual(["      "]);
+      expect(band[0]!.startsWith("\u001b[48;2;42;42;42m")).toBe(true);
+    }));
 
   // Choice P3: the lead in a box of its own, the rest in a box beside it that wraps, so the rows are the full screen's.
   it("prints an indented line in a row box, wrapping as full screen does at 50 and 100 columns", () => {

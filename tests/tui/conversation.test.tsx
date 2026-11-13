@@ -156,6 +156,16 @@ describe("Conversation's styled rows", () => {
       expect(within(shown[0]!, "34", "39")).toBe("●"); // the span's colour, under the reverse
     }));
 
+  // Task 2's review: a later span's field left undefined does not clear an earlier span's.
+  it("lays a later span over an earlier one field by field, an undefined field leaving the earlier one's", () =>
+    coloured(() => {
+      const rows = new Rows(9);
+      rows.add([{ text: "ab", styles: [{ start: 0, end: 2, color: "red" }, { start: 0, end: 1, color: undefined, bold: true }] }]);
+      const row = drawIn(null, { rows, first: 0, height: 1, unseen: 0, following: true })[0]!;
+      expect(within(row, "31", "39")).toBe("ab");
+      expect(within(row, "1", "22")).toBe("a");
+    }));
+
   it("drops a span's colour and background and the band without colour, and keeps bold (the theme's look)", () =>
     coloured(() => {
       const rows = new Rows(9);
