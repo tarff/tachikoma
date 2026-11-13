@@ -34,10 +34,11 @@ export function look(settings: Settings, env: NodeJS.ProcessEnv, level: number):
   return { light, color, full: color && level === 3 };
 }
 
-// The hex colours for full colour. text is the terminal's own foreground. None is measured: band, addTint and delTint are
-// placeholders, set by eye with the user at Task 14's check (choice P4); the others are placeholders checked there too.
+// The hex colours for full colour. text is the terminal's own foreground. accent is the pixel art's blue B (plan, appendix
+// "The pixel art"), the design's Tachikoma blue; every other value is a placeholder, none measured, set by eye with the
+// user at Task 14's terminal check (choice P4).
 const DARK: Palette = {
-  accent: "#5f9cf5",
+  accent: "#4278de",
   text: undefined,
   muted: "#8a8a8a",
   success: "#5fbf6f",
@@ -48,7 +49,7 @@ const DARK: Palette = {
   delTint: "#432124",
 };
 const LIGHT: Palette = {
-  accent: "#1f5fcc",
+  accent: "#4278de",
   text: undefined,
   muted: "#6b6b6b",
   success: "#1f8a3c",
@@ -61,21 +62,26 @@ const LIGHT: Palette = {
 
 // Without full colour, Ink's named colours, which the terminal's own palette draws, and no band or tints (design's "Colour
 // depth"); without colour, none at all.
-export function palette(l: Look): Palette {
-  if (l.full) return l.light ? LIGHT : DARK;
-  const named = l.color;
+export function palette(shown: Look): Palette {
+  if (shown.full) return shown.light ? LIGHT : DARK;
   return {
-    accent: named ? "blue" : undefined,
+    accent: shown.color ? "blue" : undefined,
     text: undefined,
-    muted: named ? "gray" : undefined,
-    success: named ? "green" : undefined,
-    error: named ? "red" : undefined,
-    warning: named ? "yellow" : undefined,
+    muted: shown.color ? "gray" : undefined,
+    success: shown.color ? "green" : undefined,
+    error: shown.color ? "red" : undefined,
+    warning: shown.color ? "yellow" : undefined,
     band: undefined,
     addTint: undefined,
     delTint: undefined,
   };
 }
 
-// The App's palette, set in cli.tsx; tests that give none get the dark full one.
-export const ThemeContext = createContext<Palette>(DARK);
+// The look with its palette: drawing reads look.color and look.full too (plan, Tasks 2, 6 and 13).
+export interface Theme {
+  look: Look;
+  palette: Palette;
+}
+
+// The App's theme, set in cli.tsx; tests that give none get the dark full one.
+export const ThemeContext = createContext<Theme>({ look: { light: false, color: true, full: true }, palette: DARK });

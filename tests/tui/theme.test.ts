@@ -1,5 +1,7 @@
+import { render } from "ink-testing-library";
+import { createElement, useContext } from "react";
 import { describe, expect, it } from "vitest";
-import { look, palette } from "../../src/tui/theme.js";
+import { look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
 
 // TUI design pass, Task 1: the look from the theme setting, COLORFGBG, NO_COLOR and chalk's colour level, and the palette
 // from the look.
@@ -28,6 +30,23 @@ describe("look", () => {
     for (const level of [0, 1, 2, 3]) expect(look({}, { NO_COLOR: "1" }, level)).toEqual({ light: false, color: false, full: false });
     expect(look({}, { NO_COLOR: "" }, 3).full).toBe(true); // set but empty is not set (no-color.org)
   });
+
+  it("reads the theme apart from the colour depth", () => {
+    expect(look({ theme: "light" }, {}, 0)).toEqual({ light: true, color: false, full: false });
+  });
+});
+
+describe("ThemeContext", () => {
+  it("gives the dark full look and its palette when none is given", () => {
+    const dark = { light: false, color: true, full: true };
+    let got: Theme | undefined;
+    const Probe = () => {
+      got = useContext(ThemeContext);
+      return null;
+    };
+    render(createElement(Probe));
+    expect(got).toEqual({ look: dark, palette: palette(dark) });
+  });
 });
 
 describe("palette", () => {
@@ -43,6 +62,7 @@ describe("palette", () => {
       }
     }
     expect(dark.band).not.toBe(light.band);
+    expect([dark.accent, light.accent]).toEqual(["#4278de", "#4278de"]); // the pixel art's B (plan, appendix)
   });
 
   it("is Ink's named colours without full colour, with no band or tints", () => {

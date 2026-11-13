@@ -877,9 +877,10 @@ if (parsed.print !== undefined) {
     ended: (lines: string[]) => reviewed.push(...lines),
   };
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();
+  // The look from the launch's settings (TUI design pass, Task 1), the colour depth as Ink's own check gives it.
+  const shown = look(loaded.settings, process.env, chalk.level);
   ink = render(
-    // The palette from the launch's settings (TUI design pass, Task 1), the colour depth as Ink's own check gives it.
-    <ThemeContext value={palette(look(loaded.settings, process.env, chalk.level))}>
+    <ThemeContext value={{ look: shown, palette: palette(shown) }}>
       <App
         session={session}
         tasks={tasks}
