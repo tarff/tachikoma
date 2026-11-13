@@ -935,3 +935,11 @@ What changed from the plan while building, for the later tasks and the reviewers
   mode refuses every shell command.
 - **Two `--help` tests** expected a space where Task 9's longer `/tasks` line now puts a line
   break; they take any whitespace between words now, as the `/vim` test beside them did.
+- **Final review:** nothing critical; the cross-task races (an ending and a stop, a move and an
+  end, an ending and the `-p` limit, a wake as a turn starts) hold. A moved command's time now
+  counts from its start, as the design's "how long they have run" says; its `-p` limit still
+  counts from the move. A stop on Windows was measured on this PC at 293-324 ms (nine stops of
+  `ping -t localhost`, none left running), not the 2-4 s of a Docker build's tree, so stopping
+  several is about a second. Whether closing the console window leaves commands running is the
+  terminal checklist's step 8. In the box, a stop during a failed command's follow-up Docker checks
+  can label it stopped; rare, left as it is.
