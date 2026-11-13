@@ -893,7 +893,7 @@ describe("App", () => {
     const { app, bus } = await mount([]);
     bus.emit("error", { kind: "fallback", attempted: "x", message: "fake:a declined; fake:b answered instead", lead: "fake:a" });
     await until(app, "↪ fake:a declined; fake:b answered instead");
-    expect(app.lastFrame()).toContain("0 errors");
+    expect(app.lastFrame()).not.toMatch(/\d+ errors?\b/); // none counted, so the status line leaves its errors out (TUI design pass, Task 10)
   });
 
   it("says how many pictures a request left out to fit its provider", async () => {
@@ -908,7 +908,7 @@ describe("App", () => {
     await type(app, "hi");
     await until(app, "seen");
     expect(app.lastFrame()).toContain("2 pictures were left out of this request to fit Anthropic's 32 MB.");
-    expect(app.lastFrame()).toContain("0 errors");
+    expect(app.lastFrame()).not.toMatch(/\d+ errors?\b/); // none counted, so the status line leaves its errors out
   });
 
   it("summarises the error log with /errors", async () => {

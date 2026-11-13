@@ -32,7 +32,7 @@ describe("workingText", () => {
       "⠹ Working · 1s · ↓ 0 tokens · ChatGPT plan · Esc to stop",
     );
     expect(workingText("Working", 1_000, { ...spend, lead: "ollama:x", costUnknown: true }, "Esc")).toBe(
-      "⠹ Working · 1s · ↓ 0 tokens · $0.00 + ? · Esc to stop",
+      "⠹ Working · 1s · ↓ 0 tokens · $0.00+ · Esc to stop", // choice D (TUI design pass, Task 10)
     );
   });
 

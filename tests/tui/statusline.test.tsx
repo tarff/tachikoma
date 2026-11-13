@@ -32,13 +32,20 @@ const info: StatusInfo = {
   running: 0,
 };
 
-// Renders once and unmounts, so Ink instances do not pile up.
-function frame(i: StatusInfo, segments: Segment[]) {
-  const app = render(<StatusLine info={i} segments={segments} />);
+// The dark full look's colours, as the App's tests get them (theme.ts).
+const dark = palette({ light: false, color: true, full: true });
+
+// Renders once and unmounts, so Ink instances do not pile up; at the test terminal's 100 columns unless given.
+function frame(i: StatusInfo, segments: Segment[], columns = 100) {
+  const app = render(<StatusLine info={i} segments={segments} columns={columns} palette={dark} />);
   const shown = app.lastFrame();
   app.unmount();
   return shown;
 }
+
+// The line as a terminal `columns` wide draws it, where Ink would cut it at that width too.
+const lineAt = (columns: number, i: StatusInfo, segments: Segment[]) =>
+  renderToString(<StatusLine info={i} segments={segments} columns={columns} palette={dark} />, { columns });
 
 // Every element the line hands Ink, with its props: the test terminal draws no colour codes (see conversation.test.tsx).
 function drawn(node: ReactNode): Record<string, unknown>[] {
@@ -49,42 +56,42 @@ function drawn(node: ReactNode): Record<string, unknown>[] {
 }
 
 // What a part says: its pieces' words, which are written nowhere else.
-const formatSegment = (s: LineSegment, i: StatusInfo) => pieces(s, i).map((p) => p.text).join("");
+const formatSegment = (s: LineSegment, i: StatusInfo) => pieces(s, i, dark).map((p) => p.text).join("");
 
 // The line's elements: a Text per part, each holding its separator, its bar and its pieces' Texts.
 type Line = ReactElement<{ children: ReactElement<{ children: ReactNode[] }>[] }>;
 
 describe("StatusLine's pieces", () => {
   // The colours are claude-hud's, by risk where it has no such part (release 5 design, "The status line's colours").
+  // The labels muted and the model in the accent colour (TUI design pass, Task 10).
   it("colour each part as the design's table says", () => {
-    expect(pieces("lead", info)).toEqual([{ text: "lead", dim: true }, { text: " " }, { text: "anthropic:claude-opus-5-5", color: "cyan" }]);
-    expect(pieces("context", { ...info, contextWindow: null })).toEqual([{ text: "ctx", dim: true }, { text: " 500.0k" }]);
-    expect(pieces("tokens", info)).toEqual([{ text: "12.3k " }, { text: "in", dim: true }, { text: " / 678 " }, { text: "out", dim: true }]);
-    expect(pieces("cost", info)).toEqual([{ text: "$0.42", color: "green" }]);
-    expect(pieces("cost", { ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0 })).toEqual([{ text: "ChatGPT plan", color: "green" }]);
+    expect(pieces("lead", info, dark)).toEqual([{ text: "lead", color: dark.muted }, { text: " " }, { text: "anthropic:claude-opus-5-5", color: dark.accent }]);
+    expect(pieces("context", { ...info, contextWindow: null }, dark)).toEqual([{ text: "ctx", color: dark.muted }, { text: " 500.0k" }]);
+    expect(pieces("tokens", info, dark)).toEqual([{ text: "12.3k " }, { text: "in", color: dark.muted }, { text: " / 678 " }, { text: "out", color: dark.muted }]);
+    expect(pieces("cost", info, dark)).toEqual([{ text: "$0.42", color: "green" }]);
+    expect(pieces("cost", { ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0 }, dark)).toEqual([{ text: "ChatGPT plan", color: "green" }]);
     for (const [mode, color] of [
       ["ask", "green"],
       ["project", "yellow"],
       ["auto", "magenta"],
       ["never", "red"],
     ] as const)
-      expect(pieces("mode", { ...info, mode })).toEqual([{ text: "perm", dim: true }, { text: " " }, { text: mode, color }]);
-    expect(pieces("errors", { ...info, errors: 0 })).toEqual([{ text: "0 errors", dim: true }]);
-    expect(pieces("errors", { ...info, errors: 1 })).toEqual([{ text: "1 error", color: "red" }]);
-    expect(pieces("project", info)).toEqual([
+      expect(pieces("mode", { ...info, mode }, dark)).toEqual([{ text: "perm", color: dark.muted }, { text: " " }, { text: mode, color }]);
+    expect(pieces("errors", { ...info, errors: 1 }, dark)).toEqual([{ text: "1 error", color: "red" }]);
+    expect(pieces("project", info, dark)).toEqual([
       { text: "Agent Harness", color: "yellow" },
       { text: " " },
       { text: "git:(", color: "magenta" },
       { text: "main", color: "cyan" },
       { text: ")", color: "magenta" },
     ]);
-    expect(pieces("project", { ...info, branch: null })).toEqual([{ text: "Agent Harness", color: "yellow" }]);
-    expect(pieces("time", info)).toEqual([{ text: "⏱ 14m", dim: true }]);
-    expect(pieces("tasks", { ...info, running: 2 })).toEqual([{ text: "2 running", color: "yellow" }]);
+    expect(pieces("project", { ...info, branch: null }, dark)).toEqual([{ text: "Agent Harness", color: "yellow" }]);
+    expect(pieces("time", info, dark)).toEqual([{ text: "⏱ 14m", dim: true }]);
+    expect(pieces("tasks", { ...info, running: 2 }, dark)).toEqual([{ text: "2 running", color: "yellow" }]);
   });
 
   it("escape the folder and the branch each, as the whole part was", () => {
-    expect(pieces("project", { ...info, project: "a\u001b[2Jb", branch: "x\u0007" }).map((p) => p.text)).toEqual([
+    expect(pieces("project", { ...info, project: "a\u001b[2Jb", branch: "x\u0007" }, dark).map((p) => p.text)).toEqual([
       "a\\u001b[2Jb",
       " ",
       "git:(",
@@ -95,7 +102,7 @@ describe("StatusLine's pieces", () => {
 
   // Found at the final review: a lead's id can come from the command line or the model list.
   it("escape the lead's id", () => {
-    expect(pieces("lead", { ...info, lead: "a\u001b[2Jb" }).map((p) => p.text)).toEqual(["lead", " ", "a\\u001b[2Jb"]);
+    expect(pieces("lead", { ...info, lead: "a\u001b[2Jb" }, dark).map((p) => p.text)).toEqual(["lead", " ", "a\\u001b[2Jb"]);
   });
 
   // contextBar's thresholds: yellow from 70% used, red from 85% (claude-hud's getContextColor).
@@ -105,13 +112,13 @@ describe("StatusLine's pieces", () => {
     [850_000, "15% left", "red"],
   ])("colour the context part and its bar alike at %d of 1M tokens used", (context, left, color) => {
     const at = { ...info, context, contextWindow: 1_000_000 };
-    expect(pieces("context", at)).toEqual([{ text: left, color }]);
-    const bar = drawn(StatusLine({ info: at, segments: ["context"] })).find((p) => typeof p.children === "string" && p.children.startsWith("█"));
+    expect(pieces("context", at, dark)).toEqual([{ text: left, color }]);
+    const bar = drawn(StatusLine({ info: at, segments: ["context"], columns: 100, palette: dark })).find((p) => typeof p.children === "string" && p.children.startsWith("█"));
     expect(bar?.color).toBe(color);
   });
 
   it("are drawn with nothing inverse, the separators grey and the line's first and last spaces plain", () => {
-    const line = StatusLine({ info: { ...info, running: 1 }, segments: SEGMENTS });
+    const line = StatusLine({ info: { ...info, running: 1 }, segments: SEGMENTS, columns: Infinity, palette: dark }); // never too long
     const all = drawn(line);
     expect(all.filter((p) => p.inverse)).toEqual([]);
     // Nine parts on the line (every one but `tools`), so eight separators.
@@ -125,12 +132,12 @@ describe("StatusLine's pieces", () => {
     const shown = SEGMENTS.filter((s): s is LineSegment => s !== "tools");
     for (const i of [
       { ...info, running: 1 },
-      { ...info, contextWindow: null, errors: 0, mode: "never", branch: null, running: 1 },
+      { ...info, contextWindow: null, errors: 1, mode: "never", branch: null, running: 1 },
     ] satisfies StatusInfo[]) {
-      const parts = (StatusLine({ info: i, segments: shown }) as Line).props.children;
+      const parts = (StatusLine({ info: i, segments: shown, columns: Infinity, palette: dark }) as Line).props.children;
       shown.forEach((s, n) => {
         const texts = (parts[n]!.props.children.find(Array.isArray) as ReactElement[]).map((t) => t.props);
-        expect(texts).toEqual(pieces(s, i).map((p) => ({ children: p.text, color: p.color, dimColor: p.dim })));
+        expect(texts).toEqual(pieces(s, i, dark).map((p) => ({ children: p.text, color: p.color, dimColor: p.dim })));
       });
     }
   });
@@ -141,6 +148,57 @@ describe("StatusLine's tasks part", () => {
     expect(frame({ ...info, running: 2 }, ["errors", "tasks"])).toBe(" 2 errors | 2 running");
     expect(frame(info, ["errors", "tasks"])).toBe(" 2 errors");
     expect(frame({ ...info, errors: 1 }, ["errors"])).toBe(" 1 error");
+  });
+});
+
+// TUI design pass, Task 10: `errors` at 0, `tokens` while both are 0, `cost` while 0 and known are left out.
+describe("StatusLine's parts at zero", () => {
+  it("leaves out the errors while there are none", () => {
+    expect(frame({ ...info, errors: 0 }, ["mode", "errors"])).toBe(" perm ask");
+    expect(frame({ ...info, errors: 1 }, ["mode", "errors"])).toBe(" perm ask | 1 error");
+  });
+
+  it("leaves out the tokens while both counts are 0, not while one is", () => {
+    expect(frame({ ...info, input: 0, output: 0 }, ["tokens", "mode"])).toBe(" perm ask");
+    expect(frame({ ...info, input: 0, output: 5 }, ["tokens", "mode"])).toBe(" 0 in / 5 out | perm ask");
+    expect(frame({ ...info, input: 5, output: 0 }, ["tokens", "mode"])).toBe(" 5 in / 0 out | perm ask");
+  });
+
+  it("leaves out a cost of 0 that is known, not one with calls of no known price, nor the ChatGPT plan", () => {
+    expect(frame({ ...info, cost: 0 }, ["cost", "mode"])).toBe(" perm ask");
+    expect(frame({ ...info, cost: 0, costUnknown: true }, ["cost", "mode"])).toBe(" $0.00+ | perm ask");
+    expect(frame({ ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0 }, ["cost", "mode"])).toBe(" ChatGPT plan | perm ask");
+  });
+
+  it("keeps every other part at its start", () => {
+    expect(frame({ ...info, input: 0, output: 0, cost: 0, errors: 0 }, SEGMENTS)).toBe(
+      " lead anthropic:claude-opus-5-5 | █████░░░░░ 50% left | perm ask | Agent Harness git:(main) | ⏱ 14m",
+    );
+  });
+});
+
+// TUI design pass, Task 10: too long for the width, parts drop from the end of the list one at a time, `lead` and `mode`
+// last, instead of the line being cut with `…`.
+describe("StatusLine's fit", () => {
+  const all = { ...info, running: 1 }; // every part shown: 152 columns
+  const full = " lead anthropic:claude-opus-5-5 | █████░░░░░ 50% left | 12.3k in / 678 out | $0.42 | perm ask"; // 94 with its last space
+
+  it.each([
+    [100, full],
+    [94, full],
+    [93, " lead anthropic:claude-opus-5-5 | █████░░░░░ 50% left | 12.3k in / 678 out | perm ask"],
+    [60, " lead anthropic:claude-opus-5-5 | perm ask"],
+    [40, " lead anthropic:claude-opus-5-5"],
+  ])("drops parts from the end at %d columns", (columns, shown) => {
+    const line = lineAt(columns, all, SEGMENTS);
+    expect(line).toBe(shown);
+    expect(line).not.toContain("…");
+  });
+
+  it("drops the parts listed before `lead` and `mode` before them, then the later of the two", () => {
+    const segments: Segment[] = ["time", "mode", "project", "lead", "errors"];
+    expect(lineAt(43, info, segments)).toBe(" perm ask | lead anthropic:claude-opus-5-5");
+    expect(lineAt(42, info, segments)).toBe(" perm ask");
   });
 });
 
@@ -189,7 +247,7 @@ describe("StatusLine", () => {
   it("shows only the chosen parts, and raw context size when the window is unknown", () => {
     const shown = frame({ ...info, contextWindow: null, costUnknown: true }, ["context", "cost"]);
     expect(shown).toContain("ctx 500.0k");
-    expect(shown).toContain("$0.42 + ?");
+    expect(shown).toContain("$0.42+");
     expect(shown).not.toContain("lead");
   });
 
@@ -198,33 +256,39 @@ describe("StatusLine", () => {
     expect(formatSegment("context", { ...info, context: 1_200_000, contextWindow: 1_000_000 })).toBe("0% left");
   });
 
+  // Choice D (TUI design pass, Task 10): a `+` after the cost means some calls had no known price.
   it("shows the ChatGPT plan where the cost would be, plus any API cost so far", () => {
     const plan = { ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0, costUnknown: false };
     expect(formatSegment("cost", plan)).toBe("ChatGPT plan");
     expect(formatSegment("cost", { ...plan, cost: 0.42 })).toBe("ChatGPT plan + $0.42");
-    expect(formatSegment("cost", { ...plan, costUnknown: true })).toBe("ChatGPT plan + ?");
-    expect(formatSegment("cost", { ...plan, cost: 0.42, costUnknown: true })).toBe("ChatGPT plan + $0.42 + ?");
+    expect(formatSegment("cost", { ...plan, costUnknown: true })).toBe("ChatGPT plan+");
+    expect(formatSegment("cost", { ...plan, cost: 0.42, costUnknown: true })).toBe("ChatGPT plan + $0.42+");
   });
 
-  it("stays on one line of the terminal, cutting off the end", () => {
+  it("marks a cost with calls of no known price with a `+`", () => {
+    expect(formatSegment("cost", info)).toBe("$0.42");
+    expect(formatSegment("cost", { ...info, costUnknown: true })).toBe("$0.42+");
+    expect(formatSegment("cost", { ...info, cost: 0, costUnknown: true })).toBe("$0.00+");
+  });
+
+  it("stays on one line of the terminal, cutting off the end of a part that is too long alone", () => {
     const shown = frame({ ...info, lead: `anthropic:${"x".repeat(200)}` }, SEGMENTS)!;
     expect(shown.split("\n")).toHaveLength(1);
-    expect(shown).toContain("…");
+    expect(shown).toMatch(/^ lead anthropic:x+…$/); // every other part dropped first
   });
 
-  // Ink cuts the whole line by display width, colour codes and all, whatever pieces it is drawn from; the cuts are
-  // release 4's, recorded from its inverse line before the pieces came in. Colour is turned on, as chalk finds none in
-  // a test's output (see conversation.test.tsx), so the cut is made across the codes as in a terminal.
+  // Ink cuts the line by display width, colour codes and all, whatever pieces it is drawn from: now only a part too long
+  // alone, as the others are dropped first (TUI design pass, Task 10). Colour is turned on, as chalk finds none in a
+  // test's output (see conversation.test.tsx), so the cut is made across the codes as in a terminal.
   it.each([
-    [30, "Agent Harness", " 2 errors | Agent Harness git…"], // within a piece
-    [26, "Agent Harness", " 2 errors | Agent Harness…"], // where the folder's piece ends
-    [13, "Agent Harness", " 2 errors | …"], // just after a separator, dropping the parts after it
-    [16, "日本語のフォルダ", " 2 errors | 日…"], // where the 16th column is half a two-column character
-  ])("cuts the line at %d columns, as release 4 did", (columns, project, shown) => {
+    [20, "Agent Harness", " Agent Harness git:…"], // within a piece
+    [15, "Agent Harness", " Agent Harness…"], // where the folder's piece ends
+    [6, "日本語のフォルダ", " 日本…"], // where the 6th column is half a two-column character
+  ])("cuts a lone part at %d columns", (columns, project, shown) => {
     const level = chalk.level;
     chalk.level = 1; // 1: chalk's basic 16 colours, enough for every colour the line uses
     try {
-      const line = renderToString(<StatusLine info={{ ...info, project }} segments={["errors", "project", "time"]} />, { columns });
+      const line = renderToString(<StatusLine info={{ ...info, project }} segments={["project"]} columns={columns} palette={dark} />, { columns });
       expect(line).toMatch(/\u001b\[/);
       expect(line.replace(/\u001b\[\d+m/g, "")).toBe(shown);
     } finally {
