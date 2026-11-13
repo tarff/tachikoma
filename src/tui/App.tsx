@@ -31,7 +31,7 @@ import { queue } from "./app/queue.js";
 import { useAppState } from "./app/state.js";
 import { type Bindings, keyText } from "./bindings.js";
 import { type Clipboard, imagePaths } from "./clipboard.js";
-import { Conversation } from "./Conversation.js";
+import { Conversation, Printed } from "./Conversation.js";
 import { brief, describe, type Line, screen as escaped } from "./describe.js";
 import { DetailView, keyRow, searchFor } from "./DetailView.js";
 import { Field } from "./Field.js";
@@ -826,11 +826,7 @@ export function App(props: AppProps) {
         />
       ) : (
         <Static items={ui.printUpTo.current === null ? ui.lines : ui.lines.slice(0, ui.printUpTo.current)}>
-          {(l) => (
-            <Text key={l.id} color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
-              {l.text}
-            </Text>
-          )}
+          {(l) => <Printed key={l.id} line={l} columns={ui.columns} />}
         </Static>
       )}
       {ui.form ? (

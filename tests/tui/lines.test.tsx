@@ -1,9 +1,15 @@
-import { describe, expect, it } from "vitest";
+import chalk from "chalk";
+import { render } from "ink-testing-library";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ToolOutcome } from "../../src/core/bus.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import type { CommandTask, Task } from "../../src/core/tasks.js";
 import { names } from "../../src/tui/app/constants.js";
+import { Printed } from "../../src/tui/Conversation.js";
+import type { Line } from "../../src/tui/describe.js";
 import { taskRows } from "../../src/tui/TaskPanel.js";
+import { type Look, palette, ThemeContext } from "../../src/tui/theme.js";
+import { Rows } from "../../src/tui/view.js";
 import { todoRows } from "../../src/tui/TodoList.js";
 import { toolParts } from "../../src/tui/ToolLine.js";
 import { workingText } from "../../src/tui/WorkingLine.js";
@@ -184,6 +190,66 @@ describe("taskRows", () => {
     const tasks = [task({ id: "t1" }), command({ id: "t2" }), command({ id: "t3" })];
     expect(shown(tasks, 4)).toEqual(["◐ t1 find the login code", expect.stringContaining("⎿ claude-haiku-5-5"), "  +2 more"]);
   });
+});
+
+// TUI design pass, Task 2: a styled line as classic mode prints it. chalk at level 3 (24-bit colour) for the tests that
+// look at colours, so the band's hex is drawn as it is.
+describe("Printed", () => {
+  const mounted: ReturnType<typeof render>[] = [];
+  afterEach(() => {
+    for (const app of mounted.splice(0)) app.unmount();
+  });
+  const plain = (s: string) => s.replace(/\u001b\[[\d;]*m/g, "");
+  const within = (row: string, open: string, close: string) =>
+    [...row.matchAll(new RegExp(`\\u001b\\[${open}m(.*?)\\u001b\\[${close}m`, "g"))].map((m) => plain(m[1]!)).join("");
+  const print = (line: Line, columns: number, look?: Look) => {
+    const app = render(look ? <ThemeContext value={{ look, palette: palette(look) }}><Printed line={line} columns={columns} /></ThemeContext> : <Printed line={line} columns={columns} />);
+    mounted.push(app);
+    return app.lastFrame()!.split("\n");
+  };
+  const coloured = <T,>(run: () => T): T => {
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      return run();
+    } finally {
+      chalk.level = level;
+    }
+  };
+
+  it("prints a line without styles as before: its text in its colour", () => {
+    expect(print({ text: "the quick\nbrown fox", color: "red" }, 10)).toEqual(["the quick", "brown fox"]);
+  });
+
+  // Choice P3: the lead in a box of its own, the rest in a box beside it that wraps, so the rows are the full screen's.
+  it("prints an indented line in a row box, wrapping as full screen does at 50 and 100 columns", () => {
+    const reply = `● ${Array.from({ length: 30 }, () => "word").join(" ")}`;
+    for (const columns of [50, 100]) {
+      const rows = new Rows(columns);
+      rows.add([{ text: reply, indent: 2 }]);
+      const full = Array.from({ length: rows.total }, (_, i) => rows.row(i).text.trimEnd());
+      expect(print({ text: reply, indent: 2 }, columns)).toEqual(full);
+    }
+    expect(print({ text: "› one\nabc defgh ij", indent: 2 }, 10)).toEqual(["› one", "  abc", "  defgh ij"]);
+  });
+
+  it("pads a band line to the width with the band colour, and draws its spans", () =>
+    coloured(() => {
+      const shown = print({ text: "hi there", band: true, styles: [{ start: 3, end: 8, bold: true }] }, 12);
+      expect(shown.map(plain)).toEqual(["hi there    "]);
+      expect(shown[0]!.startsWith("\u001b[48;2;42;42;42m")).toBe(true); // the dark look's band, #2a2a2a (theme.ts)
+      expect(within(shown[0]!, "1", "22")).toBe("there");
+    }));
+
+  it("drops the spans' colours and the band without colour, and keeps bold (the theme's look)", () =>
+    coloured(() => {
+      const line: Line = { text: "ab", band: true, styles: [{ start: 0, end: 1, color: "red", bg: "blue", bold: true }] };
+      expect(within(print(line, 6)[0]!, "31", "39")).toBe("a");
+      const none = print(line, 6, { light: false, color: false, full: false })[0]!;
+      expect(none).not.toMatch(/\u001b\[(3|4)\d/);
+      expect(within(none, "1", "22")).toBe("a");
+      expect(plain(none)).toBe("ab");
+    }));
 });
 
 // Background commands plan, choice 19: what a wake reads, subagents first, whatever the order they ended in.

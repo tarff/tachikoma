@@ -10,11 +10,31 @@ import { isMcp, outputFrom, tachikomaName } from "../hooks/tools.js";
 import type { Fold, OpenRun } from "./fold.js";
 import { marker } from "./pictures.js";
 
+// A run of style over text[start, end), drawn over the line's own colour; a later span over an earlier one (TUI design
+// pass, Task 2).
+export interface Span {
+  start: number;
+  end: number;
+  color?: string;
+  bg?: string;
+  bold?: boolean;
+  italic?: boolean;
+  dim?: boolean;
+  underline?: boolean;
+}
+
 export interface Line {
   text: string;
   color?: string;
   oneLine?: boolean; // shown on one line, cut to the screen's width (App.tsx)
   fold?: Fold; // a folded tool row, or a row of one opened, which a click opens or closes (release 8c plan, Task 15)
+  // TUI design pass, Task 2: the spans' styles; the whole row on the band colour; later rows (wrapped, or after a line
+  // break) starting `indent` columns in, under the rest of the first row, the first `indent` characters its lead (choice
+  // P3); the line starts a block (Task 3).
+  styles?: Span[];
+  band?: true;
+  indent?: number;
+  block?: true;
 }
 
 const firstLine = (s: string) => s.split(/\r?\n/)[0] ?? "";
@@ -33,10 +53,27 @@ export function brief(name: string, input: unknown): string | null {
 // Every scrollback line passes through here. Model and provider text can carry escape codes (OSC 52
 // writes the clipboard), \r and bidi overrides, which the terminal would act on. Prose keeps its line
 // breaks and tabs. A one-line entry has its line breaks escaped too; the screen cuts it after this, by
-// terminal columns, so the escapes and wide characters count toward the width.
+// terminal columns, so the escapes and wide characters count toward the width. The text is escaped run by run between
+// the spans' ends, so each span still covers its characters once an escape has lengthened one (TUI design pass, Task 2).
 export function screen(l: Line): Line {
-  const text = l.oneLine ? visible(l.text) : l.text.split(/\r?\n/).map((s) => visible(s, { tabs: true })).join("\n");
-  return { text, ...(l.color === undefined ? {} : { color: l.color }), ...(l.oneLine ? { oneLine: true } : {}), ...(l.fold ? { fold: l.fold } : {}) };
+  const escape = (s: string) => (l.oneLine ? visible(s) : s.split(/\r?\n/).map((p) => visible(p, { tabs: true })).join("\n"));
+  const cuts = [...new Set([0, l.text.length, ...(l.styles ?? []).flatMap((s) => [s.start, s.end])])].sort((a, b) => a - b);
+  const at = new Map<number, number>([[0, 0]]); // each cut's place in the escaped text
+  let text = "";
+  for (let k = 1; k < cuts.length; k++) {
+    text += escape(l.text.slice(cuts[k - 1], cuts[k]));
+    at.set(cuts[k]!, text.length);
+  }
+  return {
+    text,
+    ...(l.color === undefined ? {} : { color: l.color }),
+    ...(l.oneLine ? { oneLine: true } : {}),
+    ...(l.fold ? { fold: l.fold } : {}),
+    ...(l.styles ? { styles: l.styles.map((s) => ({ ...s, start: at.get(s.start)!, end: at.get(s.end)! })) } : {}),
+    ...(l.band ? { band: true } : {}),
+    ...(l.indent === undefined ? {} : { indent: l.indent }),
+    ...(l.block ? { block: true } : {}),
+  };
 }
 
 // An MCP call's server and tool as the server gives them, by its full name (release 8c plan, Task 18; choice 68): the

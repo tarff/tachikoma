@@ -2,7 +2,7 @@
 // and the text between two places. A selection is two places in the lines, not screen rows, so it stays on its text
 // as the view moves or rewraps.
 import { segmenter } from "./editor.js";
-import { columnsAt, columnsOf, type Pos, type Row, type Rows } from "./view.js";
+import { columnsAt, columnsOf, inner, type Pos, type Row, type Rows } from "./view.js";
 
 export const CLICK_MS = 500; // Windows' default double-click time (Microsoft, SetDoubleClickTime)
 
@@ -27,12 +27,15 @@ export function textOf(lines: readonly { text: string }[], a: Pos, b: Pos): stri
 // is copied and what is shown cannot drift apart: each one's place in its line, the column it starts at, its columns and
 // what is drawn for it. A tab is drawn as spaces to its stop; a one-line entry, which is drawn cut (view.ts, cut), is
 // counted by string-width alone. Where "…" cuts a one-line entry, the "…" comes last, marked `cut`, standing for the rest.
+// An indented line's row starts after its indent's spaces, which are no character's, and its tabs' stops count from the
+// indent, as view.ts draws them (TUI design pass, Task 2).
 export function* drawn(rows: Rows, r: Row): Generator<{ offset: number; col: number; width: number; text: string; cut: boolean }> {
   const l = rows.lines[r.line]!;
   const room = l.oneLine && r.text !== l.text ? rows.width - 1 : Infinity; // 1: the column "…" takes
-  let col = 0;
+  const n = l.oneLine ? 0 : (l.indent ?? 0);
+  let col = r.indent ?? 0;
   for (const { segment, index } of segmenter.segment(l.text.slice(r.start, r.end))) {
-    const w = l.oneLine ? columnsOf(segment) : columnsAt(segment, col, rows.width);
+    const w = l.oneLine ? columnsOf(segment) : columnsAt(segment, col - n, inner(rows.width, n));
     if (col + w > room) {
       yield { offset: r.start + index, col, width: 1, text: "…", cut: true };
       return;

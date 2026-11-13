@@ -4,6 +4,7 @@ import { render } from "ink-testing-library";
 import { isValidElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { Conversation } from "../../src/tui/Conversation.js";
+import { type Look, palette, ThemeContext } from "../../src/tui/theme.js";
 import { type Pos, Rows } from "../../src/tui/view.js";
 
 const mounted: ReturnType<typeof render>[] = [];
@@ -102,4 +103,70 @@ describe("Conversation", () => {
       chalk.level = level;
     }
   });
+});
+
+// TUI design pass, Task 2: styled lines in full screen. chalk at level 3 (24-bit colour), so the band's hex is drawn as it
+// is; each test turns it on for itself, as the selection's test above does.
+describe("Conversation's styled rows", () => {
+  const plain = (s: string) => s.replace(/\u001b\[[\d;]*m/g, "");
+  const within = (row: string, open: string, close: string) =>
+    [...row.matchAll(new RegExp(`\\u001b\\[${open}m(.*?)\\u001b\\[${close}m`, "g"))].map((m) => plain(m[1]!)).join("");
+  const BAND = "\u001b[48;2;42;42;42m"; // the dark look's band, #2a2a2a (theme.ts)
+  const coloured = <T,>(run: () => T): T => {
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      return run();
+    } finally {
+      chalk.level = level;
+    }
+  };
+  const drawIn = (look: Look | null, props: Parameters<typeof Conversation>[0]) => {
+    const app = render(look ? <ThemeContext value={{ look, palette: palette(look) }}><Conversation {...props} /></ThemeContext> : <Conversation {...props} />);
+    mounted.push(app);
+    return app.lastFrame()!.split("\n");
+  };
+
+  it("draws a span's style on the rows it reaches, across a wrap point and a line break", () =>
+    coloured(() => {
+      const rows = new Rows(9);
+      rows.add([{ text: "the quick brown\nfox", styles: [{ start: 4, end: 17, bold: true }] }]);
+      const shown = drawIn(null, { rows, first: 0, height: 3, unseen: 0, following: true });
+      expect(shown.map(plain)).toEqual(["the quick", " brown", "fox"]);
+      expect(shown.map((r) => within(r, "1", "22"))).toEqual(["quick", " brown", "f"]);
+    }));
+
+  it("fills a band row to its width with the band colour, its indent's spaces too", () =>
+    coloured(() => {
+      const rows = new Rows(9);
+      rows.add([{ text: "hi", band: true }, { text: "› a bcdefgh", band: true, indent: 2 }]);
+      const shown = drawIn(null, { rows, first: 0, height: 3, unseen: 0, following: true });
+      expect(shown.map(plain)).toEqual(["hi       ", "› a      ", "  bcdefgh"]);
+      for (const r of shown) expect(r.startsWith(BAND)).toBe(true);
+    }));
+
+  it("shows a selection over a styled row in reverse on the text only, not the indent or the band's padding", () =>
+    coloured(() => {
+      const rows = new Rows(20);
+      rows.add([{ text: "● one two three four five", indent: 2, band: true, styles: [{ start: 0, end: 1, color: "blue" }] }]);
+      const selection: [Pos, Pos] = [{ line: 0, offset: 0 }, { line: 0, offset: 25 }];
+      const shown = drawIn(null, { rows, first: 0, height: 2, unseen: 0, following: true, selection });
+      expect(shown.map(plain)).toEqual(["● one two three four", "   five             "]);
+      expect(shown.map((r) => within(r, "7", "27"))).toEqual(["● one two three four", " five"]);
+      expect(within(shown[0]!, "34", "39")).toBe("●"); // the span's colour, under the reverse
+    }));
+
+  it("drops a span's colour and background and the band without colour, and keeps bold (the theme's look)", () =>
+    coloured(() => {
+      const rows = new Rows(9);
+      rows.add([{ text: "ab", band: true, styles: [{ start: 0, end: 1, color: "red", bg: "blue", bold: true }] }]);
+      const props = { rows, first: 0, height: 1, unseen: 0, following: true };
+      const full = drawIn(null, props)[0]!;
+      expect(full).toContain(BAND);
+      expect(within(full, "31", "39")).toBe("a");
+      const none = drawIn({ light: false, color: false, full: false }, props)[0]!;
+      expect(none).not.toMatch(/\u001b\[(3|4)\d/); // no colour or background code at all
+      expect(within(none, "1", "22")).toBe("a");
+      expect(plain(none)).toBe("ab");
+    }));
 });

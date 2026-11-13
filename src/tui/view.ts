@@ -2,27 +2,37 @@
 // screen's width, and only the rows on screen are drawn; the view is either following the bottom or held at a place in
 // the lines, so a resize or new output does not move what the user is reading. All pure, so it is tested alone.
 import stringWidth from "string-width";
-import type { Line } from "./describe.js";
+import type { Line, Span } from "./describe.js";
 import { segmenter } from "./editor.js";
 
 export interface Pos {
   line: number;
   offset: number; // before text[offset]
 }
+// `styles` and `band` are its line's, the row's offsets picking the spans that apply; `indent` is the spaces it is drawn
+// with before its text, which an indented line's rows have but its first (TUI design pass, Task 2; choice P3).
 export interface Row {
   line: number;
   start: number;
   end: number;
   text: string;
   color?: string;
+  styles?: Span[];
+  band?: true;
+  indent?: number;
 }
 type Wrapped = { start: number; end: number; text: string };
-// A line as Rows keeps it: one line of text, with no line break in it.
+// A line as Rows keeps it: one line of text, with no line break in it. Its spans' offsets are into its own text. `lead`:
+// it is its Line's first, whose first `indent` characters stand in the indent of its first row (Task 2).
 export interface KeptLine {
   text: string;
   color?: string;
   oneLine?: boolean;
   fold?: Line["fold"];
+  styles?: Span[];
+  band?: true;
+  indent?: number;
+  lead?: true;
 }
 
 // A tab is drawn as spaces to the next stop. Ink would draw a tab handed to it wrongly: its output puts "\t" in one cell
@@ -144,14 +154,39 @@ function cut(text: string, width: number): string {
   return `${shown}…`;
 }
 
-// A Line as the lines it is kept as, one for each of its line breaks.
-const keptOf = (l: Line): KeptLine[] =>
-  l.text.split("\n").map((text) => ({
-    text,
-    ...(l.color === undefined ? {} : { color: l.color }),
-    ...(l.oneLine ? { oneLine: true } : {}),
-    ...(l.fold ? { fold: l.fold } : {}),
-  }));
+// A Line as the lines it is kept as, one for each of its line breaks, each with the part of each span over its text.
+const keptOf = (l: Line): KeptLine[] => {
+  let from = 0; // where the kept line starts in the Line's text
+  return l.text.split("\n").map((text, k) => {
+    const to = from + text.length;
+    const styles = l.styles?.flatMap((s) => (s.end > from && s.start < to ? [{ ...s, start: Math.max(s.start, from) - from, end: Math.min(s.end, to) - from }] : []));
+    from = to + 1; // 1: the line break
+    return {
+      text,
+      ...(l.color === undefined ? {} : { color: l.color }),
+      ...(l.oneLine ? { oneLine: true } : {}),
+      ...(l.fold ? { fold: l.fold } : {}),
+      ...(styles?.length ? { styles } : {}),
+      ...(l.band ? { band: true } : {}),
+      ...(l.indent ? { indent: l.indent, ...(k === 0 ? { lead: true } : {}) } : {}),
+    };
+  });
+};
+
+// The columns an indented kept line's text is wrapped in after its indent; a row holds one column at least. Exported so
+// a click finds the character under it by the same rule (select.ts, drawn).
+export const inner = (width: number, indent: number) => Math.max(1, width - indent);
+
+// Where a kept line's rows start (TUI design pass, Task 2; choice P3). An indented line's text past its lead wraps at the
+// width less the indent, so its first row takes the lead and as much as the full width has room for, and every later row
+// starts under that; it is what classic mode's row box (Conversation.tsx, Printed) wraps alike.
+function rowStarts(l: KeptLine, width: number): number[] {
+  if (!l.indent) return starts(l.text, width);
+  const lead = l.lead ? Math.min(l.indent, l.text.length) : 0;
+  const found = starts(l.text.slice(lead), inner(width, l.indent)).map((s) => s + lead);
+  found[0] = 0;
+  return found;
+}
 
 // All the lines, and where their rows start at the current width. Only places are kept, nothing for a line of one row,
 // and a row's text is made when it is drawn, so a long session costs little more than its text; with the count of rows
@@ -184,7 +219,7 @@ export class Rows {
   }
 
   #keep(l: KeptLine): void {
-    const found = l.oneLine ? null : starts(l.text, this.#width);
+    const found = l.oneLine ? null : rowStarts(l, this.#width);
     this.#before.push(this.#total);
     this.#starts.push(found && found.length > 1 ? found : null);
     this.#total += found ? found.length : 1;
@@ -226,8 +261,27 @@ export class Rows {
     const k = i - this.#before[lo]!;
     const start = found ? found[k]! : 0;
     const end = found?.[k + 1] ?? l.text.length;
-    const text = l.oneLine ? cut(l.text, this.#width) : draw(l.text, start, end, this.#width);
-    return { line: lo, start, end, text, ...(l.color === undefined ? {} : { color: l.color }) };
+    // An indented line's rows: the lead then its text on the first, the indent's spaces then its text on the others. A
+    // one-line entry is one row, so it has none to indent.
+    const n = l.oneLine ? 0 : (l.indent ?? 0);
+    const spaces = n && !(k === 0 && l.lead) ? n : 0;
+    const text = l.oneLine
+      ? cut(l.text, this.#width)
+      : !n
+        ? draw(l.text, start, end, this.#width)
+        : spaces
+          ? " ".repeat(n) + draw(l.text, start, end, inner(this.#width, n))
+          : l.text.slice(0, n) + draw(l.text, Math.min(n, end), end, inner(this.#width, n));
+    return {
+      line: lo,
+      start,
+      end,
+      text,
+      ...(l.color === undefined ? {} : { color: l.color }),
+      ...(l.styles ? { styles: l.styles } : {}),
+      ...(l.band ? { band: true } : {}),
+      ...(spaces ? { indent: spaces } : {}),
+    };
   }
 
   // Rows are half-open, start <= offset < end, and the line's own end is on its last row: where one row ends the next
