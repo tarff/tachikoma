@@ -130,8 +130,9 @@ At launch (and after `-c`/`-r`, above the history it redraws), a rounded box:
    file once, relative to the project; the full path stays in Ctrl+O.
 4. **The permission question in a box:** a rounded box holding the question's title, the command or
    file, and any danger lines in red; the keys line under it is today's (`y` / `n` / Esc).
-5. **Forms:** the answer field goes on its own line under the question (today
-   `watch?BTCUSDT`).
+5. **Forms: withdrawn.** The capture's `watch?BTCUSDT` came from a stand-in question the capture
+   made up; a real form's question ends in `: ` (`src/mcp/forms.ts`, the field's `question`), so
+   the answer already stands apart. Nothing changes here.
 6. **Status line:** parts that are zero or empty are left out (`0 errors`, `0 in / 0 out` before the
    first reply); labels dim, the model in the accent colour. When it is still too long, parts drop
    from the end in a set order instead of the line being cut with `…`.
