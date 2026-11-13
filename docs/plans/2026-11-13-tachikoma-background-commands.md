@@ -943,3 +943,23 @@ What changed from the plan while building, for the later tasks and the reviewers
   several is about a second. Whether closing the console window leaves commands running is the
   terminal checklist's step 8. In the box, a stop during a failed command's follow-up Docker checks
   can label it stopped; rare, left as it is.
+- **The owner's PR #18 review** (`docs/plans/2026-11-13-pr-18-review.md`) found two P2 points; the
+  fixes were reviewed twice more (spec and code) and fixed again:
+  - **A stop in the box waits for Docker's kill (choice 36, the user's, 2026-11-13):** stop_task,
+    `/tasks stop` and the `-p` limit leave the command running until its `done` settles, as only
+    the box's run says it stops later (`Running.stopsLater`); on the host a stop counts at once,
+    as before. stop_task answers then: `Stopped t1.`, or `Could not stop t1: <error>`, the task
+    failed with that error (`t1 failed: <error>`), told once. Its wait gives way to Esc
+    (`Cancelled`); a second stop_task while one is on its way waits for the same end. A command
+    that ends by itself while its stop is on its way counts as stopped by the stopper.
+  - **One turn per ending under `-p` (choice 37, the user's):** a follow-up turn takes one ending,
+    however many requests it makes; the others, and any that end during it, wait for turns of
+    their own (`tasks.oneEnding`). The prompt's turn and a window take everything, as before.
+  - **`/tasks stop t1` says `Stopping t1.`** while a box stop is on its way (choice 38, the
+    user's); with no id and nothing new to stop, it names those (`Stopping t1 and t2.`, choice 40).
+  - **Neutral stop errors (choice 39, the user's):** `Esc could not reach the box` is now `The stop
+    could not reach the box`, Esc's too; a `-p` limit whose kill fails says `... failed at its
+    background time limit: <error>`.
+  - If `close()` runs while stop_task waits and the kill then fails, the reply still says
+    `Stopped t1.`, as close marked it stopped; closing also aborts the turn, so Esc's `Cancelled`
+    usually comes first.
