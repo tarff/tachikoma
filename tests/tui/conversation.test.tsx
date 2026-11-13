@@ -166,6 +166,17 @@ describe("Conversation's styled rows", () => {
       expect(within(row, "1", "22")).toBe("a");
     }));
 
+  // Task 7's re-check: the spans are stepped through by their starts (view.ts, keptOf; runs), but laid in their own order,
+  // a later over an earlier, so the red span given second lies over the green one inside it.
+  it("lays a later span over an earlier one that starts after it", () =>
+    coloured(() => {
+      const rows = new Rows(20);
+      rows.add([{ text: "abcdefghij", styles: [{ start: 2, end: 5, color: "green" }, { start: 0, end: 10, color: "red" }] }]);
+      const row = drawIn(null, { rows, first: 0, height: 1, unseen: 0, following: true })[0]!;
+      expect(within(row, "31", "39")).toBe("abcdefghij");
+      expect(row).not.toContain("\u001b[32m");
+    }));
+
   it("drops a span's colour and background and the band without colour, and keeps bold (the theme's look)", () =>
     coloured(() => {
       const rows = new Rows(9);

@@ -53,7 +53,10 @@ const ASCII = /^[ -~]*$/;
 // Outside ASCII, string-width takes about 1 µs a character (3 million graphemes: 3.1 s, against 0.2 s from this cache,
 // measured for release 5's Task 3 review), so each character's columns are kept once found. Ink keeps its own for one
 // frame (OutputCaches belongs to one Output, and renderer.js makes a new Output each frame); this one lasts one pass,
-// cleared at each add and setWidth, so text with endless different characters cannot grow it without limit.
+// cleared at each add and setWidth, so text with endless different characters cannot grow it without limit. Classic
+// mode's Printed fills it too, for a styled line with a tab, in colour (columnsAt, firstRowEnd; TUI design pass, Task 7's
+// review), and in classic nothing clears it: it holds one entry for each different character of those lines, so it is
+// bounded by the text the session already holds.
 const known = new Map<string, number>();
 export function columnsOf(g: string): number {
   let w = known.get(g);

@@ -315,6 +315,15 @@ describe("Printed", () => {
       expect(print(tinted("- \tone"), 100, { light: false, color: false, full: false }).join("")).toContain("\t");
     }));
 
+  // Task 7's re-check: the spans are stepped through by their starts, but laid in their own order, a later over an earlier,
+  // so the red span given second lies over the green one inside it.
+  it("lays a later span over an earlier one that starts after it", () =>
+    coloured(() => {
+      const row = print({ text: "abcdefghij", styles: [{ start: 2, end: 5, color: "green" }, { start: 0, end: 10, color: "red" }] }, 100)[0]!;
+      expect(within(row, "31", "39")).toBe("abcdefghij");
+      expect(row).not.toContain("\u001b[32m");
+    }));
+
   // Task 7's review: an edit's preview has a span for each of its lines, so a long one has thousands. A character's style
   // is found by stepping through the spans, not by looking at every span for every character: the spans' fields read
   // grow with the text, where the quadratic way read 2 or more for each span at each character (about 2,000,000 here).
