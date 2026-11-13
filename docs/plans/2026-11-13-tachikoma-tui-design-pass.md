@@ -621,3 +621,15 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   required. Known limits: a file really named like `draft (really final)`, or a folder named like
   `u0041x`, keeps its full path; a path through a link or a Windows short name is relative on its
   row but full, with its note, in the heading.
+- **Task 9** (0ea7c1c, fixes 8e827a6): the question in a box. Ink's own rounded border
+  (`borderStyle="round"`, `paddingX={1}`, the same `╭─╮` as the start-up box) in the muted colour,
+  the terminal's own without colour; the question's contents keep their colours. The plan's "keys
+  line under the box" assumed a line that does not exist: the keys end the question's own line.
+  The user chose (2026-11-14, "Inside, as today"): the keys stay on the question's line, in the
+  box. In full screen the note and red lines are cut inside the box (one row each); in classic the
+  red lines wrap inside it, as they wrapped before. From the review: in classic the frame keeps 3
+  rows for a question (the box and one line), so on a short terminal the tool line and hint give
+  way before the live area fills it (a full live area makes Ink reprint the history on a Windows
+  console). Known limits: classic does not count a question line that wraps, the note or the red
+  lines, so a tall classic question on a short terminal can still fill it; at 4 columns or fewer
+  the box has no room inside.
