@@ -13,7 +13,8 @@ are theirs; the rest is mine for them to review.
 A review of this design on 2026-11-13 found three gaps, each checked against the code and marked
 "(review)" where it lands: copying drawn markdown (the user chose "what you see"), streaming (there
 is none today, so the section is dropped), and asking the terminal for its background (the user
-chose a setting instead, nothing sent to the terminal).
+chose a setting instead, nothing sent to the terminal). A second look found a fourth, resizing the
+start-up box and tables; the fix is in "Resizing".
 
 ## Sources
 
@@ -65,6 +66,27 @@ markdown all need more than one style on one line. So a line gets:
 
 Conversation.tsx draws a row as runs; classic mode's `<Static>` draws the same lines the same way.
 
+### Resizing (review)
+
+The start-up box and markdown tables are laid out for the width at the moment they are drawn, and
+are never drawn again. Each of their rows is kept as a one-line row (`oneLine`, as tool rows are
+today): when the screen narrows, a row is cut at the edge with `…` instead of wrapping, so borders
+never break across rows; when it widens again, the rows show whole, exactly as first drawn.
+Re-laying them out on resize would change how many lines there are, which would move selections,
+the held view and a question's place in the conversation, all kept by line number; so they are not.
+
+- **Selection and copying:** the lines' text does not change on resize, so a selection stays on
+  the same characters, and copying a cut row gives the whole row, as copying a cut tool row does
+  today (`…` stands for all it cuts).
+- **The held view:** kept by line and offset as today; a cut row is one screen row at any width,
+  so the view stays on the same text.
+- **Classic mode:** what is printed belongs to the terminal's scrollback, which Tachikoma cannot
+  redraw; each row is printed cut to the width at that moment, and a later resize is the
+  terminal's own (most terminals cut or re-wrap long rows themselves).
+- **Test:** full screen at 120 columns with the start-up box and a table, then 50, then 120:
+  the same lines throughout, each block row one screen row cut with `…` at 50, the 120 frames
+  before and after alike, and a selection and a held view on the same text across all three.
+
 ## 2. Start-up box (option chosen: "Box, two columns")
 
 At launch (and after `-c`/`-r`, above the history it redraws), a rounded box:
@@ -94,7 +116,9 @@ At launch (and after `-c`/`-r`, above the history it redraws), a rounded box:
   - **ASCII:** the user's `tachikoma.txt`, as drawn, where the terminal cannot show full colour or
     `NO_COLOR` is set.
   - **None:** where even the ASCII and the list do not fit side by side; the list alone shows.
-  - The widths come from the drawings and the list's longest row, not a set number.
+  - The widths come from the drawings and the list's longest row, not a set number, measured
+    when the box is drawn; a later resize cuts its rows rather than laying it out again (see
+    "Resizing").
 - **Where it lives:** in full screen, the first lines of the conversation (it scrolls away like any
   line); in classic, printed into the scrollback once. `-p` runs show none.
 
@@ -142,7 +166,8 @@ At launch (and after `-c`/`-r`, above the history it redraws), a rounded box:
 - **Drawn:** headings (bold, accent), bold, italic, inline code (accent), bulleted and numbered
   lists (indented), block quotes (a grey bar), links (underlined text, the address after it in grey
   when it differs), code blocks (on the band colour, one colour, no highlighting; see choice B), and
-  rules. Tables: drawn with box lines when they fit the width, else left as the raw text.
+  rules. Tables: drawn with box lines when they fit the width at the moment the reply is drawn,
+  else left as the raw text; a later resize cuts their rows (see "Resizing").
 - **Only replies:** your messages, tool output and notices are never read as markdown.
 - **Whole replies only (review):** a provider hands back a reply whole (`Provider.complete` returns
   the finished `Turn`), and nothing on screen arrives piece by piece today, so each reply is drawn
@@ -175,7 +200,8 @@ E. **`tachikoma.txt`:** (recommended) its drawing moves into `src/tui/art.ts` an
 - New tests: style runs across wrapped rows, selection and copying over a styled line, the band in
   both modes, the start-up box at 120, 80 and 50 columns and with `NO_COLOR`, the status line's drop
   order, the theme setting and `COLORFGBG` (light, dark, unset, malformed), and for PR 2 each
-  markdown piece, and a selection over drawn markdown copying what is drawn.
+  markdown piece, a selection over drawn markdown copying what is drawn, and the 120, 50, 120
+  column resize with the box and a table (see "Resizing").
 - The 44 captures are made again after each PR and put side by side with today's.
 - A terminal check with you for each PR: the band, the art and the colours on your dark terminal
   and, if you have one, a light one.
