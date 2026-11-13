@@ -564,3 +564,11 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   something else while a command awaits can take the command's block mark; `/settings` and
   `/keybindings` do not hold `working` while the editor is open; a click on a gap row in an
   opened fold closes it.
+- **Task 4** (1d763e8, fixes a659eac and e0c4f54): the prompt's lines. The user chose
+  (2026-11-13, "Give way for all") the broad reading of P5: the lines are drawn only in rows left
+  over once every other part has the rows it has without them, so on a short terminal they go
+  before anything else does, and with them only the conversation is two rows shorter. They span
+  all `columns`. Known limits: `─` is drawn two columns wide by a terminal set to draw such
+  characters wide (some East Asian setups), so each line wraps and the rows below are off; a
+  click on a menu row during Ctrl+R search maps to the wrong entry (the search's prompt has no
+  clickable rows in the frame, which was so before this task).
