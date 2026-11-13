@@ -4437,10 +4437,12 @@ describe("App's clicks in full screen", () => {
     await press(app, "\u0003", "/", "e"); // Ctrl-C empties it; `/e` opens a menu of three, which leaves room for the lines
     const row = shown(app).indexOf("› /e");
     expect(shown(app)[row + 1]).toBe(rule);
-    expect(shown(app)[row + 2]).toMatch(/^ {2}\//); // the menu's first entry
+    expect(shown(app)[row + 2]).toMatch(/^ {2}\/export /); // the menu's first entry
     frame = app.lastFrame();
     await pointer(mouse, ...click(4, row + 1));
     expect(app.lastFrame()).toBe(frame); // the lower line: no entry run
+    await pointer(mouse, ...click(4, row + 2)); // the row after it: /export, run as Enter runs it, alone copying
+    await until(app, "Copied the conversation");
   });
 
   // React draws no frame between a key and a mouse report from the same read of the terminal, so a click there would be

@@ -15,9 +15,8 @@ export const promptWidth = (columns: number) => Math.max(1, columns - 3);
 // the top of what it draws. Taller than `space` rows, it shows the rows around the cursor. `top` is
 // the window's first row, kept from one drawing to the next: the App passes its own, to map a click
 // to a row (release 5 design, "Clicking"). `selected`, from and to as places in the text, is drawn in reverse colours:
-// vim's VISUAL selection (release 6 plan, choice 28). With `rules`, a line of `─` the terminal's width in the muted colour
-// above it and one below, as the status line and the hint row take the terminal's width; `offset` counts the upper one
-// then (TUI design pass, Task 4).
+// vim's VISUAL selection (release 6 plan, choice 28). With `rules`, a line of `─` across the terminal's width in the muted
+// colour above it and one below; `offset` counts the upper one then (TUI design pass, Task 4).
 export function Prompt({
   editor,
   columns,

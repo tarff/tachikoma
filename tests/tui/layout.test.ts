@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../../src/core/tasks.js";
-import { type FrameIn, type FrameOut, frame, frameWithoutLines, layout, scroll, vertical } from "../../src/tui/layout.js";
+import { type FrameIn, frame, layout, scroll, vertical } from "../../src/tui/layout.js";
 import { taskRows } from "../../src/tui/TaskPanel.js";
 import { todoRows } from "../../src/tui/TodoList.js";
 import { wrap } from "../../src/tui/view.js";
@@ -366,9 +366,8 @@ describe("frame", () => {
     expect(frame({ ...base, detail: true })).toMatchObject({ rules: false });
   });
 
-  it("leaves every part but the conversation as it is without the lines, over a grid of frames", () => {
+  it("draws the lines exactly when the rows on screen have room for them, over a grid of frames", () => {
     const tasks = [subagent("t1"), subagent("t2")];
-    const parts = ({ rules, viewHeight, promptFirst, ...rest }: FrameOut) => rest;
     const wrong: string[] = [];
     let lined = 0;
     let total = 0;
@@ -389,20 +388,18 @@ describe("frame", () => {
                           todoRows: todos ? (r) => todoRows(items, r) : () => [],
                         };
                         const f = frame(i);
-                        const w = frameWithoutLines(i);
                         const name = JSON.stringify({ rows, full, promptRows, working, toolLine, hint, menu, todos, queued, panel });
                         total++;
-                        if (JSON.stringify(parts(f)) !== JSON.stringify(parts(w))) wrong.push(`${name}: parts differ`);
-                        // Drawn exactly when the rows over cover both lines, the conversation keeping its one in full screen.
-                        if (f.rules !== w.viewHeight - 2 >= (full ? 1 : 0)) wrong.push(`${name}: rules ${f.rules}`);
-                        if (!f.rules && (f.viewHeight !== w.viewHeight || f.promptFirst !== w.promptFirst)) wrong.push(`${name}: moved`);
-                        if (!f.rules) continue;
-                        lined++;
-                        if (f.viewHeight !== Math.max(1, w.viewHeight - 2) || f.promptFirst !== w.promptFirst + 1 - (full ? 2 : 0)) wrong.push(`${name}: rows`);
-                        // In full screen the frame's rows still add up to the terminal's less one.
-                        const drawn = (working ? 1 : 0) + f.todoShown.length + f.queuedShown + f.promptShown + 2 + f.menuRows + f.panel.length + (f.hinted ? 1 : 0) + 1 + (f.tooled ? 1 : 0);
-                        if (full && drawn + f.viewHeight !== rows - 1) wrong.push(`${name}: ${drawn} + ${f.viewHeight} rows`);
-                        if (!full && drawn > rows - 1) wrong.push(`${name}: ${drawn} rows`);
+                        // The live area's rows on screen, the lines left out: the working line, the to-do list, the queue,
+                        // the prompt, the menu, the task panel, the hint row, the status line and the tool line.
+                        const others = (working ? 1 : 0) + f.todoShown.length + f.queuedShown + f.promptShown + f.menuRows + f.panel.length + (f.hinted ? 1 : 0) + 1 + (f.tooled ? 1 : 0);
+                        // The frame is a row short of the terminal; in full screen the conversation keeps at least one row.
+                        const fits = (drawn: number) => (full ? rows - 1 - drawn >= 1 : drawn <= rows - 1);
+                        if (f.rules) {
+                          lined++;
+                          if (!fits(others + 2)) wrong.push(`${name}: the lines drawn in ${others} + 2 rows`);
+                          if (full && others + 2 + f.viewHeight !== rows - 1) wrong.push(`${name}: ${others} + 2 + ${f.viewHeight} rows`);
+                        } else if (fits(others + 2)) wrong.push(`${name}: the lines left out with room for them`);
                       }
     expect(wrong).toEqual([]);
     expect(lined).toBeGreaterThan(0); // the grid has frames with the lines and without

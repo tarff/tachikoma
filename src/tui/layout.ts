@@ -185,8 +185,8 @@ export function frame(i: FrameIn): FrameOut {
   };
 }
 
-// The frame as frame() lays it out first, with no lines around the prompt; exported for the tests that compare the two.
-export function frameWithoutLines(i: FrameIn): FrameOut {
+// The frame as frame() lays it out first, with no lines around the prompt.
+function frameWithoutLines(i: FrameIn): FrameOut {
   const reds = i.askedText === null ? [] : i.askedWarnings;
   const note = i.askedText !== null && i.askedNote ? 1 : 0;
   const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
