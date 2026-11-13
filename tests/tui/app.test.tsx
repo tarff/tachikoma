@@ -353,6 +353,7 @@ const RULE = "─".repeat(100);
 // pass, Task 9).
 const boxTop = (columns = 100) => `╭${"─".repeat(columns - 2)}╮`;
 const boxFoot = (columns = 100) => `╰${"─".repeat(columns - 2)}╯`;
+// boxed pads by characters, not columns, so it is for text of narrow characters only.
 const boxed = (text: string, columns = 100) => `│ ${text.padEnd(columns - 4)} │`;
 
 // The frame with its colours: Ink colours through chalk, which finds no colour in a test's output, so a test that looks
@@ -5347,8 +5348,8 @@ describe("App's questions in full screen", () => {
     expect(rows).toHaveLength(23);
     expect(rows[0]).toBe(`┌ run (${fits.length} characters)`);
     expect(rows[1]).toMatch(/^run: echo word/);
-    // Two rows at the 36 columns inside the box.
-    expect(`${rows[19]} ${rows[20]}`.replaceAll("│", "").replace(/\s+/g, " ").trim()).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+    // Two rows at the 36 columns inside the box, the space that does not fit the first starting the second.
+    expect(app.lastFrame()!.split("\n").slice(18, 22)).toEqual([boxTop(40), boxed("Allow run (shown above)? [y/n] · Esc", 40), boxed(" to decline", 40), boxFoot(40)]);
     Object.defineProperty(app.stdout, "columns", { value: 100, configurable: true });
     app.stdout.emit("resize");
     await tick();
@@ -5366,8 +5367,6 @@ describe("App's questions in full screen", () => {
 // is colour. The short line a question too long to fit moves to is boxed the same way.
 describe("App's question box", () => {
   const rowsOf = (app: ReturnType<typeof render>) => app.lastFrame()!.split("\n");
-  const top = boxTop;
-  const foot = boxFoot;
   const red = "Danger: rewriting or deleting git history: git push --force";
   const SHORT = "Allow run (shown above)? [y/n] · Esc to decline";
   const MUTED = "\u001b[38;2;138;138;138m"; // the dark full palette's muted (theme.ts)
@@ -5383,7 +5382,7 @@ describe("App's question box", () => {
     const rows = rowsOf(app);
     expect(rows).toHaveLength(23);
     expect(shown(app)[18]).toBe("said 59."); // the conversation's last row of 19
-    expect(rows.slice(19, 22)).toEqual([top(), boxed("Allow run: ls? [y/n] · Esc to decline"), foot()]);
+    expect(rows.slice(19, 22)).toEqual([boxTop(), boxed("Allow run: ls? [y/n] · Esc to decline"), boxFoot()]);
     await press(app, "y");
     expect(await answer).toBe(true);
   });
@@ -5392,11 +5391,11 @@ describe("App's question box", () => {
     let { app, ask } = await mount([], { full: true, intro: said(60) });
     void ask("run: git push --force", undefined, undefined, false, [red, red]);
     await until(app, "[y/n]");
-    expect(rowsOf(app).slice(17, 22)).toEqual([top(), boxed(red), boxed(red), boxed("Allow run: git push --force? [y/n] · Esc to decline"), foot()]);
+    expect(rowsOf(app).slice(17, 22)).toEqual([boxTop(), boxed(red), boxed(red), boxed("Allow run: git push --force? [y/n] · Esc to decline"), boxFoot()]);
     ({ app, ask } = await mount([], { full: true, intro: said(60) }));
     void ask("read /a", undefined, undefined, false, [], "Auto mode paused.");
     await until(app, "[y/n]");
-    expect(rowsOf(app).slice(18, 22)).toEqual([top(), boxed("Auto mode paused."), boxed("Allow read /a? [y/n] · Esc to decline"), foot()]);
+    expect(rowsOf(app).slice(18, 22)).toEqual([boxTop(), boxed("Auto mode paused."), boxed("Allow read /a? [y/n] · Esc to decline"), boxFoot()]);
   });
 
   it("boxes the short line of a question too long to fit, its text in the conversation", async () => {
@@ -5406,7 +5405,7 @@ describe("App's question box", () => {
     const rows = rowsOf(app);
     expect(rows).toHaveLength(23);
     expect(shown(app)[0]).toBe("┌ run (3005 characters)");
-    expect(rows.slice(19, 22)).toEqual([top(), boxed(SHORT), foot()]);
+    expect(rows.slice(19, 22)).toEqual([boxTop(), boxed(SHORT), boxFoot()]);
   });
 
   // Wrap boundaries (review): 76 columns inside an 80-column box, 36 inside a 40-column one.
@@ -5418,7 +5417,7 @@ describe("App's question box", () => {
     wide(app, columns);
     void ask(`run: ${"x".repeat(exactly)}`);
     await until(app, "[y/n]");
-    expect(rowsOf(app).slice(19, 22)).toEqual([top(columns), boxed(line(exactly), columns), foot(columns)]);
+    expect(rowsOf(app).slice(19, 22)).toEqual([boxTop(columns), boxed(line(exactly), columns), boxFoot(columns)]);
     ({ app, ask } = await mount([], { full: true, intro: said(60) }));
     wide(app, columns);
     const redLine = `Danger: ${"x".repeat(inner - "Danger: ".length)}`;
@@ -5426,12 +5425,12 @@ describe("App's question box", () => {
     await until(app, "decline");
     // One column longer: the line's last word goes to a second row; the red line one column longer is cut with "…".
     expect(rowsOf(app).slice(16, 22)).toEqual([
-      top(columns),
+      boxTop(columns),
       boxed(redLine, columns),
       boxed(`${redLine.slice(0, -1)}…`, columns),
       boxed(`Allow run: ${"x".repeat(exactly + 1)}? [y/n] · Esc to`, columns),
       boxed("decline", columns),
-      foot(columns),
+      boxFoot(columns),
     ]);
   });
 
@@ -5443,12 +5442,12 @@ describe("App's question box", () => {
     let { app, ask } = await mount([], { full: true, intro: said(60), rows: 6 });
     void ask(asked);
     await until(app, "(shown above)");
-    expect(rowsOf(app).slice(1, 4)).toEqual([top(), boxed(SHORT), foot()]);
+    expect(rowsOf(app).slice(1, 4)).toEqual([boxTop(), boxed(SHORT), boxFoot()]);
     ({ app, ask } = await mount([], { full: true, intro: said(60), rows: 7 }));
     void ask(asked);
     await until(app, "[y/n]");
     expect(app.lastFrame()).not.toContain("shown above");
-    expect(rowsOf(app).slice(1, 5)).toEqual([top(), boxed(`Allow ${asked}? [y/n] · Esc to`), boxed("decline"), foot()]);
+    expect(rowsOf(app).slice(1, 5)).toEqual([boxTop(), boxed(`Allow ${asked}? [y/n] · Esc to`), boxed("decline"), boxFoot()]);
   });
 
   it("draws the box in classic mode, its red lines wrapped inside it", async () => {
@@ -5458,14 +5457,14 @@ describe("App's question box", () => {
     const answer = ask("run: git push --force", undefined, undefined, false, [red, long]);
     await until(app, "[y/n]");
     const rows = rowsOf(app);
-    const at = rows.indexOf(top());
+    const at = rows.indexOf(boxTop());
     expect(at).toBeGreaterThan(0);
     expect(rows.slice(at, at + 6)).toEqual([
-      top(),
+      boxTop(),
       boxed(red),
       ...wrap(long, 96, false).map((r) => boxed(r.text)),
       boxed("Allow run: git push --force? [y/n] · Esc to decline"),
-      foot(),
+      boxFoot(),
     ]);
     expect(rows[at + 6]).toMatch(/^ ?\S/); // the status line, under the box
     await press(app, "y");
@@ -5477,13 +5476,13 @@ describe("App's question box", () => {
       let { app, ask } = await mount([], { full: true });
       void ask("run: ls");
       await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("[y/n]"));
-      expect(app.lastFrame()).toContain(`${MUTED}${top()}`);
+      expect(app.lastFrame()).toContain(`${MUTED}${boxTop()}`);
       expect(app.lastFrame()).toContain(`${MUTED}│`);
       const off = { light: false, color: false, full: false };
       ({ app, ask } = await mount([], { full: true, theme: { look: off, palette: palette(off) } }));
       void ask("run: ls");
       await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("[y/n]"));
-      expect(app.lastFrame()!.split("\n")).toContain(top());
+      expect(app.lastFrame()!.split("\n")).toContain(boxTop());
       expect(app.lastFrame()).toMatch(/\n│/);
     });
   });

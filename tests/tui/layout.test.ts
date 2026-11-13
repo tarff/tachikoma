@@ -383,6 +383,18 @@ describe("frame", () => {
       expect(frame({ ...at, askedText: exactly, askedWarnings: [`${redExactly}x`] })).toMatchObject({ warned: [`${redExactly}x`], viewHeight: 18 });
     });
 
+    // Task 9's code review: in classic mode the frame has no question's line, but the box and the question's line take at
+    // least three rows, which the tool line and the hint row give way to, so the live area stays a row short of the
+    // terminal (Ink draws the whole scrollback again when it is not).
+    it("keeps the box's rows and the question's in classic mode, the tool line and the hint giving way first", () => {
+      const classic: FrameIn = { ...base, full: false, toolLine: true, hint: true, question: true };
+      // Seven rows: the box's three, the tool line, the hint and the status line, a row short.
+      expect(frame({ ...classic, rows: 7 })).toMatchObject({ tooled: true, hinted: true });
+      // Six: the tool line goes; five: the hint too.
+      expect(frame({ ...classic, rows: 6 })).toMatchObject({ tooled: false, hinted: true });
+      expect(frame({ ...classic, rows: 5 })).toMatchObject({ tooled: false, hinted: false });
+    });
+
     it("moves a question to its short line on the tallest terminal where the box leaves the conversation no row, and not one row taller", () => {
       // Three rows at 76 columns: with the box's two, the frame's row short and the status line's, eight rows leave the
       // conversation one and seven none, so at seven the short line's one row is drawn, the conversation having two.

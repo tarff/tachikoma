@@ -909,9 +909,10 @@ export function App(props: AppProps) {
         )
       ) : ui.question ? (
         // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8); auto mode's pause, a
-        // grey row, goes above any red lines, which the gate never sends with it today (Task 10). All in a rounded box, the
-        // border muted (TUI design pass, Task 9): Ink's round border is the start-up box's characters, and with a space of
-        // padding each side leaves the text the terminal's columns less 4, as the frame counts them (layout.ts, frame).
+        // grey row, goes above any red lines, which the gate never sends with it today (Task 10). All in a rounded box,
+        // the border muted (TUI design pass, Task 9): Ink's round border is the start-up box's characters, and with a
+        // space of padding each side leaves the text the terminal's columns less 4, as the frame counts them
+        // (layout.ts, frame).
         <Box flexDirection="column" borderStyle="round" borderColor={ui.palette.muted} paddingX={1}>
           {ui.full ? (
             <>
