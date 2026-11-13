@@ -130,8 +130,13 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
     "Stop a background command or a background subagent by its id, such as t4.",
     z.object({ id: z.string().min(1) }),
     async ({ id }) => {
-      if (!tasks.get(id)) return `No task ${id}.`;
-      return tasks.stop(id, "tool") ? `Stopped ${id}.` : `${id} is not running.`;
+      const t = tasks.get(id);
+      if (!t) return `No task ${id}.`;
+      if (!tasks.stop(id, "tool")) return `${id} is not running.`;
+      // A command in the box is still running until its kill has run there; a kill that failed is said here alone (user
+      // choice 36, PR #18 review).
+      if (t.kind === "command" && t.state === "running") await t.done;
+      return t.kind === "command" && t.state === "failed" ? `Could not stop ${id}: ${t.error}` : `Stopped ${id}.`;
     },
   );
 

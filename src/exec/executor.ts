@@ -17,6 +17,9 @@ export interface Running {
   log: CommandLog;
   done: Promise<ExecResult>;
   stop(): void;
+  // The box's: its stop settles `done` only once its kill has run there, or rejects it when the kill fails, so a stop of
+  // a background command waits for that (user choice 36, PR #18 review).
+  stopsLater?: true;
 }
 
 // The shell tool's commands go through here, so the Docker sandbox can replace it; the file tools go through the

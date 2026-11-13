@@ -29,6 +29,14 @@ function driven() {
   return { run, stop, end, fail: (err: Error) => s.fail(err) };
 }
 
+// A command in the box (user choice 36, PR #18 review): a stop only starts its kill there, which the test then lets run or
+// fail.
+function boxDriven() {
+  const d = driven();
+  const stop = vi.fn();
+  return { ...d, stop, run: { ...d.run, stop, stopsLater: true } as Running };
+}
+
 type Limits = { started: number; moved: number; most: number };
 async function setup(
   opts: { headless?: boolean; mode?: Mode; answers?: boolean[]; limits?: Limits; start?: () => Running; worker?: Provider; max?: number } = {},
@@ -533,6 +541,34 @@ describe("stop_task", () => {
   it("answers an id not in the list", async () => {
     const { use } = await setup();
     expect(await use("stop_task", { id: "t9" })).toBe("No task t9.");
+  });
+
+  // User choice 36, PR #18 review: in the box the reply waits for the kill there.
+  it("replies once a box command's kill has run, which is still running until then", async () => {
+    const box = boxDriven();
+    const { call, use, tasks } = await setup({ start: () => box.run });
+    await call({ command: "npm run dev", background: true });
+    const replied = use("stop_task", { id: "t1" });
+    expect(await settled(replied)).toBe(false);
+    expect(tasks.get("t1")!.state).toBe("running");
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 is still running.\nNo new output.");
+    box.end({ code: null, signal: "SIGKILL" });
+    expect(await replied).toBe("Stopped t1.");
+    expect([tasks.get("t1")!.state, tasks.wakes()]).toEqual(["stopped", false]);
+    expect(tasks.take()).toEqual(["Background command t1 (npm run dev) was stopped by stop_task."]);
+    expect(await use("shell_output", { id: "t1" })).toBe("t1 was stopped by stop_task.\nNo new output.");
+  });
+
+  it("says a box command's kill that failed in its reply alone, the command failed with that error", async () => {
+    const box = boxDriven();
+    const { call, use, tasks } = await setup({ start: () => box.run });
+    await call({ command: "npm run dev", background: true });
+    const replied = use("stop_task", { id: "t1" });
+    box.fail(new Error(`Esc could not reach the box (${"x".repeat(1_000)})`)); // cut as #failed cuts it
+    const error = `Esc could not reach the box (${"x".repeat(971)}… [+30 chars]`;
+    expect(await replied).toBe(`Could not stop t1: ${error}`);
+    expect([tasks.get("t1")!.state, tasks.wakes(), tasks.take()]).toEqual(["failed", false, []]);
+    expect(await use("shell_output", { id: "t1" })).toBe(`t1 failed: ${error}\nNo new output.`);
   });
 });
 

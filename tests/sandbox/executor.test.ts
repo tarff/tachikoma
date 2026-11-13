@@ -483,6 +483,7 @@ describe("DockerExecutor with a stand-in Docker", () => {
     const docker = holding(fake, ["serving\n"], ok());
     const box = await DockerExecutor.start(OPTS, docker.run);
     const running = box.start("npm run dev", "/work");
+    expect(running.stopsLater).toBe(true); // so a background command's stop waits for the kill (user choice 36)
     await started(fake);
     running.stop();
     expect(await running.done).toEqual({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });

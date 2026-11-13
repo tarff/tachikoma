@@ -62,6 +62,8 @@ export interface CommandTask {
   // These two give shell_output's first line (background commands plan, Task 6).
   stoppedBy?: "user" | "tool" | "limit"; // who stopped it, said in that line (choice 28, the user's), or the -p limit (choice 8)
   error?: string; // a rejected run's error, cut as a command is (choices 23, 24)
+  // A stop in the box waiting for its kill there, by whom: until then it is still running (user choice 36, PR #18 review).
+  stopping?: "user" | "tool" | "limit";
   run: Running;
   done: Promise<void>;
 }
@@ -209,8 +211,11 @@ export class Tasks {
     let any = false;
     for (const t of this.all) {
       if ((id === undefined || t.id === id) && (t.state === "running" || t.state === "waiting")) {
-        if (t.kind === "command") this.#stopCommand(t, by);
-        else {
+        if (t.kind === "command") {
+          // A box stop still waiting for its kill: its words stand, as a subagent's do (user choice 36, PR #18 review).
+          if (t.stopping) continue;
+          this.#stop(t, by);
+        } else {
           const s = this.#stops.get(t.id)!;
           // Still ending after an earlier stop: that stop's words stand, and this one stops nothing (Task 6's code review).
           if (s.stop.signal.aborted) continue;
@@ -412,6 +417,7 @@ export class Tasks {
   // in place of deliver's "No new output." ("Lines this plan adds").
   #exited(t: CommandTask, r: ExecResult): void {
     if (t.state !== "running") return;
+    if (t.stopping) return this.#stopped(t, t.stopping); // the box's kill has run: the stop counts now (user choice 36)
     t.code = r.code;
     t.signal = r.signal;
     const head = `Background command ${t.id} (${headCommand(t.command)}) ${r.code !== null ? `ended with exit code ${r.code}` : `was killed by ${r.signal}`}`;
@@ -419,40 +425,54 @@ export class Tasks {
     this.#ended(t, r.code === 0 ? "done" : "failed", { text, wake: true });
   }
 
-  // Choice 23. The error is cut as a command is, so the head stays short and the output has room (As built, Task 1).
+  // Choice 23. The error is cut as a command is, so the head stays short and the output has room (As built, Task 1). A
+  // box stop whose kill failed ends so too, and the model is told once (choice 7): stop_task's reply says it, so no entry;
+  // a /tasks stop's entry starts no turn, as its stop's would not; the -p limit's wakes the lead (user choice 36, PR #18
+  // review).
   #failed(t: CommandTask, err: unknown): void {
     if (t.state !== "running") return;
     t.error = headCommand(errorText(err));
     const head = `Background command ${t.id} (${headCommand(t.command)}) failed: ${t.error}`;
-    this.#ended(t, "failed", { text: () => deliver(head, t.run.log, t.id), wake: true });
+    const said = t.stopping === "tool" ? null : { text: () => deliver(head, t.run.log, t.id), wake: t.stopping !== "user" };
+    this.#ended(t, "failed", said);
   }
 
-  // The -p limit (choice 8), in the design's words ("With -p"), the output read from the log, as the box's `done` has
-  // none for a stopped command (As built, Task 3).
+  // The -p limit (choice 8). A stop already waiting for the box's kill stands (user choice 36, PR #18 review).
   #limit(t: CommandTask): void {
-    t.stoppedBy = "limit";
-    t.run.stop();
-    const head = `Background command "${headCommand(t.command)}" was stopped after reaching its background time limit`;
-    this.#ended(t, "stopped", { text: () => deliver(head, t.run.log, t.id), wake: true });
+    if (!t.stopping) this.#stop(t, "limit");
   }
 
-  // Said at the next turn without starting one, as a stopped subagent's note is (choice 7).
-  #stopCommand(t: CommandTask, by: "user" | "tool"): void {
-    t.stoppedBy = by;
+  // On the host `done` has settled already, so the stop counts at once. In the box it counts once the kill has run there,
+  // the command still running meanwhile: #exited or #failed ends it (user choice 36, PR #18 review).
+  #stop(t: CommandTask, by: "user" | "tool" | "limit"): void {
     t.run.stop();
+    if (t.run.stopsLater) t.stopping = by;
+    else this.#stopped(t, by);
+  }
+
+  // The -p limit's entry is in the design's words ("With -p"), the output read from the log, as the box's `done` has none
+  // for a stopped command (As built, Task 3). A stop by the user or stop_task is said at the next turn without starting
+  // one, as a stopped subagent's note is (choice 7).
+  #stopped(t: CommandTask, by: "user" | "tool" | "limit"): void {
+    t.stoppedBy = by;
+    if (by === "limit") {
+      const head = `Background command "${headCommand(t.command)}" was stopped after reaching its background time limit`;
+      return this.#ended(t, "stopped", { text: () => deliver(head, t.run.log, t.id), wake: true });
+    }
     const text = `Background command ${t.id} (${headCommand(t.command)}) was stopped by ${by === "user" ? "the user" : "stop_task"}.`;
     this.#ended(t, "stopped", { text, wake: false });
   }
 
-  // `said`: the ending's entry for the lead, with its line written; none for a close (choice 29, the user's).
-  #ended(t: CommandTask, state: "done" | "failed" | "stopped", said?: { text: string | (() => string); wake: boolean }): void {
+  // `said`: the ending's entry for the lead, with its line written; none for a close (choice 29, the user's); null for
+  // the line alone, for a stop_task whose kill failed, which its reply says (user choice 36, PR #18 review).
+  #ended(t: CommandTask, state: "done" | "failed" | "stopped", said?: { text: string | (() => string); wake: boolean } | null): void {
     clearTimeout(this.#timers.get(t.id));
     this.#timers.delete(t.id);
     t.state = state;
     t.ended = Date.now();
-    if (said) {
+    if (said !== undefined) {
       this.opts.transcript?.()?.write({ t: "command-ended", id: t.id, state });
-      this.#inbox.push({ id: t.id, kind: "command", ...said });
+      if (said) this.#inbox.push({ id: t.id, kind: "command", ...said });
     }
     this.#changed();
   }

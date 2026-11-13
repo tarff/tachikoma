@@ -321,7 +321,7 @@ export class DockerExecutor implements Executor {
       }
       return { code: got.code, signal: null, stdout: got.out, stderr };
     })();
-    return { log, done, stop: () => stopping.abort() };
+    return { log, done, stop: () => stopping.abort(), stopsLater: true };
   }
 
   // Removes the box. What it held that is kept lives in /work, a host folder (choice 18). A removal that fails leaves the
