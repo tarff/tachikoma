@@ -60,8 +60,9 @@ import { Pictures, type Read } from "../../src/tui/pictures.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
+import { startBox } from "../../src/tui/startup.js";
 import { palette } from "../../src/tui/theme.js";
-import { wrap } from "../../src/tui/view.js";
+import { textWidth, wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, standInRun, tempContext, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
 
@@ -3715,6 +3716,38 @@ describe("App in full screen", () => {
     expect(rows[1]).toMatch(/^word/);
     expect(rows[2]).toMatch(/^said 34\. word/);
     expect(rows).toHaveLength(23);
+  });
+
+  // TUI design pass, Task 6 (design, "Resizing"): the start-up box is laid out once, for 120 columns, and never again; each
+  // of its rows is one screen row at any width, cut with "…" when the screen is narrower.
+  it("keeps the start-up box as drawn at 120 columns, each row cut to one at 50, and the frame as at first back at 120, a selection and the held view on the same text", async () => {
+    await inColour(async () => {
+      const resize = async (app: ReturnType<typeof render>, columns: number) => {
+        Object.defineProperty(app.stdout, "columns", { value: columns, configurable: true });
+        app.stdout.emit("resize");
+        await tick();
+      };
+      const info = { version: "0.1.0", lead: "fake:a", folder: "~/proj", branch: "main", mode: "ask", sandbox: "off" as const, files: ["CLAUDE.md"], servers: 0, hooks: 0 };
+      const box = startBox(info, textWidth(120, true), { light: false, color: true, full: true });
+      expect(box[1]!.text.length).toBeGreaterThan(50); // the pixel art's row, wider than the narrow screen
+      // 26 rows: 20 of conversation, the box's 17 and its hint, then the lines after it.
+      const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: [...box, ...said(40)] });
+      const rows = (columns: number) => stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => r.slice(0, columns - 1).trimEnd());
+      await resize(app, 120);
+      await press(app, CTRL_HOME); // the view held at the top
+      await pointer(mouse, at("press", 3, 0), at("drag", 11, 0), at("release", 11, 0)); // "Tachikoma" in the top border
+      expect(copies).toEqual(["Tachikoma"]);
+      expect(rows(120).slice(0, box.length + 1)).toEqual([...box.map((l) => l.text), "said 0."]);
+      expect(reversed(app)[0]).toBe("Tachikoma");
+      const first = app.lastFrame();
+      await resize(app, 50);
+      const cut = (text: string) => (text.length > 49 ? `${text.slice(0, 48)}…` : text); // the box's characters are one column each
+      expect(rows(50).slice(0, box.length + 1)).toEqual([...box.map((l) => cut(l.text)), "said 0."]);
+      expect(reversed(app)[0]).toBe("Tachikoma");
+      await resize(app, 120);
+      expect(app.lastFrame()).toBe(first);
+      expect(copies).toEqual(["Tachikoma"]);
+    });
   });
 
   // Release 7 plan, choice 120 (the user's hand check): a tall prompt draws at most half the rows, twelve of 24.

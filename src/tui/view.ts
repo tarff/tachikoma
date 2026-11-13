@@ -141,8 +141,9 @@ export function wrap(text: string, width: number, oneLine: boolean): Wrapped[] {
 }
 
 // `text` cut to `width` columns with "…" in the last, as cli-truncate (Ink's truncate-end) cuts it: a wide character
-// that would cross into that column is left out.
-function cut(text: string, width: number): string {
+// that would cross into that column is left out. Exported so the start-up box cuts a value inside its border by the same
+// rule (startup.ts, TUI design pass, Task 6).
+export function cut(text: string, width: number): string {
   if (stringWidth(text) <= width) return text;
   let shown = "";
   let col = 0;
@@ -188,6 +189,11 @@ function rowStarts(l: KeptLine, width: number): number[] {
   found[0] = 0;
   return found;
 }
+
+// The columns a kept line's text wraps at (TUI design pass, Architecture, "Laid out for the width text really has"): in
+// full screen one fewer than the terminal's, as the scroll bar keeps the last (the App's `new Rows(columns - 1)`,
+// app/state.ts); in classic all of them. The start-up box is laid out for it (Task 6).
+export const textWidth = (columns: number, full: boolean): number => (full ? columns - 1 : columns);
 
 // All the lines, and where their rows start at the current width. Only places are kept, nothing for a line of one row,
 // and a row's text is made when it is drawn, so a long session costs little more than its text; with the count of rows

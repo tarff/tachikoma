@@ -50,6 +50,7 @@ import {
   type Started,
   stopSoon,
   systemAgain,
+  tilde,
   turnAnswer,
   waitForBackground,
   WindowSessions,
@@ -100,9 +101,11 @@ import { InputFilter } from "./tui/input.js";
 import { programRunning } from "./tui/owner.js";
 import { Review, type ReviewCopy, type ReviewEnd } from "./tui/Review.js";
 import { SessionList } from "./tui/SessionList.js";
+import { startBox } from "./tui/startup.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
 import { look, palette, ThemeContext } from "./tui/theme.js";
+import { textWidth } from "./tui/view.js";
 
 const HELP = `tachi: a coding agent for your terminal
 
@@ -880,6 +883,29 @@ if (parsed.print !== undefined) {
   // The look from the launch's settings (TUI design pass, Task 1), the colour depth as Ink's own check gives it.
   const shown = look(loaded.settings, process.env, chalk.level);
   const colours = palette(shown);
+  // Before the first frame, which shows it, in the start-up box and the App. In the box a read that fails (Docker
+  // unreachable) is no branch, so it cannot end the launch; the tools say what failed when used (release 7 plan, Task 14's
+  // review).
+  const branch = await workspace.branch().catch(() => null);
+  // The start-up box (TUI design pass, Task 6), from what the launch has gathered, laid out for the columns a line's text
+  // has in the mode the window starts in: 80 where the terminal does not say, as Ink's getWindowSize falls back. The MCP
+  // servers counted are those starting, read before startAll: none with the network off, nor a project's one not said
+  // yes to.
+  const startLines = startBox(
+    {
+      version: VERSION,
+      lead: lead.id,
+      folder: tilde(root, os.homedir()),
+      branch,
+      mode,
+      sandbox,
+      files: instructions.read.map((f) => path.basename(f.path)),
+      servers: servers.list().filter((s) => s.state.is === "starting").length,
+      hooks: hooks.config.off ? 0 : hooks.config.hooks.length,
+    },
+    textWidth(process.stdout.columns || 80, screen.full),
+    shown,
+  );
   ink = render(
     <ThemeContext value={{ look: shown, palette: colours }}>
       <App
@@ -897,14 +923,13 @@ if (parsed.print !== undefined) {
         project={path.basename(root) || root}
         root={root}
         workspace={workspace}
-        // Before the first frame, which shows it. In the box a read that fails (Docker unreachable) is no branch, so it cannot
-        // end the launch; the tools say what failed when used (Task 14's review).
-        branch={await workspace.branch().catch(() => null)}
+        branch={branch}
         historyFile={historyFile(root)}
-        // A resumed conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan,
-        // Task 6), its tool rows folded as they were live (release 8c plan, Task 15), with the live lines' marks (TUI design
-        // pass, Task 3).
+        // The start-up box first, then the files left out and the sandbox's lines (TUI design pass, Task 6). A resumed
+        // conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan, Task 6), its
+        // tool rows folded as they were live (release 8c plan, Task 15), with the live lines' marks (TUI design pass, Task 3).
         intro={[
+          ...startLines,
           ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
           ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours }),
           ...said.map((l) => ({ ...l, color: "gray" as const })),

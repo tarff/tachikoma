@@ -53,6 +53,7 @@ import {
   stopSoon,
   turnAnswer,
   systemAgain,
+  tilde,
   waitForBackground,
   WindowSessions,
 } from "../src/clilib.js";
@@ -73,10 +74,22 @@ describe("the instruction files on screen", () => {
     left: [{ path: path.resolve("/elsewhere/x.md"), why: "not allowed" }],
   };
 
-  it("lists the files read, the user's folder as ~, their total size, and those left out", () => {
-    expect(instructionsLine(r, home)).toBe(`Instructions: ${path.join("~", ".claude", "CLAUDE.md")}, ${path.join(proj, "AGENTS.md")} (4.3k bytes); left out: ${path.resolve("/elsewhere/x.md")} (not allowed)`);
+  // TUI design pass, Task 6: the start-up box names the files read, so the line keeps only those left out.
+  it("names only the files left out, the user's folder as ~, and why; nothing when none was", () => {
+    expect(instructionsLine(r, home)).toBe(`Instructions left out: ${path.resolve("/elsewhere/x.md")} (not allowed)`);
+    const two = [...r.left, { path: path.join(home, "notes", "a\u001bb.md"), why: "not found" }];
+    expect(instructionsLine({ ...r, left: two }, home)).toBe(
+      `Instructions left out: ${path.resolve("/elsewhere/x.md")} (not allowed), ${path.join("~", "notes", "a\\u001bb.md")} (not found)`,
+    );
+    expect(instructionsLine({ ...r, left: [] }, home)).toBeNull();
     expect(instructionsLine({ text: "", read: [], left: [] }, home)).toBeNull();
-    expect(instructionsLine({ ...r, read: [] }, home)).toBe(`Instructions: none read; left out: ${path.resolve("/elsewhere/x.md")} (not allowed)`);
+  });
+
+  it("writes the user's folder as ~, and any other path as it is", () => {
+    expect(tilde(home, home)).toBe("~");
+    expect(tilde(path.join(home, "Agent Harness"), home)).toBe(path.join("~", "Agent Harness"));
+    expect(tilde(`${home}2`, home)).toBe(`${home}2`); // a folder beside home, whose name starts with home's
+    expect(tilde(proj, home)).toBe(proj);
   });
 
   it("asks once about the files outside the project, each with how it was reached, escaped", () => {
