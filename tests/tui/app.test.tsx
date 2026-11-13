@@ -893,7 +893,9 @@ describe("App", () => {
     const { app, bus } = await mount([]);
     bus.emit("error", { kind: "fallback", attempted: "x", message: "fake:a declined; fake:b answered instead", lead: "fake:a" });
     await until(app, "↪ fake:a declined; fake:b answered instead");
-    expect(app.lastFrame()).not.toMatch(/\d+ errors?\b/); // none counted, so the status line leaves its errors out (TUI design pass, Task 10)
+    // None counted, so the status line, drawn, leaves its errors out between the mode and the folder (TUI design pass, Task 10).
+    expect(app.lastFrame()).toContain("perm ask | proj");
+    expect(app.lastFrame()).not.toMatch(/\d+ errors?\b/);
   });
 
   it("says how many pictures a request left out to fit its provider", async () => {
@@ -908,7 +910,8 @@ describe("App", () => {
     await type(app, "hi");
     await until(app, "seen");
     expect(app.lastFrame()).toContain("2 pictures were left out of this request to fit Anthropic's 32 MB.");
-    expect(app.lastFrame()).not.toMatch(/\d+ errors?\b/); // none counted, so the status line leaves its errors out
+    expect(app.lastFrame()).toContain("perm ask | proj"); // the status line, its errors left out as none were counted
+    expect(app.lastFrame()).not.toMatch(/\d+ errors?\b/);
   });
 
   it("summarises the error log with /errors", async () => {
@@ -1839,7 +1842,7 @@ describe("App's background subagents", () => {
     await until(app, "next");
     await type(app, "/tasks");
     await until(app, "Tasks: 1");
-    expect(app.lastFrame()).toMatch(/Tasks: 1\n✓ t1 find x\n  ⎿ w · \d+s · ↓ 5 tokens · \$0\.00 \+ \?\n/);
+    expect(app.lastFrame()).toMatch(/Tasks: 1\n✓ t1 find x\n  ⎿ w · \d+s · ↓ 5 tokens · \$0\.00\+\n/);
   });
 
   it("prints a subagent's tool calls and answer in full with /tasks t1", async () => {

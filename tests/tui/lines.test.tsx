@@ -145,6 +145,11 @@ describe("taskRows", () => {
     expect(taskRows([task({})], 2, now)[0]!.color).toBe("yellow");
   });
 
+  // Choice D (TUI design pass, Task 10): the status line's `+`, the user's "Same everywhere".
+  it("marks a cost with calls of no known price with a `+`, as the status line does", () => {
+    expect(shown([task({ cost: 0.42, costUnknown: true })])[1]).toBe("  ⎿ claude-haiku-5-5 · 12s · ↓ 1.2k tokens · $0.42+ · read_file src/auth/oauth.ts");
+  });
+
   it("says when one waits for a place, and marks finished ones as the tool line does, without a tool", () => {
     const rows = taskRows(
       [task({ id: "t1", state: "waiting" }), task({ id: "t3", state: "done", ended: now - 2_000 }), task({ id: "t4", state: "failed", ended: now }), task({ id: "t5", state: "stopped", ended: now })],
