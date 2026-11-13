@@ -33,7 +33,7 @@ import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
 import {
-  characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened, SESSION_WORDS, SHORTEN_WORDS,
+  characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, listed, names, NOT_GONE, reviewUnopened, SESSION_WORDS, SHORTEN_WORDS,
 } from "./constants.js";
 import type { UI } from "./state.js";
 
@@ -396,7 +396,12 @@ export const queue = (ui: UI, fns: Fns) => {
       ];
     }
     if (verb === "stop" && !rest.length) {
-      if (id === undefined) return [gray(ui.tasks.stop() ? "Stopped every subagent and command." : "No subagent or command is running.")];
+      if (id === undefined) {
+        if (ui.tasks.stop()) return [gray("Stopped every subagent and command.")];
+        // Nothing new stopped: box stops still on their way are named, as /tasks stop t1 names one (user choice 40).
+        const pending = ui.tasks.all.filter((t) => t.kind === "command" && t.stopping !== undefined && t.state === "running").map((t) => t.id);
+        return [gray(pending.length ? `Stopping ${listed(pending)}.` : "No subagent or command is running.")];
+      }
       const t = ui.tasks.get(id);
       if (!t) return [none(id)];
       // A command in the box is still running until its kill has run there, and a stop already on its way says so again

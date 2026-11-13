@@ -90,10 +90,11 @@ export const SHORTEN_WORDS = {
 };
 // A number of tokens as the session's too-long line writes it, as providers/pictures.ts writes a number (session.ts).
 export const tokens = (n: number) => n.toLocaleString("en-US");
+// Ids as the lines list them: "t1", "t1 and t2", "t1, t2 and t3" (names, and /tasks stop's line, choice 40).
+export const listed = (ids: string[]) => (ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]);
 // What a wake reads (background commands plan, choice 19), subagents first: "t3's answer", "t2, t3 and t4's answers",
 // "t4's output", "t3's answer and t4's output".
 export const names = (waiting: { id: string; kind: Task["kind"] }[]) => {
-  const listed = (ids: string[]) => (ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]);
   const subagents = waiting.filter((w) => w.kind === "subagent").map((w) => w.id);
   const commands = waiting.filter((w) => w.kind === "command").map((w) => w.id);
   return [

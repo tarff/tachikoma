@@ -2024,9 +2024,6 @@ describe("App's background commands", () => {
     await until(app, "Stopping t1.");
     await type(app, "/tasks stop t1");
     await vi.waitFor(() => expect(app.lastFrame()!.split("Stopping t1.")).toHaveLength(3));
-    // With no id, the stop on its way is not counted, as a subagent's still ending is not (PR #18 fixes' review, point 5).
-    await type(app, "/tasks stop");
-    await until(app, "No subagent or command is running.");
     expect(tasks.all[0]!.state).toBe("running");
     settle({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
     await vi.waitFor(() => expect(tasks.all[0]!.state).toBe("stopped"));
@@ -2035,6 +2032,40 @@ describe("App's background commands", () => {
     await type(app, "next");
     await until(app, "noted");
     expect(lead.seen[2]!.at(-1)!.parts).toEqual([{ type: "text", text: "next" }, note("Background command t1 (npm run dev) was stopped by the user.")]);
+  });
+
+  // User choice 40: /tasks stop with no id that stops nothing new names the box stops still on their way, as the lines
+  // list ids; one that stops something says so as ever.
+  it("names the box stops still on their way when /tasks stop stops nothing new", async () => {
+    const settles: ((r: ExecResult) => void)[] = [];
+    const executor: Executor = {
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: () => ({ ...standInRun(new Promise<ExecResult>((resolve) => settles.push(resolve))), stop: () => {}, stopsLater: true }),
+    };
+    const three = { parts: ["npm run dev", "npm run watch", "npm test"].flatMap((c, i) => start(`c${i + 1}`, c).parts), usage };
+    const { app, tasks } = await mount([three, reply("started")], { executor, mode: "never" });
+    await type(app, "go");
+    await until(app, "started");
+    // Its kill run in the box, the command stopped.
+    const killed = async (n: number) => {
+      settles[n]!({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
+      await vi.waitFor(() => expect(tasks.all[n]!.state).toBe("stopped"));
+    };
+    await type(app, "/tasks stop t1");
+    await until(app, "Stopping t1.");
+    await type(app, "/tasks stop");
+    await until(app, "Stopped every subagent and command.");
+    await type(app, "/tasks stop");
+    await until(app, "Stopping t1, t2 and t3.");
+    await killed(2);
+    await type(app, "/tasks stop");
+    await until(app, "Stopping t1 and t2.");
+    await killed(0);
+    await type(app, "/tasks stop");
+    await until(app, "Stopping t2.");
+    await killed(1);
+    await type(app, "/tasks stop");
+    await until(app, "No subagent or command is running.");
   });
 
   it("reads an ending that comes while the lead is idle in a turn of its own, as reading the command's output, and tells the model once", async () => {
