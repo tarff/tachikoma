@@ -132,7 +132,7 @@ export const isCommand = (text: string) =>
 export const LIVE = [
   "lead", "mode", "sandbox", "network", "judge", "effort", "fallback", "worker", "maxTasks",
   "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor", "dangerousCommands", "autoCompactWindow",
-  "hooks", "disableAllHooks", "mcpServers",
+  "hooks", "disableAllHooks", "mcpServers", "theme",
 ] as const;
 export const FROM = ` (from ${SETTINGS})`;
 

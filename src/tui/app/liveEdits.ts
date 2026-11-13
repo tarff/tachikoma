@@ -90,6 +90,9 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       // is ever unset, and then the lead's model judges.
       const launched = resolve({}, {}, ui.live?.loaded.settings ?? {})[key] || "the lead's model";
       fns.note(gray(`"${key}" changes in ${SETTINGS} take effect at the next launch; it stays ${launched}`));
+    } else if (key === "theme") {
+      // Read at the launch only (TUI design pass, Task 1), with the same line; auto unless the launch's file set it.
+      fns.note(gray(`"theme" changes in ${SETTINGS} take effect at the next launch; it stays ${ui.live?.loaded.settings.theme ?? "auto"}`));
     } else if (key === "effort") {
       ui.effortNow.current = { effort: now.effort };
       ui.session.lead.setEffort?.(now.effort);

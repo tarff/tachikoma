@@ -44,6 +44,9 @@ export interface Settings {
   screen?: "full" | "classic";
   scrollSpeed?: number;
   editorMode?: "normal" | "vim";
+  // The palette's light or dark greys, auto reading COLORFGBG (tui/theme.ts); read at the launch only, so a live edit
+  // waits for the next one (TUI design pass, Task 1).
+  theme?: "auto" | "dark" | "light";
   vimInsertModeRemaps?: Record<string, "<Esc>">;
   editor?: string;
   dangerousCommands?: UserRules;
@@ -92,6 +95,7 @@ export function readSettings(text: string, env: NodeJS.ProcessEnv = process.env)
       else if (name === "effort") settings.effort = oneOf(entry, textOf(entry, value), EFFORTS);
       else if (name === "screen") settings.screen = oneOf(entry, textOf(entry, value), ["full", "classic"] as const);
       else if (name === "editorMode") settings.editorMode = oneOf(entry, textOf(entry, value), ["normal", "vim"] as const);
+      else if (name === "theme") settings.theme = oneOf(entry, textOf(entry, value), ["auto", "dark", "light"] as const);
       // As written in JSON, the number reads as the flag's text would: 8 as "8", 1.5 as "1.5".
       else if (name === "maxTasks") settings.maxTasks = taskCount(String(numberOf(entry, value)), entry);
       else if (name === "cleanupPeriodDays") settings.cleanupPeriodDays = taskCount(String(numberOf(entry, value)), entry);

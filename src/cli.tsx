@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs, styleText } from "node:util";
+import chalk from "chalk";
 import { type Instance, render } from "ink";
 import type { ReactElement } from "react";
 import { accountCommand } from "./auth/chatgpt.js";
@@ -101,6 +102,7 @@ import { Review, type ReviewCopy, type ReviewEnd } from "./tui/Review.js";
 import { SessionList } from "./tui/SessionList.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
+import { look, palette, ThemeContext } from "./tui/theme.js";
 
 const HELP = `tachi: a coding agent for your terminal
 
@@ -876,62 +878,65 @@ if (parsed.print !== undefined) {
   };
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();
   ink = render(
-    <App
-      session={session}
-      tasks={tasks}
-      bus={bus}
-      stats={stats}
-      mode={mode}
-      onMode={(m) => {
-        gate.mode = m;
-      }}
-      onRules={(r) => {
-        gate.rules = r;
-      }}
-      project={path.basename(root) || root}
-      root={root}
-      workspace={workspace}
-      // Before the first frame, which shows it. In the box a read that fails (Docker unreachable) is no branch, so it cannot
-      // end the launch; the tools say what failed when used (Task 14's review).
-      branch={await workspace.branch().catch(() => null)}
-      historyFile={historyFile(root)}
-      // A resumed conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan,
-      // Task 6), its tool rows folded as they were live (release 8c plan, Task 15).
-      intro={[
-        ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
-        ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers) }),
-        ...said.map((l) => ({ ...l, color: "gray" as const })),
-      ]}
-      pictures={pictures}
-      errorFile={errorFile}
-      segments={segments}
-      makeProvider={makeProvider}
-      login={accountCommand}
-      listModels={(signal, warn) => listModels(signal, process.env, warn)}
-      bindAsk={(fn) => {
-        ask = fn;
-      }}
-      screen={screen}
-      fullPossible={fullPossible(process.env, process.stdout.isTTY === true)}
-      mouse={keys}
-      input={keys}
-      scrollSpeed={speed}
-      clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
-      home={os.homedir()}
-      live={{
-        loaded,
-        given: givenBy(parsed, process.env),
-        ...(netLine ? { networkLine: netLine } : {}),
-        ...(bashLine ? { bashLine } : {}),
-        ...(gitLine ? { gitLine } : {}),
-      }}
-      {...(copy ? { copy } : {})}
-      saved={windowSessions}
-      leftLines={(lines) => left.push(...lines)}
-      hooks={hooks}
-      mcp={{ servers, project: projectServers }}
-      shell={shell}
-    />,
+    // The palette from the launch's settings (TUI design pass, Task 1), the colour depth as Ink's own check gives it.
+    <ThemeContext value={palette(look(loaded.settings, process.env, chalk.level))}>
+      <App
+        session={session}
+        tasks={tasks}
+        bus={bus}
+        stats={stats}
+        mode={mode}
+        onMode={(m) => {
+          gate.mode = m;
+        }}
+        onRules={(r) => {
+          gate.rules = r;
+        }}
+        project={path.basename(root) || root}
+        root={root}
+        workspace={workspace}
+        // Before the first frame, which shows it. In the box a read that fails (Docker unreachable) is no branch, so it cannot
+        // end the launch; the tools say what failed when used (Task 14's review).
+        branch={await workspace.branch().catch(() => null)}
+        historyFile={historyFile(root)}
+        // A resumed conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan,
+        // Task 6), its tool rows folded as they were live (release 8c plan, Task 15).
+        intro={[
+          ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
+          ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers) }),
+          ...said.map((l) => ({ ...l, color: "gray" as const })),
+        ]}
+        pictures={pictures}
+        errorFile={errorFile}
+        segments={segments}
+        makeProvider={makeProvider}
+        login={accountCommand}
+        listModels={(signal, warn) => listModels(signal, process.env, warn)}
+        bindAsk={(fn) => {
+          ask = fn;
+        }}
+        screen={screen}
+        fullPossible={fullPossible(process.env, process.stdout.isTTY === true)}
+        mouse={keys}
+        input={keys}
+        scrollSpeed={speed}
+        clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
+        home={os.homedir()}
+        live={{
+          loaded,
+          given: givenBy(parsed, process.env),
+          ...(netLine ? { networkLine: netLine } : {}),
+          ...(bashLine ? { bashLine } : {}),
+          ...(gitLine ? { gitLine } : {}),
+        }}
+        {...(copy ? { copy } : {})}
+        saved={windowSessions}
+        leftLines={(lines) => left.push(...lines)}
+        hooks={hooks}
+        mcp={{ servers, project: projectServers }}
+        shell={shell}
+      />
+    </ThemeContext>,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing
     // only the lines that changed, Ink's incrementalRendering, made no difference felt).

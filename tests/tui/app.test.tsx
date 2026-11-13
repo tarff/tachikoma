@@ -7728,6 +7728,17 @@ describe("App's live settings", () => {
     for (const key of ["sandbox", "network", "judge"]) await sees(c.app, `settings.json's "${key}" was left as --${key} set it for this session`);
   });
 
+  // TUI design pass, Task 1: the theme is read at the launch only, so a live edit says so with the same kind of line.
+  it("keeps the theme as at launch on a live edit, and says so", async () => {
+    const stays = (value: string) => `"theme" changes in settings.json take effect at the next launch; it stays ${value}`;
+    const a = await watching([], {});
+    a.write({ theme: "light" });
+    await sees(a.app, stays("auto"));
+    const b = await watching([], { theme: "light" });
+    b.write({ theme: "dark" });
+    await sees(b.app, stays("light"));
+  });
+
   // Release 8a plan, choice 26: "autoCompactWindow" is LIVE, set as /autocompact sets it; a bad one keeps the last good.
   it("sets the /autocompact size from a live autoCompactWindow, off when removed, and says a bad one", async () => {
     const { app, session, write } = await watching([], {});
