@@ -8,7 +8,7 @@ import type { CommandTask, Task } from "../../src/core/tasks.js";
 import { names } from "../../src/tui/app/constants.js";
 import { Printed } from "../../src/tui/Conversation.js";
 import type { Message } from "../../src/core/types.js";
-import { callRow, describe as describeMessage, gapped, type Line, resultRow } from "../../src/tui/describe.js";
+import { callRow, describe as describeMessage, gapped, type Line, notice, resultRow } from "../../src/tui/describe.js";
 import { taskRows } from "../../src/tui/TaskPanel.js";
 import { type Look, palette, ThemeContext } from "../../src/tui/theme.js";
 import { Rows } from "../../src/tui/view.js";
@@ -302,6 +302,21 @@ describe("describe's blocks and markers", () => {
     expect(texts(gapped([block("a"), { text: "  ⎿ ok" }, block("b")], null))).toEqual(["a", "  ⎿ ok", "", "b"]);
     expect(texts(gapped([block("a")], { text: "before" }))).toEqual(["", "a"]);
     expect(texts(gapped([block("a"), { text: "" }, block("b")], { text: "" }))).toEqual(["a", "", "b"]);
+    // An empty band line is part of your message, not a gap (Task 3's code review).
+    expect(texts(gapped([block("a")], { text: "", band: true }))).toEqual(["", "a"]);
+  });
+
+  // Task 3's code review: a notice's later rows line up after its `● `, as a reply's do, and its own spans move with its
+  // text, after the dot's.
+  it("indents a notice's later rows under its text, and keeps its own spans after the dot's", () => {
+    const shown = notice({ text: "ab", color: "gray", styles: [{ start: 0, end: 1, bold: true }] }, P);
+    expect(shown).toEqual({ text: "● ab", color: "gray", styles: [{ start: 0, end: 2, color: P.muted }, { start: 2, end: 3, bold: true }], indent: 2, block: true });
+    const long = notice({ text: Array.from({ length: 12 }, () => "word").join(" "), color: "gray" }, P);
+    const rows = new Rows(30);
+    rows.add([long]);
+    const full = Array.from({ length: rows.total }, (_, i) => rows.row(i).text.trimEnd());
+    expect(full.length).toBeGreaterThan(1);
+    expect(full.slice(1).every((r) => r.startsWith("  word"))).toBe(true);
   });
 });
 

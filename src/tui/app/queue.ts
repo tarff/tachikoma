@@ -460,11 +460,13 @@ export const queue = (ui: UI, fns: Fns) => {
   // then the ones left out, in their lines' words (Servers, tools); Reset my answer writes the reset (choice 24) and says
   // so, or, when it cannot be written, that the answer still holds (choice 52). What is said is asked for, shown at the
   // bottom, as the model list's pick says (pick, below).
-  const mcpAction = (name: string, action: Action) => {
+  // Its output one block, as a command's is (asCommand, below), a sign-in's through to its last line.
+  const mcpAction = (name: string, action: Action) => void asCommand(() => runAction(name, action));
+  const runAction = (name: string, action: Action) => {
     const servers = ui.mcp!.servers;
     if (action === "Reconnect") return void servers.restart(name);
     ui.view.current = FOLLOWING;
-    if (action === "Sign in" || action === "Sign out") return void account(name, action);
+    if (action === "Sign in" || action === "Sign out") return account(name, action);
     const shown = visible(name);
     if (action === "Show tools") {
       const { names, leftOut } = servers.tools(name); // each tool's own name (release 8c plan, Task 16; choice 66)
@@ -541,9 +543,17 @@ export const queue = (ui: UI, fns: Fns) => {
     // The pick comes after any edit of the file's lead made while the list was open, so it wins, as a /lead typed
     // then would.
     ui.waiting.current.lead = undefined;
-    void leadTo(spec)
-      .catch((err) => fns.say({ text: errorText(err), color: "red" }))
-      .finally(fns.next);
+    void asCommand(() => leadTo(spec).catch((err) => fns.say({ text: errorText(err), color: "red" }))).finally(fns.next);
+  };
+  // A list's pick says its output as a command does, one block from its first line said (TUI design pass, Task 3's code
+  // review; output.ts, say), the mark gone once it ends, as perform's is.
+  const asCommand = async (run: () => unknown) => {
+    ui.command.current = true;
+    try {
+      await run();
+    } finally {
+      ui.command.current = false;
+    }
   };
   // A shortening between turns, for /lead and /compact, run as a turn is: the working line and its spinner, what is typed
   // waiting in the queue, and Ctrl-C stopping it through its own signal, handed back with what it gave.
@@ -772,13 +782,15 @@ export const queue = (ui: UI, fns: Fns) => {
           return now;
         }
       });
-      if ("problem" in next) fns.say({ text: next.problem, color: "red" });
+      // Its red line a block of its own, as a command's output is (TUI design pass, Task 3's code review); a conversation
+      // opened brings its own blocks.
+      if ("problem" in next) fns.say({ text: next.problem, color: "red", block: true });
       else {
         const lines = [...next.lines, ...(gone ? [{ text: gone }] : [])].map((l) => ({ ...l, color: "gray" as const }));
         await switchTo(next, lines, { end: "resume", start: "resume", ...(made ? { lead: made } : {}) });
       }
     } catch (err) {
-      fns.say({ text: errorText(err), color: "red" });
+      fns.say({ text: errorText(err), color: "red", block: true });
     } finally {
       if (hold) ui.working.current = false;
     }

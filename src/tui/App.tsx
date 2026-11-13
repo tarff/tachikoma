@@ -32,7 +32,7 @@ import { useAppState } from "./app/state.js";
 import { type Bindings, keyText } from "./bindings.js";
 import { type Clipboard, imagePaths } from "./clipboard.js";
 import { Conversation, Printed } from "./Conversation.js";
-import { brief, describe, type Line, notice as noticeLine, screen as escaped } from "./describe.js";
+import { brief, describe, gapAfter, type Line, notice as noticeLine, screen as escaped } from "./describe.js";
 import { DetailView, keyRow, searchFor } from "./DetailView.js";
 import { Field } from "./Field.js";
 import { History } from "./history.js";
@@ -581,7 +581,7 @@ export function App(props: AppProps) {
   // takes no click, and its seconds grow with the working line's redraws, every SPIN_MS while a turn runs. Its top line
   // starts a block, so an empty row goes above it as say() would put one (TUI design pass, Task 3).
   const live = picking || ui.question || d ? [] : ui.run.live(ui.now).map(escaped);
-  const liveRow = live[0]?.block && ui.lastSaid.current?.text ? [{ text: "" }, ...live] : live;
+  const liveRow = live[0]?.block && gapAfter(ui.lastSaid.current) ? [{ text: "" }, ...live] : live;
   if (menu?.kind !== "path") ui.listed.current = null;
 
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the

@@ -30,7 +30,7 @@ const words = (calls: ToolCall[], shell: "bash" | "powershell" = "bash") =>
 const gray = (t: string) => ({ text: t, color: "gray", oneLine: true });
 // Task 3's marks: a folded row and the live row's top start with a grey `● `, a reply and a call row with an accent one
 // (choice P2), each a block; a reply's later rows are indented (choice P3).
-const muted = (t: string) => ({ text: t, color: "gray", styles: [{ start: 0, end: 2, color: P.muted }], oneLine: true, block: true });
+const muted = (t: string) => ({ text: t, color: "gray", styles: [{ start: 0, end: 2, color: P.muted }], indent: 2, oneLine: true, block: true });
 const folded = (t: string) => muted(`● ${t}`);
 const answer = (t: string) => ({ text: `● ${t}`, styles: [{ start: 0, end: 2, color: P.accent }], indent: 2, block: true });
 const own = (t: string) => ({ text: t, color: P.text, styles: [{ start: 0, end: 2, color: P.accent }], oneLine: true, block: true });

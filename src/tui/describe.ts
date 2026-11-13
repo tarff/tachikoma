@@ -94,21 +94,31 @@ export function shownName(name: string, names: McpNames = safeNames): string {
   return tool ? `${server} ${tool}` : server;
 }
 
-// A line's `● `, its first two characters, in a colour of the palette (TUI design pass, Task 3): the lead an indented line
-// wraps under (choice P3).
+// A line's `● `, its first two characters, in a colour of the palette (TUI design pass, Task 3): the `● ` that an indented
+// line's later rows line up after (choice P3).
 const dot = (color: string | undefined): Span => ({ start: 0, end: 2, color });
 
-// A notice (Task 3; audit 7): a grey `● ` before its text, which keeps its own colour; a block.
-export const notice = (l: Line, palette: Palette): Line => ({ ...l, text: `● ${l.text}`, styles: [dot(palette.muted)], block: true });
+// A notice (Task 3; audit 7): a grey `● ` before its text, which keeps its own colour and spans; a block, its later rows
+// lined up after the dot, as a reply's are (Task 3's code review).
+export const notice = (l: Line, palette: Palette): Line => ({
+  ...l,
+  text: `● ${l.text}`,
+  styles: [dot(palette.muted), ...(l.styles ?? []).map((s) => ({ ...s, start: s.start + 2, end: s.end + 2 }))],
+  indent: 2,
+  block: true,
+});
 
-// The lines with one empty line before each block, unless the block comes first (`before` null: no line before it) or
-// after an empty line (Task 3): as say() says them (output.ts), and as an opened folded row puts its calls' rows, so they
-// look as they did live (mouse.ts, putFold).
-export function gapped(lines: readonly Line[], before: { text: string } | null): Line[] {
+// Whether a block after `before` takes a gap: not first (null), and not after an empty line, an empty band line being
+// your message's own row, not a gap (Task 3's code review).
+export const gapAfter = (before: { text: string; band?: true } | null): boolean => before !== null && (before.text !== "" || before.band === true);
+
+// The lines with one empty line before each block where gapAfter says (Task 3): as say() says them (output.ts), and as an
+// opened folded row puts its calls' rows, so they look as they did live (mouse.ts, putFold).
+export function gapped(lines: readonly Line[], before: { text: string; band?: true } | null): Line[] {
   const out: Line[] = [];
   let last = before;
   for (const l of lines) {
-    if (l.block && last !== null && last.text !== "") out.push({ text: "" });
+    if (l.block && gapAfter(last)) out.push({ text: "" });
     out.push(l);
     last = l;
   }

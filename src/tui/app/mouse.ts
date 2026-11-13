@@ -218,7 +218,7 @@ export const mouse = (ui: UI, fns: Fns) => {
     while (from > 0 && kept.lines[from - 1]!.fold === fold) from--;
     // Spaced as say() spaces lines, so an opened row's calls look as they did live, the gaps the fold's own, so closing it
     // takes them away (TUI design pass, Task 3's review).
-    const rows = fold.open ? openRows(fold, ui.run.options) : [foldRow(fold, ui.palette)];
+    const rows = fold.open ? openRows(fold, ui.run.options) : [foldRow(fold, ui.run.options.palette)];
     const put = gapped(rows, kept.lines[from - 1] ?? null).map((l) => escaped({ ...l, fold }));
     kept.replace(from, to - from, put);
     const moved = (n: number) => (n >= to ? n + put.length - (to - from) : Math.min(n, from));
