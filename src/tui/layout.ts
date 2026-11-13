@@ -166,18 +166,33 @@ function fewest(lines: string[], room: number): string[] {
 // first red row does, and is cut as the red lines are; it is drawn only when there is a row for it beyond the
 // conversation's one and beyond the red row always kept, so a red row comes first. The gate never sends it with red lines
 // today (a paused question has no dangers), but the frame takes both.
+//
 // While the prompt is drawn (no question, list, form or detail view in its place) a line goes above it and one below, both
-// or none; they give way first, before the tool line and the hint row, so nothing that says something is lost to a line
-// (TUI design pass, Task 4 and choice P5).
+// or none, only in rows the frame leaves over once everything else has the rows it has without them: the queue, the to-do
+// list, the menu, the task panel, the prompt's own rows, the tool line and the hint row, and in full screen the
+// conversation's one row. So nothing that says something is lost to a line (TUI design pass, Task 4 and choice P5, the
+// user's reading "Give way for all"); with them, the conversation has two rows fewer.
 export function frame(i: FrameIn): FrameOut {
+  const without = frameWithoutLines(i);
+  const prompt = !i.question && !i.detail && i.pickerNeeded === null;
+  // viewHeight is the rows the live area leaves of the frame (at least one): in full screen the conversation keeps one.
+  if (!prompt || without.viewHeight - 2 < (i.full ? 1 : 0)) return without;
+  return {
+    ...without,
+    rules: true,
+    viewHeight: Math.max(1, without.viewHeight - 2),
+    promptFirst: without.promptFirst + 1 - (i.full ? 2 : 0), // under the upper line, the conversation two rows shorter
+  };
+}
+
+// The frame as frame() lays it out first, with no lines around the prompt; exported for the tests that compare the two.
+export function frameWithoutLines(i: FrameIn): FrameOut {
   const reds = i.askedText === null ? [] : i.askedWarnings;
   const note = i.askedText !== null && i.askedNote ? 1 : 0;
   const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
-  const before = i.rows - 1 - 1 - (i.working && !i.question ? 1 : 0) - i.liveRows - (i.full ? 1 : 0);
+  const base = i.rows - 1 - 1 - (i.working && !i.question ? 1 : 0) - i.liveRows - (i.full ? 1 : 0);
   // The rows kept below the tool line and the hint: the cursor's, while the prompt is drawn, or a question's least.
   const cursor = i.askedText !== null ? note + linesOf(i.askedShort ?? i.askedText).length + Math.min(1, reds.length) : i.detail ? 0 : 1;
-  const rules = !i.question && !i.detail && i.pickerNeeded === null && before >= 2 + (i.toolLine ? 1 : 0) + (i.hint ? 1 : 0) + cursor;
-  const base = before - (rules ? 2 : 0);
   const tooled = i.toolLine && base >= 1 + cursor + (i.hint ? 1 : 0);
   const room = base - (tooled ? 1 : 0);
   const hinted = i.hint && room >= 1 + cursor;
@@ -199,7 +214,7 @@ export function frame(i: FrameIn): FrameOut {
   const pickerRows = i.pickerNeeded === null ? 0 : Math.max(1, Math.min(i.pickerNeeded, i.rows - 1 - 1 - 1 - 1 - (hinted ? 1 : 0)));
   const abovePrompt = i.liveRows + (i.working ? 1 : 0) + todoShown.length + queuedShown; // the live area's rows drawn above the prompt
   const live = (askedRows: number) =>
-    (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + (rules ? 2 : 0) + menuRows + panel.length) +
+    (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);
   const questionFits = i.askedText === null || i.rows - 1 - live(note + linesOf(i.askedText).length + Math.min(1, reds.length)) >= 1; // as viewHeight, below
   const asked = linesOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
@@ -207,7 +222,7 @@ export function frame(i: FrameIn): FrameOut {
   const warned = fewest(reds, Math.max(0, i.rows - 1 - live(noted + asked.length) - 1));
   const viewHeight = Math.max(1, i.rows - 1 - live(noted + warned.length + asked.length));
   return {
-    rules,
+    rules: false,
     tooled,
     hinted,
     menuRows,
@@ -224,6 +239,6 @@ export function frame(i: FrameIn): FrameOut {
     warned,
     noted: noted === 1,
     viewHeight,
-    promptFirst: (i.full ? viewHeight : 0) + abovePrompt + (rules ? 1 : 0),
+    promptFirst: (i.full ? viewHeight : 0) + abovePrompt,
   };
 }
