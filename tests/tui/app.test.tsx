@@ -384,8 +384,8 @@ describe("App", () => {
   });
 
   it("shows the start line, grey, first", async () => {
-    const { app } = await mount([], { intro: [{ text: "Instructions: CLAUDE.md (12 bytes)", color: "gray" }] });
-    expect(app.lastFrame()).toMatch(/^Instructions: CLAUDE.md \(12 bytes\)\n/);
+    const { app } = await mount([], { intro: [{ text: "Instructions left out: ~/x.md (not allowed)", color: "gray" }] });
+    expect(app.lastFrame()).toMatch(/^Instructions left out: ~\/x\.md \(not allowed\)\n/);
   });
 
   // Release 8a plan, Task 6 (user, 2026-11-06: "Show it"): a resumed conversation is drawn as a live one, above the lines
@@ -3594,13 +3594,13 @@ const SHOWN_RULE = RULE.slice(0, 99); // the prompt's lines as shown() cuts them
 
 describe("App in full screen", () => {
   it("draws the conversation at the top and the status line at the bottom, in a frame a row shorter than the terminal", async () => {
-    const { app } = await mount([reply("hello there")], { full: true, intro: [{ text: "Instructions: CLAUDE.md (12 bytes)", color: "gray" }] });
+    const { app } = await mount([reply("hello there")], { full: true, intro: [{ text: "Instructions left out: ~/x.md (not allowed)", color: "gray" }] });
     await type(app, "hi");
     await until(app, "hello there");
     const rows = shown(app);
     expect(rows).toHaveLength(23); // 24 rows: Ink clears the whole terminal for a frame as tall as it
     // Your message's band rows after a gap, then the reply after its own (TUI design pass, Task 3).
-    expect(rows.slice(0, 8)).toEqual(["Instructions: CLAUDE.md (12 bytes)", "", "", "› hi", "", "", "● hello there", ""]);
+    expect(rows.slice(0, 8)).toEqual(["Instructions left out: ~/x.md (not allowed)", "", "", "› hi", "", "", "● hello there", ""]);
     expect(rows.at(-1)).toContain("lead fake:a");
   });
 

@@ -79,9 +79,19 @@ describe("the start-up box", () => {
     ]);
   });
 
-  it("draws the ASCII drawing with colour but not full colour, and with no colour, at 120 columns", () => {
-    expect(drawing(startBox(INFO, 120, COLOUR))).toBe("ascii");
-    expect(drawing(startBox(INFO, 120, NONE))).toBe("ascii");
+  // The pixel art is for full colour only (Task 5): with colour but not full, and with none, the ASCII drawing where it
+  // fits, else the list alone.
+  it.each([
+    { look: "colour but not full", shown: COLOUR, columns: 120, want: "ascii", wide: ASCII_BOX },
+    { look: "colour but not full", shown: COLOUR, columns: 80, want: "ascii", wide: ASCII_BOX },
+    { look: "colour but not full", shown: COLOUR, columns: 50, want: "none", wide: LIST_BOX },
+    { look: "no colour", shown: NONE, columns: 120, want: "ascii", wide: ASCII_BOX },
+    { look: "no colour", shown: NONE, columns: 80, want: "ascii", wide: ASCII_BOX },
+    { look: "no colour", shown: NONE, columns: 50, want: "none", wide: LIST_BOX },
+  ])("draws the $want layout with $look at $columns columns", ({ shown, columns, want, wide }) => {
+    const lines = startBox(INFO, columns, shown);
+    expect(drawing(lines)).toBe(want);
+    for (const l of box(lines)) expect(stringWidth(l.text)).toBe(wide);
   });
 
   it("puts each row on one line, a block at its top, and the hint under it, muted", () => {
@@ -104,7 +114,11 @@ describe("the start-up box", () => {
     expect(row.color).toBeUndefined();
     const top = lines[0]!;
     expect(colourAt(top, 0)).toBe(MUTED);
-    expect(colourAt(top, top.text.indexOf("Tachikoma"))).toBeUndefined(); // the name and version, a value
+    // The name and version in the terminal's own colour (the user's choice, 2026-11-13: "Own colour"), the lines after
+    // them muted.
+    const title = top.text.indexOf("Tachikoma 0.1.0");
+    for (let c = title; c < title + "Tachikoma 0.1.0".length; c++) expect(colourAt(top, c)).toBeUndefined();
+    expect(colourAt(top, title + "Tachikoma 0.1.0".length + 1)).toBe(MUTED);
     expect(lines.at(-2)!.styles).toEqual([{ start: 0, end: lines.at(-2)!.text.length, color: MUTED }]);
     const ascii = startBox(INFO, 80, FULL)[1]!;
     expect(colourAt(ascii, 3)).toBe(palette(FULL).accent);
@@ -147,6 +161,21 @@ describe("the start-up box", () => {
       expect(l.text.at(-1)).toMatch(/[│╮╯]/);
     }
     expect(lines[2]!.text).toMatch(/^│ {2}folder {2}~\/deep\/.*…  │$/);
+  });
+
+  // The user's choice, 2026-11-13 ("Never costs drawing"): the folder row, as the read row, is counted at its shortest
+  // (its value cut to "…") when the drawing is picked; the box then widens to `width` for it, and cuts it inside the border.
+  it("keeps the pixel art for a folder too long to fit beside it, cutting the folder with … inside the border", () => {
+    const folder = `~/${"deep/".repeat(15)}proj`; // 81 columns and "  git:(main)": counted whole, no drawing would fit
+    const lines = startBox({ ...INFO, folder }, 120, FULL);
+    expect(drawing(lines)).toBe("pixels");
+    for (const l of box(lines)) {
+      expect(stringWidth(l.text)).toBe(120);
+      expect(l.text.at(-1)).toMatch(/[│╮╯]/);
+    }
+    // The value's room: 120 less 56 for the borders, padding, art and gap, less the labels' 8: 56 columns.
+    expect(list(lines, 1 + 2 + 48 + 2)[1]).toBe(`folder  ${folder.slice(0, 55)}…`);
+    expect(list(startBox({ ...INFO, folder }, 50, FULL), 3)[1]).toBe(`folder  ${folder.slice(0, 35)}…`); // the list alone: 36
   });
 
   it("escapes control characters in what it is given, before measuring", () => {

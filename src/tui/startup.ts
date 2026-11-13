@@ -37,6 +37,7 @@ interface Item {
   label: string;
   value: string;
   files?: string[]; // the read row's names, which it cuts with "and N more"
+  least?: string; // the row at its shortest, as the drawing is picked, when not its value
 }
 
 // The first `k` names, and "and N more" for the rest.
@@ -50,7 +51,8 @@ function named(files: string[], room: number): string {
 }
 
 // The box's rows, then the hint. The drawing is the pixel art with full colour, else the ASCII drawing, else none: the
-// first whose columns, with the borders, padding, gap and the list at its narrowest (the read row cut to one name), fit
+// first whose columns, with the borders, padding, gap and the list at its narrowest (the read row cut to one name, the
+// folder to "…"), fit
 // `width`. The box is then as wide as the list wants, up to `width`; a value wider than its room is cut with "…" inside
 // the border. The border and labels are muted, the values the terminal's own colour (the user's choice, 2026-11-13).
 // Everything given is escaped before it is measured, as it comes from the disk, git and the settings.
@@ -61,14 +63,16 @@ export function startBox(info: StartInfo, width: number, look: Look): Line[] {
   const n = info.servers;
   const items: Item[] = [
     { label: "lead", value: visible(info.lead) },
-    { label: "folder", value: visible(info.branch === null ? info.folder : `${info.folder}  git:(${info.branch})`) },
+    // At its shortest the folder is cut to "…" alone, so a long path never costs the drawing (the user's choice,
+    // 2026-11-13: "Never costs drawing").
+    { label: "folder", value: visible(info.branch === null ? info.folder : `${info.folder}  git:(${info.branch})`), least: "…" },
     { label: "mode", value: `${visible(info.mode)} · sandbox ${info.sandbox}` },
-    ...(files.length ? [{ label: "read", value: files.join(", "), files }] : []),
+    ...(files.length ? [{ label: "read", value: files.join(", "), files, least: some(files, 1) }] : []),
     ...(n ? [{ label: "mcp", value: `${n} server${n === 1 ? "" : "s"} starting` }] : []),
     ...(info.hooks ? [{ label: "hooks", value: String(info.hooks) }] : []),
   ];
   const labels = Math.max(...items.map((i) => i.label.length)) + LABEL_GAP;
-  const list = (narrowest: boolean) => labels + Math.max(...items.map((i) => stringWidth(narrowest && i.files ? some(i.files, 1) : i.value)));
+  const list = (narrowest: boolean) => labels + Math.max(...items.map((i) => stringWidth(narrowest ? (i.least ?? i.value) : i.value)));
   const title = `Tachikoma ${visible(info.version)}`;
   const titled = stringWidth(title) + 6; // "╭─ ", the title, " ─╮"
 
