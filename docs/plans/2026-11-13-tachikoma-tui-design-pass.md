@@ -103,6 +103,9 @@ The user approved all six on 2026-11-13 ("yes to those six").
 - **P4. The band and tint greys start as placeholders** in theme.ts and are set by eye with the
   user at Task 14's check, on their dark terminal and a light one if they have it. The values
   chosen are recorded in the plan's "As built" with the user's words. No other number is set.
+  (Task 1's review: the accent is the art's `B`, #4278de, from the appendix; the other full-colour
+  hex values, muted, success, error and warning in both looks, are placeholders set by eye at the
+  same check.)
 - **P5. On a short terminal the prompt's two lines give way first**, before the tool line and the
   hint row, so nothing that says something is lost to a rule.
 - **P6. `marked` at an exact version**, the newest on the registry at Task 15 that is at least two
@@ -440,8 +443,9 @@ and red levels).
 - **Captures:** the 44 screen captures made again (the scratch test, run as before and deleted by
   exact name), put beside today's for the user.
 - **Terminal check (scratchpad `checklist-tui.md`):** the user runs `tachi` in their terminal:
-  start-up box and art; a conversation with tools, a failure and an edit; the band and tint greys,
-  set by eye (choice P4), on dark and, if they can, light (`theme: "light"`); `NO_COLOR=1`; a
+  start-up box and art; a conversation with tools, a failure and an edit; the band and tint greys
+  and the muted, success, error and warning colours, set by eye (choice P4), on dark and, if they
+  can, light (`theme: "light"`); `NO_COLOR=1`; a
   resize 120 → 50 → 120; a permission question. Fixes from it are built, reviewed and re-checked.
 - Then: the whole-PR review, the full suite once, and a PR on the user's say-so.
 
@@ -540,3 +544,9 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
 ## As built
 
 (Filled in as tasks finish.)
+
+- **Task 1** (aca2fba, review fixes d3558e5): `theme` setting and palette. Departures, accepted
+  by the controller: `text` has no colour in any look (the terminal's own foreground, since a fixed
+  one would differ between light and dark and the design gives none); the context carries the
+  `Look` with the palette (`{ look, palette }`), as Tasks 2, 6 and 13 need `look`; a live edit of
+  `theme` uses the launch-only settings' existing sentence (src/tui/app/liveEdits.ts).
