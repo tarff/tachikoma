@@ -922,3 +922,16 @@ What changed from the plan while building, for the later tasks and the reviewers
   just printed an answer. Its terminal check (`process.stderr.isTTY`, in `cli.tsx`) has no test.
   The second Ctrl-C goes through the CLI's `quit()` (`process.exit(130)`), untested, as a test
   cannot send Ctrl-C to a spawned run on Windows.
+- **The README names this release "after release 8c" (choice 35, the user's, 2026-11-13):** the
+  banner says background commands followed 8c and 8c-2 comes next, and the feature bullet is
+  tagged `(after release 8c)`; no new number.
+- **Task 12:** beyond the plan's list, the status line's count, `/export`'s notes (a command's
+  ending notes go under `Subagents:`, the heading unchanged), the headless intro (a background
+  subagent still runs in the foreground) and the detail view (`/tasks t3` opens a command's
+  record too) were brought up to date. The hard-kill sentence of the removed time-limit entry is
+  a limit of its own, `(no release is set)`: release 12 was set for the time limit, not for it.
+  The MCP limits entry called the 30,000-character cut Tachikoma's; it is Claude Code's
+  (`src/exec/executor.ts`). The terminal checklist's step 6 needs `--mode auto`, as `-p` in `ask`
+  mode refuses every shell command.
+- **Two `--help` tests** expected a space where Task 9's longer `/tasks` line now puts a line
+  break; they take any whitespace between words now, as the `/vim` test beside them did.
