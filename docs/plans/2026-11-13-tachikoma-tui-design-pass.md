@@ -550,3 +550,17 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   one would differ between light and dark and the design gives none); the context carries the
   `Look` with the palette (`{ look, palette }`), as Tasks 2, 6 and 13 need `look`; a live edit of
   `theme` uses the launch-only settings' existing sentence (src/tui/app/liveEdits.ts).
+- **Task 2** (b99a543, review fixes 77eafe4): styled lines. An empty line prints as one row in
+  classic (Ink gives an empty Text none), for the gaps and the band. Known limits: the lead must be
+  `indent` plain characters (a line break, a tab or a wide character in it draws differently in
+  the two modes); a span edge between `\r` and `\n` draws the `\r` (Task 7 ends spans after `\n`).
+- **Task 3** (cf7863e, fixes d32e986 and 931538f): blocks, gaps and markers. The user chose
+  (2026-11-13, "Gap; ● on warnings"): each slash command's output is one block with no dot, a
+  list's pick included; the start-up warnings are notices. Controller's calls from the reviews: a
+  red line (a live edit's problem, the launch's red line) is a block with no dot; an opened fold
+  is spaced as its calls were live; your message's empty band rows are not a gap, so a reply
+  after it gets its own; notices take `indent: 2` like replies; the live row has an empty row
+  above it. All to be looked at in Task 14's terminal check. Known limits: a line said by
+  something else while a command awaits can take the command's block mark; `/settings` and
+  `/keybindings` do not hold `working` while the editor is open; a click on a gap row in an
+  opened fold closes it.
