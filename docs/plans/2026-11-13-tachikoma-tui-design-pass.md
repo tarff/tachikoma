@@ -594,3 +594,14 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   art, which needs 95 columns there; look at both at the check. Left as they are: App.tsx keeps
   its own `columns - 1` beside `textWidth`; `Instructions.read[].size` is no longer shown;
   `tilde` matches the home folder's letter case exactly.
+- **Task 7** (1b4b83c, fixes 42189a1, 72f4169 and e4066ae): diffs in colour. `previewStyles`
+  (describe.ts) colours an edit's preview; each span runs to just past its line's `\n`, so a
+  CRLF file's `\r` is never drawn. Ctrl+O and the moved question are unchanged: neither shows a
+  diff (Ctrl+O shows the input unmarked; the moved question re-says only its own line). From the
+  review: Task 2's span loops (`runs()`, `keptOf`) now step through spans in order (a 20,000-line
+  edit drew in 32.5 s in classic before, 2.2 s after). The user chose (2026-11-13, "Expand
+  first-row tabs"): in classic, a tab on a tinted line's first row is printed as spaces to its
+  8-column stop, as full screen draws it. Known limits: a tab on a later row is expanded by Ink's
+  wrap-ansi counting from the line's start, so it lands a column or two off full screen; a row
+  mixing an untinted tab before a tinted one can break one character differently; the tint
+  covers a line's characters only, not the rest of its row (look at it in Task 14's check).
