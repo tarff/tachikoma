@@ -1,7 +1,8 @@
 # Tachikoma
 
-> **Work in progress.** Release 8c of 15 is done (the third of release 8's five parts); its second
-> half, 8c-2, servers inside the sandbox and allowed sites, comes next, and the rest is being built.
+> **Work in progress.** Release 8c of 15 is done (the third of release 8's five parts), and
+> background commands after it; 8c's second half, 8c-2, servers inside the sandbox and allowed
+> sites, comes next, and the rest is being built.
 > Expect missing features and changes that break things, and don't rely on it for real work yet.
 
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
@@ -16,7 +17,8 @@ editor, stash, pictures and vim mode; a Docker sandbox, auto mode (a second mode
 actions) and a check on dangerous commands; saved sessions you can reopen, with a conversation
 too long for the model shortened into a summary; hooks, your own commands run at set moments
 of a session, in Claude Code's format; and MCP servers, whose tools the model can use, set up as
-in Claude Code. The command is `tachi`. So far it has been tested
+in Claude Code. After 8c came background commands, shell commands that keep running while the
+model works. The command is `tachi`. So far it has been tested
 on Windows 11 only; release 14 adds testing on Linux and macOS.
 
 ## What it does
@@ -33,9 +35,9 @@ on Windows 11 only; release 14 adds testing on Linux and macOS.
   permission mode, set with `--mode`; when it asks about a write or an edit, it shows what will go
   into the file first. There are four: `ask` (the default), `project`, `auto` and `never`. See
   [Permission modes](#permission-modes).
-- **Background commands:** the model can run a shell command in the background, such as a dev
-  server, read what it has printed since it last looked with `shell_output`, and stop it with
-  `stop_task`. When one ends by itself, the model is told at once with the output it has not read
+- **Background commands** (after release 8c): the model can run a shell command in the
+  background, such as a dev server, read what it has printed since it last looked with
+  `shell_output`, and stop it with `stop_task`. When one ends by itself, the model is told at once with the output it has not read
   yet, starting a turn if it was idle; one stopped with `stop_task` or `/tasks stop` is mentioned at
   its next turn. A command still running at its timeout (2 minutes unless the model sets one, 10 at
   most) moves to the background; one that starts with `sleep` or `Start-Sleep` is stopped at its
@@ -1939,7 +1941,7 @@ Each is fixed in a later release, unless it says otherwise.
   Node cannot make without a native add-on or a helper program (no release is set). On macOS and
   Linux a stop ends the command's whole process group, but a program that left the group, as
   under `setsid`, keeps running too.
-- **A hard kill or a crash of Node can leave commands running** (release 12). Closing the
+- **A hard kill or a crash of Node can leave commands running** (no release is set). Closing the
   terminal, SIGTERM, and Ctrl-C in headless mode stop running commands, background ones too; a
   hard kill or a crash of Node does not, and on macOS and Linux the command then keeps going.
 - **On Windows, PowerShell error messages repeat the whole command**, including the line Tachikoma
