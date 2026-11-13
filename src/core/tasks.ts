@@ -264,9 +264,17 @@ export class Tasks {
     return this.#inbox.filter((i) => i.wake).map(({ id, kind }) => ({ id, kind }));
   }
 
+  // Set by -p's wait before each turn it starts: that turn's take() takes the first waking entry alone, with the notes
+  // waiting, so each ending gets a turn of its own (user choice 37, PR #18 review). A window's takes take everything.
+  oneEnding = false;
+
   // Everything waiting for the lead, removed, so each goes into exactly one request.
   take(): string[] {
-    return this.#inbox.splice(0).map((i) => (typeof i.text === "string" ? i.text : i.text()));
+    const first = this.oneEnding ? this.#inbox.find((i) => i.wake) : undefined;
+    this.oneEnding = false;
+    const taken = first ? this.#inbox.filter((i) => !i.wake || i === first) : this.#inbox;
+    this.#inbox = first ? this.#inbox.filter((i) => i.wake && i !== first) : [];
+    return taken.map((i) => (typeof i.text === "string" ? i.text : i.text()));
   }
 
   clearFinished(): void {

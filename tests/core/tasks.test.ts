@@ -793,6 +793,27 @@ describe("Tasks, background commands", () => {
     expect(c.stop).toHaveBeenCalledTimes(1);
   });
 
+  // User choice 37, PR #18 review: under -p each turn the wait starts takes one ending.
+  it("takes the first ending alone, with the notes waiting, when -p's wait asks for one", async () => {
+    const { tasks } = await setup(new Held());
+    const [a, b, c] = [command(), command(), command()];
+    const [ta, , tc] = [tasks.adopt(a.run, { command: "make" }), tasks.adopt(b.run, { command: "serve" }), tasks.adopt(c.run, { command: "npm test" })];
+    a.end(0);
+    await ta.done;
+    tasks.stop("t2");
+    c.end(1);
+    await tc.done;
+    tasks.oneEnding = true;
+    expect(tasks.take()).toEqual([
+      "Background command t1 (make) ended with exit code 0, with no new output.",
+      "Background command t2 (serve) was stopped by the user.",
+    ]);
+    expect([tasks.oneEnding, tasks.wakes()]).toEqual([false, true]);
+    tasks.oneEnding = true;
+    expect(tasks.take()).toEqual(["Background command t3 (npm test) ended with exit code 1, with no new output."]);
+    expect(tasks.take()).toEqual([]);
+  });
+
   // User choice 36, PR #18 review: in the box a stop counts once its kill has run there.
   it("counts a box stop once its kill has run, the command running until then, said once at the next turn", async () => {
     const saved = lead();

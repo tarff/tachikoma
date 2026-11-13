@@ -391,6 +391,22 @@ describe("waitForBackground", () => {
     expect(s.sent(3)).toContain("Background command t2 (node b.js) ended with exit code 0, with no new output.");
   });
 
+  // User choice 37, PR #18 review: two endings waiting at once still get a turn each, in the order they ended.
+  it("takes a turn for each of two endings that came before the wait could take either", async () => {
+    const s = await setup([both("node a.js", "node b.js"), reply("Started both."), reply("a ended."), reply("b ended.")]);
+    const stop = new AbortController();
+    const first = await s.first(stop.signal);
+    s.runs[0]!.end(ok(""));
+    s.runs[1]!.end(ok(""));
+    await Promise.all(s.tasks.all.map((t) => t.done));
+    expect(await s.wait(first, stop.signal)).toBeUndefined();
+    expect(s.answers).toEqual(["Started both.", "a ended.", "b ended."]);
+    expect(s.lead.seen).toHaveLength(4);
+    expect(s.sent(2)).toContain("Background command t1 (node a.js) ended with exit code 0, with no new output.");
+    expect(s.sent(2)).not.toContain("Background command t2");
+    expect(s.sent(3)).toContain("Background command t2 (node b.js) ended with exit code 0, with no new output.");
+  });
+
   it("stops at Ctrl-C during the wait: the command stopped unrecorded, no turn, exit 130, no timer or listener left", async () => {
     vi.useFakeTimers();
     onTestFinished(() => void vi.useRealTimers());
@@ -484,7 +500,7 @@ describe("waitForBackground", () => {
     vi.useFakeTimers();
     onTestFinished(() => void vi.useRealTimers());
     const odd = "node a.js\u001b[2J";
-    const s = await setup([both(odd, "npm run dev"), reply("Started both."), reply("Both ended.")]);
+    const s = await setup([both(odd, "npm run dev"), reply("Started both."), reply("a ended."), reply("b ended.")]);
     const stop = new AbortController();
     const first = await s.first(stop.signal);
     const lines: string[] = [];
