@@ -114,6 +114,11 @@ function starts(text: string, width: number): number[] {
   return found;
 }
 
+// Where one line's first row at `width` columns ends: where starts() breaks it, a tab counted to its stop, which is where
+// Ink breaks it in classic mode once that row's tabs under a background are printed as those spaces (Conversation.tsx,
+// Printed; TUI design pass, Task 7's review).
+export const firstRowEnd = (text: string, width: number): number => starts(text, width)[1] ?? text.length;
+
 // What a row of text[start, end) shows: the text itself, with each tab as spaces to its stop, cut at `width`.
 function draw(text: string, start: number, end: number, width: number): string {
   const part = text.slice(start, end);

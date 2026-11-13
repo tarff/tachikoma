@@ -265,6 +265,56 @@ describe("Printed", () => {
       expect(plain(none)).toBe("ab");
     }));
 
+  // Task 7's review, the user's choice (2026-11-13, "Expand first-row tabs"): the terminal skips a raw tab's cells without
+  // painting the background, so a tab under a background on a line's first row is printed as the spaces to its stop, as
+  // full screen draws it; a tab after the first row's end, or with no background, or without colour, stays a tab.
+  const TINT = "48;2;67;33;36"; // the dark look's delete tint, #432124 (theme.ts)
+  const tinted = (text: string, color?: string): Line => {
+    let start = 0;
+    const styles = text.split("\n").map((l) => {
+      const s = { start, end: Math.min(start + l.length + 1, text.length), bg: "#432124", ...(color ? { color } : {}) };
+      start = s.end;
+      return s;
+    });
+    return { text, styles };
+  };
+  const fullRows = (line: Line, columns: number) => {
+    const rows = new Rows(columns);
+    rows.add([line]);
+    return Array.from({ length: rows.total }, (_, i) => rows.row(i).text);
+  };
+
+  // A line with no lead is laid out at the terminal's width, ink-testing-library's 100 columns, as the App's are at its
+  // own (`columns`, Ink's useWindowSize).
+  it("prints a tab under a background on a line's first row as the spaces to its stop, as full screen draws it", () =>
+    coloured(() => {
+      const line = tinted("- \tone\n- \t\ttwo");
+      const shown = print(line, 100);
+      expect(shown.map(plain)).toEqual(["-       one", "-               two"]);
+      expect(shown.map(plain)).toEqual(fullRows(line, 100));
+      expect(shown.map((r) => within(r, TINT, "49"))).toEqual(["-       one", "-               two"]); // tinted, spaces too
+      expect(shown.join("")).not.toContain("\t");
+      // An indented line's text counts its columns from the box after its lead (choice P3), as full screen does.
+      const indented = { ...tinted("● \tone"), indent: 2 };
+      expect(print(indented, 30).map(plain)).toEqual(fullRows(indented, 30).map((r) => r.trimEnd()));
+      expect(print(indented, 30).map(plain)).toEqual(["●         one"]);
+    }));
+
+  // A tab after the first row is left to Ink: a Text that wraps goes through wrap-ansi, which turns every tab into the
+  // spaces to a stop counted from its line's start, not its row's (wrap-ansi 10.0.2, expandTabs), inside the run's
+  // background. So it is painted, at its own stop: "end" then 3 spaces (to column 104 of the line), where full screen draws
+  // 5 (to column 8 of the row).
+  it("leaves a tab after a line's first row to Ink, and one without a background or without colour as a tab", () =>
+    coloured(() => {
+      const long = `- \t${"word ".repeat(18)}end\tx`; // at 100 columns "end" goes to the second row, the tab after it
+      const first = `-       ${"word ".repeat(18)}`;
+      expect(fullRows(tinted(long), 100)).toEqual([first, "end     x"]);
+      const shown = print(tinted(long), 100);
+      expect(shown.map((r) => within(r, TINT, "49"))).toEqual([first, "end   x"]);
+      expect(print({ text: "- \tone", styles: [{ start: 0, end: 6, color: "red" }] }, 100).join("")).toContain("\t");
+      expect(print(tinted("- \tone"), 100, { light: false, color: false, full: false }).join("")).toContain("\t");
+    }));
+
   // Task 7's review: an edit's preview has a span for each of its lines, so a long one has thousands. A character's style
   // is found by stepping through the spans, not by looking at every span for every character: the spans' fields read
   // grow with the text, where the quadratic way read 2 or more for each span at each character (about 2,000,000 here).

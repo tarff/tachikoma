@@ -3281,6 +3281,21 @@ describe("App's diffs in colour", () => {
     });
   });
 
+  // Task 7's review, the user's choice (2026-11-13, "Expand first-row tabs"): a tab-indented edit's leading tabs are drawn
+  // as tinted spaces in classic, where the terminal would skip a raw tab's cells unpainted, as full screen draws them.
+  it.each([false, true])("draws a tab-indented edit's leading tabs as tinted spaces (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "a.go", old_text: "\tone", new_text: "\t\tuno" }), reply("edited")], { full });
+      writeFileSync(path.join(ctx.root, "a.go"), "\tone\n");
+      await type(app, "edit it");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow edit"));
+      expect(app.lastFrame()).not.toContain("\t");
+      for (const [text, [fg, bg]] of [["-       one", DEL], ["+               uno", ADD]] as const) {
+        expect(raw(app, text)).toMatch(new RegExp(`(${esc(fg!)}${esc(bg!)}|${esc(bg!)}${esc(fg!)})${esc(text)}\u001b\\[`));
+      }
+    });
+  });
+
   // The spec review: with colour off (theme.ts, look; NO_COLOR, say), an edit's preview draws no colour of its own, though
   // chalk would draw one. Only the preview's grey is left, the line's own, which Task 13 takes from the palette.
   it("draws an edit's preview with no colour of its own when colour is off", async () => {

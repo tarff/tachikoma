@@ -5,7 +5,7 @@ import { segmenter } from "./editor.js";
 import type { Found } from "./find.js";
 import { drawn, ordered } from "./select.js";
 import { ThemeContext } from "./theme.js";
-import { bar, inner, type Pos, type Row, type Rows } from "./view.js";
+import { bar, columnsAt, firstRowEnd, inner, type Pos, type Row, type Rows } from "./view.js";
 
 // The conversation in full screen (release 5 design, "The screen", "Scrolling"): `height` rows from `first`, each in its
 // line's colour, then blank rows, so what is drawn under it stays at the bottom of the screen; a view held past the
@@ -95,7 +95,8 @@ const STYLE = ["color", "bg", "bold", "italic", "dim", "underline"] as const;
 // so the spans are stepped through in order of their starts, and a style made again only where the spans over a
 // character change: a line with a span for each of thousands of lines, a long edit's preview, is drawn in time that grows
 // with its length (Task 7's review).
-function runs(chars: Iterable<{ offset: number; text: string; inverse: boolean }>, spans: readonly Span[] = []): ReactNode[] {
+// A character's `spaces`, a tab's in classic mode (Printed), is drawn in its place where its style has a background.
+function runs(chars: Iterable<{ offset: number; text: string; inverse: boolean; spaces?: string }>, spans: readonly Span[] = []): ReactNode[] {
   const parts: { text: string; style: Style; inverse: boolean }[] = [];
   const order = spans.map((_, i) => i).sort((a, b) => spans[a]!.start - spans[b]!.start);
   let next = 0; // the first in `order` not yet reached
@@ -111,9 +112,10 @@ function runs(chars: Iterable<{ offset: number; text: string; inverse: boolean }
       style = {};
       for (const i of open) for (const k of STYLE) if (spans[i]![k] !== undefined) Object.assign(style, { [k]: spans[i]![k] });
     }
+    const text = c.spaces !== undefined && style.bg !== undefined ? c.spaces : c.text;
     const last = parts.at(-1);
-    if (last && last.inverse === c.inverse && STYLE.every((k) => last.style[k] === style[k])) last.text += c.text;
-    else parts.push({ text: c.text, style, inverse: c.inverse });
+    if (last && last.inverse === c.inverse && STYLE.every((k) => last.style[k] === style[k])) last.text += text;
+    else parts.push({ text, style, inverse: c.inverse });
   }
   return parts.map((p, k) =>
     STYLE.some((s) => p.style[s] !== undefined) ? (
@@ -166,16 +168,41 @@ function Band({ width, children }: { width: number; children: ReactNode }) {
 // screen; a band line on the band colour the screen's width. A line with none of these prints as it did before, but an
 // empty one is a space, as an empty Text takes no row and a gap or a band line must take one (Task 2's review).
 export function Printed({ line, columns }: { line: Line; columns: number }) {
+  const { look } = useContext(ThemeContext);
   const l = line.text ? line : { ...line, text: " " };
   const n = l.oneLine ? 0 : (l.indent ?? 0);
-  const text = (from: number, to: number) => (
+  // Each character of text[from, to), laid out in a box `width` columns wide when given (the screen's, or the indented
+  // text's after its lead). The terminal skips a raw tab's cells without painting a background, so a tab on a line's first
+  // row carries the spaces to its stop that full screen draws for it (view.ts, columnsAt), its columns counted from the
+  // box's start after `from` or a line break, and runs() draws them where a background is (Task 7's review; the user's
+  // choice, 2026-11-13, "Expand first-row tabs"). The first row ends where Ink breaks it (view.ts, firstRowEnd); a tab
+  // after that stays a tab, as where it falls is not known here, and Ink's wrapping turns it into spaces itself, painted,
+  // counted from its line's start (wrap-ansi 10.0.2, expandTabs). Only with colour: without it nothing is painted.
+  const chars = (from: number, to: number, width?: number) => {
+    const tabs = width !== undefined && look.color && l.text.slice(from, to).includes("\t");
+    const out: { offset: number; text: string; inverse: boolean; spaces?: string }[] = [];
+    let col = 0;
+    let end = to; // where the first row of the line the character is on ends
+    for (const { segment, index } of segmenter.segment(l.text.slice(from, to))) {
+      const at = from + index;
+      if (!tabs) {
+        out.push({ offset: at, text: segment, inverse: false });
+        continue;
+      }
+      if (at === from || l.text[at - 1] === "\n") {
+        const next = l.text.indexOf("\n", at);
+        end = at + firstRowEnd(l.text.slice(at, next === -1 ? to : Math.min(next, to)), width);
+        col = 0;
+      }
+      const w = columnsAt(segment, col, width);
+      out.push({ offset: at, text: segment, inverse: false, ...(segment === "\t" && at < end ? { spaces: " ".repeat(w) } : {}) });
+      col += w;
+    }
+    return out;
+  };
+  const text = (from: number, to: number, width?: number) => (
     <Text color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
-      {l.styles
-        ? runs(
-            [...segmenter.segment(l.text.slice(from, to))].map((s) => ({ offset: from + s.index, text: s.segment, inverse: false })),
-            l.styles,
-          )
-        : l.text.slice(from, to)}
+      {l.styles ? runs(chars(from, to, width), l.styles) : l.text.slice(from, to)}
     </Text>
   );
   const body = n ? (
@@ -183,10 +210,10 @@ export function Printed({ line, columns }: { line: Line; columns: number }) {
       <Box width={n} flexShrink={0}>
         {text(0, n)}
       </Box>
-      <Box width={inner(columns, n)}>{text(n, l.text.length)}</Box>
+      <Box width={inner(columns, n)}>{text(n, l.text.length, inner(columns, n))}</Box>
     </>
   ) : (
-    text(0, l.text.length)
+    text(0, l.text.length, l.oneLine ? undefined : columns)
   );
   if (l.band) return <Band width={columns}>{body}</Band>;
   return n ? <Box width={columns}>{body}</Box> : body;
