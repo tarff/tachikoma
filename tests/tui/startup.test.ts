@@ -1,3 +1,4 @@
+import path from "node:path";
 import stringWidth from "string-width";
 import { describe, expect, it } from "vitest";
 import { ASCII, pixelRows } from "../../src/tui/art.js";
@@ -153,19 +154,65 @@ describe("the start-up box", () => {
     expect(list(pixels, 1 + 2 + 48 + 2)).toContain("read    NOTES0.md, NOTES1.md, NOTES2.md, NOTES3.md and 6 more"); // 120 - 56 - 8 = 56 columns
   });
 
-  it("cuts a value too wide for the box with … inside it, so the right border stays", () => {
-    const lines = startBox({ ...INFO, folder: `~/${"deep/".repeat(20)}proj` }, 50, FULL);
+  // Task 6's code review: the read row's shortest is its whole list where that is shorter than one name and "and 1 more".
+  it("picks the drawing with the read row at whichever of its forms is shorter", () => {
+    const probe = { ...INFO, lead: "x", folder: "~/p", files: ["AGENTS.md", "a.md"], servers: 0 };
+    // The widest row is "mode    ask · sandbox off", 25 columns: 29 around it with the ASCII drawing.
+    const lines = startBox(probe, 54, FULL);
+    expect(drawing(lines)).toBe("ascii");
+    for (const l of box(lines)) expect(stringWidth(l.text)).toBe(54);
+    expect(list(lines, 1 + 2 + 21 + 2)).toContain("read    AGENTS.md, a.md");
+  });
+
+  // The user's choice, 2026-11-13 ("Short paths when repeated").
+  it("names each file alone, or by its path where another file has the same name, and cuts the list on what it shows", () => {
+    const user = path.join("~", ".claude", "CLAUDE.md");
+    const project = path.join(path.sep, "work", "proj", "CLAUDE.md");
+    const inner = path.join(path.sep, "work", "proj", ".claude", "CLAUDE.md");
+    const agents = path.join(path.sep, "work", "proj", "AGENTS.md");
+    expect(list(startBox({ ...INFO, files: [user, agents] }, 120, COLOUR), 1 + 2 + 21 + 2)).toContain("read    CLAUDE.md, AGENTS.md");
+    const repeated = { ...INFO, files: [user, project, agents] };
+    expect(list(startBox(repeated, 120, COLOUR), 1 + 2 + 21 + 2)).toContain(`read    ${user}, ${project}, AGENTS.md`);
+    // At 50 the value's room is 36: "<user> and 2 more" is 28, and a second path would make it 50.
+    const three = startBox({ ...INFO, files: [user, project, inner] }, 50, COLOUR);
+    expect(list(three, 3)).toContain(`read    ${user} and 2 more`);
+  });
+
+  // The user's choice, 2026-11-13 ("Cut the path's middle"): a folder too long for its room keeps the path's start, as
+  // much of it as fits, then "…", the folder's own name and the branch.
+  it("cuts a folder too long for its room in its path's middle, keeping its name and branch, inside the border", () => {
+    const folder = "~/work/a/b/c/d/my-project"; // 25 columns and "  git:(main)": 37, one more than its room at 50
+    const lines = startBox({ ...INFO, folder }, 50, FULL);
     expect(drawing(lines)).toBe("none");
     for (const l of box(lines)) {
       expect(stringWidth(l.text)).toBe(50);
       expect(l.text.at(-1)).toMatch(/[│╮╯]/);
     }
-    expect(lines[2]!.text).toMatch(/^│ {2}folder {2}~\/deep\/.*…  │$/);
+    expect(lines[2]!.text).toBe(`│  folder  ~/work/a/b/…/my-project  git:(main)${" ".repeat(36 - 35)}  │`);
+    const windows = startBox({ ...INFO, folder: "C:\\Users\\me\\work\\a\\b\\my-project" }, 50, FULL);
+    expect(list(windows, 3)[1]).toBe("folder  C:\\Users\\me\\…\\my-project  git:(main)"); // by the path's own separator
+  });
+
+  it("cuts a folder whose start, … and name still do not fit at its end instead, inside the border", () => {
+    const name = "y".repeat(40);
+    for (const folder of [`~/a/${name}`, `~/${name}`]) {
+      const lines = startBox({ ...INFO, folder }, 50, FULL);
+      for (const l of box(lines)) expect(stringWidth(l.text)).toBe(50);
+      expect(list(lines, 3)[1]).toBe(`folder  ${folder.slice(0, 35)}…`); // the path's start, in its room of 36
+    }
+  });
+
+  // Review point 8: every width by the columns a character takes, so a wide character counts as two.
+  it("cuts a folder with wide characters by its columns", () => {
+    // "~/作業/資料/古い/プロジェクト" is 29 columns, 41 with the branch: at 50 its room is 36. Keeping "資料" too is 38.
+    const lines = startBox({ ...INFO, folder: "~/作業/資料/古い/プロジェクト" }, 50, FULL);
+    for (const l of box(lines)) expect(stringWidth(l.text)).toBe(50);
+    expect(lines[2]!.text).toBe(`│  folder  ~/作業/…/プロジェクト  git:(main)${" ".repeat(36 - 33)}  │`);
   });
 
   // The user's choice, 2026-11-13 ("Never costs drawing"): the folder row, as the read row, is counted at its shortest
   // (its value cut to "…") when the drawing is picked; the box then widens to `width` for it, and cuts it inside the border.
-  it("keeps the pixel art for a folder too long to fit beside it, cutting the folder with … inside the border", () => {
+  it("keeps the pixel art for a folder too long to fit beside it, cutting the folder inside the border", () => {
     const folder = `~/${"deep/".repeat(15)}proj`; // 81 columns and "  git:(main)": counted whole, no drawing would fit
     const lines = startBox({ ...INFO, folder }, 120, FULL);
     expect(drawing(lines)).toBe("pixels");
@@ -173,9 +220,24 @@ describe("the start-up box", () => {
       expect(stringWidth(l.text)).toBe(120);
       expect(l.text.at(-1)).toMatch(/[│╮╯]/);
     }
-    // The value's room: 120 less 56 for the borders, padding, art and gap, less the labels' 8: 56 columns.
-    expect(list(lines, 1 + 2 + 48 + 2)[1]).toBe(`folder  ${folder.slice(0, 55)}…`);
-    expect(list(startBox({ ...INFO, folder }, 50, FULL), 3)[1]).toBe(`folder  ${folder.slice(0, 35)}…`); // the list alone: 36
+    // The value's room: 120 less 56 for the borders, padding, art and gap, less the labels' 8: 56 columns, which seven
+    // "deep"s, "…", the name and the branch fill to 55.
+    expect(list(lines, 1 + 2 + 48 + 2)[1]).toBe(`folder  ~${"/deep".repeat(7)}/…/proj  git:(main)`);
+    expect(list(startBox({ ...INFO, folder }, 50, FULL), 3)[1]).toBe(`folder  ~${"/deep".repeat(3)}/…/proj  git:(main)`); // room 36
+  });
+
+  // Task 6's code review: the box is never wider than its width, its title cut to fit; the least it can be is a border
+  // and its padding each side around one column, 7.
+  it("draws no row wider than a very narrow width, the title cut with …", () => {
+    const lines = startBox(INFO, 12, FULL);
+    expect(drawing(lines)).toBe("none");
+    for (const l of box(lines)) {
+      expect(stringWidth(l.text)).toBe(12);
+      expect(l.text.at(-1)).toMatch(/[│╮╯]/);
+    }
+    expect(lines[0]!.text).toBe("╭─ Tachi… ─╮");
+    expect(lines[2]!.text).toBe("│  folder  │"); // no room for a value: the label alone
+    for (const l of box(startBox(INFO, 3, FULL))) expect(stringWidth(l.text)).toBe(7);
   });
 
   it("escapes control characters in what it is given, before measuring", () => {

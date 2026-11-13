@@ -888,9 +888,10 @@ if (parsed.print !== undefined) {
   // review).
   const branch = await workspace.branch().catch(() => null);
   // The start-up box (TUI design pass, Task 6), from what the launch has gathered, laid out for the columns a line's text
-  // has in the mode the window starts in: 80 where the terminal does not say, as Ink's getWindowSize falls back. The MCP
-  // servers counted are those starting, read before startAll: none with the network off, nor a project's one not said
-  // yes to.
+  // has in the mode the window starts in: 80 where the terminal does not say, the last of Ink's getWindowSize's fallbacks
+  // (it asks terminal-size first; a window has a terminal, which says). The MCP servers counted are those starting, read
+  // before startAll: none with the network off, nor a project's one not said yes to. The instruction files go by path,
+  // which the box shortens to their names where they differ.
   const startLines = startBox(
     {
       version: VERSION,
@@ -899,7 +900,7 @@ if (parsed.print !== undefined) {
       branch,
       mode,
       sandbox,
-      files: instructions.read.map((f) => path.basename(f.path)),
+      files: instructions.read.map((f) => tilde(f.path, os.homedir())),
       servers: servers.list().filter((s) => s.state.is === "starting").length,
       hooks: hooks.config.off ? 0 : hooks.config.hooks.length,
     },
