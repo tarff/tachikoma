@@ -132,13 +132,13 @@ export function StatusLine({ info, segments, columns, palette }: { info: StatusI
     const parts = listed.filter((_, n) => on[n]);
     return 2 + parts.reduce((sum, s) => sum + width(s), 0) + 3 * (parts.length - 1);
   };
-  const last = (s: LineSegment) => s === "lead" || s === "mode";
+  const keptLongest = (s: LineSegment) => s === "lead" || s === "mode"; // dropped only once no other part is left
   while (on.filter(Boolean).length > 1 && lineWidth() > columns) {
-    const n = on.findLastIndex((o, m) => o && !last(listed[m]!));
+    const n = on.findLastIndex((o, m) => o && !keptLongest(listed[m]!));
     on[n === -1 ? on.lastIndexOf(true) : n] = false;
   }
   // None put back while `lead` or `mode` is out, so they still go last.
-  if (listed.every((s, n) => on[n] || !last(s)))
+  if (listed.every((s, n) => on[n] || !keptLongest(s)))
     for (let n = 0; n < listed.length; n++) {
       if (on[n]) continue;
       on[n] = true;
