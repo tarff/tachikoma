@@ -156,8 +156,8 @@ function fewest(lines: string[], room: number): string[] {
 // one whose rows would leave the conversation less than its one row draws its short line instead, when it has one to
 // move to (release 5 plan, Task 11). The model list takes the rows it needs, up to all but the conversation's least row,
 // its filter line and the status line (release 5 plan, choice 19).
-// A dangerous command's red lines above a question are drawn a row each, cut at the terminal's width as Ink's
-// truncate-end cuts (release 7 plan, Task 8 and choice 63). At least one red row is always kept: the tool line and the
+// A dangerous command's red lines above a question are drawn a row each, cut at the box's inner width as Ink's
+// truncate-end cuts (release 7 plan, Task 8 and choice 63; TUI design pass, Task 9). At least one red row is always kept: the tool line and the
 // hint row count, in place of the cursor's row, the question's own rows (its short line's, when it can move) and one red
 // row, so they give way first; the working line, not drawn under a question, counts none then; and the red row counts in
 // whether the question fits, so one that would leave none moves to its short line. The red lines take the rows the
@@ -189,10 +189,13 @@ export function frame(i: FrameIn): FrameOut {
 function frameWithoutLines(i: FrameIn): FrameOut {
   const reds = i.askedText === null ? [] : i.askedWarnings;
   const note = i.askedText !== null && i.askedNote ? 1 : 0;
-  const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
+  // The question is drawn in a rounded box (TUI design pass, Task 9): its text in the terminal's columns less a border
+  // and a space of padding each side, and the box's top and foot two more of the question's own rows.
+  const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns - 4, false).map((r) => r.text));
+  const box = i.askedText === null ? 0 : 2;
   const base = i.rows - 1 - 1 - (i.working && !i.question ? 1 : 0) - i.liveRows - (i.full ? 1 : 0);
   // The rows kept below the tool line and the hint: the cursor's, while the prompt is drawn, or a question's least.
-  const cursor = i.askedText !== null ? note + linesOf(i.askedShort ?? i.askedText).length + Math.min(1, reds.length) : i.detail ? 0 : 1;
+  const cursor = i.askedText !== null ? box + note + linesOf(i.askedShort ?? i.askedText).length + Math.min(1, reds.length) : i.detail ? 0 : 1;
   const tooled = i.toolLine && base >= 1 + cursor + (i.hint ? 1 : 0);
   const room = base - (tooled ? 1 : 0);
   const hinted = i.hint && room >= 1 + cursor;
@@ -216,11 +219,11 @@ function frameWithoutLines(i: FrameIn): FrameOut {
   const live = (askedRows: number) =>
     (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);
-  const questionFits = i.askedText === null || i.rows - 1 - live(note + linesOf(i.askedText).length + Math.min(1, reds.length)) >= 1; // as viewHeight, below
+  const questionFits = i.askedText === null || i.rows - 1 - live(box + note + linesOf(i.askedText).length + Math.min(1, reds.length)) >= 1; // as viewHeight, below
   const asked = linesOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
-  const noted = note === 1 && i.rows - 1 - live(asked.length + Math.min(1, reds.length)) - 1 >= 1 ? 1 : 0; // 1: the conversation's least row
-  const warned = fewest(reds, Math.max(0, i.rows - 1 - live(noted + asked.length) - 1));
-  const viewHeight = Math.max(1, i.rows - 1 - live(noted + warned.length + asked.length));
+  const noted = note === 1 && i.rows - 1 - live(box + asked.length + Math.min(1, reds.length)) - 1 >= 1 ? 1 : 0; // 1: the conversation's least row
+  const warned = fewest(reds, Math.max(0, i.rows - 1 - live(box + noted + asked.length) - 1));
+  const viewHeight = Math.max(1, i.rows - 1 - live(box + noted + warned.length + asked.length));
   return {
     rules: false,
     tooled,

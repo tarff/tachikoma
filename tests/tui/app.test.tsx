@@ -349,6 +349,11 @@ const OSC52_SHOWN = "\\u001b]52;c;Y3VybA==\\u0007";
 const DARK = palette({ light: false, color: true, full: true });
 // The prompt's line above it and below it, the terminal's width: ink-testing-library's 100 columns (TUI design pass, Task 4).
 const RULE = "─".repeat(100);
+// The question's box's rows without colour, `columns` wide: its top, a row of text inside it, and its foot (TUI design
+// pass, Task 9).
+const boxTop = (columns = 100) => `╭${"─".repeat(columns - 2)}╮`;
+const boxFoot = (columns = 100) => `╰${"─".repeat(columns - 2)}╯`;
+const boxed = (text: string, columns = 100) => `│ ${text.padEnd(columns - 4)} │`;
 
 // The frame with its colours: Ink colours through chalk, which finds no colour in a test's output, so a test that looks
 // for colours turns them on for itself at chalk's `level` and back off after: 1, chalk's basic 16 colours, enough for
@@ -1128,18 +1133,18 @@ describe("App", () => {
     const first = ask('tv: draw {"shape":"line"}', undefined, undefined, undefined, [], LONG_NOTE, true);
     await until(app, "Allow tv: draw");
     let rows = app.lastFrame()!.split("\n");
-    const at = rows.findIndex((r) => r.startsWith("Draws a shape"));
-    expect(rows[at]).toMatch(/^Draws a shape.*…$/);
+    const at = rows.findIndex((r) => r.startsWith("│ Draws a shape")); // inside the question's box (TUI design pass, Task 9)
+    expect(rows[at]).toMatch(/^│ Draws a shape.*… │$/);
     expect(rows[at]!.length).toBeLessThanOrEqual(100); // the test screen's width
-    expect(rows[at + 1]).toMatch(/^Allow tv: draw/);
+    expect(rows[at + 1]).toMatch(/^│ Allow tv: draw/);
     await press(app, "n");
     expect(await first).toBe(false);
     const second = ask('tv: draw {"shape":"line"}', undefined, undefined, undefined, [], LONG_NOTE);
     await until(app, "Allow tv: draw");
     rows = app.lastFrame()!.split("\n");
-    const from = rows.findIndex((r) => r.startsWith("Draws a shape"));
+    const from = rows.findIndex((r) => r.startsWith("│ Draws a shape"));
     expect(rows[from]).not.toContain("…");
-    expect(rows[from + 1]).not.toMatch(/^Allow/); // the rest of the note, on a row of its own
+    expect(rows[from + 1]).not.toMatch(/^│ Allow/); // the rest of the note, on a row of its own
     await press(app, "n");
     expect(await second).toBe(false);
   });
@@ -1160,14 +1165,15 @@ describe("App", () => {
   it("fits a question's grey line in a small terminal, with red lines given too, keeping a red row", async () => {
     await inColour(1, async () => {
       const warnings = Array.from({ length: 7 }, (_, i) => `Danger: rewriting or deleting git history: git push --force origin b${i + 1}`);
-      const { app, ask } = await mount([], { full: true, rows: 8 });
+      const { app, ask } = await mount([], { full: true, rows: 10 });
       const asking = ask("run: git push --force origin b1", undefined, undefined, undefined, warnings, PAUSE);
       await until(app, "more dangers");
       const frame = app.lastFrame()!;
-      expect(frame.split("\n").length).toBeLessThanOrEqual(7); // the frame's row short of the terminal's eight
+      expect(frame.split("\n").length).toBeLessThanOrEqual(9); // the frame's row short of the terminal's ten
       expect(frame).toContain(`\u001b[90m${PAUSE}`);
       expect(frame).toContain(`\u001b[31m${warnings[0]}`);
-      expect(frame).toContain("\u001b[31m…and 5 more dangers"); // eight rows: a row short, the conversation, grey, three red, the question, status
+      // Ten rows: a row short, the conversation, the box's top, grey, three red, the question, the box's foot, status.
+      expect(frame).toContain("\u001b[31m…and 5 more dangers");
       expect(frame.indexOf(PAUSE)).toBeLessThan(frame.indexOf(warnings[0]!));
       expect(frame).toContain("\u001b[33mAllow run: git push --force origin b1?");
       await press(app, "n");
@@ -1203,16 +1209,18 @@ describe("App", () => {
   it("cuts the red lines to a row each in full screen, and counts those that do not fit, keeping the frame inside the terminal", async () => {
     await inColour(1, async () => {
       const line = [`git push --force origin ${"x".repeat(120)}`, ...Array.from({ length: 6 }, (_, i) => `git push --force origin b${i + 1}`)].join("; ");
-      const { app, gate } = await mount([], { full: true, rows: 10 });
+      const { app, gate } = await mount([], { full: true, rows: 12 });
       const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
         () => "allowed",
         (err: Error) => err.message,
       );
       await until(app, "more dangers");
       const frame = app.lastFrame()!;
-      expect(frame.split("\n").length).toBeLessThanOrEqual(9); // the frame's row short of the terminal's ten
-      expect(frame).toContain(`\u001b[31mDanger: rewriting or deleting git history: git push --force origin ${"x".repeat(32)}…`);
-      // Ten rows: the frame's row short, the conversation's one, the question's four and the status line leave three.
+      expect(frame.split("\n").length).toBeLessThanOrEqual(11); // the frame's row short of the terminal's twelve
+      // Cut at the box's 96 columns inside (TUI design pass, Task 9).
+      expect(frame).toContain(`\u001b[31mDanger: rewriting or deleting git history: git push --force origin ${"x".repeat(28)}…`);
+      // Twelve rows: the frame's row short, the conversation's one, the box's two, the question's four and the status line
+      // leave three.
       expect(frame).toContain("\u001b[31mDanger: rewriting or deleting git history: git push --force origin b1\u001b[39m");
       expect(frame).toContain("\u001b[31m…and 5 more dangers");
       expect(frame).not.toContain("\u001b[31mDanger: rewriting or deleting git history: git push --force origin b2");
@@ -2697,7 +2705,7 @@ describe("App's folded tool rows", () => {
     await type(app, "look");
     await until(app, "Allow run: git status?");
     const asked = ["› look", "", "", "● Read 1 file", "", "● shell git status"];
-    expect(from(app, false, "› look").slice(0, 7)).toEqual([...asked, "Allow run: git status? [y/n] · Esc to decline"]);
+    expect(from(app, false, "› look").slice(0, 9)).toEqual([...asked, boxTop(), boxed("Allow run: git status? [y/n] · Esc to decline"), boxFoot()]);
     await press(app, "y");
     await until(app, "done");
     expect(from(app, false, "› look").slice(0, 10)).toEqual([...asked, "  ⎿ You allowed this.", "  ⎿ ok", "", "● done"]);
@@ -3402,7 +3410,7 @@ describe("App's one path per edit", () => {
     const { app, ask, ctx } = await mount([], { full });
     const summary = `edit ${path.join(ctx.root, "a.ts")}${note(ctx.root)}`;
     const answer = ask(summary, "- one\n+ uno", asker("t2 (x)").owner);
-    await waitFor(() => bare(app.lastFrame()!).includes(bare(`Allow t2 (x) to ${summary}?`)));
+    await waitFor(() => bare(app.lastFrame()!.replace(/│/g, "")).includes(bare(`Allow t2 (x) to ${summary}?`))); // │: the box's sides
     await press(app, "y");
     expect(await answer).toBe(true);
     const shown = bare(stripVTControlCharacters(app.lastFrame()!).replace(/│/g, ""));
@@ -5035,7 +5043,7 @@ describe("App's questions in full screen", () => {
     expect(shown(app)[0]).toBe("said 33.");
     const answer = ask("write a.txt", detail(5));
     await until(app, "Allow write a.txt? [y/n]");
-    expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt"), ""]); // the last row kept for "↓ N new lines"
+    expect(shown(app).slice(12, 19)).toEqual([...headed("write a.txt"), ""]); // the last row kept for "↓ N new lines"
     await press(app, "y");
     expect(await answer).toBe(true);
   });
@@ -5053,16 +5061,16 @@ describe("App's questions in full screen", () => {
     const answer = ask("write a.txt", detail(100));
     await until(app, "[y/n]");
     expect(shown(app)[0]).toBe("┌ write a.txt (100 lines)");
-    await press(app, PG_DOWN); // half of 21
-    expect(shown(app)[0]).toBe("line 9.");
+    await press(app, PG_DOWN); // half of 19, the rows the question's box leaves
+    expect(shown(app)[0]).toBe("line 8.");
     await wheel(mouse, "down");
-    expect(shown(app)[0]).toBe("line 12.");
+    expect(shown(app)[0]).toBe("line 11.");
     await press(app, "y");
     expect(await answer).toBe(true);
     lead.answer("later reply");
     if (up) {
       await gone(app, "Esc to stop");
-      expect(shown(app)[0]).toBe("line 12.");
+      expect(shown(app)[0]).toBe("line 11.");
       expect(app.lastFrame()).not.toContain("later reply");
       expect(app.lastFrame()).toContain("↓ 3 new lines · Ctrl+End"); // the answer's line, the reply's gap and the reply
       await press(app, CTRL_END);
@@ -5091,18 +5099,18 @@ describe("App's questions in full screen", () => {
     const t3 = asker("t3 (b)");
     const first = ask("write a.txt", detail(5, "a"), t2.owner);
     await until(app, "Allow t2 (a) to write a.txt? [y/n]");
-    expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt", "a"), ""]);
+    expect(shown(app).slice(12, 19)).toEqual([...headed("write a.txt", "a"), ""]);
     const second = ask("write b.txt", detail(5, "b"), t3.owner);
     await until(app, "↓ 7 new lines · Ctrl+End"); // the second's gap, heading and detail, below (TUI design pass, Task 3)
-    expect(shown(app).slice(14, 20)).toEqual(headed("write a.txt", "a"));
+    expect(shown(app).slice(12, 18)).toEqual(headed("write a.txt", "a"));
     lead.answer("a reply");
     await until(app, "↓ 9 new lines · Ctrl+End");
-    expect(shown(app).slice(14, 20)).toEqual(headed("write a.txt", "a"));
+    expect(shown(app).slice(12, 18)).toEqual(headed("write a.txt", "a"));
     await press(app, "y");
     expect(await first).toBe(true);
     await until(app, "Allow t3 (b) to write b.txt? [y/n]");
     // Below the second's detail: the reply, with its gap, and the first's answer.
-    expect(shown(app).slice(14, 21)).toEqual([...headed("write b.txt", "b"), "↓ 3 new lines · Ctrl+End"]);
+    expect(shown(app).slice(12, 19)).toEqual([...headed("write b.txt", "b"), "↓ 3 new lines · Ctrl+End"]);
     await press(app, "y");
     expect(await second).toBe(true);
     await gone(app, "[y/n]");
@@ -5138,7 +5146,7 @@ describe("App's questions in full screen", () => {
     expect(app.lastFrame()).not.toContain("[y/n]");
     await press(app, "\u001b"); // closes the list
     await until(app, "Allow t2 (a) to write a.txt? [y/n]");
-    expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt"), ""]);
+    expect(shown(app).slice(12, 19)).toEqual([...headed("write a.txt"), ""]);
     await press(app, "y");
     expect(await answer).toBe(true);
   });
@@ -5161,25 +5169,28 @@ describe("App's questions in full screen", () => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
     const answer = ask("write a.txt", detail(5));
     await until(app, "[y/n]");
-    expect(shown(app).slice(14, 20)).toEqual(headed("write a.txt"));
+    expect(shown(app).slice(12, 18)).toEqual(headed("write a.txt"));
     Object.assign(app.stdout, { rows: 30 });
     app.stdout.emit("resize");
     await tick();
     const rows = shown(app);
     expect(rows).toHaveLength(29);
-    expect(rows.slice(14, 20)).toEqual(headed("write a.txt")); // not put again on the taller view's second-last row
+    expect(rows.slice(12, 18)).toEqual(headed("write a.txt")); // not put again on the taller view's second-last row
     await press(app, "y");
     expect(await answer).toBe(true);
   });
 
   // A question too long to leave the conversation its one row puts its text in the conversation (the user's choice at
-  // Task 11's review). A command `m` times "echo word " long, its question taking `rows` rows at 100 columns.
+  // Task 11's review). A command `m` times "echo word " long, its question taking `rows` rows at the 96 columns inside its
+  // box (TUI design pass, Task 9). `inBox` is a row of the box as shown() gives it: the right border is in the column
+  // shown() leaves out.
   const command = (m: number) => `run: ${"echo word ".repeat(m)}`;
   const taking = (rows: number) => {
     let m = 1;
-    while (wrap(`Allow ${command(m)}? [y/n] · Esc to decline`, 100, false).length < rows) m++;
+    while (wrap(`Allow ${command(m)}? [y/n] · Esc to decline`, 96, false).length < rows) m++;
     return command(m);
   };
+  const inBox = (text: string) => `│ ${text}`;
 
   it.each([
     { key: "y", ok: true, how: "You allowed this." },
@@ -5193,13 +5204,13 @@ describe("App's questions in full screen", () => {
     const rows = shown(app);
     expect(rows).toHaveLength(23);
     expect(rows[0]).toBe("┌ run (3005 characters)");
-    expect(rows[21]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+    expect(rows[20]).toBe(inBox("Allow run (shown above)? [y/n] · Esc to decline"));
     expect(rows[1]).toMatch(/^run: echo word echo/);
-    // Every row of it: rows 1 to 20 show, and the rest come onto the last row a row at a time.
-    const text = rows.slice(1, 21);
+    // Every row of it: rows 1 to 18 show, and the rest come onto the last row a row at a time.
+    const text = rows.slice(1, 19);
     while (text.length < wrap(long, 99, false).length) {
       await press(app, SHIFT_DOWN);
-      text.push(shown(app)[20]!);
+      text.push(shown(app)[18]!);
     }
     expect(text.join("").replaceAll(" ", "")).toBe(long.replaceAll(" ", ""));
     await press(app, key);
@@ -5209,20 +5220,21 @@ describe("App's questions in full screen", () => {
 
   it("shows a question as before while it leaves the conversation a row, and puts it in the conversation once it would not", async () => {
     let { app, ask } = await mount([], { full: true, intro: said(60) });
-    const fits = taking(21); // 23 rows less the status line's
+    const fits = taking(19); // 23 rows less the status line's, the box's two and the conversation's one
     void ask(fits);
     await until(app, "[y/n]");
     let rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows.slice(0, 2)).toEqual(["said 59.", `Allow ${fits.slice(0, 93)}`]);
+    expect(rows[0]).toBe("said 59.");
+    expect(rows[2]).toBe(inBox(`Allow ${fits.slice(0, 89)}`)); // under the box's top
     expect(app.lastFrame()).not.toContain("shown above");
 
     ({ app, ask } = await mount([], { full: true, intro: said(60) }));
-    void ask(taking(22));
+    void ask(taking(20));
     await until(app, "[y/n]");
     rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[21]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+    expect(rows[20]).toBe(inBox("Allow run (shown above)? [y/n] · Esc to decline"));
   });
 
   // The user's choices at Task 11's re-review: a question with a write's preview points at it, adding no copy; the line
@@ -5243,7 +5255,7 @@ describe("App's questions in full screen", () => {
     await press(app, PG_DOWN, PG_DOWN); // past the heading's rows, to its preview's lines
     expect(shown(app)).toEqual(expect.arrayContaining(detail(5, "b").split("\n")));
     await press(app, CTRL_END);
-    expect(shown(app).slice(19, 21)).toEqual(["c 29.", "t2 (a) to run: ls: You allowed this."]); // the newest lines: no copy of the path
+    expect(shown(app).slice(17, 19)).toEqual(["c 29.", "t2 (a) to run: ls: You allowed this."]); // the newest lines: no copy of the path
     await press(app, "y");
     expect(await second).toBe(true);
     await until(app, "Allow t4 (c) to write c.txt? [y/n]");
@@ -5257,7 +5269,7 @@ describe("App's questions in full screen", () => {
     await until(app, "[y/n]");
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[21]).toBe("Allow t2 to run (shown above)? [y/n] · Esc to decline");
+    expect(rows[20]).toBe(inBox("Allow t2 to run (shown above)? [y/n] · Esc to decline"));
     expect(rows[0]).toMatch(/^┌ t2 to run \(\d+ characters\)$/);
     expect(rows[1]).toMatch(/^t2 \(word word/); // the full name, in the conversation
   });
@@ -5296,28 +5308,29 @@ describe("App's questions in full screen", () => {
     if (!before) expect(app.lastFrame()).not.toContain("new line");
   });
 
-  // 21 rows of conversation: a detail fits in 20 with its heading, the last kept for "↓ N new lines".
+  // 19 rows of conversation beside the question's box: a detail fits in 18 with its heading, the last kept for "↓ N new
+  // lines".
   it("puts a detail that fits above the last row at the foot of the view, and one a row taller with its heading at the top", async () => {
     let { app, ask } = await mount([], { full: true, intro: said(60) });
+    void ask("write a.txt", detail(16)); // 17 rows
+    await until(app, "[y/n]");
+    expect(shown(app).slice(17, 19)).toEqual(["line 15.", ""]);
+    expect(shown(app)[1]).toBe("┌ write a.txt (16 lines)");
+    ({ app, ask } = await mount([], { full: true, intro: said(60) }));
     void ask("write a.txt", detail(18)); // 19 rows
     await until(app, "[y/n]");
-    expect(shown(app).slice(19, 21)).toEqual(["line 17.", ""]);
-    expect(shown(app)[1]).toBe("┌ write a.txt (18 lines)");
-    ({ app, ask } = await mount([], { full: true, intro: said(60) }));
-    void ask("write a.txt", detail(20)); // 21 rows
-    await until(app, "[y/n]");
-    expect(shown(app)[0]).toBe("┌ write a.txt (20 lines)");
+    expect(shown(app)[0]).toBe("┌ write a.txt (18 lines)");
   });
 
   it("counts the hint row when deciding whether a question fits", async () => {
     const { app, ask } = await mount([], { full: true, intro: said(60), past: ["hello"] });
     await press(app, "\u0012"); // Ctrl+R's search keeps the hint row while the question waits
     await until(app, "search:");
-    void ask(taking(21)); // fits beside one row of conversation only without the hint row
+    void ask(taking(19)); // fits beside one row of conversation only without the hint row
     await until(app, "[y/n]");
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[20]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+    expect(rows[19]).toBe(inBox("Allow run (shown above)? [y/n] · Esc to decline")); // in the box, over its foot
     expect(rows[21]).toMatch(/^search: /);
   });
 
@@ -5326,7 +5339,7 @@ describe("App's questions in full screen", () => {
     const fits = taking(15);
     const answer = ask(fits);
     await until(app, "[y/n]");
-    expect(shown(app)[7]).toBe(`Allow ${fits.slice(0, 93)}`); // under 7 rows of conversation
+    expect(shown(app)[6]).toBe(inBox(`Allow ${fits.slice(0, 89)}`)); // under 5 rows of conversation and the box's top
     Object.defineProperty(app.stdout, "columns", { value: 40, configurable: true });
     app.stdout.emit("resize");
     await tick();
@@ -5334,16 +5347,145 @@ describe("App's questions in full screen", () => {
     expect(rows).toHaveLength(23);
     expect(rows[0]).toBe(`┌ run (${fits.length} characters)`);
     expect(rows[1]).toMatch(/^run: echo word/);
-    expect(`${rows[20]} ${rows[21]}`).toBe("Allow run (shown above)? [y/n] · Esc to decline"); // two rows at 40 columns
+    // Two rows at the 36 columns inside the box.
+    expect(`${rows[19]} ${rows[20]}`.replaceAll("│", "").replace(/\s+/g, " ").trim()).toBe("Allow run (shown above)? [y/n] · Esc to decline");
     Object.defineProperty(app.stdout, "columns", { value: 100, configurable: true });
     app.stdout.emit("resize");
     await tick();
     rows = shown(app);
     expect(rows).toHaveLength(23);
     expect(rows[0]).toBe(`┌ run (${fits.length} characters)`);
-    expect(rows[21]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+    expect(rows[20]).toBe(inBox("Allow run (shown above)? [y/n] · Esc to decline"));
     await press(app, "y");
     expect(await answer).toBe(true);
+  });
+});
+
+// TUI design pass, Task 9 (audit 4): the question in a rounded box, its grey line, red lines and its own line inside, a
+// border and a space of padding each side, so its text has the terminal's columns less 4. The border is muted when there
+// is colour. The short line a question too long to fit moves to is boxed the same way.
+describe("App's question box", () => {
+  const rowsOf = (app: ReturnType<typeof render>) => app.lastFrame()!.split("\n");
+  const top = boxTop;
+  const foot = boxFoot;
+  const red = "Danger: rewriting or deleting git history: git push --force";
+  const SHORT = "Allow run (shown above)? [y/n] · Esc to decline";
+  const MUTED = "\u001b[38;2;138;138;138m"; // the dark full palette's muted (theme.ts)
+  const wide = (app: ReturnType<typeof render>, columns: number) => {
+    Object.defineProperty(app.stdout, "columns", { value: columns, configurable: true });
+    app.stdout.emit("resize");
+  };
+
+  it("draws a question that fits in the box over the status line in full screen, the conversation two rows shorter", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    const answer = ask("run: ls");
+    await until(app, "[y/n]");
+    const rows = rowsOf(app);
+    expect(rows).toHaveLength(23);
+    expect(shown(app)[18]).toBe("said 59."); // the conversation's last row of 19
+    expect(rows.slice(19, 22)).toEqual([top(), boxed("Allow run: ls? [y/n] · Esc to decline"), foot()]);
+    await press(app, "y");
+    expect(await answer).toBe(true);
+  });
+
+  it("draws the red lines and the grey line in the box, above the question's line", async () => {
+    let { app, ask } = await mount([], { full: true, intro: said(60) });
+    void ask("run: git push --force", undefined, undefined, false, [red, red]);
+    await until(app, "[y/n]");
+    expect(rowsOf(app).slice(17, 22)).toEqual([top(), boxed(red), boxed(red), boxed("Allow run: git push --force? [y/n] · Esc to decline"), foot()]);
+    ({ app, ask } = await mount([], { full: true, intro: said(60) }));
+    void ask("read /a", undefined, undefined, false, [], "Auto mode paused.");
+    await until(app, "[y/n]");
+    expect(rowsOf(app).slice(18, 22)).toEqual([top(), boxed("Auto mode paused."), boxed("Allow read /a? [y/n] · Esc to decline"), foot()]);
+  });
+
+  it("boxes the short line of a question too long to fit, its text in the conversation", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    void ask(`run: ${"echo word ".repeat(300)}`);
+    await until(app, "(shown above)");
+    const rows = rowsOf(app);
+    expect(rows).toHaveLength(23);
+    expect(shown(app)[0]).toBe("┌ run (3005 characters)");
+    expect(rows.slice(19, 22)).toEqual([top(), boxed(SHORT), foot()]);
+  });
+
+  // Wrap boundaries (review): 76 columns inside an 80-column box, 36 inside a 40-column one.
+  it.each([80, 40])("wraps a question's line at %i columns less 4, and cuts a red line there", async (columns) => {
+    const inner = columns - 4;
+    const line = (k: number) => `Allow run: ${"x".repeat(k)}? [y/n] · Esc to decline`;
+    const exactly = inner - line(0).length; // the x's that make the line exactly the inner width
+    let { app, ask } = await mount([], { full: true, intro: said(60) });
+    wide(app, columns);
+    void ask(`run: ${"x".repeat(exactly)}`);
+    await until(app, "[y/n]");
+    expect(rowsOf(app).slice(19, 22)).toEqual([top(columns), boxed(line(exactly), columns), foot(columns)]);
+    ({ app, ask } = await mount([], { full: true, intro: said(60) }));
+    wide(app, columns);
+    const redLine = `Danger: ${"x".repeat(inner - "Danger: ".length)}`;
+    void ask(`run: ${"x".repeat(exactly + 1)}`, undefined, undefined, false, [redLine, `${redLine}x`]);
+    await until(app, "decline");
+    // One column longer: the line's last word goes to a second row; the red line one column longer is cut with "…".
+    expect(rowsOf(app).slice(16, 22)).toEqual([
+      top(columns),
+      boxed(redLine, columns),
+      boxed(`${redLine.slice(0, -1)}…`, columns),
+      boxed(`Allow run: ${"x".repeat(exactly + 1)}? [y/n] · Esc to`, columns),
+      boxed("decline", columns),
+      foot(columns),
+    ]);
+  });
+
+  // Short terminals: a question of two rows needs the frame's row short, the conversation's, the box's two, its own two
+  // and the status line's, seven.
+  it("moves a question to its short line on the tallest terminal where the box leaves the conversation no row, and not one taller", async () => {
+    const asked = `run: ${"x".repeat(62)}`;
+    expect(wrap(`Allow ${asked}? [y/n] · Esc to decline`, 96, false)).toHaveLength(2);
+    let { app, ask } = await mount([], { full: true, intro: said(60), rows: 6 });
+    void ask(asked);
+    await until(app, "(shown above)");
+    expect(rowsOf(app).slice(1, 4)).toEqual([top(), boxed(SHORT), foot()]);
+    ({ app, ask } = await mount([], { full: true, intro: said(60), rows: 7 }));
+    void ask(asked);
+    await until(app, "[y/n]");
+    expect(app.lastFrame()).not.toContain("shown above");
+    expect(rowsOf(app).slice(1, 5)).toEqual([top(), boxed(`Allow ${asked}? [y/n] · Esc to`), boxed("decline"), foot()]);
+  });
+
+  it("draws the box in classic mode, its red lines wrapped inside it", async () => {
+    const { app, ask } = await mount([], { intro: said(3) });
+    const long = `Danger: ${"word ".repeat(30).trim()}`; // 157 columns: two rows of 96
+    expect(wrap(long, 96, false)).toHaveLength(2);
+    const answer = ask("run: git push --force", undefined, undefined, false, [red, long]);
+    await until(app, "[y/n]");
+    const rows = rowsOf(app);
+    const at = rows.indexOf(top());
+    expect(at).toBeGreaterThan(0);
+    expect(rows.slice(at, at + 6)).toEqual([
+      top(),
+      boxed(red),
+      ...wrap(long, 96, false).map((r) => boxed(r.text)),
+      boxed("Allow run: git push --force? [y/n] · Esc to decline"),
+      foot(),
+    ]);
+    expect(rows[at + 6]).toMatch(/^ ?\S/); // the status line, under the box
+    await press(app, "y");
+    expect(await answer).toBe(true);
+  });
+
+  it("draws the border muted with colour, and in the terminal's own without", async () => {
+    await inColour(3, async () => {
+      let { app, ask } = await mount([], { full: true });
+      void ask("run: ls");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("[y/n]"));
+      expect(app.lastFrame()).toContain(`${MUTED}${top()}`);
+      expect(app.lastFrame()).toContain(`${MUTED}│`);
+      const off = { light: false, color: false, full: false };
+      ({ app, ask } = await mount([], { full: true, theme: { look: off, palette: palette(off) } }));
+      void ask("run: ls");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("[y/n]"));
+      expect(app.lastFrame()!.split("\n")).toContain(top());
+      expect(app.lastFrame()).toMatch(/\n│/);
+    });
   });
 });
 
@@ -5548,7 +5690,7 @@ describe("App's detail view in full screen", () => {
     expect(app.lastFrame()).not.toContain(KEYS);
     expect(app.lastFrame()).not.toContain("No turn yet");
     // The conversation's 21 rows beside the question: the detail's last line on the second-last (plan, Task 11).
-    expect(shown(app).slice(14, 21)).toEqual(["┌ write a.txt (5 lines)", "line 0.", "line 1.", "line 2.", "line 3.", "line 4.", ""]);
+    expect(shown(app).slice(12, 19)).toEqual(["┌ write a.txt (5 lines)", "line 0.", "line 1.", "line 2.", "line 3.", "line 4.", ""]);
     await press(app, "n");
     expect(await answer).toBe(false);
     await until(app, "write a.txt: You declined this.");
@@ -6467,7 +6609,7 @@ describe("App's /screen", () => {
     expect(shown(app)[0]).not.toBe("said 0.");
     const answer = ask("write a.txt", "line 0.\nline 1.");
     await until(app, "Allow write a.txt? [y/n]");
-    expect(shown(app).slice(17, 21)).toEqual(["┌ write a.txt (2 lines)", "line 0.", "line 1.", ""]);
+    expect(shown(app).slice(15, 19)).toEqual(["┌ write a.txt (2 lines)", "line 0.", "line 1.", ""]);
     await press(app, "y");
     expect(await answer).toBe(true);
   });
@@ -6990,7 +7132,7 @@ describe("App's keys from the table of actions", () => {
     void ask("write a.txt").then(() => (answered = true));
     await until(app, "Allow write a.txt? [y/n] · Esc to decline");
     await press(app, "\u0004");
-    expect(app.lastFrame()).toContain("Allow write a.txt? [y/n] · Esc to decline\nPress Ctrl-D again to exit");
+    expect(app.lastFrame()).toContain(`${boxed("Allow write a.txt? [y/n] · Esc to decline")}\n${boxFoot()}\nPress Ctrl-D again to exit`);
     await press(app, "\u0004", "y"); // gone: y answers nothing
     expect(answered).toBe(false);
   });
@@ -11441,7 +11583,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { hooks: [h.hook("PreToolUse")] });
     await type(app, "go");
     await untilSlow(app, "Allow");
-    expect(app.lastFrame()).toMatch(/A hook asks: Sure\?\nAllow read_file/);
+    expect(app.lastFrame()).toContain(`${boxed("A hook asks: Sure?")}\n│ Allow read_file`); // in the question's box
     await press(app, "n");
     await untilSlow(app, "done");
   });

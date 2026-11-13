@@ -213,16 +213,19 @@ describe("frame", () => {
     expect(frame({ ...list, pickerNeeded: 3 })).toMatchObject({ pickerRows: 3, viewHeight: 6 });
   });
 
+  // The question is drawn in a box (TUI design pass, Task 9): sixty columns inside one of 64, and two border rows, so
+  // these terminals are two rows taller than they were before it.
   it("draws a question that fits in its rows, and gives one too long to fit its short line's rows", () => {
-    const columns = 60;
+    const inner = 60;
     const fitting = "Allow run: ls? [y/n] · Esc to decline";
     const long = `Allow run: ${"echo hello ".repeat(60)}? [y/n] · Esc to decline`;
     const short = "Allow run (shown above)? [y/n] · Esc to decline";
-    // Seven rows are the most that fit in ten, the frame's row short, the status line's and the conversation's one taken.
-    const seven = "x".repeat(7 * columns);
-    const eight = "x".repeat(7 * columns + 1);
-    expect([fitting, long, short, seven, eight].map((t) => wrap(t, columns, false).length)).toEqual([1, 12, 1, 7, 8]);
-    const asked: FrameIn = { ...base, rows: 10, columns, hint: false, question: true };
+    // Seven rows are the most that fit in twelve, the frame's row short, the box's two, the status line's and the
+    // conversation's one taken.
+    const seven = "x".repeat(7 * inner);
+    const eight = "x".repeat(7 * inner + 1);
+    expect([fitting, long, short, seven, eight].map((t) => wrap(t, inner, false).length)).toEqual([1, 12, 1, 7, 8]);
+    const asked: FrameIn = { ...base, rows: 12, columns: inner + 4, hint: false, question: true };
     const fits = frame({ ...asked, askedText: fitting, askedShort: short });
     expect(fits).toMatchObject({ questionFits: true, viewHeight: 7 });
     expect(fits.asked).toEqual([fitting]);
@@ -234,22 +237,23 @@ describe("frame", () => {
     // One that cannot move (it has moved already, or the list is open) keeps its rows, the conversation its one row.
     expect(frame({ ...asked, askedText: long })).toMatchObject({ questionFits: false, asked: { length: 12 }, viewHeight: 1 });
     // In classic mode a question is drawn as one Text, which counts no rows here.
-    expect(frame({ ...asked, full: false })).toMatchObject({ questionFits: true, asked: [], viewHeight: 8 });
+    expect(frame({ ...asked, full: false })).toMatchObject({ questionFits: true, asked: [], viewHeight: 10 });
   });
 
   // Release 7 plan, Task 8 and choice 63: a dangerous command's red lines are drawn above the question in full screen, one
   // row each (cut at the terminal's width as it is drawn), in the rows the question leaves the conversation beyond its
   // one; when they do not all fit, the last row drawn says how many more there are. The frame never passes the terminal.
   it("draws a question's red lines a row each, as many as fit, the last saying how many more", () => {
-    const columns = 60;
+    const inner = 60; // in the box, as above
     const fitting = "Allow run: git push --force? [y/n] · Esc to decline";
     const short = "Allow run (shown above)? [y/n] · Esc to decline";
     const red = (n: number) => `Danger: rewriting or deleting git history: git push --force origin b${n}`;
     const long = `Danger: rewriting or deleting git history: git push --force ${"origin ".repeat(5)}`;
-    expect(wrap(long, columns, false).length).toBe(2); // two rows if wrapped; one row here
+    expect(wrap(long, inner, false).length).toBe(2); // two rows if wrapped; one row here
     const reds = (n: number) => Array.from({ length: n }, (_, i) => red(i + 1));
-    // Ten rows: the frame's row short, the conversation's one, the question's and the status line's leave six.
-    const asked: FrameIn = { ...base, rows: 10, columns, hint: false, question: true, askedText: fitting, askedShort: short };
+    // Twelve rows: the frame's row short, the conversation's one, the box's two, the question's and the status line's
+    // leave six.
+    const asked: FrameIn = { ...base, rows: 12, columns: inner + 4, hint: false, question: true, askedText: fitting, askedShort: short };
     expect(frame({ ...asked, askedWarnings: [red(1)] })).toMatchObject({ questionFits: true, warned: [red(1)], asked: [fitting], viewHeight: 6 });
     expect(frame({ ...asked, askedWarnings: [red(1), long] })).toMatchObject({ warned: [red(1), long], viewHeight: 5 });
     expect(frame({ ...asked, askedWarnings: reds(6) })).toMatchObject({ warned: reds(6), viewHeight: 1 });
@@ -257,7 +261,7 @@ describe("frame", () => {
     expect(frame({ ...asked, askedWarnings: reds(7) })).toMatchObject({ warned: [...reds(5), "…and 2 more dangers"], viewHeight: 1 });
     expect(frame({ ...asked, askedWarnings: reds(12) })).toMatchObject({ warned: [...reds(5), "…and 7 more dangers"], viewHeight: 1 });
     // A question of two rows keeps them, as one red row still fits beside it, and the red lines take what is left.
-    const two = "x".repeat(columns + 1);
+    const two = "x".repeat(inner + 1);
     expect(frame({ ...asked, askedText: two, askedWarnings: reds(6) })).toMatchObject({
       questionFits: true,
       asked: { length: 2 },
@@ -265,21 +269,21 @@ describe("frame", () => {
       viewHeight: 1,
     });
     // One that leaves no row for a red line moves, so they have room again.
-    const eight = "x".repeat(7 * columns + 1);
-    const seven = "x".repeat(7 * columns);
+    const eight = "x".repeat(7 * inner + 1);
+    const seven = "x".repeat(7 * inner);
     expect(frame({ ...asked, askedText: seven, askedWarnings: [red(1)] })).toMatchObject({ questionFits: false, asked: [short], warned: [red(1)] });
     const moved = frame({ ...asked, askedText: eight, askedWarnings: reds(7) });
     expect(moved).toMatchObject({ asked: [short], warned: [...reds(5), "…and 2 more dangers"], viewHeight: 1 });
     // One that cannot move is one that has moved (App.tsx, movable), drawn as its short line; its red row is kept.
     expect(frame({ ...asked, askedText: short, askedShort: null, askedWarnings: [red(1)] })).toMatchObject({ asked: [short], warned: [red(1)] });
-    // Forty by seven, a moved question, the hint and the tool line: the tool line and the hint count the question's own
-    // two rows and its red row, so the tool line gives way, and the question's rows, the hint and the status line leave
-    // the red row its row, with a turn running or not, as the working line is not drawn under a question. With room for
-    // one red row only, it says how many dangers there are.
+    // Forty inside the box by nine, a moved question, the hint and the tool line: the tool line and the hint count the
+    // question's own two rows, the box's two and its red row, so the tool line gives way, and the question's rows, the
+    // hint and the status line leave the red row its row, with a turn running or not, as the working line is not drawn
+    // under a question. With room for one red row only, it says how many dangers there are.
     const small: FrameIn = {
       ...base,
-      rows: 7,
-      columns: 40,
+      rows: 9,
+      columns: 44,
       working: true,
       hint: true,
       toolLine: true,
@@ -296,7 +300,7 @@ describe("frame", () => {
     expect(frame({ ...idle, askedWarnings: [red(1)] })).toMatchObject({ tooled: false, hinted: true, asked: { length: 2 }, warned: [red(1)], viewHeight: 1 });
     expect(frame({ ...idle, askedWarnings: reds(7) })).toMatchObject({ tooled: false, warned: ["7 dangers"], viewHeight: 1 });
     // In classic mode the red lines are Texts of their own, drawn whole, which count no rows here, as the question's.
-    expect(frame({ ...asked, full: false, askedText: null, askedShort: null, askedWarnings: [red(1)] })).toMatchObject({ warned: [], viewHeight: 8 });
+    expect(frame({ ...asked, full: false, askedText: null, askedShort: null, askedWarnings: [red(1)] })).toMatchObject({ warned: [], viewHeight: 10 });
   });
 
   // Release 7 plan, Task 10: auto mode's pause is a grey row of the question. It counts as one of the question's own rows,
@@ -305,37 +309,88 @@ describe("frame", () => {
   // row. The gate never sends a grey line with red lines today (a paused question has no dangers), but the frame takes
   // both, the grey row above.
   it("draws a question's grey line as a row of its own when there is a row for it, before any red lines", () => {
-    const columns = 60;
+    const inner = 60; // in the box, as above
     const fitting = "Allow read /made/up/notes.txt? [y/n] · Esc to decline";
     const short = "Allow read (shown above)? [y/n] · Esc to decline";
     const red = (n: number) => `Danger: rewriting or deleting git history: git push --force origin b${n}`;
     const reds = (n: number) => Array.from({ length: n }, (_, i) => red(i + 1));
-    // Ten rows: the frame's row short, the conversation's one, the grey row, the question's and the status line's.
-    const asked: FrameIn = { ...base, rows: 10, columns, hint: false, question: true, askedText: fitting, askedShort: short, askedNote: true };
+    // Twelve rows: the frame's row short, the conversation's one, the box's two, the grey row, the question's and the
+    // status line's.
+    const asked: FrameIn = { ...base, rows: 12, columns: inner + 4, hint: false, question: true, askedText: fitting, askedShort: short, askedNote: true };
     expect(frame(asked)).toMatchObject({ questionFits: true, noted: true, warned: [], asked: [fitting], viewHeight: 6 });
     expect(frame({ ...asked, askedWarnings: reds(7) })).toMatchObject({ noted: true, warned: [...reds(4), "…and 3 more dangers"], viewHeight: 1 });
     // Seven rows fit without the grey row (above) and not with it, so the question moves to its short line.
-    const seven = "x".repeat(7 * columns);
+    const seven = "x".repeat(7 * inner);
     expect(frame({ ...asked, askedText: seven })).toMatchObject({ questionFits: false, noted: true, asked: [short] });
     expect(frame({ ...asked, askedText: seven, askedNote: false })).toMatchObject({ questionFits: true, noted: false });
-    // Forty by seven, a moved question of two rows with a red line, the hint and the tool line: the grey row is the
-    // question's own, so the tool line and the hint give way, and the red row keeps its row. The frame is a row short.
-    const small: FrameIn = { ...base, rows: 7, columns: 40, working: true, hint: true, toolLine: true, question: true, askedText: short, askedShort: null, askedNote: true };
+    // Forty inside the box by nine, a moved question of two rows with a red line, the hint and the tool line: the grey row
+    // is the question's own, so the tool line and the hint give way, and the red row keeps its row. The frame is a row
+    // short.
+    const small: FrameIn = { ...base, rows: 9, columns: 44, working: true, hint: true, toolLine: true, question: true, askedText: short, askedShort: null, askedNote: true };
     const f = frame({ ...small, askedWarnings: [red(1)] });
     expect(f).toMatchObject({ tooled: false, hinted: false, noted: true, asked: { length: 2 }, warned: [red(1)], viewHeight: 1 });
-    expect(f.viewHeight + 1 + f.warned.length + f.asked.length + 1).toBe(6); // the conversation, grey, red, question, status
+    // The conversation, the box's top, grey, red, question, the box's foot, status.
+    expect(f.viewHeight + 1 + 1 + f.warned.length + f.asked.length + 1 + 1).toBe(8);
     // With no question drawn, as in classic mode or under the model list, there is no grey row.
     expect(frame({ ...asked, askedText: null })).toMatchObject({ noted: false });
-    // Four rows and a one-line question that cannot move: the frame's row short, the conversation's, the question's and
-    // the status line's leave none, so the grey row is left out, as a red row would be, and the frame stays a row short.
-    const four = frame({ ...asked, rows: 4, askedShort: null });
-    expect(four).toMatchObject({ noted: false, asked: [fitting], warned: [], viewHeight: 1 });
-    expect(four.viewHeight + four.asked.length + 1).toBe(3);
-    // Five rows, a red line too, and the question moved to its one-row short line: one row is free, and the red row
+    // Six rows and a one-line question that cannot move: the frame's row short, the conversation's, the box's two, the
+    // question's and the status line's leave none, so the grey row is left out, as a red row would be, and the frame stays
+    // a row short.
+    const six = frame({ ...asked, rows: 6, askedShort: null });
+    expect(six).toMatchObject({ noted: false, asked: [fitting], warned: [], viewHeight: 1 });
+    expect(six.viewHeight + 2 + six.asked.length + 1).toBe(5);
+    // Seven rows, a red line too, and the question moved to its one-row short line: one row is free, and the red row
     // takes it; the grey row gives way.
-    const five = frame({ ...asked, rows: 5, askedWarnings: [red(1)] });
-    expect(five).toMatchObject({ questionFits: false, asked: [short], noted: false, warned: [red(1)], viewHeight: 1 });
-    expect(five.viewHeight + five.warned.length + five.asked.length + 1).toBe(4);
+    const sevenRows = frame({ ...asked, rows: 7, askedWarnings: [red(1)] });
+    expect(sevenRows).toMatchObject({ questionFits: false, asked: [short], noted: false, warned: [red(1)], viewHeight: 1 });
+    expect(sevenRows.viewHeight + 2 + sevenRows.warned.length + sevenRows.asked.length + 1).toBe(6);
+  });
+
+  // TUI design pass, Task 9: the question in a rounded box. Inside it text has the terminal's columns less 4, a border and
+  // a space of padding each side, so the question's line and its short line are wrapped there and the red lines cut
+  // there; the box's two border rows are among the question's own.
+  describe("the question's box", () => {
+    const short = "Allow run (shown above)? [y/n] · Esc to decline";
+    const fitting = "Allow run: ls? [y/n] · Esc to decline";
+    const red = "Danger: rewriting or deleting git history: git push --force";
+    const asked: FrameIn = { ...base, rows: 24, columns: 80, hint: false, question: true, askedText: fitting, askedShort: short };
+
+    it("counts its two border rows: a question that fits, one with dangers, and one that moves above", () => {
+      // Twenty-four rows: the frame's row short, the box's two, the question's one and the status line's leave the
+      // conversation nineteen.
+      const fits = frame(asked);
+      expect(fits).toMatchObject({ questionFits: true, asked: [fitting], warned: [], viewHeight: 19 });
+      expect(fits.viewHeight + 1 + fits.asked.length + 1 + 1).toBe(23); // the conversation, the box, the status line
+      expect(frame({ ...asked, askedWarnings: [red, red] })).toMatchObject({ questionFits: true, warned: [red, red], asked: [fitting], viewHeight: 17 });
+      // Nineteen rows at 76 columns fit; twenty move to the short line, the conversation keeping the rest.
+      const nineteen = "x".repeat(19 * 76);
+      expect(frame({ ...asked, askedText: nineteen })).toMatchObject({ questionFits: true, asked: { length: 19 }, viewHeight: 1 });
+      expect(frame({ ...asked, askedText: `${nineteen}x` })).toMatchObject({ questionFits: false, asked: [short], viewHeight: 19 });
+      // In classic mode the frame is given no question's line (App.tsx), so it counts no rows, nor the box's.
+      expect(frame({ ...asked, full: false, askedText: null, askedShort: null })).toMatchObject({ asked: [], viewHeight: 22 });
+    });
+
+    it.each([80, 40])("wraps the question's line at %i columns less 4, and cuts a red line there to one row", (columns) => {
+      const inner = columns - 4;
+      const at = { ...asked, columns };
+      const exactly = `Allow run: ${"x".repeat(inner - "Allow run: ".length)}`;
+      expect(exactly).toHaveLength(inner);
+      expect(frame({ ...at, askedText: exactly })).toMatchObject({ asked: [exactly], viewHeight: 19 });
+      expect(frame({ ...at, askedText: `${exactly}x` })).toMatchObject({ asked: { length: 2 }, viewHeight: 18 });
+      // A red line is one row however long, cut where it is drawn, inside the box (App.tsx).
+      const redExactly = `Danger: ${"x".repeat(inner - "Danger: ".length)}`;
+      expect(frame({ ...at, askedText: exactly, askedWarnings: [redExactly] })).toMatchObject({ warned: [redExactly], viewHeight: 18 });
+      expect(frame({ ...at, askedText: exactly, askedWarnings: [`${redExactly}x`] })).toMatchObject({ warned: [`${redExactly}x`], viewHeight: 18 });
+    });
+
+    it("moves a question to its short line on the tallest terminal where the box leaves the conversation no row, and not one row taller", () => {
+      // Three rows at 76 columns: with the box's two, the frame's row short and the status line's, eight rows leave the
+      // conversation one and seven none, so at seven the short line's one row is drawn, the conversation having two.
+      const three = "x".repeat(2 * 76 + 1);
+      expect(wrap(three, 76, false)).toHaveLength(3);
+      expect(frame({ ...asked, rows: 7, askedText: three })).toMatchObject({ questionFits: false, asked: [short], viewHeight: 2 });
+      expect(frame({ ...asked, rows: 8, askedText: three })).toMatchObject({ questionFits: true, asked: { length: 3 }, viewHeight: 1 });
+    });
   });
 
   // TUI design pass, Task 4 and choice P5, the user's reading ("Give way for all"): a line above the prompt and one below,
