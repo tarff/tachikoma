@@ -54,6 +54,7 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
     // The command goes to the gate, whose dangerous-command check reads it (release 7 plan, Task 8).
     await ctx.gate.require({ kind: "shell", outside: false, summary: `run: ${command}`, command }, ctx.signal);
     if (ctx.signal?.aborted) throw new Error("Cancelled");
+    const started = Date.now();
     const run = ctx.executor.start(command, ctx.root);
     const way = await firstOf(run, ms, ctx.signal);
     // A stop's end is awaited, as exec awaited it: the box's comes once its kill has run there, and an Esc that cannot
@@ -75,7 +76,7 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
     }
     if (way === "timeout" || way === "moved") {
       // What it printed so far stays in its log, unread, so the first shell_output gives it (design, "A command that runs long").
-      const { id } = tasks.adopt(run, { command, moved: true });
+      const { id } = tasks.adopt(run, { command, moved: true, started });
       if (way === "moved") return `Moved to the background as ${id} by the user.`;
       return `Command did not complete within its ${s}s timeout and was moved to the background as ${id}.`;
     }

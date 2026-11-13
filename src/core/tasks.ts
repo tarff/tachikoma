@@ -176,10 +176,12 @@ export class Tasks {
   // A background command joins the list, started there or moved there from the foreground (background commands plan,
   // choice 6). Its line in the lead's transcript is written before this returns, as a subagent's is (#run), so the id the
   // shell tool hands the model is never handed out again. `limit` is the time limit the tool's timeout asks for under -p.
-  adopt(run: Running, opts: { command: string; moved?: boolean; limit?: number }): CommandTask {
+  // `started` is when a moved command started in the foreground, so its time shown is how long it has run (design,
+  // "What the model gets"); its -p limit still counts from the move.
+  adopt(run: Running, opts: { command: string; moved?: boolean; limit?: number; started?: number }): CommandTask {
     const id = `t${this.#next++}`;
     // `done` is set just below, before anything reads it.
-    const made = { kind: "command", id, command: opts.command, background: true, state: "running", started: Date.now(), shown: true, run };
+    const made = { kind: "command", id, command: opts.command, background: true, state: "running", started: opts.started ?? Date.now(), shown: true, run };
     const t = made as Omit<CommandTask, "done"> as CommandTask;
     this.all.push(t);
     this.opts.transcript?.()?.write({ t: "command", id, command: opts.command });

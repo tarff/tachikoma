@@ -226,14 +226,18 @@ describe("the shell tool, in the foreground", () => {
   it("moves a command still running at the default 120 s to the background, saying so", async () => {
     const { call, started, tasks, reached } = await setup();
     fakeTimers();
+    // The clock, so the task's start is the command's, not the move's (design: the panel shows how long it has run).
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    onTestFinished(() => void now.mockRestore());
     const out = call({ command: "npm test" });
     await reached();
+    now.mockReturnValue(121_000);
     vi.advanceTimersByTime(120_000 - 1);
     expect(await settled(out)).toBe(false);
     vi.advanceTimersByTime(1);
     expect(await out).toBe("Command did not complete within its 120s timeout and was moved to the background as t1.");
     const t = tasks.get("t1") as CommandTask;
-    expect([t.command, t.state, t.run, started[0]!.run.stop.mock.calls.length]).toEqual(["npm test", "running", started[0]!.run.run, 0]);
+    expect([t.command, t.state, t.run, started[0]!.run.stop.mock.calls.length, t.started]).toEqual(["npm test", "running", started[0]!.run.run, 0, 1_000]);
     expect([tasks.holding, vi.getTimerCount()]).toEqual([undefined, 0]);
     tasks.stop();
   });
@@ -271,7 +275,7 @@ describe("the shell tool, in the foreground", () => {
     await reached();
     vi.advanceTimersByTime(5_000);
     expect(await out).toBe("Command did not complete within its 5s timeout and was moved to the background as t1.");
-    expect(adopt.mock.calls[0]![1]).toEqual({ command: "npm test", moved: true });
+    expect(adopt.mock.calls[0]![1]).toEqual({ command: "npm test", moved: true, started: expect.any(Number) });
     tasks.stop();
   });
 
@@ -304,11 +308,14 @@ describe("the shell tool, in the foreground", () => {
   it("moves the command to the background on Ctrl+B, saying the user moved it", async () => {
     const { call, started, tasks, reached } = await setup();
     fakeTimers();
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    onTestFinished(() => void now.mockRestore());
     const out = call({ command: "npm run dev" });
     await reached();
+    now.mockReturnValue(9_000);
     expect(tasks.moveForeground()).toBe(true);
     expect(await out).toBe("Moved to the background as t1 by the user.");
-    expect([tasks.get("t1")!.state, started[0]!.run.stop.mock.calls.length]).toEqual(["running", 0]);
+    expect([tasks.get("t1")!.state, started[0]!.run.stop.mock.calls.length, tasks.get("t1")!.started]).toEqual(["running", 0, 1_000]);
     expect([tasks.holding, tasks.moveForeground(), vi.getTimerCount()]).toEqual([undefined, false, 0]);
     tasks.stop();
   });
