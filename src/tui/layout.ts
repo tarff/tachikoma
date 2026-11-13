@@ -112,6 +112,7 @@ export interface FrameIn {
 }
 
 export interface FrameOut {
+  rules: boolean; // the prompt's two lines drawn, the one above it and the one below (TUI design pass, Task 4)
   tooled: boolean; // the tool line drawn
   hinted: boolean; // the hint row drawn
   menuRows: number;
@@ -128,7 +129,7 @@ export interface FrameOut {
   warned: string[]; // the red lines drawn above it, a row each, the last saying how many more when they do not all fit
   noted: boolean; // its grey line drawn, a row above any red lines, when there is a row for it
   viewHeight: number; // the conversation's rows, in full screen
-  promptFirst: number; // the prompt's first row
+  promptFirst: number; // the prompt's first row, under its upper line when that is drawn
 }
 
 // The red lines in `room` rows: all when they fit, or else all but the last row's worth and that row counting the rest,
@@ -165,13 +166,18 @@ function fewest(lines: string[], room: number): string[] {
 // first red row does, and is cut as the red lines are; it is drawn only when there is a row for it beyond the
 // conversation's one and beyond the red row always kept, so a red row comes first. The gate never sends it with red lines
 // today (a paused question has no dangers), but the frame takes both.
+// While the prompt is drawn (no question, list, form or detail view in its place) a line goes above it and one below, both
+// or none; they give way first, before the tool line and the hint row, so nothing that says something is lost to a line
+// (TUI design pass, Task 4 and choice P5).
 export function frame(i: FrameIn): FrameOut {
   const reds = i.askedText === null ? [] : i.askedWarnings;
   const note = i.askedText !== null && i.askedNote ? 1 : 0;
   const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
-  const base = i.rows - 1 - 1 - (i.working && !i.question ? 1 : 0) - i.liveRows - (i.full ? 1 : 0);
+  const before = i.rows - 1 - 1 - (i.working && !i.question ? 1 : 0) - i.liveRows - (i.full ? 1 : 0);
   // The rows kept below the tool line and the hint: the cursor's, while the prompt is drawn, or a question's least.
   const cursor = i.askedText !== null ? note + linesOf(i.askedShort ?? i.askedText).length + Math.min(1, reds.length) : i.detail ? 0 : 1;
+  const rules = !i.question && !i.detail && i.pickerNeeded === null && before >= 2 + (i.toolLine ? 1 : 0) + (i.hint ? 1 : 0) + cursor;
+  const base = before - (rules ? 2 : 0);
   const tooled = i.toolLine && base >= 1 + cursor + (i.hint ? 1 : 0);
   const room = base - (tooled ? 1 : 0);
   const hinted = i.hint && room >= 1 + cursor;
@@ -193,7 +199,7 @@ export function frame(i: FrameIn): FrameOut {
   const pickerRows = i.pickerNeeded === null ? 0 : Math.max(1, Math.min(i.pickerNeeded, i.rows - 1 - 1 - 1 - 1 - (hinted ? 1 : 0)));
   const abovePrompt = i.liveRows + (i.working ? 1 : 0) + todoShown.length + queuedShown; // the live area's rows drawn above the prompt
   const live = (askedRows: number) =>
-    (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
+    (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + (rules ? 2 : 0) + menuRows + panel.length) +
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);
   const questionFits = i.askedText === null || i.rows - 1 - live(note + linesOf(i.askedText).length + Math.min(1, reds.length)) >= 1; // as viewHeight, below
   const asked = linesOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
@@ -201,6 +207,7 @@ export function frame(i: FrameIn): FrameOut {
   const warned = fewest(reds, Math.max(0, i.rows - 1 - live(noted + asked.length) - 1));
   const viewHeight = Math.max(1, i.rows - 1 - live(noted + warned.length + asked.length));
   return {
+    rules,
     tooled,
     hinted,
     menuRows,
@@ -217,6 +224,6 @@ export function frame(i: FrameIn): FrameOut {
     warned,
     noted: noted === 1,
     viewHeight,
-    promptFirst: (i.full ? viewHeight : 0) + abovePrompt,
+    promptFirst: (i.full ? viewHeight : 0) + abovePrompt + (rules ? 1 : 0),
   };
 }

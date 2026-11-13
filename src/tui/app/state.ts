@@ -148,7 +148,8 @@ export function useAppState({
   // drawing that started it.
   const fullNow = useRef(full);
   // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row, how many it draws and
-  // which of its rows they are (layout.ts, frame), and the menu's under it, no prompt rows while a question, the model
+  // which of its rows they are (layout.ts, frame), whether its two lines are drawn (TUI design pass, Task 4), and the
+  // menu's under the lower one, no prompt rows while a question, the model
   // list, Ctrl+R's search, whose prompt shows a match, or the detail view takes their place; the prompt as typed and the
   // menu's choice when they were drawn, which keys replace, never change; the detail view drawn, if any; and whether the
   // model list and a question are drawn, which take the keys (phase.ts, PhaseInputs).
@@ -158,6 +159,7 @@ export function useAppState({
     promptFirst: 0,
     promptRows: 0,
     promptWindow: { top: 0, above: 0, below: 0 },
+    rules: false,
     menuRows: 0,
     editor: empty,
     chosen: chosen.current,

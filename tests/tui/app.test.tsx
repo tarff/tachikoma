@@ -344,6 +344,8 @@ const OSC52_SHOWN = "\\u001b]52;c;Y3VybA==\\u0007";
 // The palette the App draws in when no theme is given, the dark full one (theme.ts, ThemeContext), for the lines a test
 // makes as cli.tsx makes a resumed conversation's (TUI design pass, Task 3).
 const DARK = palette({ light: false, color: true, full: true });
+// The prompt's line above it and below it, the terminal's width: ink-testing-library's 100 columns (TUI design pass, Task 4).
+const RULE = "─".repeat(100);
 
 function expectNoRawControls(frame: string | undefined) {
   for (const c of ["\u001b", "\u0007", "\r", "\u202e", "\u009b"]) expect(frame).not.toContain(c);
@@ -1526,7 +1528,7 @@ describe("App's queue", () => {
     await type(app, "one");
     await until(app, "Esc to stop");
     await press(app, "two", "\r", "three", "\r", "fo");
-    expect(app.lastFrame()).toMatch(/Esc to stop\ntwo\nthree\n› fo\n↑ to edit queued messages\n/);
+    expect(app.lastFrame()).toMatch(/Esc to stop\ntwo\nthree\n─+\n› fo\n─+\n↑ to edit queued messages\n/);
     release();
     await until(app, "r2");
     expect(prompts(session)).toEqual(["one", "two\n\nthree"]);
@@ -1540,7 +1542,7 @@ describe("App's queue", () => {
     const { app, session } = await mount([], { lead });
     app.stdin.write("one\rtwo\r");
     await until(app, "Esc to stop");
-    expect(app.lastFrame()).toMatch(/Esc to stop\ntwo\n›/);
+    expect(app.lastFrame()).toMatch(/Esc to stop\ntwo\n─+\n›/);
     release();
     await until(app, "r2");
     expect(prompts(session)).toEqual(["one", "two"]);
@@ -1551,7 +1553,7 @@ describe("App's queue", () => {
     const { app, session } = await mount([], { lead, newLead: lead });
     app.stdin.write("/lead fake:b\rone\rtwo\r");
     await tick(); // the command is done, and its turn-end would take the queue on
-    expect(app.lastFrame()).toMatch(/\ntwo\n›/); // still queued: one is running
+    expect(app.lastFrame()).toMatch(/\ntwo\n─+\n›/); // still queued: one is running
     release();
     await until(app, "r2");
     expect(prompts(session)).toEqual(["one", "two"]);
@@ -1590,7 +1592,7 @@ describe("App's queue", () => {
     await until(app, "Esc to stop");
     await press(app, "two", "\r", "three", "\r", "draft", "\u0003");
     await gone(app, "Esc to stop");
-    expect(app.lastFrame()).toContain("› draft\n  two\n  three\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› draft\n  two\n  three\n${RULE}\n? for shortcuts`);
     await tick();
     expect(prompts(session)).toEqual(["one"]);
   });
@@ -1605,7 +1607,7 @@ describe("App's queue", () => {
     await until(app, `Allow write ${path.join(ctx.root, "a.txt")}?`);
     await press(app, "\u0003");
     await gone(app, "Esc to stop");
-    expect(app.lastFrame()).toContain("› two\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› two\n${RULE}\n? for shortcuts`);
   });
 
   it("exits on a queued /exit, sending nothing after it", async () => {
@@ -1664,26 +1666,26 @@ describe("App's space on screen", () => {
   const lines = (n: number) => [...Array(n).keys()].map((i) => `l${i}`).join("\r");
 
   it("keeps the live part a row shorter than the terminal, showing a tall paste around the cursor", async () => {
-    const { app } = await mount([], { rows: 10 });
+    const { app } = await mount([], { rows: 12 }); // the ten rows this case had, and the prompt's two lines
     await press(app, `\u001b[200~${lines(20)}\u001b[201~`);
     const frame = app.lastFrame()!;
-    expect(frame.split("\n")).toHaveLength(9);
-    expect(frame).toContain("› ↑ 14 rows above\n  l14\n");
-    expect(frame).toContain("  l19\n? for shortcuts\n");
+    expect(frame.split("\n")).toHaveLength(11);
+    expect(frame).toContain(`${RULE}\n› ↑ 14 rows above\n  l14\n`);
+    expect(frame).toContain(`  l19\n${RULE}\n? for shortcuts\n`);
     await press(app, ...Array<string>(6).fill("\u001b[A")); // up to l13, past the window's top
-    expect(app.lastFrame()!.split("\n")).toHaveLength(9);
+    expect(app.lastFrame()!.split("\n")).toHaveLength(11);
     expect(app.lastFrame()).toContain("› ↑ 13 rows above\n  l13\n");
     expect(app.lastFrame()).toContain("  ↓ 2 rows below\n");
   });
 
   it("gives the queue the rows the prompt leaves, the last saying how many more, or the hint line the count", async () => {
-    const { app } = await mount([], { lead: hanging(), rows: 8 });
+    const { app } = await mount([], { lead: hanging(), rows: 10 }); // the eight rows this case had, and the prompt's two lines
     await type(app, "one");
     await until(app, "Esc to stop");
     for (const q of ["q1", "q2", "q3", "q4", "q5"]) await press(app, q, "\r");
-    expect(app.lastFrame()).toMatch(/Esc to stop\nq1\nq2\n\+3 more\n›\n↑ to edit queued messages\n[^\n]*$/);
+    expect(app.lastFrame()).toMatch(/Esc to stop\nq1\nq2\n\+3 more\n─+\n›\n─+\n↑ to edit queued messages\n[^\n]*$/);
     await press(app, "a", "\n", "b", "\n", "c", "\n", "d"); // four rows: none left for the queue
-    expect(app.lastFrame()).toMatch(/Esc to stop\n› a\n  b\n  c\n  d\n5 queued\n[^\n]*$/);
+    expect(app.lastFrame()).toMatch(/Esc to stop\n─+\n› a\n  b\n  c\n  d\n─+\n5 queued\n[^\n]*$/);
   });
 
   it("drops the hint line when the terminal is too short for it and the cursor's row", async () => {
@@ -1788,10 +1790,10 @@ describe("App's background subagents", () => {
     const { app } = await mount([], { lead, worker, segments: ["tasks"] });
     await type(app, "go");
     await until(app, "started it");
-    expect(app.lastFrame()).toMatch(/›\n◐ t1 find x\n  ⎿ w · \d+s · ↓ 0 tokens · \$0\.00\n\? for shortcuts\n 1 running$/);
+    expect(app.lastFrame()).toMatch(/›\n─+\n◐ t1 find x\n  ⎿ w · \d+s · ↓ 0 tokens · \$0\.00\n\? for shortcuts\n 1 running$/);
     worker.answer("found");
     await until(app, "read it");
-    expect(app.lastFrame()).toMatch(/›\n✓ t1 find x\n  ⎿ w · /);
+    expect(app.lastFrame()).toMatch(/›\n─+\n✓ t1 find x\n  ⎿ w · /);
     await type(app, "more");
     await until(app, "next");
     expect(app.lastFrame()).not.toContain("✓ t1 find x");
@@ -1891,7 +1893,7 @@ describe("App's background commands", () => {
     const { app } = await mount([], { lead, executor, mode: "never" });
     await type(app, "go");
     await until(app, "started");
-    expect(app.lastFrame()).toMatch(/›\n◐ t1 npm run dev\n  ⎿ shell · \d+s\n◐ t2 npm test\n  ⎿ shell · \d+s\n◐ t3 npm run \\u001b\[2Jwatch\n  ⎿ shell · \d+s\n/);
+    expect(app.lastFrame()).toMatch(/›\n─+\n◐ t1 npm run dev\n  ⎿ shell · \d+s\n◐ t2 npm test\n  ⎿ shell · \d+s\n◐ t3 npm run \\u001b\[2Jwatch\n  ⎿ shell · \d+s\n/);
     runs[0]!.end(0);
     await until(app, "one");
     expect(app.lastFrame()).toContain("t1 finished");
@@ -1901,7 +1903,7 @@ describe("App's background commands", () => {
     await type(app, "/tasks stop t3");
     await until(app, "t3 stopped");
     expect(app.lastFrame()).toMatch(
-      /›\n✓ t1 npm run dev\n  ⎿ shell · exit code 0 · \d+s\n✗ t2 npm test\n  ⎿ shell · exit code 1 · \d+s\n⊘ t3 npm run \\u001b\[2Jwatch\n  ⎿ shell · \d+s\n/,
+      /›\n─+\n✓ t1 npm run dev\n  ⎿ shell · exit code 0 · \d+s\n✗ t2 npm test\n  ⎿ shell · exit code 1 · \d+s\n⊘ t3 npm run \\u001b\[2Jwatch\n  ⎿ shell · \d+s\n/,
     );
   });
 
@@ -2179,7 +2181,7 @@ describe("App's background commands", () => {
     await press(app, CTRL_B);
     await until(app, "moved it");
     expect(lead.seen[1]!.at(-1)!.parts).toEqual([moved]);
-    expect(app.lastFrame()).toMatch(/›\n◐ t1 npm test\n  ⎿ shell · \d+s\n/);
+    expect(app.lastFrame()).toMatch(/›\n─+\n◐ t1 npm test\n  ⎿ shell · \d+s\n/);
     expect(tasks.all.map((t) => [t.id, t.state])).toEqual([["t1", "running"]]);
   });
 
@@ -3224,7 +3226,7 @@ describe("App's to-do list", () => {
     const { app, bus } = await mount([]);
     bus.emit("todo", items);
     await tick();
-    expect(app.lastFrame()).toContain("☑ read the login code\n◐ find where the token is saved\n☐ write the fix\n›");
+    expect(app.lastFrame()).toContain(`☑ read the login code\n◐ find where the token is saved\n☐ write the fix\n${RULE}\n›`);
     bus.emit("todo", items.map((i) => ({ ...i, status: "done" as const })));
     await tick();
     expect(app.lastFrame()).not.toContain("☑");
@@ -3245,14 +3247,14 @@ describe("App's to-do list", () => {
   });
 
   it("sits under the working line, above the queue, and gives way before the prompt", async () => {
-    const { app, bus } = await mount([], { lead: hanging(), rows: 10 });
+    const { app, bus } = await mount([], { lead: hanging(), rows: 12 }); // the ten rows this case had, and the prompt's two lines
     await type(app, "one");
     await until(app, "Esc to stop");
     bus.emit("todo", [...items, { text: "test it", status: "pending" }]);
     await press(app, "q1", "\r");
-    expect(app.lastFrame()).toMatch(/Esc to stop\n☑ read the login code\n◐ find where the token is saved\n☐ write the fix\n☐ test it\nq1\n›\n/);
+    expect(app.lastFrame()).toMatch(/Esc to stop\n☑ read the login code\n◐ find where the token is saved\n☐ write the fix\n☐ test it\nq1\n─+\n›\n/);
     await press(app, "a", "\n", "b", "\n", "c", "\n", "d"); // four rows for the prompt: two left for the list, none for the queue
-    expect(app.lastFrame()).toMatch(/Esc to stop\n◐ find where the token is saved\n\+3 more\n› a\n  b\n  c\n  d\n1 queued\n/);
+    expect(app.lastFrame()).toMatch(/Esc to stop\n◐ find where the token is saved\n\+3 more\n─+\n› a\n  b\n  c\n  d\n─+\n1 queued\n/);
   });
 
   it("escapes what the model wrote in it", async () => {
@@ -3268,11 +3270,11 @@ describe("App's menus", () => {
   it("lists the commands for / at the start of an empty prompt, narrowing as the command is typed", async () => {
     const { app } = await mount([]);
     await press(app, "/");
-    expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model; alone, pick it from a list\n  /model  Pick the lead model from a list\n");
+    expect(app.lastFrame()).toContain(`› /\n${RULE}\n  /lead <provider:model>  Switch the lead model; alone, pick it from a list\n  /model  Pick the lead model from a list\n`);
     expect(app.lastFrame()).toContain("↑↓ choose · Tab fill · Enter run · Esc close");
     await press(app, "e");
     expect(app.lastFrame()).toContain(
-      "› /e\n  /export [file]  Write the conversation to a file as text; alone, copy it\n  /errors  Summarise the error log\n  /exit  Quit\n",
+      `› /e\n${RULE}\n  /export [file]  Write the conversation to a file as text; alone, copy it\n  /errors  Summarise the error log\n  /exit  Quit\n`,
     );
     expect(app.lastFrame()).not.toContain("/model");
   });
@@ -3314,9 +3316,9 @@ describe("App's menus", () => {
     await writeFile(path.join(ctx.root, "src", "x.ts"), "secret");
     await writeFile(path.join(ctx.root, "a.txt"), "");
     await press(app, "read @");
-    expect(app.lastFrame()).toContain("› read @\n  src/\n  a.txt\n↑↓ choose · Tab or Enter fill · Esc close");
+    expect(app.lastFrame()).toContain(`› read @\n${RULE}\n  src/\n  a.txt\n↑↓ choose · Tab or Enter fill · Esc close`);
     await press(app, "s", "\t");
-    expect(app.lastFrame()).toContain("› read @src/\n  src/x.ts\n");
+    expect(app.lastFrame()).toContain(`› read @src/\n${RULE}\n  src/x.ts\n`);
     await press(app, "\r");
     expect(app.lastFrame()).toContain("› read @src/x.ts\n");
     await press(app, "\r");
@@ -3327,17 +3329,17 @@ describe("App's menus", () => {
   it("says in the menu why a folder cannot be listed", async () => {
     const { app } = await mount([]);
     await press(app, "@nope/");
-    expect(app.lastFrame()).toMatch(/› @nope\/\n {2}Cannot list nope\/: ENOENT/);
+    expect(app.lastFrame()).toMatch(/› @nope\/\n─+\n {2}Cannot list nope\/: ENOENT/);
   });
 
   it("cuts the prompt to the cursor's row while a menu is open, and fits the menu in the rows left", async () => {
-    const { app, ctx } = await mount([], { rows: 8 });
+    const { app, ctx } = await mount([], { rows: 10 });
     for (const name of ["a1", "a2", "a3", "a4", "a5", "a6"]) await writeFile(path.join(ctx.root, name), "");
     await press(app, "one", "\n", "two", "\n", "@a");
-    // Seven rows: the prompt's cursor row, four for the menu, the hint line and the status line.
-    expect(app.lastFrame()).toMatch(/^› @a\n {2}a1\n {2}a2\n {2}a3\n {2}↓ 3 more\n↑↓ choose[^\n]*\n[^\n]*$/);
+    // Nine rows: the prompt's cursor row and its two lines, four for the menu, the hint line and the status line.
+    expect(app.lastFrame()).toMatch(/^─+\n› @a\n─+\n {2}a1\n {2}a2\n {2}a3\n {2}↓ 3 more\n↑↓ choose[^\n]*\n[^\n]*$/);
     await press(app, "\u001b[B", "\u001b[B", "\u001b[B");
-    expect(app.lastFrame()).toMatch(/^› @a\n {2}↑ 2 more\n {2}a3\n {2}a4\n {2}↓ 2 more\n/);
+    expect(app.lastFrame()).toMatch(/^─+\n› @a\n─+\n {2}↑ 2 more\n {2}a3\n {2}a4\n {2}↓ 2 more\n/);
   });
 });
 
@@ -3586,6 +3588,7 @@ const SHIFT_DOWN = "\u001b[1;2B";
 const said = (n: number, text = (i: number) => `said ${i}.`) => Array.from({ length: n }, (_, i) => ({ text: text(i) }));
 // Each row of the frame, without the scroll bar's column (the last of ink-testing-library's 100) and the spaces before it.
 const shown = (app: ReturnType<typeof render>, columns = 100) => app.lastFrame()!.split("\n").map((r) => r.slice(0, columns - 1).trimEnd());
+const SHOWN_RULE = RULE.slice(0, 99); // the prompt's lines as shown() cuts them, the scroll bar's column left out
 
 describe("App in full screen", () => {
   it("draws the conversation at the top and the status line at the bottom, in a frame a row shorter than the terminal", async () => {
@@ -3602,23 +3605,23 @@ describe("App in full screen", () => {
   it("shows the newest lines, earlier ones on PgUp, holds the view while a reply arrives, and goes back to the newest on Ctrl+End", async () => {
     const lead = new Held();
     const { app } = await mount([], { full: true, lead, intro: said(60) });
-    // 20 rows of conversation: 23 less the prompt, the hint and the status line.
-    expect(shown(app).slice(0, 20)).toEqual(said(60).slice(40).map((l) => l.text));
-    await press(app, PG_UP); // half of 20
-    expect(shown(app)[0]).toBe("said 30.");
-    expect(shown(app)[19]).toBe("said 49.");
+    // 18 rows of conversation: 23 less the prompt, its two lines, the hint and the status line.
+    expect(shown(app).slice(0, 18)).toEqual(said(60).slice(42).map((l) => l.text));
+    await press(app, PG_UP); // half of 18
+    expect(shown(app)[0]).toBe("said 33.");
+    expect(shown(app)[17]).toBe("said 50.");
     await type(app, "hi"); // sending goes to the bottom
     await until(app, "\n› hi");
-    expect(shown(app).slice(18, 20)).toEqual(["› hi", ""]); // the working line takes the hint's row
-    await press(app, PG_UP); // from row 44 of 64: the gap and three band rows after said 59. (TUI design pass, Task 3)
-    expect(shown(app)[0]).toBe("said 34.");
+    expect(shown(app).slice(16, 18)).toEqual(["› hi", ""]); // the working line takes the hint's row
+    await press(app, PG_UP); // from row 46 of 64: the gap and three band rows after said 59. (TUI design pass, Task 3)
+    expect(shown(app)[0]).toBe("said 37.");
     lead.answer("a\nb");
     await until(app, "↓ 3 new lines · Ctrl+End"); // the reply's gap and its two lines
     await gone(app, "Esc to stop");
-    expect(shown(app)[0]).toBe("said 34.");
+    expect(shown(app)[0]).toBe("said 37.");
     expect(app.lastFrame()).not.toContain("› hi");
     await press(app, CTRL_END);
-    expect(shown(app).slice(15, 20)).toEqual(["› hi", "", "", "● a", "  b"]);
+    expect(shown(app).slice(13, 18)).toEqual(["› hi", "", "", "● a", "  b"]);
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -3678,8 +3681,9 @@ describe("App in full screen", () => {
     );
     try {
       await tick();
-      // The prompt's row is under 20 of conversation, in a frame of 23: up 3 from the frame's foot, then to after "› ".
-      expect(terminal.out).toContain("\u001b[3A\u001b[3G\u001b[?25h");
+      // The prompt's row is under 18 of conversation and its upper line, in a frame of 23: up 4 from the frame's foot, then
+      // to after "› ".
+      expect(terminal.out).toContain("\u001b[4A\u001b[3G\u001b[?25h");
     } finally {
       app.unmount();
     }
@@ -3688,11 +3692,11 @@ describe("App in full screen", () => {
   it("moves a row on Shift+Up and Shift+Down, goes to the top on Ctrl+Home, and stays at the bottom on PgDn", async () => {
     const { app } = await mount([], { full: true, intro: said(60) });
     await press(app, PG_DOWN);
-    expect(shown(app)[0]).toBe("said 40.");
+    expect(shown(app)[0]).toBe("said 42.");
     await press(app, SHIFT_UP);
-    expect(shown(app)[0]).toBe("said 39.");
+    expect(shown(app)[0]).toBe("said 41.");
     await press(app, SHIFT_DOWN);
-    expect(shown(app)[0]).toBe("said 40.");
+    expect(shown(app)[0]).toBe("said 42.");
     await press(app, CTRL_HOME);
     expect(shown(app)[0]).toBe("said 0.");
   });
@@ -3701,14 +3705,14 @@ describe("App in full screen", () => {
     const long = (i: number) => `said ${i}. ${"word ".repeat(14).trimEnd()}`; // under 80 columns: one row at 99, two at 59
     const { app } = await mount([], { full: true, intro: said(60, long) });
     await press(app, PG_UP);
-    expect(shown(app)[0]).toBe(long(30));
+    expect(shown(app)[0]).toBe(long(33));
     Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
     app.stdout.emit("resize");
     await tick();
     const rows = shown(app, 60);
-    expect(rows[0]).toMatch(/^said 30\. word/);
+    expect(rows[0]).toMatch(/^said 33\. word/);
     expect(rows[1]).toMatch(/^word/);
-    expect(rows[2]).toMatch(/^said 31\. word/);
+    expect(rows[2]).toMatch(/^said 34\. word/);
     expect(rows).toHaveLength(23);
   });
 
@@ -3718,10 +3722,10 @@ describe("App in full screen", () => {
     await press(app, Array.from({ length: 20 }, (_, i) => `p${i}`).join("\n")); // Ctrl+J between them
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[0]).toBe("said 51.");
-    expect(rows[8]).toBe("said 59.");
-    expect(rows[9]).toBe("› ↑ 9 rows above");
-    expect(rows[20]).toBe("  p19");
+    expect(rows[0]).toBe("said 53."); // seven rows of conversation, then the prompt's upper line
+    expect(rows[6]).toBe("said 59.");
+    expect(rows[8]).toBe("› ↑ 9 rows above");
+    expect(rows[19]).toBe("  p19");
   });
 
   it("scrolls with PgUp while a question waits, and still answers it with y", async () => {
@@ -3766,7 +3770,7 @@ describe("App in full screen", () => {
   ])("goes to the bottom, following, on $name", async ({ key, shows }) => {
     const { app } = await mount([], { full: true, intro: said(60), note: "a note on the login", models: [{ provider: "fake", models: ["a"] }] });
     await press(app, PG_UP);
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
     await press(app, key);
     await until(app, shows);
     expect(app.lastFrame()).not.toContain("new lines");
@@ -3776,9 +3780,9 @@ describe("App in full screen", () => {
     const { app } = await mount([], { full: true, intro: said(60), past: ["about"] });
     await press(app, "\u0012", "ab");
     await until(app, "search: ab ·");
-    expect(shown(app)[0]).toBe("said 40.");
+    expect(shown(app)[0]).toBe("said 42.");
     await press(app, PG_UP);
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
     await press(app, SHIFT_DOWN, CTRL_HOME);
     expect(shown(app)[0]).toBe("said 0.");
     expect(app.lastFrame()).toContain("search: ab ·");
@@ -3832,14 +3836,16 @@ describe("App in full screen", () => {
     await until(app, "Esc to stop");
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows.slice(-9)).toEqual([
+    expect(rows.slice(-11)).toEqual([
       expect.stringContaining("Esc to stop"),
       "◐ one",
       "☐ two",
       "q1",
       "q2",
       "q3",
+      SHOWN_RULE,
       "›",
+      SHOWN_RULE,
       "↑ to edit queued messages",
       expect.stringContaining("lead fake:hang"),
     ]);
@@ -3892,9 +3898,10 @@ const thumb = (app: ReturnType<typeof render>) =>
     .flatMap((r, i) => ([...r][BAR] === "┃" ? [i] : []));
 
 describe("App's wheel and scroll bar in full screen", () => {
-  // 80 lines in 20 rows of conversation: the newest 20 show, said 60. to said 79.
+  // 80 lines in 20 rows of conversation: the newest 20 show, said 60. to said 79. A case that counts the rows has a
+  // terminal of 26 for them: Ink's 24 and the prompt's two lines (TUI design pass, Task 4).
   it("scrolls 3 rows a notch of the wheel, wherever the pointer is", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     expect(shown(app)[0]).toBe("said 60.");
     await wheel(mouse, "up");
     expect(shown(app)[0]).toBe("said 57.");
@@ -3905,7 +3912,7 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 
   it("moves one row every second notch at a speed of 0.5", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80), scrollSpeed: 0.5 });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80), scrollSpeed: 0.5 });
     const tops = [];
     for (let i = 0; i < 4; i++) {
       await wheel(mouse, "up");
@@ -3929,7 +3936,7 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 
   it("goes to the first lines on a click on the bar's track near its top", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     expect(thumb(app)).toEqual([15, 16, 17, 18, 19]); // 20 rows of 80 seen: a thumb of 5 rows, at the foot
     await pointer(mouse, at("press", BAR, 1), at("release", BAR, 1));
     expect(shown(app)[0]).toBe("said 0.");
@@ -3937,14 +3944,14 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 
   it("centres the thumb on the row of the track clicked", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     await pointer(mouse, at("press", BAR, 8), at("release", BAR, 8));
     expect(thumb(app)).toEqual([6, 7, 8, 9, 10]);
     expect(shown(app)[0]).toBe("said 24."); // the thumb at 6 of its 15 rows of travel: 6 * 60 / 15
   });
 
   it("moves the thumb with the pointer while it is dragged, keeping where on it it was pressed, until the button is let go", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     await press(app, CTRL_HOME);
     expect(thumb(app)).toEqual([0, 1, 2, 3, 4]);
     await pointer(mouse, at("press", BAR, 1), at("drag", BAR, 8));
@@ -3958,7 +3965,7 @@ describe("App's wheel and scroll bar in full screen", () => {
 
   it("follows again when the thumb is dragged to the bottom, so a new reply shows at once", async () => {
     const lead = new Held();
-    const { app, mouse } = await mount([], { full: true, lead, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, lead, intro: said(80) });
     await type(app, "go");
     await until(app, "› go");
     await press(app, CTRL_HOME);
@@ -3970,7 +3977,7 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 
   it("moves the thumb as PgUp scrolls", async () => {
-    const { app } = await mount([], { full: true, intro: said(80) });
+    const { app } = await mount([], { full: true, rows: 26, intro: said(80) });
     await press(app, PG_UP); // 10 rows up, to row 50 of the 60 the view can start at: the thumb at 12.5 of 15, rounded
     expect(thumb(app)).toEqual([13, 14, 15, 16, 17]);
   });
@@ -3985,7 +3992,7 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 
   it("keeps the view where it is when the grabbed thumb moves sideways on its row, and draws nothing new", async () => {
-    let { app, mouse } = await mount([], { full: true, intro: said(80) });
+    let { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     await press(app, PG_UP);
     expect(thumb(app)).toEqual([13, 14, 15, 16, 17]);
     await pointer(mouse, at("press", BAR, 15), at("drag", BAR - 1, 15));
@@ -3994,7 +4001,7 @@ describe("App's wheel and scroll bar in full screen", () => {
     for (let i = 0; i < 10; i++) await pointer(mouse, at("drag", BAR - 1, 15));
     expect(app.frames.length).toBe(frames);
     // 1,000 lines: a thumb of one row, which stands for many first rows
-    ({ app, mouse } = await mount([], { full: true, intro: said(1000) }));
+    ({ app, mouse } = await mount([], { full: true, rows: 26, intro: said(1000) }));
     await press(app, PG_UP, PG_UP);
     expect(shown(app)[0]).toBe("said 960.");
     await pointer(mouse, at("press", BAR, 19), at("drag", BAR - 1, 19));
@@ -4002,13 +4009,13 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 
   it("ends an earlier grab on a new press, as when its release was lost", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     await pointer(mouse, at("press", BAR, 17), at("press", 10, 5), at("drag", 10, 12));
     expect(shown(app)[0]).toBe("said 60.");
   });
 
   it("grabs a thumb held at the bar's end by a track click where the pointer is on it", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     await pointer(mouse, at("press", BAR, 1));
     expect(thumb(app)).toEqual([0, 1, 2, 3, 4]); // centred on row 1 it would start above the bar, so it starts at 0
     await pointer(mouse, at("drag", BAR, 5)); // 4 rows down
@@ -4070,6 +4077,8 @@ const reversed = (app: ReturnType<typeof render>) => app.lastFrame()!.split("\n"
 const click = (x: number, y: number) => [at("press", x, y), at("release", x, y)];
 
 describe("App's selecting and copying in full screen", () => {
+  // A case that counts the conversation's 20 rows has a terminal of 26 for them: Ink's 24 and the prompt's two lines
+  // (TUI design pass, Task 4).
   // 149 columns of words: a row of 99, then the rest.
   const long = "word ".repeat(30).trimEnd();
 
@@ -4088,7 +4097,7 @@ describe("App's selecting and copying in full screen", () => {
 
   it("shows the selection in reverse colours as it grows, never on the scroll bar's column", async () => {
     await inColour(async () => {
-      const { app, mouse } = await mount([], { full: true, intro: said(80) });
+      const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
       await pointer(mouse, at("press", 2, 5), at("drag", 3, 6));
       expect(reversed(app).slice(4, 8)).toEqual(["", "id 65.", "said", ""]);
       await pointer(mouse, at("drag", BAR, 6));
@@ -4098,7 +4107,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("scrolls a row for each drag report below the conversation, or on its top row for a drag started below it, copying lines off screen", async () => {
-    const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
     await press(app, CTRL_HOME);
     await pointer(mouse, at("press", 0, 18), at("drag", 50, 21), at("drag", 50, 22), at("release", 50, 22));
     expect(shown(app)[0]).toBe("said 2.");
@@ -4149,7 +4158,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("says the terminal alone copied, with no failure, where there is no tool, as on Linux over SSH", async () => {
-    const { app, mouse, copies } = await mount([], { full: true, intro: said(80), run: null });
+    const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80), run: null });
     await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
     expect(copies).toEqual(["said 63."]);
     expect(app.lastFrame()).toContain("Copied 8 characters with the terminal only");
@@ -4157,7 +4166,7 @@ describe("App's selecting and copying in full screen", () => {
 
   it("keeps the selection on its text as new output moves the view, and as the wheel scrolls it", async () => {
     await inColour(async () => {
-      const { app, mouse, bus } = await mount([], { full: true, intro: said(80) });
+      const { app, mouse, bus } = await mount([], { full: true, rows: 26, intro: said(80) });
       await pointer(mouse, at("press", 0, 19), at("drag", 98, 19)); // said 79., the button still held
       expect(reversed(app)[19]).toBe("said 79.");
       bus.emit("error", { kind: "fallback", attempted: "x", message: "moved on", lead: "fake:a" });
@@ -4174,7 +4183,7 @@ describe("App's selecting and copying in full screen", () => {
   // over newer clipboard contents (the user's choice at Task 9's review, 2026-10-27, dropping the plan's choice 9).
   it("only scrolls on Shift+Up with a selection showing, copying nothing and leaving the selection on its text", async () => {
     await inColour(async () => {
-      const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
+      const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
       await press(app, PG_UP);
       await pointer(mouse, at("press", 0, 2), at("drag", 50, 2), at("release", 50, 2));
       expect(copies).toEqual(["said 52."]);
@@ -4206,7 +4215,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("never scrolls for a drag that started on the conversation's top row, selecting within it", async () => {
-    const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
     await pointer(mouse, at("press", 2, 0), at("drag", 5, 0), at("drag", 3, 2), at("drag", 6, 0), at("release", 6, 0));
     expect(shown(app)[0]).toBe("said 60.");
     expect(copies).toEqual(["id 60"]);
@@ -4215,7 +4224,7 @@ describe("App's selecting and copying in full screen", () => {
   // The line about a copy takes the hint row's place only when it is showing, so a copy never moves the conversation
   // (the user's choice at Task 9's review, 2026-10-27).
   it("says nothing about a copy during a turn, which has no hint row, so the conversation stays where it is", async () => {
-    const { app, mouse, copies } = await mount([], { full: true, intro: said(80), lead: hanging() });
+    const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80), lead: hanging() });
     await type(app, "go");
     await until(app, "Esc to stop");
     const before = shown(app).slice(0, 19);
@@ -4316,8 +4325,8 @@ describe("App's selecting and copying in full screen", () => {
   // choice at Task 9's review, 2026-10-27).
   it("clears a selection on a press on the prompt, on the status line, or with another button, copying nothing", async () => {
     await inColour(async () => {
-      const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
-      for (const [i, press] of [at("press", 5, 20), at("press", 5, 22), at("press", 10, 10, { button: "right" })].entries()) {
+      const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
+      for (const [i, press] of [at("press", 5, 21), at("press", 5, 24), at("press", 10, 10, { button: "right" })].entries()) {
         await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
         expect(reversed(app)[3]).toBe("said 63.");
         await pointer(mouse, press, { ...press, kind: "release" }); // the prompt's row, the status line's, a right click
@@ -4329,7 +4338,7 @@ describe("App's selecting and copying in full screen", () => {
 
   it("keeps a selection while the scroll bar's thumb is dragged", async () => {
     await inColour(async () => {
-      const { app, mouse } = await mount([], { full: true, intro: said(80) });
+      const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
       await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
       await pointer(mouse, at("press", BAR, 17), at("drag", BAR, 15), at("release", BAR, 15));
       expect(shown(app)[0]).not.toBe("said 60.");
@@ -4339,7 +4348,7 @@ describe("App's selecting and copying in full screen", () => {
 
   // The "↓ N new lines" row is not text: a press there starts nothing, and a drag onto it counts as the row above it.
   it("never selects or copies the line hidden under the new-lines row", async () => {
-    const { app, mouse, bus, copies } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse, bus, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
     await press(app, PG_UP); // said 50. to said 69.
     bus.emit("error", { kind: "fallback", attempted: "x", message: "moved on", lead: "fake:a" });
     await until(app, "↓ 2 new lines"); // a block: its gap and its line (TUI design pass, Task 3)
@@ -4355,7 +4364,7 @@ describe("App's selecting and copying in full screen", () => {
   it("selects on the conversation's last row when every line that came in shows", async () => {
     const { app, mouse, bus, copies } = await mount([], { full: true, intro: said(22) });
     await press(app, PG_UP); // held at said 0.
-    Object.assign(app.stdout, { rows: 30 }); // 26 rows of conversation: said 0. to said 21., then 4 blank
+    Object.assign(app.stdout, { rows: 32 }); // 26 rows of conversation, the prompt's two lines taken: said 0. to said 21., then 4 blank
     app.stdout.emit("resize");
     await tick();
     // A reply of three lines, after its gap, fills the 4 (TUI design pass, Task 3).
@@ -4378,20 +4387,21 @@ describe("App's selecting and copying in full screen", () => {
 });
 
 // Clicks in the prompt and on menu entries (release 5 design, "Clicking"). With 24 rows and nothing else live, the prompt
-// is the frame's row 20, under 20 rows of conversation; its text starts after the two columns of "› ".
+// is the frame's row 19, under 18 rows of conversation and its upper line (TUI design pass, Task 4); its text starts after
+// the two columns of "› ".
 describe("App's clicks in full screen", () => {
   it("puts the prompt's cursor at the character clicked, at a row's end past it, and on a wrapped prompt's second row", async () => {
     const { app, mouse } = await mount([], { full: true });
     await press(app, "hello world");
-    await pointer(mouse, ...click(8, 20)); // the "w": column 6 of the text
+    await pointer(mouse, ...click(8, 19)); // the "w": column 6 of the text
     await press(app, "X");
     expect(app.lastFrame()).toContain("› hello Xworld\n");
-    await pointer(mouse, ...click(60, 20));
+    await pointer(mouse, ...click(60, 19));
     await press(app, "!");
     expect(app.lastFrame()).toContain("› hello Xworld!\n");
     await press(app, "\u0015", `${"a".repeat(97)}bcd`); // Ctrl+U empties it; 97 columns a row, so "bcd" wraps
-    expect(app.lastFrame()).toContain(`› ${"a".repeat(97)}\n  bcd\n`); // two rows: 19 and 20
-    await pointer(mouse, ...click(3, 20)); // the "c"
+    expect(app.lastFrame()).toContain(`› ${"a".repeat(97)}\n  bcd\n`); // two rows: 18 and 19, under the upper line
+    await pointer(mouse, ...click(3, 19)); // the "c"
     await press(app, "X");
     expect(app.lastFrame()).toContain(`› ${"a".repeat(97)}\n  bXcd\n`);
   });
@@ -4399,13 +4409,37 @@ describe("App's clicks in full screen", () => {
   it("puts the prompt's cursor at a row's start on a click in the row's first two columns", async () => {
     const { app, mouse } = await mount([], { full: true });
     await press(app, "ab", "\n", "cd");
-    expect(shown(app).slice(19, 21)).toEqual(["› ab", "  cd"]);
-    await pointer(mouse, ...click(1, 19)); // on the "›"'s space
+    expect(shown(app).slice(18, 20)).toEqual(["› ab", "  cd"]);
+    await pointer(mouse, ...click(1, 18)); // on the "›"'s space
     await press(app, "X");
-    expect(shown(app).slice(19, 21)).toEqual(["› Xab", "  cd"]);
-    await pointer(mouse, ...click(0, 20)); // a continuation row
+    expect(shown(app).slice(18, 20)).toEqual(["› Xab", "  cd"]);
+    await pointer(mouse, ...click(0, 19)); // a continuation row
     await press(app, "Y");
-    expect(shown(app).slice(19, 21)).toEqual(["› Xab", "  Ycd"]);
+    expect(shown(app).slice(18, 20)).toEqual(["› Xab", "  Ycd"]);
+  });
+
+  // TUI design pass, Task 4: the prompt's lines, above and below it, take no click; under the lower one, the menu's first
+  // entry is the row after it.
+  it("does nothing on a click on the prompt's lines, and puts the cursor on its first row under the upper one", async () => {
+    const { app, mouse } = await mount([], { full: true });
+    await press(app, "hello world");
+    const rule = SHOWN_RULE;
+    expect(shown(app).slice(18, 21)).toEqual([rule, "› hello world", rule]);
+    let frame = app.lastFrame();
+    await pointer(mouse, ...click(8, 18), ...click(8, 20));
+    expect(app.lastFrame()).toBe(frame);
+    await press(app, "X");
+    expect(app.lastFrame()).toContain("› hello worldX\n"); // the cursor where typing left it
+    await pointer(mouse, ...click(8, 19)); // the "w": column 6 of the text
+    await press(app, "Y");
+    expect(app.lastFrame()).toContain("› hello YworldX\n");
+    await press(app, "\u0003", "/"); // Ctrl-C empties it; `/` opens the menu
+    const row = shown(app).indexOf("› /");
+    expect(shown(app)[row + 1]).toBe(rule);
+    expect(shown(app)[row + 2]).toMatch(/^ {2}\//); // the menu's first entry
+    frame = app.lastFrame();
+    await pointer(mouse, ...click(4, row + 1));
+    expect(app.lastFrame()).toBe(frame); // the lower line: no entry run
   });
 
   // React draws no frame between a key and a mouse report from the same read of the terminal, so a click there would be
@@ -4413,9 +4447,9 @@ describe("App's clicks in full screen", () => {
   it("drops a click that comes in the same read as a key that changes the prompt", async () => {
     const { app, mouse } = await mount([], { full: true });
     await press(app, "ab", "\n", "cd", "\n", "ef");
-    expect(shown(app).slice(18, 21)).toEqual(["› ab", "  cd", "  ef"]);
+    expect(shown(app).slice(17, 20)).toEqual(["› ab", "  cd", "  ef"]);
     app.stdin.write("\u0003"); // Ctrl-C empties the prompt to one row
-    for (const m of click(3, 20)) mouse.emit("mouse", m); // on "ef", drawn before the key
+    for (const m of click(3, 19)) mouse.emit("mouse", m); // on "ef", drawn before the key
     await tick();
     expect(app.lastFrame()).toContain("\n›\n");
     await press(app, "X");
@@ -4452,7 +4486,7 @@ describe("App's clicks in full screen", () => {
       await writeFile(path.join(ctx.root, "a.txt"), "");
       await writeFile(path.join(ctx.root, "b.txt"), "");
       await press(app, "@");
-      expect(shown(app).slice(18, 21)).toEqual(["› @", "  a.txt", "  b.txt"]);
+      expect(shown(app).slice(17, 21)).toEqual(["› @", SHOWN_RULE, "  a.txt", "  b.txt"]); // the menu under the lower line
       await pointer(mouse, ...click(4, 20));
       expect(app.lastFrame()).toContain("› @b.txt\n");
     } finally {
@@ -4522,29 +4556,29 @@ describe("App's clicks in full screen", () => {
 
   // Release 5 plan, choice 10. The counts start at 2: a count takes the place of a row, and counts it (layout.ts, scroll).
   it("does nothing on a click on a menu's or the prompt's count of the rows cut off", async () => {
-    const { app, mouse, ctx } = await mount([], { full: true, rows: 10 });
+    const { app, mouse, ctx } = await mount([], { full: true, rows: 12 });
     try {
       for (const name of ["a1", "a2", "a3", "a4", "a5", "a6"]) await writeFile(path.join(ctx.root, name), "");
       await press(app, "@a");
-      // Nine rows: one of conversation, the prompt, five of the menu, the hint and the status line.
-      expect(shown(app).slice(1, 7)).toEqual(["› @a", "  a1", "  a2", "  a3", "  a4", "  ↓ 2 more"]);
+      // Eleven rows: one of conversation, the prompt and its two lines, five of the menu, the hint and the status line.
+      expect(shown(app).slice(2, 9)).toEqual(["› @a", SHOWN_RULE, "  a1", "  a2", "  a3", "  a4", "  ↓ 2 more"]);
       let frame = app.lastFrame();
-      await pointer(mouse, ...click(4, 6));
+      await pointer(mouse, ...click(4, 8));
       expect(app.lastFrame()).toBe(frame);
       await press(app, ...Array(4).fill("\u001b[B")); // a5 chosen
-      expect(shown(app).slice(1, 7)).toEqual(["› @a", "  ↑ 2 more", "  a3", "  a4", "  a5", "  a6"]);
+      expect(shown(app).slice(2, 9)).toEqual(["› @a", SHOWN_RULE, "  ↑ 2 more", "  a3", "  a4", "  a5", "  a6"]);
       frame = app.lastFrame();
-      await pointer(mouse, ...click(4, 2));
+      await pointer(mouse, ...click(4, 4));
       expect(app.lastFrame()).toBe(frame);
-      // Ctrl+U empties it; ten lines, in five rows, half the terminal's (release 7 plan, choice 120).
+      // Ctrl+U empties it; ten lines, in six rows, half the terminal's (release 7 plan, choice 120).
       await press(app, "\u0015", "a", ..."bcdefghij".split("").flatMap((c) => ["\n", c]));
-      expect(shown(app).slice(2, 7)).toEqual(["› ↑ 6 rows above", "  g", "  h", "  i", "  j"]);
+      expect(shown(app).slice(2, 8)).toEqual(["› ↑ 5 rows above", "  f", "  g", "  h", "  i", "  j"]);
       await pointer(mouse, ...click(4, 2));
       await press(app, "X");
-      expect(shown(app)[6]).toBe("  jX");
+      expect(shown(app)[7]).toBe("  jX");
       await press(app, "\u007f", ...Array(9).fill("\u001b[A")); // Backspace, then up to the first row
-      expect(shown(app).slice(2, 7)).toEqual(["› a", "  b", "  c", "  d", "  ↓ 6 rows below"]);
-      await pointer(mouse, ...click(4, 6));
+      expect(shown(app).slice(2, 8)).toEqual(["› a", "  b", "  c", "  d", "  e", "  ↓ 5 rows below"]);
+      await pointer(mouse, ...click(4, 7));
       await press(app, "Y");
       expect(shown(app)[2]).toBe("› aY");
     } finally {
@@ -4612,7 +4646,7 @@ describe("App's clicks in full screen", () => {
   it("starts the press-twice count again on a click", async () => {
     const { app, mouse } = await mount([], { full: true });
     await press(app, "abc", "\u001b");
-    await pointer(mouse, ...click(3, 20));
+    await pointer(mouse, ...click(3, 19));
     await press(app, "\u001b"); // within 800 ms of the first: a first press again
     expect(app.lastFrame()).toContain("› abc\n");
     await press(app, "\u001b"); // the second
@@ -4629,8 +4663,8 @@ describe("App's questions in full screen", () => {
 
   it("brings a short detail into view, its last line on the conversation's second-last row", async () => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
-    await press(app, PG_UP);
-    expect(shown(app)[0]).toBe("said 30.");
+    await press(app, PG_UP); // half of the 18 rows the prompt and its two lines leave
+    expect(shown(app)[0]).toBe("said 33.");
     const answer = ask("write a.txt", detail(5));
     await until(app, "Allow write a.txt? [y/n]");
     expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt"), ""]); // the last row kept for "↓ N new lines"
@@ -4674,10 +4708,10 @@ describe("App's questions in full screen", () => {
     await press(app, PG_UP);
     const answer = ask("run: ls");
     await until(app, "Allow run: ls? [y/n]");
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
     await press(app, "y");
     expect(await answer).toBe(true);
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
   });
 
   it("holds the view on the shown question's detail while another's and a reply arrive, then goes to the next one's, then follows", async () => {
@@ -4704,7 +4738,7 @@ describe("App's questions in full screen", () => {
     await press(app, "y");
     expect(await second).toBe(true);
     await gone(app, "[y/n]");
-    expect(shown(app).slice(15, 20)).toEqual(["b 4.", "", "● a reply", "t2 (a) to write a.txt: You allowed this.", "t3 (b) to write b.txt: You allowed this."]);
+    expect(shown(app).slice(13, 18)).toEqual(["b 4.", "", "● a reply", "t2 (a) to write a.txt: You allowed this.", "t3 (b) to write b.txt: You allowed this."]);
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -4751,7 +4785,7 @@ describe("App's questions in full screen", () => {
     await press(app, "y");
     expect(await answer).toBe(true);
     await until(app, "write a.txt: You allowed this.");
-    expect(shown(app)[19]).toBe("write a.txt: You allowed this.");
+    expect(shown(app)[17]).toBe("write a.txt: You allowed this."); // the conversation's last row, over the prompt's upper line
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -4988,7 +5022,7 @@ describe("App's detail view in full screen", () => {
     await press(app, key);
     rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[19]).toBe("›");
+    expect(rows[18]).toBe("›"); // between its two lines, over the hint, the status line and the tool line
     expect(app.lastFrame()).toContain("› go");
     expect(app.lastFrame()).not.toContain("Last turn"); // not put in the conversation
   });
@@ -4996,7 +5030,7 @@ describe("App's detail view in full screen", () => {
   it("prints the last turn below on Ctrl+O in classic mode, as before", async () => {
     const { app } = await mount([]);
     await press(app, "\u000f");
-    expect(app.lastFrame()).toMatch(/^No turn yet, so no tool calls to show\.\n›/);
+    expect(app.lastFrame()).toMatch(/^No turn yet, so no tool calls to show\.\n─+\n›/);
   });
 
   it("opens a subagent's record in the view with /tasks t1, putting nothing in the conversation, and prints a mistake as before", async () => {
@@ -5201,7 +5235,7 @@ describe("App's detail view in full screen", () => {
     await press(app, "\u0003");
     expect(app.lastFrame()).not.toContain(KEYS);
     expect(app.lastFrame()).not.toContain("again to exit");
-    expect(shown(app)[20]).toBe("›");
+    expect(shown(app)[19]).toBe("›");
   });
 
   it("closes the view on Ctrl-C with nothing running, leaving the prompt's draft as it was and not counting toward exiting", async () => {
@@ -5441,9 +5475,9 @@ describe("App's detail view in full screen", () => {
   it("leaves the conversation where it is for a G read with the q that closes the view", async () => {
     const { app } = await mount([], { full: true, intro: said(60) });
     await press(app, PG_UP);
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
     await press(app, "\u000f", "qG");
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
   });
 
   // The user's choice at Task 12's review.
@@ -5493,7 +5527,7 @@ describe("App's detail view in full screen", () => {
     expect(shown(app)[21]).toBe(KEYS);
     expect(app.lastFrame()).not.toContain("Filter:");
     await press(app, "q");
-    expect(shown(app)[20]).toBe("›");
+    expect(shown(app)[19]).toBe("›");
     expect(app.lastFrame()).not.toContain("search:");
   });
 
@@ -6017,7 +6051,7 @@ describe("App's /screen", () => {
     await until(app, "Unknown command: /nope.");
     expect(app.lastFrame()!.replaceAll(/ *\n */g, " ")).toContain("/errors, /screen, /settings, /keybindings, /vim, /exit"); // a long line wraps
     await press(app, "/", "s");
-    expect(app.lastFrame()).toContain("› /s\n  /screen  Switch between full screen and classic\n");
+    expect(app.lastFrame()).toContain(`› /s\n${RULE}\n  /screen  Switch between full screen and classic\n`);
   });
 
   // Found at the final review: where the session started in classic as full screen can't draw (the output is not a
@@ -6053,7 +6087,7 @@ describe("App's /screen", () => {
     await until(app, "screen is now classic");
     await type(app, "hi");
     await until(app, "the reply");
-    expect(app.lastFrame()).toMatch(/^said 0\.\nsaid 1\.\nsaid 2\.\n\nscreen is now classic\n\n\n› hi\n\n\n● the reply\n›/);
+    expect(app.lastFrame()).toMatch(/^said 0\.\nsaid 1\.\nsaid 2\.\n\nscreen is now classic\n\n\n› hi\n\n\n● the reply\n─+\n›/);
   });
 
   // bindAsk is set up at mount too (Task 11): after a switch to full screen a question's detail is kept and brought into view.
@@ -6513,9 +6547,9 @@ describe("App's keys from the table of actions", () => {
   it("types q into Ctrl+R's query, and Esc still puts the match in the prompt", async () => {
     const { app } = await mount([], { past: ["quit now"] });
     await press(app, "\u0012", "q");
-    expect(app.lastFrame()).toContain("› quit now\nsearch: q · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel");
+    expect(app.lastFrame()).toContain(`› quit now\n${RULE}\nsearch: q · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel`);
     await press(app, "\u001b");
-    expect(app.lastFrame()).toContain("› quit now\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› quit now\n${RULE}\n? for shortcuts`);
   });
 
   // A chord ending in a plain letter (plan, Task 6, "A chord under way comes first").
@@ -6668,7 +6702,7 @@ describe("App's keys from the table of actions", () => {
     bus.emit("todo", todo);
     await tick();
     await press(app, CTRL_X, "ab", "t");
-    expect(app.lastFrame()).toContain("☐ write the fix\n› abt\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`☐ write the fix\n${RULE}\n› abt\n${RULE}\n? for shortcuts`);
   });
 
   it("drops a waiting chord on a paste, so the next letter is typed", async () => {
@@ -6676,7 +6710,7 @@ describe("App's keys from the table of actions", () => {
     bus.emit("todo", todo);
     await tick();
     await press(app, CTRL_X, "\u001b[200~ab\u001b[201~", "t");
-    expect(app.lastFrame()).toContain("☐ write the fix\n› abt\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`☐ write the fix\n${RULE}\n› abt\n${RULE}\n? for shortcuts`);
   });
 
   // Each hint names the keys a table leaves bound, in release 5's words (keys.ts, named).
@@ -6923,43 +6957,43 @@ describe("App's stash", () => {
     await press(app, "abcd", LEFT, LEFT, CTRL_S);
     expect(app.lastFrame()).toMatch(/^›$/m);
     await press(app, CTRL_S, "X");
-    expect(app.lastFrame()).toContain("› abXcd\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› abXcd\n${RULE}\n? for shortcuts`);
   });
 
   it("swaps the prompt and the slot when both have text", async () => {
     const { app } = await mount([]);
     await press(app, "one", CTRL_S, "two", CTRL_S);
-    expect(app.lastFrame()).toContain(`› one\n${STASHED}`);
+    expect(app.lastFrame()).toContain(`› one\n${RULE}\n${STASHED}`);
     await press(app, CTRL_S);
-    expect(app.lastFrame()).toContain(`› two\n${STASHED}`);
+    expect(app.lastFrame()).toContain(`› two\n${RULE}\n${STASHED}`);
   });
 
   it("shows the hint while the slot is full and no other hint takes the row: a menu's and the queue's come first", async () => {
     const { lead, release } = gated([reply("r1"), reply("r2")]);
     const { app } = await mount([], { lead });
     await press(app, "aside", CTRL_S);
-    expect(app.lastFrame()).toContain(`›\n${STASHED}\n`);
+    expect(app.lastFrame()).toContain(`›\n${RULE}\n${STASHED}\n`);
     await press(app, "/");
     expect(app.lastFrame()).toContain("↑↓ choose");
     expect(app.lastFrame()).not.toContain("Stashed");
     await press(app, "\u007f", "go", "\r");
     await until(app, "Esc to stop");
-    expect(app.lastFrame()).toContain(`›\n${STASHED}`); // during a turn too, where no hint shows otherwise
+    expect(app.lastFrame()).toContain(`›\n${RULE}\n${STASHED}`); // during a turn too, where no hint shows otherwise
     await press(app, "later", "\r");
-    expect(app.lastFrame()).toContain("›\n↑ to edit queued messages");
+    expect(app.lastFrame()).toContain(`›\n${RULE}\n↑ to edit queued messages`);
     release();
     await until(app, "r2");
     await press(app, CTRL_S);
-    expect(app.lastFrame()).toContain("› aside\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› aside\n${RULE}\n? for shortcuts`);
   });
 
   it("names the key chat:stash is bound to in the hint", async () => {
     const bindings = new Bindings(tableOf({ ...DEFAULTS, Chat: { ...DEFAULTS.Chat, "ctrl+s": null, "ctrl+q": "chat:stash" } }));
     const { app } = await mount([], { bindings });
     await press(app, "aside", CTRL_S);
-    expect(app.lastFrame()).toContain("› aside\n? for shortcuts"); // Ctrl+S is bound to nothing now
+    expect(app.lastFrame()).toContain(`› aside\n${RULE}\n? for shortcuts`); // Ctrl+S is bound to nothing now
     await press(app, CTRL_Q);
-    expect(app.lastFrame()).toContain("›\nStashed · Ctrl+Q to bring back");
+    expect(app.lastFrame()).toContain(`›\n${RULE}\nStashed · Ctrl+Q to bring back`);
   });
 
   it("undoes within the text brought back", async () => {
@@ -6981,7 +7015,7 @@ describe("App's stash", () => {
     await type(app, "two");
     await until(app, "r2");
     await press(app, "\u001b[A", CTRL_S, "\u001b[A");
-    expect(app.lastFrame()).toContain(`› two\n${STASHED}`);
+    expect(app.lastFrame()).toContain(`› two\n${RULE}\n${STASHED}`);
   });
 
   // Final review: Ctrl+S after Up stashed the line Up showed and dropped the draft Up keeps, picture and all. The slot
@@ -7010,7 +7044,7 @@ describe("App's stash", () => {
     const frame = app.lastFrame();
     await press(app, CTRL_S);
     expect(app.lastFrame()).toBe(frame);
-    expect(frame).toContain("›\n? for shortcuts");
+    expect(frame).toContain(`›\n${RULE}\n? for shortcuts`);
   });
 });
 
@@ -7221,7 +7255,7 @@ describe("App's pictures", () => {
     pictures.set(1, "none");
     pictures.set(2, "none");
     await until(app, "No picture on the clipboard.\nNo picture on the clipboard.");
-    expect(app.lastFrame()).toMatch(/› b ?\n\? for shortcuts/); // the stash, left empty, is gone too
+    expect(app.lastFrame()).toMatch(/› b ?\n─+\n\? for shortcuts/); // the stash, left empty, is gone too
   });
 
   // Found at the combined review: what Ctrl+K took, and vim's register, kept a failed read's marker, so Ctrl+Y or p put
@@ -7357,10 +7391,10 @@ describe("App's picture reads", () => {
     const { read, answers } = answered();
     const { app, session } = await mount([reply("seen")], { readPicture: read });
     await press(app, "look ", PICTURE);
-    expect(app.lastFrame()).toContain(`› look [Image #1]\n${READING}`);
+    expect(app.lastFrame()).toContain(`› look [Image #1]\n${RULE}\n${READING}`);
     answers[0]!(PNG);
     await gone(app, READING);
-    expect(app.lastFrame()).toContain("› look [Image #1]\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› look [Image #1]\n${RULE}\n? for shortcuts`);
     await press(app, "\r");
     await until(app, "seen");
     expect(userParts(session)).toEqual([[{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }]]);
@@ -9180,9 +9214,9 @@ describe("App's live settings", () => {
     await type(app, "/nope");
     await sees(app, "/errors, /screen, /settings, /keybindings, /vim, /exit");
     await press(app, "/", "k");
-    expect(app.lastFrame()).toContain("› /k\n  /keybindings  Open the keys file in your editor\n");
+    expect(app.lastFrame()).toContain(`› /k\n${RULE}\n  /keybindings  Open the keys file in your editor\n`);
     await press(app, "\u007f", "s", "e");
-    expect(app.lastFrame()).toContain("› /se\n  /settings  Open the settings file in your editor\n");
+    expect(app.lastFrame()).toContain(`› /se\n${RULE}\n  /settings  Open the settings file in your editor\n`);
   });
 
   it("says /settings and /keybindings take nothing after them", async () => {
@@ -11967,14 +12001,14 @@ describe("App's MCP", () => {
     expect(frame.indexOf("  notes.txt\n")).toBeLessThan(frame.indexOf("  @fake:note://a\n"));
     // A uri's slashes make what is typed a folder that cannot be listed, which says nothing while a resource matches.
     await press(app, "fake:note:/");
-    await shows(app, "› @fake:note:/\n  @fake:note://a\n");
+    await shows(app, `› @fake:note:/\n${RULE}\n  @fake:note://a\n`);
     expect(app.lastFrame()).not.toContain("notes.txt");
     expect(app.lastFrame()).not.toContain("Cannot list");
     await mcp!.servers.server("fake")!.callTool("add-resource", { resource: { uri: "note://b", name: "b" } }, {});
     // The library waits 300 ms for more changes before it reads the list again (its debounceMs); a key draws it.
     await soon(() => expect(mcp!.servers.server("fake")!.resources).toHaveLength(2));
     await press(app, "/");
-    await shows(app, "› @fake:note://\n  @fake:note://a\n  @fake:note://b\n");
+    await shows(app, `› @fake:note://\n${RULE}\n  @fake:note://a\n  @fake:note://b\n`);
   });
 
   it("sends a picked resource's text after the typed words, as the server's, and shows the prompt as typed", async () => {
@@ -12046,7 +12080,7 @@ describe("App's MCP", () => {
     const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", { prompts: [GREET] })]) });
     await soon(() => expect(states(mcp!.servers)).toEqual(["fake ready"]));
     await press(app, "/fa");
-    await shows(app, "› /fa\n  /fake:greet  Greets someone\n"); // the description's first line
+    await shows(app, `› /fa\n${RULE}\n  /fake:greet  Greets someone\n`); // the description's first line
     await press(app, "\t", "Ann", "\r");
     await shows(app, "greeted");
     expect(lastSent(lead)).toEqual([

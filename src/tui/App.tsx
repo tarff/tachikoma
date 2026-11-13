@@ -774,6 +774,7 @@ export function App(props: AppProps) {
     promptFirst,
     promptRows: picking || ui.question || ui.search.current || d ? 0 : promptShown,
     promptWindow: f.promptWindow,
+    rules: f.rules,
     menuRows,
     editor: ui.editor.current,
     chosen: ui.chosen.current,
@@ -944,6 +945,7 @@ export function App(props: AppProps) {
             space={promptSpace}
             top={ui.promptTop}
             selected={highlight}
+            rules={f.rules}
           />
           {menu && <Menu entries={menu.entries} chosen={fns.chosenIn(prompt, menu)} rows={menuRows} top={ui.menuTop} />}
           <TaskPanel rows={panel} />

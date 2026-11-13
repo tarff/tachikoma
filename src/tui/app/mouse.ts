@@ -177,8 +177,8 @@ export const mouse = (ui: UI, fns: Fns) => {
   const clickAt = (x: number, y: number) => {
     const f = ui.frame.current;
     if (ui.editor.current !== f.editor || ui.chosen.current !== f.chosen) return;
-    const { columns, promptFirst, promptRows, promptWindow, menuRows } = f;
-    const row = y - promptFirst; // a row of the prompt, then of the menu
+    const { columns, promptFirst, promptRows, promptWindow, rules, menuRows } = f;
+    const row = y - promptFirst; // a row of the prompt, then of the menu; a click on the prompt's lines does nothing
     const marked = (i: number, shown: number, w: { above: number; below: number }) => (i === 0 && w.above > 0) || (i === shown - 1 && w.below > 0);
     const e = ui.editor.current;
     if (row >= 0 && row < promptRows) {
@@ -187,7 +187,7 @@ export const mouse = (ui: UI, fns: Fns) => {
       ui.editor.current = move(e, placeOn(places, promptWindow.top + row, x - 2)!);
       ui.goal.current = null;
     } else {
-      const i = row - promptRows;
+      const i = row - promptRows - (rules ? 1 : 0); // the menu is under the lower line (TUI design pass, Task 4)
       if (i < 0 || i >= menuRows) return;
       const menu = fns.menuFor(e); // after the rows are checked: for an `@` path it can list a folder again
       if (!menu) return;

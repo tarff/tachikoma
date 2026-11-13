@@ -119,6 +119,7 @@ const items = Array.from({ length: 8 }, (_, k) => ({ text: `item ${k}`, status: 
 describe("frame", () => {
   it("gives the conversation every row the prompt, the hint and the status line leave, the frame a row short", () => {
     expect(frame(base)).toEqual({
+      rules: true,
       tooled: false,
       hinted: true,
       menuRows: 0,
@@ -127,76 +128,77 @@ describe("frame", () => {
       promptShown: 1,
       promptWindow: { top: 0, above: 0, below: 0 },
       todoShown: [],
-      left: 15,
+      left: 13,
       queuedShown: 0,
       pickerRows: 0,
       questionFits: true,
       asked: [],
       warned: [],
       noted: false,
-      viewHeight: 16, // with the prompt, the hint and the status line, 19 rows
-      promptFirst: 16,
+      viewHeight: 14, // with the prompt, its two lines, the hint and the status line, 19 rows
+      promptFirst: 15,
     });
   });
 
   it("windows a prompt taller than its space around the cursor, leaving the conversation its one row", () => {
-    // Of ten rows, the frame's row short, the hint and the status line leave seven for twelve, in classic mode, where the
-    // conversation is the terminal's own scrollback.
+    // Of ten rows, the frame's row short, the prompt's two lines, the hint and the status line leave five for twelve, in
+    // classic mode, where the conversation is the terminal's own scrollback.
     const f = frame({ ...base, rows: 10, full: false, promptRows: 12, cursorRow: 11 });
-    expect(f).toMatchObject({ promptSpace: 7, promptShown: 7, left: 0, viewHeight: 1, promptFirst: 0 });
-    expect(f.promptWindow).toEqual({ top: 5, above: 6, below: 0 });
+    expect(f).toMatchObject({ promptSpace: 5, promptShown: 5, left: 0, viewHeight: 1, promptFirst: 1 });
+    expect(f.promptWindow).toEqual({ top: 7, above: 8, below: 0 });
   });
 
   // Release 7 plan, choice 120 (the user's hand check): in full screen a long prompt left the conversation one row.
   it("gives a prompt at most half the rows in full screen, the conversation keeping the rest", () => {
-    // Ten rows: five for twelve, where six were left (the frame's row short, the hint and the status line), so the
-    // conversation has two.
+    // Ten rows: the four left (the frame's row short, the conversation's, the prompt's two lines, the hint and the status
+    // line taken), fewer than half, so the conversation keeps its one.
     const ten = frame({ ...base, rows: 10, promptRows: 12, cursorRow: 11 });
-    expect(ten).toMatchObject({ promptSpace: 5, promptShown: 5, left: 0, viewHeight: 2, promptFirst: 2 });
-    expect(ten.promptWindow).toEqual({ top: 7, above: 8, below: 0 });
-    // Twenty rows: ten for thirty, the conversation the other seven of the nineteen drawn; a prompt of ten keeps them all.
+    expect(ten).toMatchObject({ promptSpace: 4, promptShown: 4, left: 0, viewHeight: 1, promptFirst: 2 });
+    expect(ten.promptWindow).toEqual({ top: 8, above: 9, below: 0 });
+    // Twenty rows: ten for thirty, the conversation the other five of the nineteen drawn; a prompt of ten keeps them all.
     const twenty = frame({ ...base, rows: 20, promptRows: 30, cursorRow: 0 });
-    expect(twenty).toMatchObject({ promptSpace: 10, promptShown: 10, left: 0, viewHeight: 7, promptFirst: 7 });
+    expect(twenty).toMatchObject({ promptSpace: 10, promptShown: 10, left: 0, viewHeight: 5, promptFirst: 6 });
     expect(twenty.promptWindow).toEqual({ top: 0, above: 0, below: 21 });
-    expect(frame({ ...base, rows: 20, promptRows: 10 })).toMatchObject({ promptShown: 10, viewHeight: 7, promptWindow: { top: 0, above: 0, below: 0 } });
+    expect(frame({ ...base, rows: 20, promptRows: 10 })).toMatchObject({ promptShown: 10, viewHeight: 5, promptWindow: { top: 0, above: 0, below: 0 } });
     // A short prompt is drawn as before.
-    expect(frame({ ...base, rows: 20, promptRows: 3 })).toMatchObject({ promptShown: 3, viewHeight: 14, promptFirst: 14 });
+    expect(frame({ ...base, rows: 20, promptRows: 3 })).toMatchObject({ promptShown: 3, viewHeight: 12, promptFirst: 13 });
     // A to-do list still gives way to the whole prompt, so the rows the prompt frees are the conversation's.
     const listed = frame({ ...base, rows: 20, promptRows: 30, todoRows: (rows) => todoRows(items, rows) });
-    expect(listed).toMatchObject({ todoShown: [], promptShown: 10, left: 0, viewHeight: 7, promptFirst: 7 });
+    expect(listed).toMatchObject({ todoShown: [], promptShown: 10, left: 0, viewHeight: 5, promptFirst: 6 });
     // An open menu still cuts it to the cursor's row.
-    expect(frame({ ...base, rows: 20, promptRows: 30, cursorRow: 4, menu: 3 })).toMatchObject({ menuRows: 3, promptSpace: 1, promptShown: 1, viewHeight: 13 });
-    // A small terminal: below nine rows the rules above give no more than half; at three rows and less, still one row.
-    expect(frame({ ...base, rows: 8, promptRows: 12 })).toMatchObject({ promptSpace: 4, promptShown: 4, viewHeight: 1 });
+    expect(frame({ ...base, rows: 20, promptRows: 30, cursorRow: 4, menu: 3 })).toMatchObject({ menuRows: 3, promptSpace: 1, promptShown: 1, viewHeight: 11 });
+    // A small terminal: below thirteen rows the rules above give no more than half; at three rows and less, still one row.
+    expect(frame({ ...base, rows: 8, promptRows: 12 })).toMatchObject({ promptSpace: 2, promptShown: 2, viewHeight: 1 });
     for (const rows of [1, 2, 3]) expect(frame({ ...base, rows, promptRows: 12 })).toMatchObject({ promptSpace: 1, promptShown: 1, viewHeight: 1 });
   });
 
   it("cuts the prompt to the cursor's row under an open menu, which takes the rest", () => {
     const long = frame({ ...base, rows: 12, promptRows: 3, cursorRow: 1, menu: 20 });
-    expect(long).toMatchObject({ menuRows: 7, promptSpace: 1, promptShown: 1, left: 0, viewHeight: 1, promptFirst: 1 });
+    expect(long).toMatchObject({ menuRows: 5, promptSpace: 1, promptShown: 1, left: 0, viewHeight: 1, promptFirst: 2 });
     expect(long.promptWindow).toEqual({ top: 1, above: 0, below: 0 });
     // A short menu takes its entries' rows; the prompt is still cut, and the conversation has the rest.
     const short = frame({ ...base, rows: 12, promptRows: 3, cursorRow: 1, menu: 2 });
-    expect(short).toMatchObject({ menuRows: 2, promptSpace: 1, promptShown: 1, left: 5, viewHeight: 6, promptFirst: 6 });
+    expect(short).toMatchObject({ menuRows: 2, promptSpace: 1, promptShown: 1, left: 3, viewHeight: 4, promptFirst: 5 });
   });
 
   it("shares the room between the task panel and the to-do list, which gives way before the prompt does", () => {
     const tasks = [subagent("t1"), subagent("t2")];
-    const shared: FrameIn = { ...base, rows: 14, taskRows: (rows) => taskRows(tasks, rows, 0), todoRows: (rows) => todoRows(items, rows) };
+    // Sixteen rows: the fourteen this case had before the prompt's two lines (TUI design pass, Task 4), and those.
+    const shared: FrameIn = { ...base, rows: 16, taskRows: (rows) => taskRows(tasks, rows, 0), todoRows: (rows) => todoRows(items, rows) };
     const f = frame(shared);
     expect(f.panel).toHaveLength(4); // two subagents, two rows each
     expect(f.todoShown.map((r) => r.text)).toEqual(["item 0", "item 1", "item 2", "item 3", "+4 more"]);
-    expect(f).toMatchObject({ promptSpace: 6, promptShown: 1, left: 0, viewHeight: 1, promptFirst: 6 });
+    expect(f).toMatchObject({ rules: true, promptSpace: 6, promptShown: 1, left: 0, viewHeight: 1, promptFirst: 7 });
     // A four-row prompt keeps its rows; the list is cut to two.
     const tall = frame({ ...shared, promptRows: 4, cursorRow: 3 });
     expect(tall.todoShown.map((r) => r.text)).toEqual(["item 0", "+7 more"]);
-    expect(tall).toMatchObject({ promptShown: 4, left: 0, viewHeight: 1, promptFirst: 3 });
+    expect(tall).toMatchObject({ promptShown: 4, left: 0, viewHeight: 1, promptFirst: 4 });
   });
 
   it("shows as many queued messages as fit, the last row saying how many more, and none with no row left", () => {
-    // Five rows left for seven: four and "+3 more".
-    expect(frame({ ...base, rows: 10, queued: 7 })).toMatchObject({ left: 5, queuedShown: 5, viewHeight: 1, promptFirst: 6 });
-    expect(frame({ ...base, rows: 10, queued: 3 })).toMatchObject({ left: 5, queuedShown: 3, viewHeight: 3, promptFirst: 6 });
+    // Three rows left for seven: two and "+5 more".
+    expect(frame({ ...base, rows: 10, queued: 7 })).toMatchObject({ left: 3, queuedShown: 3, viewHeight: 1, promptFirst: 5 });
+    expect(frame({ ...base, rows: 10, queued: 3 })).toMatchObject({ left: 3, queuedShown: 3, viewHeight: 1, promptFirst: 5 });
     expect(frame({ ...base, rows: 5, queued: 7 })).toMatchObject({ left: 0, queuedShown: 0, viewHeight: 1, promptFirst: 1 });
   });
 
@@ -332,32 +334,53 @@ describe("frame", () => {
     expect(five.viewHeight + five.warned.length + five.asked.length + 1).toBe(4);
   });
 
+  // TUI design pass, Task 4 and choice P5: a line above the prompt and one below, while the prompt is drawn, both or none.
+  // They give way first on a short terminal, before the tool line and the hint row.
+  it("draws the prompt's two lines when there are rows for them beside the tool line, the hint and the cursor's row", () => {
+    // Seven rows: the frame's row short, the conversation's, the status line's, and four for the lines, the hint and the
+    // prompt's row; the conversation's is the one its seven leave, the prompt's first row under the upper line.
+    expect(frame({ ...base, rows: 7 })).toMatchObject({ rules: true, hinted: true, promptSpace: 1, promptShown: 1, left: 0, viewHeight: 1, promptFirst: 2 });
+    // One row short: no lines, the rest as without them, the conversation taking the row they leave.
+    expect(frame({ ...base, rows: 6 })).toMatchObject({ rules: false, hinted: true, promptSpace: 2, promptShown: 1, left: 1, viewHeight: 2, promptFirst: 2 });
+    // A tool line needs a row more; one row short, the lines go and the tool line and the hint stay.
+    expect(frame({ ...base, rows: 8, toolLine: true })).toMatchObject({ rules: true, tooled: true, hinted: true });
+    expect(frame({ ...base, rows: 7, toolLine: true })).toMatchObject({ rules: false, tooled: true, hinted: true });
+    // In classic mode, with no conversation's row, a row fewer is needed.
+    expect(frame({ ...base, rows: 6, full: false })).toMatchObject({ rules: true, promptSpace: 1, promptFirst: 1 });
+    expect(frame({ ...base, rows: 5, full: false })).toMatchObject({ rules: false, promptSpace: 2, promptFirst: 0 });
+    // No prompt drawn, no lines: under a question, the model list and the detail view.
+    expect(frame({ ...base, question: true })).toMatchObject({ rules: false });
+    expect(frame({ ...base, pickerNeeded: 3 })).toMatchObject({ rules: false });
+    expect(frame({ ...base, detail: true })).toMatchObject({ rules: false });
+  });
+
   describe("one input changed, every other the same", () => {
-    // A twelve-row prompt, the cursor on its seventh row, in a frame of twelve rows: the prompt draws half of them (choice
-    // 120), and the conversation has the three its eight rows leave.
-    const tall: FrameIn = { ...base, rows: 12, promptRows: 12, cursorRow: 6 };
-    const off = { tooled: false, hinted: true, promptSpace: 6, promptShown: 6, left: 0, viewHeight: 3, promptFirst: 3 };
+    // A twelve-row prompt, the cursor on its seventh row, in a frame of thirteen rows: the prompt draws half of them, six
+    // (choice 120), and the conversation has the two its ten rows leave, the prompt's two lines among them (TUI design
+    // pass, Task 4).
+    const tall: FrameIn = { ...base, rows: 13, promptRows: 12, cursorRow: 6 };
+    const off = { rules: true, tooled: false, hinted: true, promptSpace: 6, promptShown: 6, left: 0, viewHeight: 2, promptFirst: 3 };
 
     it("the working line takes a row above the prompt", () => {
       expect(frame(tall)).toMatchObject(off);
       expect(frame(tall).promptWindow).toEqual({ top: 2, above: 3, below: 5 });
       const on = frame({ ...tall, working: true });
-      expect(on).toMatchObject({ ...off, viewHeight: 2, promptFirst: 3 });
+      expect(on).toMatchObject({ ...off, viewHeight: 1, promptFirst: 3 });
       expect(on.promptWindow).toEqual({ top: 2, above: 3, below: 5 });
       // In classic mode it takes one of the prompt's.
-      expect(frame({ ...tall, full: false })).toMatchObject({ promptSpace: 9, promptShown: 9, promptFirst: 0 });
-      expect(frame({ ...tall, full: false, working: true })).toMatchObject({ promptSpace: 8, promptShown: 8, promptFirst: 1 });
+      expect(frame({ ...tall, full: false })).toMatchObject({ promptSpace: 8, promptShown: 8, promptFirst: 1 });
+      expect(frame({ ...tall, full: false, working: true })).toMatchObject({ promptSpace: 7, promptShown: 7, promptFirst: 2 });
     });
 
     // Release 8c plan, choice 67 and Task 17: the open run's live row, two rows above the working line.
     it("the open run's live row takes its rows above the prompt, as the working line does", () => {
-      expect(frame({ ...tall, working: true, liveRows: 2 })).toMatchObject({ promptSpace: 5, promptShown: 5, viewHeight: 1, promptFirst: 4 });
-      expect(frame({ ...tall, full: false, working: true, liveRows: 2 })).toMatchObject({ promptSpace: 6, promptShown: 6, promptFirst: 3 });
+      expect(frame({ ...tall, working: true, liveRows: 2 })).toMatchObject({ promptSpace: 4, promptShown: 4, viewHeight: 1, promptFirst: 5 });
+      expect(frame({ ...tall, full: false, working: true, liveRows: 2 })).toMatchObject({ promptSpace: 5, promptShown: 5, promptFirst: 4 });
     });
 
     it("a tool line takes a row under the status line, where there is room for it, the hint and the cursor's row", () => {
       const on = frame({ ...tall, toolLine: true });
-      expect(on).toMatchObject({ ...off, tooled: true, viewHeight: 2, promptFirst: 2 });
+      expect(on).toMatchObject({ ...off, tooled: true, viewHeight: 1, promptFirst: 2 });
       expect(on.promptWindow).toEqual({ top: 2, above: 3, below: 5 });
       // Four rows leave one, which the cursor's row keeps; six leave three, one each.
       expect(frame({ ...tall, rows: 4, toolLine: true })).toMatchObject({ tooled: false, hinted: false });
@@ -366,7 +389,7 @@ describe("frame", () => {
 
     it("the detail view draws no prompt: the conversation's place has every row but the hint's and the status line's", () => {
       const on = frame({ ...tall, detail: true });
-      expect(on).toMatchObject({ ...off, viewHeight: 9, promptFirst: 9 });
+      expect(on).toMatchObject({ ...off, rules: false, viewHeight: 10, promptFirst: 10 });
       // With no cursor's row to keep, a four-row terminal still has the hint row, for the detail view's keys.
       expect(frame({ ...tall, rows: 4 })).toMatchObject({ hinted: false });
       expect(frame({ ...tall, rows: 4, detail: true })).toMatchObject({ hinted: true });
