@@ -572,3 +572,8 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   characters wide (some East Asian setups), so each line wraps and the rows below are off; a
   click on a menu row during Ctrl+R search maps to the wrong entry (the search's prompt has no
   clickable rows in the frame, which was so before this task).
+- **Task 5** (be5bdf6, review fixes 66330f7): the drawings. `asciiRows` takes the palette
+  (`asciiRows(palette)`), as a plain function cannot read the context. `tachikoma.txt` was moved
+  in byte for byte (checked against the file before it was deleted) and deleted. The pixel art is
+  for full colour only. Known limit: `▀ ▄ █` are drawn two columns wide by a terminal set to draw
+  such characters wide, as `─` in Task 4.
