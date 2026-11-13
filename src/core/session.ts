@@ -1,4 +1,5 @@
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
+import { HEAD_COMMAND, headCommand } from "../exec/log.js";
 import { type Combined, commandOf } from "../hooks/answer.js";
 import type { Event } from "../hooks/config.js";
 import type { Hooks } from "../hooks/hooks.js";
@@ -1166,9 +1167,16 @@ export class Session {
     const last_assistant_message = reply.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
     // Each background subagent running or waiting, as choice 21 gives it: one waiting for a place is reported "running" on
     // purpose, as that choice says. Crons Tachikoma has none of (design).
-    const background_tasks = (this.opts.tasks?.all ?? [])
-      .filter((t) => t.background && (t.state === "running" || t.state === "waiting"))
-      .map((t) => ({ id: t.id, type: "agent", status: "running", description: t.description, agent_type: "Explore" }));
+    // Each running command as Claude Code's shell task (background commands plan, choice 17): it has no description of its
+    // own, so that is the command cut as the hooks reference says, with its marker, and `command` cut at the same length.
+    const background_tasks = (this.opts.tasks?.all ?? []).flatMap((t): Record<string, string>[] => {
+      if (t.kind === "command") {
+        if (t.state !== "running") return [];
+        return [{ id: t.id, type: "shell", status: "running", description: headCommand(t.command), command: t.command.slice(0, HEAD_COMMAND) }];
+      }
+      if (!t.background || (t.state !== "running" && t.state !== "waiting")) return [];
+      return [{ id: t.id, type: "agent", status: "running", description: t.description, agent_type: "Explore" }];
+    });
     try {
       if (this.opts.subagent) {
         const fields = { agent_transcript_path: this.#transcript?.file, last_assistant_message, stop_hook_active: active };

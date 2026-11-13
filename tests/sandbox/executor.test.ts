@@ -327,7 +327,7 @@ describe("DockerExecutor with a stand-in Docker", () => {
     const running = box.exec("sleep 600", "/work", stop.signal);
     await new Promise((resolve) => setImmediate(resolve)); // the command is started
     stop.abort();
-    const message = `The sandbox stopped working: Esc could not reach the box (${words}). Shell and file tools are off until Tachikoma is launched again.`;
+    const message = `The sandbox stopped working: The stop could not reach the box (${words}). Shell and file tools are off until Tachikoma is launched again.`;
     await expect(running).rejects.toThrow(message);
     await expect(box.exec("echo hi", "/work")).rejects.toThrow(message);
   });
@@ -434,6 +434,119 @@ describe("DockerExecutor with a stand-in Docker", () => {
     });
     const box = await DockerExecutor.start(OPTS, fake.run);
     expect((await box.exec("make build", "/work")).stderr).toBe("");
+    await box.stop();
+  });
+
+  // Background commands plan, Task 3 (choice 3): start runs what exec runs, and streams it into a log.
+  const MEMORY_LINE = `(Stopped: the command used more than the box's memory limit of 512m. "sandboxLimits" in settings.json changes it.)`;
+  // Docker's run of the command (the `-w` exec), held until the test lets it end, or rejecting when the stop's signal
+  // aborts, as the real run does; every other call goes to `fake`.
+  const holding = (fake: ReturnType<typeof fakeDocker>, pieces: string[], end: Answer) => {
+    let release: () => void = () => {};
+    const run: DockerRun = (args, opts) => {
+      if (args[1] !== "-w") return fake.run(args, opts);
+      void fake.run(args, opts); // recorded
+      for (const piece of pieces) opts?.data?.(piece);
+      return new Promise((resolve, reject) => {
+        release = () => resolve(end);
+        opts?.signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+      });
+    };
+    return { run, release: () => release() };
+  };
+
+  // Until Docker's run of the command (the `-w` exec) is recorded: the command is started.
+  const started = async (fake: ReturnType<typeof fakeDocker>) => {
+    while (!fake.calls.some((c) => c[1] === "-w")) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  it("start streams each piece Docker gives into the log in order, before the end, with exec's arguments", async () => {
+    const fake = answering(() => ok());
+    const docker = holding(fake, ["a", "b", "c"], { code: 0, out: "ac", err: "b" });
+    const box = await DockerExecutor.start(OPTS, docker.run);
+    const running = box.start("npm run dev", "/work/src");
+    let ended = false;
+    void running.done.catch(() => {}).finally(() => (ended = true));
+    await started(fake);
+    expect(running.log.kept()).toBe("abc");
+    expect(ended).toBe(false);
+    docker.release();
+    expect(await running.done).toEqual({ code: 0, signal: null, stdout: "ac", stderr: "b" });
+    const at = fake.calls.findIndex((c) => c[0] === "exec" && c[1] === "-w");
+    expect(fake.calls[at]).toEqual(["exec", "-w", "/work/src", "b0x", "bash", "-c", expect.stringContaining("setsid"), "_", "npm run dev"]);
+    expect(fake.options[at]).toMatchObject({ cut: true, data: expect.any(Function) });
+    await box.stop();
+  });
+
+  it("start's stop kills the command's group in the box and settles done as a kill, keeping the log", async () => {
+    const fake = answering(() => ok());
+    const docker = holding(fake, ["serving\n"], ok());
+    const box = await DockerExecutor.start(OPTS, docker.run);
+    const running = box.start("npm run dev", "/work");
+    expect(running.stopsLater).toBe(true); // so a background command's stop waits for the kill (user choice 36)
+    await started(fake);
+    running.stop();
+    expect(await running.done).toEqual({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
+    expect(fake.calls).toContainEqual(["exec", "b0x", "bash", "-c", expect.stringContaining("kill -KILL")]);
+    expect(running.log.kept()).toBe("serving\n");
+    await box.stop();
+  });
+
+  it("start's stop while the count is read, before the command reaches the box, runs nothing", async () => {
+    let reads = 0;
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args.includes("/sys/fs/cgroup/memory.events")) {
+        return ++reads === 1 ? { code: 1, out: "", err: "Error response from daemon: busy\n" } : ok("oom_kill 0\n");
+      }
+      return ok();
+    });
+    const box = await DockerExecutor.start(OPTS, fake.run);
+    const running = box.start("npm run dev", "/work");
+    running.stop();
+    expect(await running.done).toEqual({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
+    expect(reads).toBe(2);
+    expect(fake.calls.some((c) => c[1] === "-w")).toBe(false);
+    await box.stop();
+  });
+
+  it("start adds the memory limit's line to stderr and to the log (choice 3)", async () => {
+    let reads = 0;
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args.includes("/sys/fs/cgroup/memory.events")) return ok(`oom_kill ${reads++ === 0 ? 0 : 1}\n`);
+      return ok("true\n");
+    });
+    const docker = holding(fake, ["make: *** [build] Killed"], { code: 2, out: "", err: "make: *** [build] Killed" });
+    const box = await DockerExecutor.start({ ...OPTS, limits: { memory: 512 * MB, cpus: 1, pids: 64 } }, docker.run);
+    const running = box.start("make build", "/work");
+    await started(fake);
+    docker.release();
+    expect((await running.done).stderr).toBe(`make: *** [build] Killed\n${MEMORY_LINE}`);
+    expect(running.log.kept()).toBe(`make: *** [build] Killed\n${MEMORY_LINE}`);
+    await box.stop();
+  });
+
+  it("start rejects done with the sandbox's failure when Docker cannot be reached, and throws at once after it", async () => {
+    const fake = answering(() => ok());
+    const run: DockerRun = (args, opts) => (args[1] === "-w" ? Promise.reject(new Error("spawn docker EACCES")) : fake.run(args, opts));
+    const box = await DockerExecutor.start(OPTS, run);
+    const message = "The sandbox stopped working: spawn docker EACCES. Shell and file tools are off until Tachikoma is launched again.";
+    await expect(box.start("npm run dev", "/work").done).rejects.toThrow(message);
+    expect(() => box.start("echo again", "/work")).toThrow(message);
+    await box.stop();
+  });
+
+  it("exec's Esc while the command runs kills its group in the box and says Cancelled", async () => {
+    const fake = answering(() => ok());
+    const docker = holding(fake, [], ok());
+    const box = await DockerExecutor.start(OPTS, docker.run);
+    const esc = new AbortController();
+    const running = box.exec("sleep 600", "/work", esc.signal);
+    await started(fake);
+    esc.abort();
+    await expect(running).rejects.toThrow("Cancelled");
+    expect(fake.calls).toContainEqual(["exec", "b0x", "bash", "-c", expect.stringContaining("kill -KILL")]);
     await box.stop();
   });
 
@@ -622,6 +735,19 @@ for i in range(${box.limits.pids + 1}): subprocess.Popen(['sleep', '600'], stdou
     const running = box.exec("sleep 600", "/work", stop.signal);
     stop.abort();
     await expect(running).rejects.toThrow("Cancelled");
+    expect(await processes(box)).not.toMatch(SLEEPING);
+  });
+
+  // Background commands plan, Task 3: the real docker run streams each piece into the log as it arrives (choice 3).
+  it("start streams output into the log before the end, and its stop leaves nothing running", async (ctx) => {
+    const box = await realBox(ctx);
+    const running = box.start("echo ready; sleep 600", "/work");
+    let ended = false;
+    void running.done.catch(() => {}).finally(() => (ended = true)); // a command that ends early stops the wait
+    while (!ended && !running.log.kept().includes("ready")) await new Promise((resolve) => setImmediate(resolve)); // lets docker's output in
+    expect(ended).toBe(false);
+    running.stop();
+    expect(await running.done).toEqual({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
     expect(await processes(box)).not.toMatch(SLEEPING);
   });
 

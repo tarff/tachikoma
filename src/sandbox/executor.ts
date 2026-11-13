@@ -6,7 +6,8 @@ import { randomUUID } from "node:crypto";
 import { readlinkSync } from "node:fs";
 import os from "node:os";
 import { commandEnv, onPath } from "../exec/env.js";
-import type { ExecResult, Executor } from "../exec/executor.js";
+import type { ExecResult, Executor, Running } from "../exec/executor.js";
+import { CommandLog } from "../exec/log.js";
 import type { SandboxLimits } from "../settings.js";
 import { docker, type DockerRun } from "./docker.js";
 import type { Mount } from "./mounts.js";
@@ -134,6 +135,8 @@ const HOST = [os.hostname(), process.platform, ...(process.platform === "linux" 
 // The box's cgroup's memory events, as the box sees them. Only cgroup v2 has the file (Docker Desktop's, and most Linux
 // today); cgroup v1, Ubuntu 20.04's and RHEL 8's default, has none, and OOMKilled is read instead (exec, below).
 const EVENTS = "/sys/fs/cgroup/memory.events";
+// What goes before a line added after a command's output: a line break, unless there is none or it ends with one.
+const newline = (text: string) => (text && !text.endsWith("\n") ? "\n" : "");
 
 // Boxes still to remove when Tachikoma ends. "exit" handlers cannot wait, so this one removal runs docker synchronously,
 // by its full path, with the environment commands get, as docker.ts does. cli.tsx's signal handlers end through
@@ -254,35 +257,71 @@ export class DockerExecutor implements Executor {
     return box;
   }
 
+  // `start` plus the signal, as the host's exec is (background commands plan, Task 3): an abort stops the command, and
+  // once inGroup's kill has run in the box rejects `Cancelled`, or the sandbox's failure when it could not reach the box
+  // (choice 87). A broken box, or an abort before the call, starts nothing.
   async exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult> {
+    if (this.state.broken) throw this.state.broken;
+    if (signal?.aborted) throw new Error("Cancelled");
+    const run = this.start(command, cwd);
+    const onAbort = () => run.stop();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    // start calls the DockerRun before it returns (the count's read), and a run that answers at once, as a test's
+    // stand-in does, can abort the signal inside that call, before the listener above was added.
+    if (signal?.aborted) run.stop();
+    try {
+      const r = await run.done;
+      if (signal?.aborted) throw new Error("Cancelled"); // even when start gave the real exit code (below)
+      return r;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  // The command in its own group in the box, each piece it prints going to the log as it arrives (background commands
+  // plan, choice 3). A broken box throws here, at once. `stop()` aborts the run's own signal, so inGroup kills the group
+  // in the box as for Esc, and `done` gives a kill; a stop while the count is read, before the command reaches the box,
+  // starts nothing. Docker's own failures reject `done` with the sandbox's failure, as exec throws it.
+  start(command: string, cwd: string): Running {
     const { state } = this;
     if (state.broken) throw state.broken;
-    if (signal?.aborted) throw new Error("Cancelled");
-    if (state.oomKills === undefined) state.oomKills = await state.oomKillCount(); // again, until it can be read
-    if (signal?.aborted) throw new Error("Cancelled"); // an Esc during that read: nothing has started
-    const before = state.oomKills;
-    const got = await inGroup(this.run, this.id, ["-w", cwd], "bash -c", command, { signal, cut: true });
-    if ("cancelled" in got) throw new Error("Cancelled");
-    if ("unreached" in got) throw state.fail(got.unreached);
-    // A failure may be Docker's own: the box is asked whether it still runs, and if not, Docker's words are given.
-    if (got.code !== 0) {
-      const gone = await state.gone();
-      if (gone === NO_DOCKER) throw state.fail(NO_DOCKER);
-      if (gone !== undefined) throw state.fail(got.err.trim() || gone);
-    }
-    let stderr = got.err;
-    // Out of memory, the kernel kills with signal 9: the shell's 137. Measured on 2026-11-02 in a 512 MB box (Docker
-    // 29.9.2, cgroup v2): memory.events' oom_kill went up by one at each kill by the memory limit and stayed the same at
-    // a plain `kill -9`, while OOMKilled stayed true for the box's life after its first one, so it would blame a later
-    // kill -9. So the count is used, read again after every command that fails (choice 89), as a build that exits 2 may
-    // hold a process the limit killed, against the count before it: a kill by the limit in a process left running by an
-    // earlier command, found after a later failure, is laid on that later one. Without the file (cgroup v1), or for a
-    // command whose count before it could not be read, OOMKilled is the only sign, after a 137 only, with that flaw.
-    if (got.code !== 0 && (await state.outOfMemory(before, got.code))) {
-      const line = `(Stopped: the command used more than ${state.memoryLine()})`;
-      stderr += `${stderr && !stderr.endsWith("\n") ? "\n" : ""}${line}`;
-    }
-    return { code: got.code, signal: null, stdout: got.out, stderr };
+    const log = new CommandLog();
+    const stopping = new AbortController();
+    const { signal } = stopping;
+    // Docker's run gives each stream's head only at its end, so a stopped command's `done` has no output; its log has it.
+    const killed: ExecResult = { code: null, signal: "SIGKILL", stdout: "", stderr: "" };
+    const done = (async (): Promise<ExecResult> => {
+      if (state.oomKills === undefined) state.oomKills = await state.oomKillCount(); // again, until it can be read
+      if (signal.aborted) return killed; // a stop during that read: nothing has started
+      const before = state.oomKills;
+      const got = await inGroup(this.run, this.id, ["-w", cwd], "bash -c", command, { signal, cut: true, data: (text) => log.add(text) });
+      if ("unreached" in got) throw state.fail(got.unreached);
+      if ("cancelled" in got) return killed;
+      // A stop during the checks below comes after the command's end: start gives its real exit code, exec Cancelled.
+      // A failure may be Docker's own: the box is asked whether it still runs, and if not, Docker's words are given.
+      if (got.code !== 0) {
+        const gone = await state.gone();
+        if (gone === NO_DOCKER) throw state.fail(NO_DOCKER);
+        if (gone !== undefined) throw state.fail(got.err.trim() || gone);
+      }
+      let stderr = got.err;
+      // Out of memory, the kernel kills with signal 9: the shell's 137. Measured on 2026-11-02 in a 512 MB box (Docker
+      // 29.9.2, cgroup v2): memory.events' oom_kill went up by one at each kill by the memory limit and stayed the same at
+      // a plain `kill -9`, while OOMKilled stayed true for the box's life after its first one, so it would blame a later
+      // kill -9. So the count is used, read again after every command that fails (choice 89), as a build that exits 2 may
+      // hold a process the limit killed, against the count before it: a kill by the limit in a process left running by an
+      // earlier command, found after a later failure, is laid on that later one. Without the file (cgroup v1), or for a
+      // command whose count before it could not be read, OOMKilled is the only sign, after a 137 only, with that flaw.
+      // With background commands running side by side, a long-running command that fails can also be blamed for a kill
+      // by the limit in another command started after it: a known limit.
+      if (got.code !== 0 && (await state.outOfMemory(before, got.code))) {
+        const line = `(Stopped: the command used more than ${state.memoryLine()})`;
+        stderr += `${newline(stderr)}${line}`;
+        log.add(`${newline(log.kept())}${line}`); // so a background command's ending says it too (choice 3)
+      }
+      return { code: got.code, signal: null, stdout: got.out, stderr };
+    })();
+    return { log, done, stop: () => stopping.abort(), stopsLater: true };
   }
 
   // Removes the box. What it held that is kept lives in /work, a host folder (choice 18). A removal that fails leaves the
@@ -300,14 +339,15 @@ export class DockerExecutor implements Executor {
 // command), as a killed command made it print a "Killed" line quoting the wrapper. An Esc before the id is written leaves
 // a `.stop` file, which the wrapper looks for after writing it: Esc writes its file before reading the id, so either it
 // reads the id or the wrapper sees its file. `unreached` is Docker's words when the box could not be reached, which
-// each caller gives in its own error. DockerExecutor.exec and BoxWorkspace's calls (boxWorkspace.ts) run through it.
+// each caller gives in its own error. DockerExecutor.start (and exec through it) and BoxWorkspace's calls
+// (boxWorkspace.ts) run through it; `data` is start's, for its log.
 export async function inGroup(
   run: DockerRun,
   id: string,
   flags: string[],
   inner: "bash -c" | "node -e",
   arg: string,
-  opts: { signal?: AbortSignal; cut?: boolean; input?: Buffer },
+  opts: { signal?: AbortSignal; cut?: boolean; input?: Buffer; data?: (text: string) => void },
 ): Promise<{ code: number; out: string; err: string } | { cancelled: true } | { unreached: string }> {
   const { signal } = opts;
   const group = `/tmp/tachikoma-${randomUUID()}`;
@@ -330,8 +370,9 @@ export async function inGroup(
     got = await run(["exec", ...flags, id, "bash", "-c", wrapper, "_", arg], opts);
   } catch (err) {
     if (signal?.aborted) {
+      // Said for a background command's stop as for Esc, so it names neither (user choice 39, PR #18 review).
       const unreached = await kill;
-      return unreached !== undefined ? { unreached: `Esc could not reach the box (${unreached})` } : { cancelled: true };
+      return unreached !== undefined ? { unreached: `The stop could not reach the box (${unreached})` } : { cancelled: true };
     }
     return { unreached: (err as Error).message };
   } finally {

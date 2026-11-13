@@ -50,6 +50,7 @@ import {
   stopSoon,
   systemAgain,
   turnAnswer,
+  waitForBackground,
   WindowSessions,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
@@ -61,8 +62,8 @@ import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { type Row, sessionsDir, sweep } from "./core/sessions.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
-import { errorText, type Provider } from "./core/types.js";
-import { LocalExecutor, LocalWorkspace } from "./exec/local.js";
+import { errorText, type Message, type Provider } from "./core/types.js";
+import { LocalExecutor, LocalWorkspace, shellFor } from "./exec/local.js";
 import { Hooks } from "./hooks/hooks.js";
 import { pathsFor } from "./hooks/tools.js";
 import { readKeybindings } from "./keybindings.js";
@@ -83,9 +84,10 @@ import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
 import { shellOf } from "./safety/split.js";
 import { hooksOf, loadSettings, SETTINGS, shownFile } from "./settings.js";
+import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "./tools/commands.js";
 import { delegateTool } from "./tools/delegate.js";
+import { editFileTool } from "./tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
-import { shellTool } from "./tools/shell.js";
 import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
 import { NOT_GONE } from "./tui/app/constants.js";
@@ -147,11 +149,11 @@ In a session: /lead <provider:model> switches the lead model, /lead or /model pi
 /resume switches the window to a saved one, /branch [name] carries on in a copy of this session,
 /rename <name> names it, /export [file] writes the conversation to a file as text, or alone copies
 it, /compact [words] shortens it into a summary now, /autocompact <tokens> shortens it once it
-passes that many tokens (/autocompact off: only when a request would not fit), /tasks lists the
-subagents (/tasks t1 shows one, /tasks stop stops them), /hooks lists the hooks in force,
-/mcp lists the MCP servers, /errors summarises the error log, /screen switches between full screen
-and classic, /settings opens the settings file in your editor, /keybindings opens the
-keys file in your editor, /vim switches vim mode in this window, /exit quits.
+passes that many tokens (/autocompact off: only when a request would not fit), /tasks lists
+subagents and background commands (/tasks t1 shows one, /tasks stop stops them), /hooks lists
+the hooks in force, /mcp lists the MCP servers, /errors summarises the error log, /screen switches
+between full screen and classic, /settings opens the settings file in your editor, /keybindings
+opens the keys file in your editor, /vim switches vim mode in this window, /exit quits.
 Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty
 prompt quits. Ctrl+T hides or shows the to-do list. Esc and Ctrl+T can be moved in the keys file;
 Ctrl-C and Ctrl-D cannot. ? on an empty prompt lists every key.`;
@@ -690,11 +692,15 @@ const tasks = new Tasks({
   hooks,
   paths,
   mcp: servers, // each subagent's own MCP tools, its trusted read-only ones only (Task 7)
+  // A background command's time limit, under -p only (background commands plan, choice 8 and Task 11).
+  ...(interactive ? {} : { limits: { started: HEADLESS_LIMIT, moved: HEADLESS_LIMIT, most: MOST_TIMEOUT } }),
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus. In the box the shell tool says
-// bash, whatever the host.
+// bash, whatever the host. The shell tool keeps its place after edit_file, so the order the model sees is as before,
+// shell_output and stop_task just after it (background commands plan, Tasks 5 and 6).
+const commandTools = shellTools(tasks, { shell: box ? "bash" : shellFor().name, headless: !interactive });
 const tools = [
-  ...TOOLS.map((t) => (box && t === shellTool ? box.shellTool : t)),
+  ...TOOLS.flatMap((t) => (t === editFileTool ? [t, ...commandTools] : [t])),
   todoTool((items) => bus.emit("todo", items)),
   delegateTool(tasks, { headless: !interactive }),
 ];
@@ -710,9 +716,9 @@ const opened = saved
       name,
     );
 const said = [...opened.lines, ...(leadLine ? [{ text: leadLine }] : [])].map((l) => ({ ...l, text: visible(l.text) }));
-// The subagents a crash cut short reach the model with its next request, as waiting answers do (release 8a design,
-// "Resuming"), and are marked reported once handed out: the window's session's, which /clear, /resume and /branch switch
-// (release 8a plan, Task 7).
+// The subagents a crash cut short, and the background commands that had not ended (background commands plan, choice 15),
+// reach the model with its next request, as waiting answers do (release 8a design, "Resuming"), and are marked reported
+// once handed out: the window's session's, which /clear, /resume and /branch switch (release 8a plan, Task 7).
 const windowSessions = new WindowSessions(sessions, { project: root, version: VERSION, tools: specs }, { box: box !== undefined, full: system }, opened);
 const { session, pictures } = leadSession({
   lead,
@@ -778,26 +784,35 @@ if (parsed.print !== undefined) {
   for (const line of said) console.error(gray(line.text));
   session.load(opened.conversation);
   session.start(source);
-  // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us.
-  // A second Ctrl-C gets Node's default and ends at once.
+  // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us. The first Ctrl-C stops
+  // the turn, or the wait for background commands; a second ends at once through process.exit, so the exit handlers still
+  // stop the commands and the box (background commands plan, choice 22; design, "How the wait ends").
   const stop = new AbortController();
-  process.once("SIGINT", () => stop.abort());
+  process.on("SIGINT", () => (stop.signal.aborted ? quit() : stop.abort()));
   // A prompt a UserPromptSubmit hook blocked, and a hook's continue: false, end the run with exit code 1, as its work was
   // cut short (release 8b plan, Task 8 and choice 9). Only the reply this turn added is printed (turnAnswer): a blocked
   // prompt, one a stop left unsent, and one stopped while it waited for SessionStart or the MCP servers add none, so a
   // resumed session's last answer is not printed as this run's (release 8c plan, Task 9's review); a stop later in the
-  // turn prints the answer it came after, as a Stop hook's does (release 8b plan, Task 9).
-  const before = session.messages.at(-1);
-  const ended = await session.send(parsed.print, stop.signal);
-  // Read now: a Ctrl-C during SessionEnd or copy mode's step below comes after the run's work, so it does not mark the run
-  // stopped (Task 10's code review).
-  const aborted = stop.signal.aborted;
-  const text = parsed.json ? undefined : turnAnswer(before, session.messages);
-  if (text !== undefined) {
+  // turn prints the answer it came after, as a Stop hook's does (release 8b plan, Task 9). Each later turn's answer is
+  // printed so too (background commands plan, Task 11).
+  const printAnswer = (before: Message | undefined) => {
+    const text = parsed.json ? undefined : turnAnswer(before, session.messages);
+    if (text === undefined) return;
     const { out, note } = headlessAnswer(text, { raw: parsed.raw === true, tty: process.stdout.isTTY === true });
     console.log(out);
     if (note) console.error(note);
-  }
+  };
+  const before = session.messages.at(-1);
+  const first = await session.send(parsed.print, stop.signal);
+  printAnswer(before);
+  // Then the wait while background commands run, a turn for each ending, unless the first turn ended the run; either way
+  // what is left stops as the window's close stops it (background commands design, "With -p"; plan, choices 25 and 29).
+  // The waiting line only on a terminal, grey as the launch's lines.
+  const waitingLine = process.stderr.isTTY ? { waitingLine: (line: string) => console.error(gray(line)) } : {};
+  const ended = await waitForBackground(first, session, tasks, stop.signal, { bus, failed: () => failed, answer: printAnswer, ...waitingLine });
+  // Read now: a Ctrl-C during SessionEnd or copy mode's step below comes after the run's work, so it does not mark the run
+  // stopped (Task 10's code review).
+  const aborted = stop.signal.aborted;
   // The run's session ends here, after its answer, however its turn ended, a stop by Ctrl-C too (release 8b plan, Task 10).
   // Then the MCP servers stop, after SessionEnd, whose mcp_tool hooks call them (release 8c plan, Task 8's code review).
   await session.end("other");

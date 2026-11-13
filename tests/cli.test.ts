@@ -12,6 +12,7 @@ import { projectFile } from "../src/core/datadir.js";
 import { openSession, sessionsDir } from "../src/core/sessions.js";
 import { readTranscript } from "../src/core/transcript.js";
 import { onPath } from "../src/exec/env.js";
+import { shellFor } from "../src/exec/local.js";
 import { answersFor } from "../src/mcp/answers.js";
 import { AuthStore, McpAuth } from "../src/mcp/auth.js";
 import { readProjectFile, readServers } from "../src/mcp/config.js";
@@ -182,7 +183,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   it("lists --classic and /screen in the help", () => {
     const help = tachi("--help").stdout;
     expect(help).toMatch(/^ {2}--classic /m);
-    expect(help).toMatch(/\/screen switches between full\s+screen\s+and\s+classic/);
+    expect(help).toMatch(/\/screen\s+switches\s+between\s+full\s+screen\s+and\s+classic/);
   });
 
   it("lists tachi review in the help", () => {
@@ -191,7 +192,7 @@ describe("tachi", { timeout: 15_000 }, () => {
 
   it("lists /settings, /keybindings and /vim in the help", () => {
     const help = tachi("--help").stdout;
-    expect(help).toMatch(/\/settings opens the settings file in your editor,\s+\/keybindings opens the\s+keys file in your editor/);
+    expect(help).toMatch(/\/settings\s+opens\s+the\s+settings\s+file\s+in\s+your\s+editor,\s+\/keybindings\s+opens\s+the\s+keys\s+file\s+in\s+your\s+editor/);
     expect(help).toMatch(/\/vim\s+switches\s+vim\s+mode\s+in\s+this\s+window,/);
   });
 
@@ -591,6 +592,53 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(sent[1]!.messages.at(-1)).toMatchObject({ role: "tool", content: told });
   });
 
+  // Background commands plan, Task 11 (design, "With -p"): after its answer the run waits while a background command runs,
+  // and the command's ending gets a turn, whose answer is printed too. The lead is a stand-in served on the loopback
+  // address, as above; a PreToolUse hook of the test's own allows the command, as -p asks nobody. Its own limit: the run
+  // pays the -p start of about 7.5 s ("Before you start").
+  it("with -p, waits for a background command and prints the answer its ending gets too", { timeout: 60_000 }, async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-wait-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    const script = path.join(top, "allow.cjs");
+    const allow = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } };
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify(allow))});`);
+    const hooks = { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const command = `node -e "setTimeout(() => console.log('done'), 300)"`;
+    const sent: { messages: { role: string; content?: unknown }[] }[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const request = JSON.parse(body) as (typeof sent)[number];
+        sent.push(request);
+        const first = !request.messages.some((m) => m.role === "tool");
+        const ending = JSON.stringify(request.messages.at(-1)).includes("Background command t1");
+        const call = { id: "c1", type: "function", function: { name: "shell", arguments: JSON.stringify({ command, background: true }) } };
+        const said = ending ? "It printed done." : "Started it.";
+        const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: said };
+        const choice = { index: 0, finish_reason: first ? "tool_calls" : "stop", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "run it in the background", env);
+    expect(r).toMatchObject({ code: 0, stdout: "Started it.\nIt printed done.\n" });
+    expect(sent).toHaveLength(3);
+    expect(sent[1]!.messages.at(-1)).toMatchObject({ role: "tool", content: "Started t1 in the background." });
+    expect(JSON.stringify(sent[2]!.messages.at(-1))).toContain(`Background command t1 (${command.replaceAll('"', '\\"')}) ended with exit code 0:\\ndone`);
+  });
+
   // Release 8b plan, Task 8 and choice 9: a prompt a UserPromptSubmit hook blocked, and any hook's continue: false, end a
   // -p run with exit code 1 and the grey line as a note on its error output; with --json, as a hook-note line of its own
   // (the user's choice, 2026-11-09). The lead is the stand-in above, which asks to read a file, then answers.
@@ -844,6 +892,18 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     "  --fork-session    with -c or -r, open a copy of the session and leave the saved one as it was",
     "",
   ].join("\n");
+
+  // Background commands plan, Task 5: the lead's shell tool, made in cli.tsx, names the host's shell, and keeps its place
+  // after edit_file. The box's says bash (copy mode's -p run, below).
+  it("with -p, gives the lead the shell tool, shell_output and stop_task after edit_file, naming the host's shell", async () => {
+    const { proj, data } = place();
+    const { url, sent } = await standIn();
+    const r = await tachiLater("-p", "hi", where(proj, data, url));
+    expect(r.code).toBe(0);
+    const tools = (sent[0] as unknown as { tools: { function: { name: string; description: string } }[] }).tools.map((t) => t.function);
+    expect(tools.map((t) => t.name).slice(0, 6)).toEqual(["read_file", "write_file", "edit_file", "shell", "shell_output", "stop_task"]);
+    expect(tools[3]!.description).toMatch(new RegExp(`^Run a command with ${shellFor().name} in the project root and return its output\\. `));
+  });
 
   // Release 8a plan, Task 13 (user, 2026-11-06: "Show the line, send anyway"): a summary for the /autocompact size that
   // fails, the request then sent as it is and answered, fails no -p run. The first reply reports a million prompt tokens,
@@ -1179,9 +1239,10 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   // Release 8b plan, Task 12: /hooks among the commands, in the user's words (2026-11-10), after the /tasks part.
   // Release 8c plan, Task 10: /mcp after the /hooks part, in the plan's words.
+  // Background commands plan, Task 9: /tasks lists both kinds, in the plan's words.
   it("lists /hooks in the help, after /tasks, and /mcp after it", () => {
     expect(tachi("--help").stdout).toContain(
-      "subagents (/tasks t1 shows one, /tasks stop stops them), /hooks lists the hooks in force,\n/mcp lists the MCP servers, /errors summarises the error log,",
+      "/tasks lists\nsubagents and background commands (/tasks t1 shows one, /tasks stop stops them), /hooks lists\nthe hooks in force, /mcp lists the MCP servers, /errors summarises the error log,",
     );
   });
 });
@@ -1541,7 +1602,6 @@ describe("live link's launch, with a stand-in Docker", () => {
     expect(started.system).toContain("Shell commands run with bash on linux.");
     expect(started.subagentSystem).toContain("The project root is /work.");
     expect(started.gate).toEqual({ root: "/work", home: "/tmp", shell: "bash" });
-    expect(started.shellTool.spec.description).toContain("with bash");
   });
 
   it("starts with the network on as bridge, saying so", async () => {
@@ -1811,8 +1871,13 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     mkdirSync(proj);
     mkdirSync(empty);
     writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const sent: { tools: { function: { name: string; description: string } }[] }[] = []; // each request, for its tools
     const server = http.createServer((req, res) => {
-      req.resume().on("end", () => {
+      let asked = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (asked += d));
+      req.on("end", () => {
+        sent.push(JSON.parse(asked));
         if (change) for (const session of readdirSync(path.join(data, "copies"))) writeFileSync(path.join(data, "copies", session, "work", "new.txt"), "made-up\n");
         const message = { role: "assistant", content: "done" };
         const body = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [{ index: 0, finish_reason: "stop", message }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
@@ -1840,13 +1905,16 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
       child.on("error", reject);
       child.on("close", resolve);
     });
-    return { code, stdout, stderr, proj, copies: path.join(data, "copies") };
+    return { code, stdout, stderr, proj, copies: path.join(data, "copies"), sent };
   }
 
   it("answers, then names the copy kept for review on stderr, keeping it and leaving the folder untouched", async () => {
     const r = await copyRun("ok", true);
     expect(r.stdout).toBe("done\n");
     expect(r.code).toBe(0);
+    // In the box the shell tool says bash, whatever the host (background commands plan, Task 5; cli.tsx).
+    const shell = r.sent[0]!.tools.find((t) => t.function.name === "shell")!;
+    expect(shell.function.description).toMatch(/^Run a command with bash in the project root and return its output\. /);
     const lines = r.stderr.trimEnd().split("\n");
     expect(lines[0]).toBe(`Copying ${r.proj} for the sandbox...`); // not a terminal, so not grey
     expect(lines[1]).toBe("Starting the sandbox...");

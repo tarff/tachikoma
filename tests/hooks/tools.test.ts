@@ -1,15 +1,15 @@
 import { writeFileSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { Bus } from "../../src/core/bus.js";
 import { PermissionGate } from "../../src/core/permissions.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { errorOf, fromClaude, outputFrom, pathsFor, responseOf, toClaude } from "../../src/hooks/tools.js";
+import { shellTools } from "../../src/tools/commands.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { writeFileTool } from "../../src/tools/files.js";
 import { SUBAGENT_TOOLS } from "../../src/tools/index.js";
-import { shellTool } from "../../src/tools/shell.js";
-import { FakeProvider, reply, tempContext } from "../helpers.js";
+import { FakeProvider, reply, standInRun, tempContext } from "../helpers.js";
 
 // No hook runs here, and no path is opened but the test's own folder (release 8b plan, "Rules for every task").
 const HOST = pathsFor("/proj", null, "linux");
@@ -31,6 +31,10 @@ const CASES: [string, Record<string, unknown>, string, Record<string, unknown>][
     todos: [{ content: "one", status: "completed" }, { content: "two", status: "in_progress" }] }],
   // Release 8c plan, choice 44.
   ["tool_search", { query: "select:mcp__a__b", max_results: 2 }, "ToolSearch", { query: "select:mcp__a__b", max_results: 2 }],
+  // Background commands plan, choice 16.
+  ["shell", { command: "npm run dev", background: true, timeout: 5000 }, "Bash", { command: "npm run dev", run_in_background: true, timeout: 5000 }],
+  ["stop_task", { id: "t4" }, "TaskStop", { task_id: "t4" }],
+  ["shell_output", { id: "t4" }, "shell_output", { id: "t4" }],
 ];
 
 describe("toClaude and fromClaude: every tool both ways", () => {
@@ -203,6 +207,14 @@ describe("fromClaude: a rewrite Tachikoma cannot take", () => {
     ["a todo's unknown field", "todo", { todos: [{ content: "a", status: "pending", priority: "high" }] },
       '"priority" in "todos" is not a field Tachikoma can take'],
     ["Bash's description of the wrong type", "shell", { command: "ls", description: 1 }, '"description" must be text in quotes'],
+    // Background commands plan, choice 16: the shell tool's own range for a timeout, and TaskStop's deprecated shell_id.
+    ["Bash's timeout of 0", "shell", { command: "ls", timeout: 0 }, '"timeout" must be a whole number of milliseconds from 1 to 7200000'],
+    ["Bash's timeout above two hours", "shell", { command: "ls", timeout: 7_200_001 }, '"timeout" must be a whole number of milliseconds from 1 to 7200000'],
+    ["Bash's timeout of 1.5", "shell", { command: "ls", timeout: 1.5 }, '"timeout" must be a whole number of milliseconds from 1 to 7200000'],
+    ["Bash's timeout as text", "shell", { command: "ls", timeout: "5000" }, '"timeout" must be a whole number of milliseconds from 1 to 7200000'],
+    ["Bash's run_in_background that is not true or false", "shell", { command: "ls", run_in_background: "yes" }, '"run_in_background" must be true or false'],
+    ["TaskStop's shell_id", "stop_task", { task_id: "t1", shell_id: "t1" }, '"shell_id" is not a field Tachikoma can take'],
+    ["TaskStop without task_id", "stop_task", { shell_id: "t1" }, '"updatedInput" has no "task_id"'],
   ])("%s", (_, name, input, problem) => {
     expect(fromClaude(name, input, HOST)).toEqual({ problem });
   });
@@ -211,9 +223,6 @@ describe("fromClaude: a rewrite Tachikoma cannot take", () => {
   it.each<[string, string, Record<string, unknown>, string]>([
     ["Edit's replace_all: true", "edit_file", { file_path: "/proj/a", old_string: "a", new_string: "b", replace_all: true },
       '"replace_all" must be false, as Tachikoma\'s edit_file replaces one exact match'],
-    ["Bash's run_in_background: true", "shell", { command: "ls", run_in_background: true },
-      '"run_in_background" must be false, as Tachikoma\'s shell cannot run a command in the background'],
-    ["Bash's timeout", "shell", { command: "ls", timeout: 1000 }, '"timeout" cannot be set, as Tachikoma\'s shell has no time limit'],
     ["Grep's output_mode", "search_files", { pattern: "x", output_mode: "count" },
       '"output_mode" must be "content", as Tachikoma\'s search_files gives the matching lines'],
     ["Grep's -i", "search_files", { pattern: "x", "-i": true }, '"-i" must be false, as Tachikoma\'s search_files matches letter case exactly'],
@@ -230,11 +239,19 @@ describe("fromClaude: a rewrite Tachikoma cannot take", () => {
   it("takes those fields at Tachikoma's own way, and Claude Code's labels, leaving them out", () => {
     expect(fromClaude("edit_file", { file_path: "/proj/a", old_string: "a", new_string: "b", replace_all: false }, HOST)).toEqual({
       input: { path: "/proj/a", old_text: "a", new_text: "b" } });
-    expect(fromClaude("shell", { command: "ls", run_in_background: false, description: "List files" }, HOST)).toEqual({ input: { command: "ls" } });
+    expect(fromClaude("shell", { command: "ls", description: "List files" }, HOST)).toEqual({ input: { command: "ls" } });
     expect(fromClaude("search_files", { pattern: "x", output_mode: "content", "-i": false, multiline: false }, HOST)).toEqual({ input: { pattern: "x" } });
     expect(fromClaude("delegate", { description: "d", prompt: "p", subagent_type: "Explore" }, HOST)).toEqual({ input: { description: "d", task: "p" } });
     expect(fromClaude("todo", { todos: [{ content: "a", status: "completed", activeForm: "Doing a" }] }, HOST)).toEqual({
       input: { items: [{ text: "a", status: "done" }] } });
+  });
+
+  // Background commands plan, choice 16: the shell's own fields now, so the tool's schema and its rules run on them (Task 5).
+  it("takes Bash's run_in_background and timeout as the shell's background and timeout, at both ends of the range", () => {
+    expect(fromClaude("shell", { command: "npm run dev", run_in_background: true }, HOST)).toEqual({ input: { command: "npm run dev", background: true } });
+    expect(fromClaude("shell", { command: "ls", run_in_background: false, timeout: 7_200_000, description: "List files" }, HOST)).toEqual({
+      input: { command: "ls", background: false, timeout: 7_200_000 } });
+    expect(fromClaude("shell", { command: "ls", timeout: 1 }, HOST)).toEqual({ input: { command: "ls", timeout: 1 } });
   });
 
   // answer.ts reads a field set to null as not set; so does this.
@@ -261,7 +278,7 @@ describe("responseOf and errorOf: what PostToolUse and PostToolUseFailure are se
   });
 
   it("gives the text the model reads for the other tools, and for a tool that reported nothing", () => {
-    for (const name of ["read_file", "edit_file", "find_files", "search_files", "todo", "tool_search", "other"]) {
+    for (const name of ["read_file", "edit_file", "find_files", "search_files", "todo", "tool_search", "shell_output", "stop_task", "other"]) {
       expect(responseOf(name, "the text")).toBe("the text");
     }
     expect(responseOf("shell", "the text")).toBe("the text");
@@ -282,7 +299,9 @@ describe("responseOf and errorOf: what PostToolUse and PostToolUseFailure are se
 
 describe("outputFrom: a hook's updatedToolOutput, turned back into what the model reads", () => {
   it("takes text for the tools whose result is the text", () => {
-    for (const name of ["read_file", "edit_file", "find_files", "search_files", "todo"]) expect(outputFrom(name, "new text")).toBe("new text");
+    for (const name of ["read_file", "edit_file", "find_files", "search_files", "todo", "shell_output", "stop_task"]) {
+      expect(outputFrom(name, "new text")).toBe("new text");
+    }
   });
 
   it("rebuilds Bash's shape into the shell tool's own layout", () => {
@@ -318,10 +337,36 @@ describe("report: the parts the tools give", () => {
   it("shell reports its output and exit code, on success and on failure", async () => {
     const ctx = await tempContext("never");
     const parts: unknown[] = [];
-    const executor = { exec: async () => ({ code: 1, signal: null, stdout: "out\n", stderr: "err\n" }) };
-    await expect(shellTool.run({ command: "false" }, { ...ctx, executor, report: (p) => parts.push(p) })).rejects.toThrow("exit code: 1");
+    const executor = {
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: () => standInRun(Promise.resolve({ code: 1, signal: null, stdout: "out\n", stderr: "err\n" })),
+    };
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: [], ctx: { ...ctx, executor } });
+    const [shellTool] = shellTools(tasks, { shell: "sh", headless: false });
+    await expect(shellTool!.run({ command: "false" }, { ...ctx, executor, report: (p) => parts.push(p) })).rejects.toThrow("exit code: 1");
     expect(parts).toEqual([{ stdout: "out\n", stderr: "err\n", code: 1 }]);
     expect(errorOf("shell", "", parts[0])).toMatch(/^Exit code 1\n/);
+  });
+
+  // Background commands design, "Approval and hooks": Claude Code's docs give no shape for these, so hooks get the text.
+  it("shell reports nothing for a background start or a move, so hooks get the text the model reads", async () => {
+    const ctx = await tempContext("never");
+    const parts: unknown[] = [];
+    const executor = {
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: () => standInRun(new Promise(() => {})), // never ends by itself
+    };
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: [], ctx: { ...ctx, executor } });
+    onTestFinished(() => void tasks.stop());
+    const [shellTool] = shellTools(tasks, { shell: "sh", headless: false });
+    const run = { ...ctx, executor, report: (p: unknown) => parts.push(p) };
+    const started = await shellTool!.run({ command: "npm run dev", background: true }, run);
+    const moved = await shellTool!.run({ command: "npm test", timeout: 1 }, run);
+    expect(parts).toEqual([]);
+    expect([started, moved]).toEqual([
+      "Started t1 in the background.",
+      "Command did not complete within its 1s timeout and was moved to the background as t2.",
+    ]);
   });
 
   it("write_file reports whether the file was new, so Write's type is create, then update", async () => {

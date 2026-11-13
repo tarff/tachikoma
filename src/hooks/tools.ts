@@ -1,4 +1,5 @@
 import path from "node:path";
+import { MOST_TIMEOUT } from "../tools/commands.js";
 import { shellText } from "../tools/shell.js";
 
 // Tachikoma's tools as hooks see them, in Claude Code's names, inputs and results, so a hook made for Claude Code works
@@ -51,7 +52,7 @@ export function pathsFor(root: string, box: { mode: "live" | "copy" } | null, pl
   };
 }
 
-type Kind = "text" | "path" | "count" | "flag" | "todos";
+type Kind = "text" | "path" | "count" | "flag" | "ms" | "todos";
 interface Field { ours: string; theirs: string; kind: Kind; required?: true }
 // A field Claude Code's tool has and Tachikoma's has not (choice 14): taken only at Tachikoma's own way (`only`), never
 // (`never`), or, for a label that changes nothing about the call, as any text, then left out.
@@ -63,13 +64,20 @@ interface Spec { claude: string; fields: Field[]; sent?: Record<string, unknown>
 const TOOLS: Record<string, Spec> = {
   shell: {
     claude: "Bash",
-    fields: [{ ours: "command", theirs: "command", kind: "text", required: true }],
-    extra: {
-      description: "label",
-      timeout: { never: "Tachikoma's shell has no time limit" },
-      run_in_background: { only: false, as: "Tachikoma's shell cannot run a command in the background" },
-    },
+    // Background commands plan, choice 16: a rewrite that sets either of the last two runs through the shell tool's own
+    // schema and rules, as the model's call would.
+    fields: [
+      { ours: "command", theirs: "command", kind: "text", required: true },
+      { ours: "background", theirs: "run_in_background", kind: "flag" },
+      { ours: "timeout", theirs: "timeout", kind: "ms" },
+    ],
+    extra: { description: "label" },
   },
+  // Claude Code's TaskStop also takes `shell_id`, which its schema calls deprecated (background commands plan, choice 16).
+  stop_task: { claude: "TaskStop", fields: [{ ours: "id", theirs: "task_id", kind: "text", required: true }] },
+  // Claude Code has no tool for it, so hooks see it by its own name (design, "Approval and hooks"); its entry lets a hook's
+  // rewrite of it be taken, as for Tachikoma's other tools.
+  shell_output: { claude: "shell_output", fields: [{ ours: "id", theirs: "id", kind: "text", required: true }] },
   read_file: {
     claude: "Read",
     fields: [
@@ -223,6 +231,11 @@ function take(f: Field, v: unknown, paths: Paths): { value: unknown } | { proble
       return Number.isInteger(v) && (v as number) >= 1 ? { value: v } : { problem: `"${f.theirs}" must be a whole number above 0` };
     case "flag":
       return typeof v === "boolean" ? { value: v } : { problem: `"${f.theirs}" must be true or false` };
+    // The range the shell tool's schema takes (tools/commands.ts).
+    case "ms":
+      return Number.isInteger(v) && (v as number) >= 1 && (v as number) <= MOST_TIMEOUT
+        ? { value: v }
+        : { problem: `"${f.theirs}" must be a whole number of milliseconds from 1 to ${MOST_TIMEOUT}` };
     case "todos":
       return todosOf(v);
   }
@@ -273,7 +286,7 @@ export function errorOf(name: string, text: string, parts?: unknown): string {
 }
 
 // The tools whose result Claude Code's docs give no shape for, so hooks get the text (choice 11) and may give text back.
-const TEXT_RESULT = new Set(["read_file", "edit_file", "find_files", "search_files", "todo"]);
+const TEXT_RESULT = new Set(["read_file", "edit_file", "find_files", "search_files", "todo", "shell_output", "stop_task"]);
 
 // A hook's `updatedToolOutput` as the text the model reads (choice 13), or null where it does not match the tool's result
 // and is not used, as Claude Code ignores one. PostToolUse runs only after a call that succeeded, so a rebuilt shell

@@ -6,7 +6,8 @@ import { resolveIn } from "../tools/files.js";
 import { filesIn, findIn, searchIn } from "../tools/search.js";
 import { gitBranch } from "../tui/git.js";
 import { commandEnv, system32 } from "./env.js";
-import { type ExecResult, type Executor, MAX_TOOL_OUTPUT } from "./executor.js";
+import { type ExecResult, type Executor, MAX_TOOL_OUTPUT, type Running } from "./executor.js";
+import { CommandLog } from "./log.js";
 import type { Match, Workspace } from "./workspace.js";
 
 export function shellFor(platform: NodeJS.Platform = process.platform): { name: string; argv: (command: string) => string[] } {
@@ -72,40 +73,80 @@ export function collect(stream: Readable, limit = MAX_TOOL_OUTPUT): () => string
 }
 
 export class LocalExecutor implements Executor {
+  // `start` plus the signal, so exec's callers see what they always have: an abort stops the command and rejects
+  // `Cancelled` at once (background commands plan, choice 1).
   exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult> {
     if (signal?.aborted) return Promise.reject(new Error("Cancelled"));
-    const [file, ...args] = shellFor().argv(command);
+    const run = this.start(command, cwd);
+    if (!signal) return run.done;
     return new Promise((resolve, reject) => {
-      // No stdin: a command waiting for input would otherwise wait forever.
-      const child = spawn(file!, args, { cwd, env: commandEnv(), windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
-      running.add(child);
-      const stdout = collect(child.stdout);
-      const stderr = collect(child.stderr);
-      const done = () => {
+      const onAbort = () => {
+        run.stop();
+        reject(new Error("Cancelled"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      run.done.then(
+        (r) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(r);
+        },
+        (e) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(e);
+        },
+      );
+    });
+  }
+
+  // A command that cannot be spawned at all (a NUL character in it: Node's spawn throws ERR_INVALID_ARG_VALUE at once)
+  // makes start throw, and the caller catches that; a spawn error reported later rejects `done` (choice 23).
+  start(command: string, cwd: string): Running {
+    const [file, ...args] = shellFor().argv(command);
+    // No stdin: a command waiting for input would otherwise wait forever.
+    const child = spawn(file!, args, { cwd, env: commandEnv(), windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    running.add(child);
+    // Two records (background commands plan, choice 2): the log has both streams in the order they arrive, for a
+    // background command; `done` has each stream's head apart, as exec always gave. collect decodes each stream.
+    const log = new CommandLog();
+    const stdout = collect(child.stdout);
+    const stderr = collect(child.stderr);
+    child.stdout.on("data", (d: string) => log.add(d));
+    child.stderr.on("data", (d: string) => log.add(d));
+    let stop = () => {};
+    const done = new Promise<ExecResult>((resolve, reject) => {
+      const end = () => {
         running.delete(child);
-        signal?.removeEventListener("abort", onAbort);
         child.off("close", onClose);
       };
       // Settles at once: "close" waits for every holder of the pipes, and a program the shell
       // started may hold them for good.
-      const onAbort = () => {
+      stop = () => {
         killTree(child);
-        done();
+        end();
         child.stdout.destroy();
         child.stderr.destroy();
-        reject(new Error("Cancelled"));
+        resolve({ code: null, signal: "SIGKILL", stdout: stdout(), stderr: stderr() });
       };
       const onClose = (code: number | null, sig: NodeJS.Signals | null) => {
-        done();
+        end();
         resolve({ code, signal: sig, stdout: stdout(), stderr: stderr() });
       };
-      signal?.addEventListener("abort", onAbort, { once: true });
       child.on("error", (e) => {
-        done();
+        end();
         reject(e);
       });
       child.on("close", onClose);
     });
+    let stopped = false;
+    return {
+      log,
+      done,
+      stop: () => {
+        if (stopped) return;
+        stopped = true;
+        stop();
+      },
+    };
   }
 }
 

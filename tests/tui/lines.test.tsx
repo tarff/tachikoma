@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { ToolOutcome } from "../../src/core/bus.js";
 import type { TodoItem } from "../../src/tools/todo.js";
-import type { Task } from "../../src/core/tasks.js";
+import type { CommandTask, Task } from "../../src/core/tasks.js";
+import { names } from "../../src/tui/app/constants.js";
 import { taskRows } from "../../src/tui/TaskPanel.js";
 import { todoRows } from "../../src/tui/TodoList.js";
 import { toolParts } from "../../src/tui/ToolLine.js";
@@ -33,6 +34,12 @@ describe("workingText", () => {
 
   it("leaves out the stop key when no key is bound to chat:cancel", () => {
     expect(workingText("Working", 1_000, null, undefined)).toBe("⠹ Working · 1s");
+  });
+
+  // Background commands plan, Task 10 (the user's choice 33): the key that moves a held foreground command, last.
+  it("ends with the key that moves a running command to the background, after the stop key when there is one", () => {
+    expect(workingText("Working", 1_000, spend, "Esc", "Ctrl+B")).toBe("⠹ Working · 1s · ↓ 0 tokens · $0.00 · Esc to stop · Ctrl+B to run in background");
+    expect(workingText("Working", 1_000, null, undefined, "Ctrl+G")).toBe("⠹ Working · 1s · Ctrl+G to run in background");
   });
 });
 
@@ -105,7 +112,24 @@ describe("todoRows", () => {
 describe("taskRows", () => {
   const now = 1_000_000;
   const task = (over: Partial<Task>): Task =>
-    ({ id: "t2", description: "find the login code", task: "In the project, find the login code.", model: "anthropic:claude-haiku-5-5", background: true, state: "running", started: now - 12_000, output: 1_234, cost: 0.0123, costUnknown: false, lastTool: { name: "read_file", input: { path: "src/auth/oauth.ts" } }, shown: true, messages: [], done: Promise.resolve({ state: "done", text: "" }), ...over }) as Task;
+    ({
+      kind: "subagent",
+      id: "t2",
+      description: "find the login code",
+      task: "In the project, find the login code.",
+      model: "anthropic:claude-haiku-5-5",
+      background: true,
+      state: "running",
+      started: now - 12_000,
+      output: 1_234,
+      cost: 0.0123,
+      costUnknown: false,
+      lastTool: { name: "read_file", input: { path: "src/auth/oauth.ts" } },
+      shown: true,
+      messages: [],
+      done: Promise.resolve({ state: "done", text: "" }),
+      ...over,
+    }) as Task;
   const shown = (tasks: Task[], rows = 10) => taskRows(tasks, rows, now).map((r) => `${r.mark} ${r.text}`);
 
   it("shows a running subagent's number and description, then under it its model, time, tokens, cost and latest tool call", () => {
@@ -142,5 +166,38 @@ describe("taskRows", () => {
 
   it("escapes what the model wrote, and keeps a description to its first line", () => {
     expect(shown([task({ description: "a\u001b[2Jb\nsecond line", lastTool: { name: "read_file", input: { path: "x\ry" } } })])).toEqual(["◐ t2 a\\u001b[2Jb", "  ⎿ claude-haiku-5-5 · 12s · ↓ 1.2k tokens · $0.01 · read_file x␍y"]);
+  });
+
+  // Background commands plan, choice 18: a command's rows; one that ended with no exit code shows the running row's
+  // shape, its mark saying how it ended (Task 9).
+  const command = (over: Partial<CommandTask>): Task =>
+    ({ kind: "command", id: "t4", command: "npm run dev\nnext", background: true, state: "running", started: now - 12_000, shown: true, ...over }) as Task;
+
+  it("shows a command by its first line, then shell, its exit code once it ended with one, and its time", () => {
+    expect(shown([command({})])).toEqual(["◐ t4 npm run dev", "  ⎿ shell · 12s"]);
+    expect(shown([command({ state: "done", code: 0, signal: null, ended: now - 2_000 })])).toEqual(["✓ t4 npm run dev", "  ⎿ shell · exit code 0 · 10s"]);
+    expect(shown([command({ state: "stopped", stoppedBy: "user", ended: now - 2_000 })])).toEqual(["⊘ t4 npm run dev", "  ⎿ shell · 10s"]);
+    expect(shown([command({ state: "failed", code: null, signal: "SIGKILL", ended: now - 2_000 })])).toEqual(["✗ t4 npm run dev", "  ⎿ shell · 10s"]);
+  });
+
+  it("counts a command in the +N more of a panel too short for every row", () => {
+    const tasks = [task({ id: "t1" }), command({ id: "t2" }), command({ id: "t3" })];
+    expect(shown(tasks, 4)).toEqual(["◐ t1 find the login code", expect.stringContaining("⎿ claude-haiku-5-5"), "  +2 more"]);
+  });
+});
+
+// Background commands plan, choice 19: what a wake reads, subagents first, whatever the order they ended in.
+describe("names", () => {
+  it("names one or several answers, then one or several commands' output", () => {
+    expect(names([{ id: "t3", kind: "subagent" }])).toBe("t3's answer");
+    expect(names(["t2", "t3", "t4"].map((id) => ({ id, kind: "subagent" as const })))).toBe("t2, t3 and t4's answers");
+    expect(names([{ id: "t4", kind: "command" }])).toBe("t4's output");
+    const mixed = [
+      { id: "t4", kind: "command" as const },
+      { id: "t2", kind: "subagent" as const },
+      { id: "t5", kind: "command" as const },
+      { id: "t3", kind: "subagent" as const },
+    ];
+    expect(names(mixed)).toBe("t2 and t3's answers and t4 and t5's output");
   });
 });

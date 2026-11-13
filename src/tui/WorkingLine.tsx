@@ -21,13 +21,15 @@ export function elapsed(ms: number): string {
 
 // The line over the prompt while something runs (release 3 design, "On screen"): what it is, for how
 // long, and for a turn its tokens and cost so far, which change after each model reply; and `stop`, the key bound to
-// chat:cancel (release 6 plan, Task 6), if any.
-export function workingText(label: string, ms: number, spend: Spend | null, stop: string | undefined): string {
+// chat:cancel (release 6 plan, Task 6), if any; and `move`, the key bound to task:background while the shell tool holds a
+// foreground command, which every command shows, folded or not (background commands plan, Task 10; the user's choice 33).
+export function workingText(label: string, ms: number, spend: Spend | null, stop: string | undefined, move?: string): string {
   const time = elapsed(ms);
   const turn = spend ? ` · ↓ ${k(spend.output)} tokens · ${costText(spend.lead, spend.cost, spend.costUnknown)}` : "";
-  return `${FRAMES[Math.floor(ms / SPIN_MS) % FRAMES.length]} ${label} · ${time}${turn}${stop === undefined ? "" : ` · ${stop} to stop`}`;
+  const keys = `${stop === undefined ? "" : ` · ${stop} to stop`}${move === undefined ? "" : ` · ${move} to run in background`}`;
+  return `${FRAMES[Math.floor(ms / SPIN_MS) % FRAMES.length]} ${label} · ${time}${turn}${keys}`;
 }
 
-export function WorkingLine({ label, ms, spend, stop }: { label: string; ms: number; spend: Spend | null; stop: string | undefined }) {
-  return <Text wrap="truncate-end">{workingText(label, ms, spend, stop)}</Text>;
+export function WorkingLine({ label, ms, spend, stop, move }: { label: string; ms: number; spend: Spend | null; stop: string | undefined; move: string | undefined }) {
+  return <Text wrap="truncate-end">{workingText(label, ms, spend, stop, move)}</Text>;
 }

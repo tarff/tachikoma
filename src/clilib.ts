@@ -5,15 +5,18 @@ import { constants } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { privateDir } from "./auth/private.js";
+import type { Bus } from "./core/bus.js";
 import { type Instructions, type Reached, readInstructions, type Where } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
-import { type Conversation, Session, type SessionOptions } from "./core/session.js";
+import { type Conversation, type Ended, Session, type SessionOptions } from "./core/session.js";
 import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
+import type { CommandTask, Tasks } from "./core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "./core/transcript.js";
 import { errorText, madeUnder, type Message, type ToolSpec } from "./core/types.js";
 import { gitBash } from "./exec/env.js";
 import type { Executor } from "./exec/executor.js";
+import { headCommand } from "./exec/log.js";
 import type { Answers } from "./mcp/answers.js";
 import { type ServerConfig, variables } from "./mcp/config.js";
 import { SEARCH } from "./mcp/search.js";
@@ -30,8 +33,6 @@ import { heldLine, type ImageIo, prepareImage } from "./sandbox/image.js";
 import { CASE_REFUSED, ignoresCase, liveMounts, type Mount, sessionSettings } from "./sandbox/mounts.js";
 import { MANIFEST, type Manifest, PENDING, removeCopySync, snapshot } from "./sandbox/snapshot.js";
 import type { SandboxLimits, Settings } from "./settings.js";
-import { shellToolOf } from "./tools/shell.js";
-import type { Tool } from "./tools/tool.js";
 import { screen } from "./tui/describe.js";
 import { gitBranch } from "./tui/git.js";
 import { Pictures } from "./tui/pictures.js";
@@ -262,6 +263,62 @@ export function turnAnswer(before: Message | undefined, messages: Message[]): st
   return last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
 }
 
+// Claude Code's headless page, "Background tasks at exit": -p's waiting line after 5 s (background commands plan, "Numbers
+// in this plan").
+const WAITING_LINE_MS = 5_000;
+
+// -p's wait after its first answer (background commands design, "With -p", "How the wait ends"; plan, choices 21 and 25):
+// while a background command runs or an ending waits, each ending gets a turn, its answer printed as the first's. It ends
+// once everything has ended, at Ctrl-C (`signal`), at a failed call (`failed`), or at a turn whose result ended the run,
+// which it returns; `first`, the first turn's result, returned at once when it ended the run. However it ends, what is
+// left stops as the window's close stops it, unrecorded, so a resume says it was not running (choice 29, the user's); its
+// time limit's timer goes with it, so nothing holds the process open. `waitingLine` is given only when stderr is a
+// terminal: the line is said once, after 5 s of waiting.
+export async function waitForBackground(
+  first: Ended | void,
+  session: Session,
+  tasks: Tasks,
+  signal: AbortSignal,
+  opts: { bus: Bus; failed: () => boolean; answer: (before: Message | undefined) => void; waitingLine?: (line: string) => void },
+): Promise<Ended | void> {
+  const running = () => tasks.all.filter((t): t is CommandTask => t.kind === "command" && t.state === "running");
+  const { waitingLine } = opts;
+  let said = false;
+  // Until the list changes or Ctrl-C, the waiting line's timer and both listeners gone either way.
+  const change = () =>
+    new Promise<void>((resolve) => {
+      const say = (line: (text: string) => void) => {
+        said = true;
+        line(`Waiting for background work to finish: ${running().map((t) => `${t.id} (${visible(headCommand(t.command))})`).join(", ")}`);
+      };
+      const timer = waitingLine && !said ? setTimeout(() => say(waitingLine), WAITING_LINE_MS) : undefined;
+      const done = () => {
+        clearTimeout(timer);
+        opts.bus.off("tasks", done);
+        signal.removeEventListener("abort", done);
+        resolve();
+      };
+      opts.bus.on("tasks", done);
+      signal.addEventListener("abort", done);
+    });
+  try {
+    if (first) return first;
+    while (!signal.aborted && !opts.failed() && (tasks.wakes() || running().length)) {
+      if (!tasks.wakes()) {
+        await change();
+        continue;
+      }
+      const before = session.messages.at(-1);
+      // Endings that came together, or during the turn, still get a turn each (user choice 37, PR #18 review).
+      const ended = await tasks.oneEnding(() => session.send("", signal));
+      opts.answer(before);
+      if (ended) return ended;
+    }
+  } finally {
+    tasks.close();
+  }
+}
+
 // A reader such as `head` that stops early is a normal end, not a crash.
 export function endOnEpipe(err: NodeJS.ErrnoException): void {
   if (err.code !== "EPIPE") throw err;
@@ -403,7 +460,6 @@ export interface Started {
   system: string;
   subagentSystem: string;
   gate: { root: string; home: string; shell: Shell };
-  shellTool: Tool;
   protection: Protection;
   lines: string[];
   copy?: Copied;
@@ -539,7 +595,6 @@ export async function sandboxStart(
     system: systemPrompt(BOX_ROOT, "linux", "bash"),
     subagentSystem: subagentPrompt(BOX_ROOT),
     gate: { root: BOX_ROOT, home: BOX_HOME, shell: shellOf("box") },
-    shellTool: shellToolOf("bash"),
     protection: boxProtection(root, protectionOf(ready.git)),
     lines: [
       visible(line),
@@ -551,14 +606,26 @@ export async function sandboxStart(
   };
 }
 
-// Choice 21: with the box's network off, a failed command's result gets one more line. Which failures were the network's
-// cannot be told, so every failure gets it.
+// Release 7 plan, choice 21: with the box's network off, a failed command's result gets one more line. Which failures
+// were the network's cannot be told, so every failure gets it. A command run through start, as the shell tool runs
+// every command from the background commands plan's Task 5 on, gets it in its result and in its log, so a background
+// command's ending says it; one that was stopped did not fail, and gets nothing.
 export function networkNoted(executor: Executor): Executor {
   const line = "(The box's network is off, so nothing in it can reach the internet. To allow it, launch with --network on.)";
+  const after = (text: string) => `${text && !text.endsWith("\n") ? "\n" : ""}${line}`;
   return {
     exec: async (command, cwd, signal) => {
       const r = await executor.exec(command, cwd, signal);
-      return r.code === 0 ? r : { ...r, stderr: `${r.stderr}${r.stderr && !r.stderr.endsWith("\n") ? "\n" : ""}${line}` };
+      return r.code === 0 ? r : { ...r, stderr: `${r.stderr}${after(r.stderr)}` };
+    },
+    start: (command, cwd) => {
+      const run = executor.start(command, cwd);
+      const done = run.done.then((r) => {
+        if (r.code === 0 || r.code === null) return r;
+        run.log.add(after(run.log.kept()));
+        return { ...r, stderr: `${r.stderr}${after(r.stderr)}` };
+      });
+      return { ...run, done };
     },
   };
 }
@@ -701,8 +768,9 @@ export function chooseSession(
 }
 
 // A session opened for this window: the conversation for Session.load; the grey lines to say, one that names the session
-// cut to the screen's width; the lines for the model about subagents whose answers were lost, which go into its next
-// request as waiting text does, with `reported` to call once they have been handed out; and its lock's release.
+// cut to the screen's width; the lines for the model about subagents whose answers were lost and background commands
+// that had not ended, which go into its next request as waiting text does, with `reported` to call once they have been
+// handed out; and its lock's release.
 export interface Opened {
   conversation: Conversation;
   lines: { text: string; oneLine?: boolean }[];
@@ -786,8 +854,9 @@ export function openSaved(dir: string, id: string, o: { fork: boolean; copy?: st
 // choice 4). It writes `-n`'s name; a `lead` line when this launch leads with another model, so the next resume opens
 // with it; no `tools` line, which the session's first request writes when its tools differ from those the history was
 // last saved under, so a reply is sent with its thinking only under its own tools (release 8c plan, choice 46). Once
-// the lost lines have been handed to the model (`reported`), `lost` goes into
-// each unfinished subagent's file, so it is reported once (user, 2026-11-06: "Report once"). A session saved under
+// the lost lines have been handed to the model (`reported`), each one told is marked, so it is reported once (user,
+// 2026-11-06: "Report once"): a subagent by a `lost` line in its own file, a command that had not ended by a
+// `command-ended` line in this session's transcript (background commands plan, choice 15). A session saved under
 // another sandbox setting than this launch's, `prompt.box`, has a system prompt naming another shell and project root,
 // so this launch's, `prompt.full`, takes its place and is written in a `system` line, the replies keeping their
 // thinking only under it (release 8a final review, user, 2026-11-07: "Rebuild it", "Save the setting"). The setting is
@@ -806,8 +875,15 @@ export function resumed(
   const system = rebuilt ? o.prompt.full : read.system;
   // Each in the subagents folder, as tasks.ts names a subagent's file, made inside the private sessions folder; an id
   // from the file is used only when it is one Tasks gives, so no line can lead the write elsewhere.
+  // A command's ending goes into the session's own transcript, a fork's or a branch's copy included, as its command line
+  // is there; its id names no file, so any id is written (background commands plan, choice 15).
   const reported = () => {
-    for (const u of read.unfinished.filter((u) => /^t\d+$/.test(u.id))) {
+    for (const u of read.unfinished) {
+      if (u.kind === "command") {
+        transcript.write({ t: "command-ended", id: u.id, state: "lost" });
+        continue;
+      }
+      if (!/^t\d+$/.test(u.id)) continue;
       const file = path.join(pathsOf(transcript.file).subagents, `${u.id}.jsonl`);
       new Transcript(file, transcript.pictures, { inherits: true }).write({ t: "ended", state: "lost" });
     }
@@ -848,7 +924,12 @@ export function resumed(
       tools: read.tools, // the tools saved last, which its replies were made under (Task 6b's quality review; choice 46)
     },
     lines,
-    lost: read.unfinished.map((u) => `Subagent ${u.id} (${u.description}) had not finished when the session ended; its answer was lost.`),
+    // A command cut as every first line naming one cuts it (background commands plan, choice 24).
+    lost: read.unfinished.map((u) =>
+      u.kind === "command"
+        ? `Command ${u.id} (${headCommand(u.command)}) had not ended when the session ended; it is not running in this session.`
+        : `Subagent ${u.id} (${u.description}) had not finished when the session ended; its answer was lost.`,
+    ),
     reported,
     release: s.release,
   };
@@ -878,7 +959,8 @@ export class WindowSessions {
     this.#lost = [...(open?.lost ?? [])];
   }
 
-  // The lost lines, once, for the model's next request, as waiting text goes; their subagents are then marked reported.
+  // The lost lines, once, for the model's next request, as waiting text goes; their subagents and commands are then
+  // marked reported.
   lost(): string[] {
     const now = this.#lost.splice(0);
     if (now.length) this.#open?.reported();

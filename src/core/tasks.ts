@@ -1,4 +1,6 @@
 import path from "node:path";
+import type { ExecResult, Running } from "../exec/executor.js";
+import { deliver, headCommand } from "../exec/log.js";
 import type { Hooks } from "../hooks/hooks.js";
 import type { Paths } from "../hooks/tools.js";
 import type { Servers } from "../mcp/servers.js";
@@ -9,7 +11,7 @@ import { Bus, type ErrorEvent } from "./bus.js";
 import type { Owner, PermissionGate } from "./permissions.js";
 import { type Ended, Session, truncate } from "./session.js";
 import { pathsOf, Transcript } from "./transcript.js";
-import type { Message, Provider } from "./types.js";
+import { errorText, type Message, type Provider } from "./types.js";
 
 export type TaskState = "waiting" | "running" | "done" | "failed" | "stopped";
 
@@ -23,7 +25,8 @@ export interface Result {
 }
 
 // One subagent, as the panel and /tasks show it.
-export interface Task {
+export interface SubagentTask {
+  kind: "subagent";
   id: string; // t1, t2 and so on through the session
   description: string; // a few words naming the task, for the screen
   task: string; // what it was asked to find out, as the model wrote it
@@ -41,6 +44,31 @@ export interface Task {
   messages: Message[]; // its conversation, for /tasks t3
   done: Promise<Result>;
 }
+
+// One background command, a task of its own kind (background commands plan, choice 5): `running`, then `done` for exit
+// code 0, `failed` for any other end, `stopped` when stopped. Its ids come from the subagents' counter. `done` settles
+// once the list has taken its end, never rejecting.
+export interface CommandTask {
+  kind: "command";
+  id: string;
+  command: string; // as the model gave it
+  background: true;
+  state: TaskState;
+  started: number;
+  ended?: number;
+  shown: boolean;
+  code?: number | null; // as it ended by itself
+  signal?: NodeJS.Signals | null;
+  // These two give shell_output's first line (background commands plan, Task 6).
+  stoppedBy?: "user" | "tool" | "limit"; // who stopped it, said in that line (choice 28, the user's), or the -p limit (choice 8)
+  error?: string; // a rejected run's error, cut as a command is (choices 23, 24)
+  // A stop in the box waiting for its kill there, by whom: until then it is still running (user choice 36, PR #18 review).
+  stopping?: "user" | "tool" | "limit";
+  run: Running;
+  done: Promise<void>;
+}
+
+export type Task = SubagentTask | CommandTask;
 
 export interface TasksOptions {
   bus: Bus; // the lead's: subagents' spend and errors are reported there, marked with the subagent
@@ -63,6 +91,10 @@ export interface TasksOptions {
   // subagent more (release 8c plan, Task 7 and choice 17), with a tool_search and a loaded set of its own, starting with
   // none, never the lead's (choice 43).
   mcp?: Servers;
+  // Under -p only, a background command's time limit in milliseconds: `started` for one started without a timeout,
+  // `moved` for one moved from the foreground, `most` the most a timeout can ask for (background commands plan, choice 8;
+  // the numbers are Task 11's).
+  limits?: { started: number; moved: number; most: number };
 }
 
 // The task manager (release 4 design, "How it is built"): starts subagents, each its own Session,
@@ -70,13 +102,20 @@ export interface TasksOptions {
 // lead's next request takes them.
 export class Tasks {
   readonly all: Task[] = [];
-  #inbox: { id: string; text: string; wake: boolean }[] = [];
+  // A command's ending is made into its text when take() runs, so output the model read meanwhile is not given again
+  // (background commands plan, choice 7).
+  #inbox: { id: string; kind: Task["kind"]; text: string | (() => string); wake: boolean }[] = [];
+  #timers = new Map<string, NodeJS.Timeout>(); // each -p command's time limit, by its id (choice 8)
+  #one: "waiting" | "taken" | undefined; // in a turn -p's wait started, whether its ending has been taken (oneEnding)
+  // The foreground command Ctrl+B can move, set by the shell tool while one runs (choice 9).
+  holding?: { move(): void };
   #max: number;
   #free: number; // below 0 while more run than a lowered max allows
   #worker: () => Provider;
   #fallback: Provider | undefined;
   #line: (() => void)[] = []; // subagents waiting for a free place, in order
-  #stops = new Map<string, { stop: AbortController; byUser: boolean }>();
+  // `by` is who stopped it through stop(), for its words (choice 27); none when the lead's turn stopped it.
+  #stops = new Map<string, { stop: AbortController; by?: "user" | "tool" }>();
   #next = 1; // the next id's number: from(n) raises it past a loaded conversation's subagents (release 8a plan, choice 4)
 
   constructor(private readonly opts: TasksOptions) {
@@ -119,32 +158,100 @@ export class Tasks {
   }
 
   // `signal` is the lead's turn, for a subagent it waits for: stopping the turn stops it too.
-  start(task: string, opts: { description?: string; background: boolean; signal?: AbortSignal }): Task {
+  start(task: string, opts: { description?: string; background: boolean; signal?: AbortSignal }): SubagentTask {
     const provider = this.#worker();
     const id = `t${this.#next++}`;
     const stop = new AbortController();
     opts.signal?.addEventListener("abort", () => stop.abort(), { once: true });
-    this.#stops.set(id, { stop, byUser: false });
+    this.#stops.set(id, { stop });
     // `done` is set just below, before anything reads it.
-    const t = { id, description: opts.description ?? task, task, model: provider.id, background: opts.background, state: "waiting", started: Date.now(), output: 0, cost: 0, costUnknown: false, lastTool: null, shown: true, messages: [] } as Omit<Task, "done"> as Task;
+    const made = {
+      kind: "subagent", id, description: opts.description ?? task, task, model: provider.id, background: opts.background, state: "waiting",
+      started: Date.now(), output: 0, cost: 0, costUnknown: false, lastTool: null, shown: true, messages: [],
+    };
+    const t = made as Omit<SubagentTask, "done"> as SubagentTask;
     this.all.push(t);
     t.done = this.#run(t, provider, this.#fallback, stop.signal);
     this.#changed();
     return t;
   }
 
-  // By the user: one subagent, or with no id all of them. False when none was running.
-  stop(id?: string): boolean {
+  // A background command joins the list, started there or moved there from the foreground (background commands plan,
+  // choice 6). Its line in the lead's transcript is written before this returns, as a subagent's is (#run), so the id the
+  // shell tool hands the model is never handed out again. `limit` is the time limit the tool's timeout asks for under -p.
+  // `started` is when a moved command started in the foreground, so its time shown is how long it has run (design,
+  // "What the model gets"); its -p limit still counts from the move.
+  adopt(run: Running, opts: { command: string; moved?: boolean; limit?: number; started?: number }): CommandTask {
+    const id = `t${this.#next++}`;
+    // `done` is set just below, before anything reads it.
+    const made = { kind: "command", id, command: opts.command, background: true, state: "running", started: opts.started ?? Date.now(), shown: true, run };
+    const t = made as Omit<CommandTask, "done"> as CommandTask;
+    this.all.push(t);
+    this.opts.transcript?.()?.write({ t: "command", id, command: opts.command });
+    const { limits } = this.opts;
+    if (limits) {
+      const ms = opts.moved ? limits.moved : Math.min(opts.limit ?? limits.started, limits.most);
+      this.#timers.set(id, setTimeout(() => this.#limit(t), ms));
+    }
+    // A rejection (Docker unreachable, a spawn error) is taken here, so none goes unhandled (choice 23).
+    t.done = run.done.then(
+      (r) => this.#exited(t, r),
+      (err: unknown) => this.#failed(t, err),
+    );
+    this.#changed();
+    return t;
+  }
+
+  get(id: string): Task | undefined {
+    return this.all.find((t) => t.id === id);
+  }
+
+  // One subagent or command, or with no id all of them: by the user (/tasks stop) or by the model (stop_task). False when
+  // none was running.
+  stop(id?: string, by: "user" | "tool" = "user"): boolean {
     let any = false;
     for (const t of this.all) {
       if ((id === undefined || t.id === id) && (t.state === "running" || t.state === "waiting")) {
-        const s = this.#stops.get(t.id)!;
-        s.byUser = true;
-        s.stop.abort();
+        if (t.kind === "command") {
+          // A box stop still waiting for its kill: its words stand, as a subagent's do (user choice 36, PR #18 review).
+          if (t.stopping) continue;
+          this.#stop(t, by);
+        } else {
+          const s = this.#stops.get(t.id)!;
+          // Still ending after an earlier stop: that stop's words stand, and this one stops nothing (Task 6's code review).
+          if (s.stop.signal.aborted) continue;
+          s.by = by;
+          s.stop.abort();
+        }
         any = true;
       }
     }
     return any;
+  }
+
+  // The window or the session is closing: everything stops, as stop() stops it, but a command's ending is not recorded
+  // and no note is left, as no turn follows to say it, so a resume tells the model once that it had not ended, which is
+  // true (background commands plan, choice 29, the user's). Subagents stop as stop() stops them (release 8a).
+  close(): void {
+    for (const t of this.all) {
+      if (t.kind !== "command" || t.state !== "running") continue;
+      t.run.stop();
+      this.#ended(t, "stopped");
+    }
+    this.stop();
+  }
+
+  // Ctrl+B: the foreground command moves to the background (choice 9). False when none runs.
+  moveForeground(): boolean {
+    if (!this.holding) return false;
+    this.holding.move();
+    return true;
+  }
+
+  // shell_output gave the model an ended command's end and output, so its entry goes, and the model is not told twice
+  // (choice 7).
+  told(id: string): void {
+    this.#inbox = this.#inbox.filter((i) => i.id !== id);
   }
 
   // Whether a waiting answer should start a turn: a stopped subagent's note waits for the next one.
@@ -152,14 +259,32 @@ export class Tasks {
     return this.#inbox.some((i) => i.wake);
   }
 
-  // The subagents whose answers are waiting to start a turn, for its working line.
-  answering(): string[] {
-    return this.#inbox.filter((i) => i.wake).map((i) => i.id);
+  // The subagents and commands whose entries are waiting to start a turn, for its working line, each with its kind, as
+  // the line names a subagent's answer and a command's output apart (background commands plan, choice 19).
+  answering(): { id: string; kind: Task["kind"] }[] {
+    return this.#inbox.filter((i) => i.wake).map(({ id, kind }) => ({ id, kind }));
+  }
+
+  // -p's wait runs each turn it starts through here: in that turn the takes give one waking entry in all, the first, and
+  // every note waiting, holding back the other endings, those that arrive during the turn too, so each gets a turn of
+  // its own (user choice 37, PR #18 review). A window's takes, and -p's first turn's, take everything.
+  async oneEnding<T>(turn: () => Promise<T>): Promise<T> {
+    this.#one = "waiting";
+    try {
+      return await turn();
+    } finally {
+      this.#one = undefined;
+    }
   }
 
   // Everything waiting for the lead, removed, so each goes into exactly one request.
   take(): string[] {
-    return this.#inbox.splice(0).map((i) => i.text);
+    const one = this.#one;
+    const first = one === "waiting" ? this.#inbox.find((i) => i.wake) : undefined;
+    if (first) this.#one = "taken";
+    const taken = one ? this.#inbox.filter((i) => !i.wake || i === first) : this.#inbox;
+    this.#inbox = one ? this.#inbox.filter((i) => i.wake && i !== first) : [];
+    return taken.map((i) => (typeof i.text === "string" ? i.text : i.text()));
   }
 
   clearFinished(): void {
@@ -173,7 +298,7 @@ export class Tasks {
     this.#changed();
   }
 
-  async #run(t: Task, provider: Provider, fallback: Provider | undefined, signal: AbortSignal): Promise<Result> {
+  async #run(t: SubagentTask, provider: Provider, fallback: Provider | undefined, signal: AbortSignal): Promise<Result> {
     // Its own file, <id>/subagents/<tN>.jsonl beside the lead's pictures folder, named by a line in the lead's (release 8a
     // design, "Saving sessions"). The lead's line is written before the first wait; the subagent's own file only with its
     // first message or its ended line, and a missing file reads as unfinished. So from start, before delegate says it
@@ -189,7 +314,8 @@ export class Tasks {
     const result = (await this.#place(signal)) ? await this.#work(t, provider, fallback, signal, own) : null;
     const stopped = this.#stops.get(t.id)!;
     // A hook's stop comes with its own result and its stopReason (#work).
-    const byWhom = stopped.byUser ? " by the user before it finished" : ""; // the words, said after "was stopped"
+    // The words, said after "was stopped": a stop by stop_task says so (choice 27, the user's, 2026-11-13).
+    const byWhom = stopped.by ? ` by ${stopped.by === "user" ? "the user" : "stop_task"} before it finished` : "";
     const { hook, ...r }: Result & { hook?: string } = result ?? { state: "stopped", text: `${t.id} was stopped${byWhom}.` };
     // How it ended, when the lead was told it failed or was stopped, waiting or running, so a resumed session never
     // reports it lost (release 8a plan, choice 4). A finished one's answer, its last reply, says so already.
@@ -198,25 +324,27 @@ export class Tasks {
     t.answer = r.text;
     t.ended = Date.now();
     const name = `Background task ${t.id} (${t.description})`;
-    const { id } = t;
-    if (t.background && r.state === "done") this.#inbox.push({ id, text: `${name} finished:\n${truncate(r.text)}`, wake: true });
-    if (t.background && r.state === "failed") this.#inbox.push({ id, text: `${name} failed: ${r.text}`, wake: true });
+    const { id, kind } = t;
+    if (t.background && r.state === "done") this.#inbox.push({ id, kind, text: `${name} finished:\n${truncate(r.text)}`, wake: true });
+    if (t.background && r.state === "failed") this.#inbox.push({ id, kind, text: `${name} failed: ${r.text}`, wake: true });
     // Waking the lead, as a failure does; after an answer, the answer as a finished one's, then the stop's line (the user's
     // choices, 2026-11-09).
     if (t.background && hook !== undefined) {
       const text = r.stop
         ? `${name} finished:\n${truncate(r.stop.answer)}\n${r.stop.line}`
         : `${name} was stopped by a hook${hook ? `: ${hook}` : "."}`;
-      this.#inbox.push({ id, text, wake: true });
+      this.#inbox.push({ id, kind, text, wake: true });
     }
-    if (t.background && r.state === "stopped" && stopped.byUser) this.#inbox.push({ id, text: `${name} was stopped by the user before it finished.`, wake: false });
+    if (t.background && r.state === "stopped" && stopped.by) {
+      this.#inbox.push({ id, kind, text: `${name} was stopped${byWhom}.`, wake: false });
+    }
     this.#changed();
     return r;
   }
 
   // Null when it was stopped, by the user or the lead's turn; a hook's stop has its own result, with `hook` its stopReason.
   async #work(
-    t: Task,
+    t: SubagentTask,
     provider: Provider,
     fallback: Provider | undefined,
     signal: AbortSignal,
@@ -300,6 +428,72 @@ export class Tasks {
     }
     if (text.trim() && !failure) return { state: "done", text };
     return { state: "failed", text: failure?.message ?? "it ended without an answer" };
+  }
+
+  // A command that came to its end by itself (choice 5). A command the list already stopped or timed out has had its
+  // ending recorded, so the end its kill settles `done` with is ignored. With nothing unread the line is the plan's own,
+  // in place of deliver's "No new output." ("Lines this plan adds").
+  #exited(t: CommandTask, r: ExecResult): void {
+    if (t.state !== "running") return;
+    // The box's kill has run: the stop counts now (user choice 36). A command that ended by itself while the kill was on
+    // its way is said stopped by whoever stopped it too: it was asked to stop, and the end it raced the kill with is not
+    // said (kept so in the PR #18 fixes' review).
+    if (t.stopping) return this.#stopped(t, t.stopping);
+    t.code = r.code;
+    t.signal = r.signal;
+    const head = `Background command ${t.id} (${headCommand(t.command)}) ${r.code !== null ? `ended with exit code ${r.code}` : `was killed by ${r.signal}`}`;
+    const text = () => (t.run.log.unread() ? deliver(`${head}:`, t.run.log, t.id) : `${head}, with no new output.`);
+    this.#ended(t, r.code === 0 ? "done" : "failed", { text, wake: true });
+  }
+
+  // Choice 23. The error is cut as a command is, so the head stays short and the output has room (As built, Task 1). A
+  // box stop whose kill failed ends so too, and the model is told once (choice 7): a user's or stop_task's entry starts no
+  // turn, as its stop's would not, and stop_task's reply, when it came, takes it (told); the -p limit's wakes the lead,
+  // saying it failed at the limit (user choices 36 and 39, PR #18 review and its second review).
+  #failed(t: CommandTask, err: unknown): void {
+    if (t.state !== "running") return;
+    t.error = headCommand(errorText(err));
+    const head = `Background command ${t.id} (${headCommand(t.command)}) failed${t.stopping === "limit" ? " at its background time limit" : ""}: ${t.error}`;
+    this.#ended(t, "failed", { text: () => deliver(head, t.run.log, t.id), wake: !t.stopping || t.stopping === "limit" });
+  }
+
+  // The -p limit (choice 8). A stop already waiting for the box's kill stands (user choice 36, PR #18 review).
+  #limit(t: CommandTask): void {
+    if (!t.stopping) this.#stop(t, "limit");
+  }
+
+  // On the host `done` has settled already, so the stop counts at once. In the box it counts once the kill has run there,
+  // the command still running meanwhile: #exited or #failed ends it (user choice 36, PR #18 review).
+  #stop(t: CommandTask, by: "user" | "tool" | "limit"): void {
+    t.run.stop();
+    if (t.run.stopsLater) t.stopping = by;
+    else this.#stopped(t, by);
+  }
+
+  // The -p limit's entry is in the design's words ("With -p"), the output read from the log, as the box's `done` has none
+  // for a stopped command (As built, Task 3). A stop by the user or stop_task is said at the next turn without starting
+  // one, as a stopped subagent's note is (choice 7).
+  #stopped(t: CommandTask, by: "user" | "tool" | "limit"): void {
+    t.stoppedBy = by;
+    if (by === "limit") {
+      const head = `Background command "${headCommand(t.command)}" was stopped after reaching its background time limit`;
+      return this.#ended(t, "stopped", { text: () => deliver(head, t.run.log, t.id), wake: true });
+    }
+    const text = `Background command ${t.id} (${headCommand(t.command)}) was stopped by ${by === "user" ? "the user" : "stop_task"}.`;
+    this.#ended(t, "stopped", { text, wake: false });
+  }
+
+  // `said`: the ending's entry for the lead, with its line written; none for a close (choice 29, the user's).
+  #ended(t: CommandTask, state: "done" | "failed" | "stopped", said?: { text: string | (() => string); wake: boolean }): void {
+    clearTimeout(this.#timers.get(t.id));
+    this.#timers.delete(t.id);
+    t.state = state;
+    t.ended = Date.now();
+    if (said) {
+      this.opts.transcript?.()?.write({ t: "command-ended", id: t.id, state });
+      this.#inbox.push({ id: t.id, kind: "command", ...said });
+    }
+    this.#changed();
   }
 
   // Resolves true once a place is free, taking it; false if the subagent is stopped first.

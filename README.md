@@ -1,7 +1,8 @@
 # Tachikoma
 
-> **Work in progress.** Release 8c of 15 is done (the third of release 8's five parts); its second
-> half, 8c-2, servers inside the sandbox and allowed sites, comes next, and the rest is being built.
+> **Work in progress.** Release 8c of 15 is done (the third of release 8's five parts), and
+> background commands after it; 8c's second half, 8c-2, servers inside the sandbox and allowed
+> sites, comes next, and the rest is being built.
 > Expect missing features and changes that break things, and don't rely on it for real work yet.
 
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
@@ -16,7 +17,8 @@ editor, stash, pictures and vim mode; a Docker sandbox, auto mode (a second mode
 actions) and a check on dangerous commands; saved sessions you can reopen, with a conversation
 too long for the model shortened into a summary; hooks, your own commands run at set moments
 of a session, in Claude Code's format; and MCP servers, whose tools the model can use, set up as
-in Claude Code. The command is `tachi`. So far it has been tested
+in Claude Code. After 8c came background commands, shell commands that keep running while the
+model works. The command is `tachi`. So far it has been tested
 on Windows 11 only; release 14 adds testing on Linux and macOS.
 
 ## What it does
@@ -33,6 +35,18 @@ on Windows 11 only; release 14 adds testing on Linux and macOS.
   permission mode, set with `--mode`; when it asks about a write or an edit, it shows what will go
   into the file first. There are four: `ask` (the default), `project`, `auto` and `never`. See
   [Permission modes](#permission-modes).
+- **Background commands** (after release 8c): the model can run a shell command in the
+  background, such as a dev server, read what it has printed since it last looked with
+  `shell_output`, and stop it with `stop_task`. When one ends by itself, the model is told at once with the output it has not read
+  yet, starting a turn if it was idle; one stopped with `stop_task` or `/tasks stop` is mentioned at
+  its next turn. A command still running at its timeout (2 minutes unless the model sets one, 10 at
+  most) moves to the background; one that starts with `sleep` or `Start-Sleep` is stopped at its
+  timeout instead. Ctrl+B moves the running command at once. Each keeps its newest 30,000
+  characters of output. These numbers are Claude Code's documented ones, not measured for
+  Tachikoma. They show in the panel and in `/tasks`, sharing the subagents' numbering (t1, t2,
+  ...), and go on when you press Esc. Starting one asks first, as any command does, and the
+  question says it will run in the background. The sandbox opens no ports to your machine, so a
+  server started in it cannot be reached from your browser.
 - **A Docker sandbox** (release 7): `--sandbox live` runs the model's commands and file tools in a
   container on your folder, and `--sandbox copy` on a copy whose changes you review, file by file,
   before any reaches your folder. See [The sandbox](#the-sandbox).
@@ -69,9 +83,10 @@ on Windows 11 only; release 14 adds testing on Linux and macOS.
   background answer that arrives while the lead is idle starts a turn by itself. A panel under the
   prompt shows each one's short description, and under it its model, time, tokens, cost and latest
   tool call. `--worker <provider:model>` (or `TACHI_WORKER`) picks their model, the lead's by
-  default, and `--max-tasks` how many run at once (8 by default). `/tasks` lists them, `/tasks t3`
-  shows one in full and `/tasks stop` stops them. A subagent's read outside the project asks first,
-  naming the subagent.
+  default, and `--max-tasks` how many run at once (8 by default; background commands do not
+  count). `/tasks` lists them with the background commands, `/tasks t3` shows one in full and
+  `/tasks stop` stops them all. A subagent's read outside the project asks first, naming the
+  subagent.
 - **A to-do list** the lead keeps above the prompt while any item is unfinished. Ctrl+T hides or
   shows it.
 - **Your instruction files:** each session reads `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` (or
@@ -101,7 +116,7 @@ on Windows 11 only; release 14 adds testing on Linux and macOS.
   [Stash](#stash), [Pictures](#pictures) and [Vim mode](#vim-mode).
 - **A status line** showing the lead, how much of the context window is left (with a bar), tokens,
   cost (or "ChatGPT plan"), mode, error count, the project folder and git branch, how long the
-  session has run, and how many subagents run, its parts coloured as
+  session has run, and how many subagents and background commands run, its parts coloured as
   [claude-hud](https://github.com/jarrodwatts/claude-hud)'s are; a line under it counts the turn's
   tool calls. `--status` picks which parts to show. Subagents' tokens and cost count in the totals.
 - **Headless runs:** `-p "<prompt>"` runs one prompt, prints the answer and exits. Add `--json` to
@@ -189,13 +204,15 @@ In a session, `/lead <provider:model>` switches the lead model, `/lead` or `/mod
 models to pick from, `/login chatgpt` and `/logout chatgpt` sign in and out, `/clear`, `/resume`,
 `/branch` and `/rename` start, switch, copy and name [saved sessions](#saved-sessions), `/export`
 writes the conversation out, `/compact` and `/autocompact`
-[shorten it](#shortening-long-conversations), `/tasks` lists the subagents, `/hooks` lists the
-[hooks](#hooks) in force, `/mcp` lists the [MCP servers](#mcp-servers), `/errors` summarises the
+[shorten it](#shortening-long-conversations), `/tasks` lists the subagents and background
+commands, `/hooks` lists the [hooks](#hooks) in force, `/mcp` lists the
+[MCP servers](#mcp-servers), `/errors` summarises the
 error log, `/screen` switches between full screen and classic, `/settings` and `/keybindings`
 open the settings and keys files in your editor, `/vim` switches vim mode, and `/exit` quits;
 commands ignore case. `/lead`, `/model`, `/screen`, `/vim` and `/autocompact` change only the
 window you type them in. Esc or Ctrl-C stops the current turn and the subagents it waits for;
-background subagents go on until `/tasks stop` or you quit.
+background subagents and commands go on until `/tasks stop` or you quit. Ctrl+B moves a running
+shell command to the background.
 When idle, Ctrl-C clears the prompt, and pressed twice on an empty prompt it quits. Ctrl+T hides or
 shows the to-do list. Esc and Ctrl+T can be moved in the keys file; Ctrl-C and Ctrl-D cannot. `?`
 on an empty prompt lists every key.
@@ -615,7 +632,9 @@ everything the model read, cannot be committed by mistake.
   flags and settings, so resuming never brings back `auto` or `never` unasked; in copy mode the box
   gets a fresh copy of the folder as it is now. Nor does the to-do list, or a subagent that had not
   finished: the model is told, once, `Subagent <id> (<description>) had not finished when the
-  session ended; its answer was lost.`
+  session ended; its answer was lost.` Nor does a background command still running when the
+  session ended: `Command <id> (<command>) had not ended when the session ended; it is not running
+  in this session.` Their ids are not handed out again.
 - **A tool call a crash left without a result is never run again.** The model gets this result for
   it instead: `Outcome unknown: the session ended while this was running, or before its result was
   saved. It may have run in full or in part. Check what it would have changed before running it
@@ -657,22 +676,23 @@ In a session:
 - **`/rename <name>`** names this session, as the lists show it and `tachi -r <name>` opens it:
   `Session named <name>.`
 - **`/clear`, `/resume` and `/branch` wait in the queue while a turn runs,** as `/lead` does, and
-  are refused while a subagent runs, so no answer can land in the wrong session: `<command> waits
-  until no subagent is running: <ids> still running. /tasks stop stops them.`
+  are refused while a subagent or a background command runs, so no answer or ending can land in
+  the wrong session: `<command> waits until no subagent or command is running: <ids> still
+  running. /tasks stop stops them.` A dev server, for example, must be stopped before `/clear`.
 - **A switch leaves the earlier lines on screen.** After `/clear` and `/resume`, the tool calls
   Ctrl+O shows, the to-do list, the context gauge and `/tasks`, with the side panel, start afresh:
-  the earlier conversation's finished subagents leave them. `/branch` keeps them all, as the copy
-  is the same conversation. The sandbox carries on: in copy mode, the review at the end
-  covers the changes of every session the window had.
+  the earlier conversation's finished subagents and commands leave them. `/branch` keeps them
+  all, as the copy is the same conversation. The sandbox carries on: in copy mode, the review at
+  the end covers the changes of every session the window had.
 
 ### Exporting a conversation
 
 `/export <file>` writes the conversation as text: a heading over each message, `You:` or
 `Tachikoma (<lead>):`, the lead being the one that wrote that reply; each tool call as `● <name>
 <input as JSON>`, with its result under it after `⎿`, as Ctrl+O shows it; each picture as its
-`[Image #1]` marker; and the notes about background subagents the model was given, under
-`Subagents:`. The file is UTF-8 with LF line endings throughout. After a shortening, it is the
-conversation from the summary on; the earlier messages are in the transcript only.
+`[Image #1]` marker; and the notes about background subagents and commands the model was given,
+under `Subagents:`. The file is UTF-8 with LF line endings throughout. After a shortening, it is
+the conversation from the summary on; the earlier messages are in the transcript only.
 
 - **Where:** a relative path is from the project folder. In copy mode that is your own folder, not
   the copy, as the file is written by Tachikoma on your machine. A path in double quotes, as
@@ -781,12 +801,12 @@ started.
 - **Clicks:** a click in the prompt puts the cursor there. A click on a `/` menu entry runs it, on
   an `@` entry fills it in, and on a model in `/model` picks it.
 - **The detail view:** Ctrl+O (the last turn's tool calls in full) and `/tasks t3` (a subagent's
-  full record) open in the conversation's place. The prompt is hidden meanwhile; the status line
-  stays, and a dim row names the keys. j and k or Up and Down move a line, g and G or Home and End
-  go to the top and bottom, and the wheel, the scroll bar, the scroll keys and selecting work as in
-  the conversation. q, Esc or Ctrl+O close the view. Ctrl-C stops a turn that is running and
-  leaves the view open; with nothing running it closes the view. A permission question closes the
-  view, so y and n go to the question.
+  or a command's full record) open in the conversation's place. The prompt is hidden meanwhile;
+  the status line stays, and a dim row names the keys. j and k or Up and Down move a line, g and G
+  or Home and End go to the top and bottom, and the wheel, the scroll bar, the scroll keys and
+  selecting work as in the conversation. q, Esc or Ctrl+O close the view. Ctrl-C stops a turn
+  that is running and leaves the view open; with nothing running it closes the view. A permission
+  question closes the view, so y and n go to the question.
 - **Searching the detail view:** `/` searches as you type, ignoring case. Esc while typing drops the
   search, and Enter keeps it, or drops it when nothing matches; once it is kept, n and N go to the
   next and previous match. With a search kept, q, Esc and Ctrl+O still close the view.
@@ -978,7 +998,7 @@ event gets `session_id`; `transcript_path`, Tachikoma's own session file; `cwd`,
 | PreToolUse | `tool_name`, `tool_input`, `tool_use_id` |
 | PostToolUse | the same, with the input that ran, then `tool_response` and `duration_ms` |
 | PostToolUseFailure | the same, then `error`, `is_interrupt` (always `false`) and `duration_ms` |
-| Stop | `stop_hook_active`, true once a Stop hook has kept this turn going; `last_assistant_message`; `background_tasks`, each background subagent running or waiting; `session_crons`, always `[]` |
+| Stop | `stop_hook_active`, true once a Stop hook has kept this turn going; `last_assistant_message`; `background_tasks`, each background subagent running or waiting, and each background command running, as `type: "shell"` with its command as `description` and `command`, each cut at 1,000 characters, Claude Code's cut; `session_crons`, always `[]` |
 | SubagentStart | `agent_id`, `agent_type` |
 | SubagentStop | `agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message`, `stop_hook_active` |
 | PreCompact | `trigger`, `custom_instructions` (the `/compact` words, or null) |
@@ -994,7 +1014,9 @@ every line still names the tool as Tachikoma does (`shell`, not `Bash`).
 
 | Tachikoma's tool | Hooks see | `tool_input` | `tool_response` |
 |---|---|---|---|
-| `shell` | `Bash` | `command` | `{stdout, stderr, interrupted: false, isImage: false}` |
+| `shell` | `Bash` | `command`, `run_in_background`, `timeout` | `{stdout, stderr, interrupted: false, isImage: false}`; for one started in or moved to the background, the text the model reads |
+| `shell_output` | `shell_output`, as Claude Code no longer has one | `id` | the text the model reads |
+| `stop_task` | `TaskStop` | `task_id` | the text the model reads |
 | `read_file` | `Read` | `file_path`, `offset`, `limit` | the text the model reads |
 | `write_file` | `Write` | `file_path`, `content` | `{filePath, type}`, `type` being `"create"` or `"update"` |
 | `edit_file` | `Edit` | `file_path`, `old_string`, `new_string` | the text the model reads |
@@ -1076,10 +1098,12 @@ Event by event:
     was ignored.` A rewrite the tool cannot take refuses the call, the model and you told: `A
     PreToolUse hook's rewrite of <tool> could not be used (<reason>): <command>`, the reason naming
     the field. So does a Claude Code field that Tachikoma's tool lacks, unless it is set to what
-    Tachikoma does anyway: Edit's `replace_all: true`, Bash's `run_in_background: true` or any
-    `timeout`, Grep's `"-i": true`, and the like are refused. In live link, and in copy mode on
-    Windows, a rewritten whole path outside the project is refused, as the box cannot reach it; in
-    copy mode on macOS and Linux a whole path is taken as the box's own.
+    Tachikoma does anyway: Edit's `replace_all: true`, TaskStop's `shell_id`, Grep's `"-i": true`,
+    and the like are refused. Bash's `run_in_background` and `timeout` are taken under the shell
+    tool's own rules, as the model's are, so an out-of-range `timeout` is refused with the reason
+    `"timeout" must be a whole number of milliseconds from 1 to 7200000`. In live link, and in copy
+    mode on Windows, a rewritten whole path outside the project is refused, as the box cannot reach
+    it; in copy mode on macOS and Linux a whole path is taken as the box's own.
 - **PostToolUse and PostToolUseFailure:** a block's reason, exit code 2's error output and
   `additionalContext` go to the model after the result. The call's outcome stays as it was.
 - **PostToolUse's `updatedToolOutput`** (read at PostToolUse only) replaces the result the model
@@ -1577,8 +1601,11 @@ making it first if it is missing.
 
 - **Contexts** say where a key acts: `Global` everywhere, `Chat` at the prompt, `Autocomplete` in
   the `/` and `@` menus, `Confirmation` at a question, `HistorySearch` in Ctrl+R's search, `Select`
-  in the model list, `Transcript` in the detail view, `Scroll` in full screen, and `Review` in copy
-  mode's review. A context's own binding comes before Global's.
+  in the model list, `Transcript` in the detail view, `Scroll` in full screen, `Review` in copy
+  mode's review, and `Task` while a shell command runs in the foreground, which then comes before
+  every other context: Ctrl+B (`task:background`) moves the command to the background. At other
+  times `Task` is not in force, so Ctrl+B is left to the other contexts, where nothing binds it by
+  default. A context's own binding comes before Global's.
 - **Keys** are written as Claude Code writes them: `ctrl`, `alt` (or `meta`, `opt`, `option`) and
   `shift`, joined to a key by `+`, case ignored, with special keys by name (`escape`, `enter`,
   `tab`, `space`, `up`, `down`, `left`, `right`, `pageup`, `pagedown`, `home`, `end`, `backspace`,
@@ -1633,6 +1660,7 @@ The default keys:
 | Transcript | `q` transcript:exit, `ctrl+c` transcript:exit, `escape` transcript:exit, `[` transcript:print, `/` transcript:search, `n` transcript:nextMatch, `shift+n` transcript:previousMatch, `j` transcript:lineDown, `down` transcript:lineDown, `k` transcript:lineUp, `up` transcript:lineUp, `g` transcript:top, `home` transcript:top, `shift+g` transcript:bottom, `end` transcript:bottom |
 | Scroll | `pageup` scroll:pageUp, `pagedown` scroll:pageDown, `ctrl+home` scroll:top, `ctrl+end` scroll:bottom, `shift+up` scroll:lineUp, `wheelup` scroll:lineUp, `shift+down` scroll:lineDown, `wheeldown` scroll:lineDown |
 | Review | `up` review:previous, `down` review:next, `space` review:toggle, `enter` review:diff, `a` review:apply, `l` review:later, `d` review:discard, `m` review:merge, `s` review:skip |
+| Task | `ctrl+b` task:background |
 
 **Shift+Enter in Windows Terminal** makes a new line, as elsewhere. Windows Terminal sends it as
 plain Enter, so while Tachikoma reads the keys it turns on Windows Terminal's own way of reporting
@@ -1795,7 +1823,8 @@ a session with an OpenAI model, billed to the plan instead of an API key.
 `tachi -p "<prompt>"` prints the answer and exits. Nobody is there to approve an action, so anything
 the permission mode would ask about is refused, and the model is told so. For the same reason,
 instruction files outside the project are left out, and a line on stderr names them. A background
-subagent runs in the foreground, since there is no later turn to read its answer in.
+subagent still runs in the foreground; after the answer, `-p` waits only for background commands
+(below).
 
 - **The output is made safe for a terminal**, wherever it goes: control characters, escape codes and
   marks that reorder text, in the answer and in error messages, are printed as text such as
@@ -1812,6 +1841,17 @@ subagent runs in the foreground, since there is no later turn to read its answer
   command is refused. With the sandbox, the launch lines go to stderr, the image must already be
   built (`tachi sandbox build`), and copy mode keeps its copy, saying on stderr after the answer
   `Changes kept for review: tachi review <name>`.
+- **Background commands:** after the answer, the run waits until every background command has
+  ended. Each ending gives the model one more turn, and each turn's answer is printed. Under `-p`
+  a background command has a time limit: 10 minutes, or the `timeout` the model gives with it, at
+  most 2 hours; one its timeout moved to the background gets 10 minutes from the move. At the
+  limit it is stopped and the model is told `Background command "<command>" was stopped after
+  reaching its background time limit`, then gets its turn. When stderr is a terminal and the wait
+  has gone 5 seconds without a change, a grey line says, once, `Waiting for background work to
+  finish: <id> (<command>)`, several joined by commas. The numbers are Claude Code's, not measured
+  for Tachikoma. Ctrl-C stops the wait and every background command, and the run exits 130; a second
+  Ctrl-C ends it at once. A hook's `"continue": false` or a failed request, on any turn, stops them
+  too, no more turns start, and the run exits 1.
 - **Saved too:** a `-p` run is saved as a session, marked so, and left out of `tachi -c` and the
   `tachi -r` list until it is opened in the window. `tachi -c -p "<prompt>"` carries on the newest
   `-p` run, and `tachi -r <id or name> -p "<prompt>"` any saved session; the list itself needs the
@@ -1889,16 +1929,21 @@ Each is fixed in a later release, unless it says otherwise.
   OpenRouter's window is not known, so a request still too long after shortening ends with
   OpenRouter's own error, not the `too long for <model>` line (no release is set).
 - **No budget limit** (release 12). An interactive session runs until you stop it.
-- **Shell commands have no time limit** (release 12). A command that keeps its output open runs
-  until you cancel it. Closing the terminal, SIGTERM, and Ctrl-C in headless mode stop running
-  commands; a hard kill or a crash of Node does not, and on macOS and Linux the command then keeps
-  going.
 - **The file tools check a path, then use it.** Another program that swaps a folder for a link in
   between could redirect a write, and a hard link inside the project to a file outside it looks like
   an ordinary file. Both need something already running on your machine. In the sandbox the file
   tools work inside the box, where a link can lead only to what the box can see.
-- **On Windows, cancelling cannot stop a program whose shell has already exited.** Cancel still
-  returns at once. On macOS and Linux it does stop it.
+- **On Windows, stopping a command cannot stop a program that outlives its shell,** as with
+  `Start-Process node server.js`: Esc, `stop_task`, `/tasks stop`, the `-p` time limit and quitting
+  each leave it running, as taskkill finds a command's programs only while its shell is alive. Esc
+  still returns at once. Claude Code has the same gap on Windows; its documentation promises this
+  clean-up only on macOS and Linux. Stopping such a program would take a Windows job object, which
+  Node cannot make without a native add-on or a helper program (no release is set). On macOS and
+  Linux a stop ends the command's whole process group, but a program that left the group, as
+  under `setsid`, keeps running too.
+- **A hard kill or a crash of Node can leave commands running** (no release is set). Closing the
+  terminal, SIGTERM, and Ctrl-C in headless mode stop running commands, background ones too; a
+  hard kill or a crash of Node does not, and on macOS and Linux the command then keeps going.
 - **On Windows, PowerShell error messages repeat the whole command**, including the line Tachikoma
   puts first to make the output UTF-8. The ways around it that were tried either lost the exit code or
   turned error messages into XML.
@@ -2040,6 +2085,14 @@ it says so.
   Docker Desktop for Linux or macOS (on Linux, by default, only your home folder is shared).
 - **A project on a mapped network drive** resolves to a `\\server\share` path that Docker Desktop
   cannot mount.
+- **A program in the box that leaves its command's process group,** through `setsid` or by
+  detaching itself as some servers do, keeps running after `stop_task` or `/tasks stop`, as a stop
+  there kills only the command's group. It stops when the box is removed at the session's end.
+- **A background command's stop in the box waits for Docker's kill there:** until it has run the
+  command still shows as running, `/tasks stop t1` says `Stopping t1.` (`/tasks stop`, `Stopping
+  every subagent and command.`), and `stop_task` answers only then. A kill that cannot reach the
+  box ends the command as failed, `stop_task` answering `Could not stop t1: <error>`, and the
+  sandbox stops.
 - **A command can stop its own box:** `kill -9 -1` ends every process of the box's user, and the box
   with them: `The sandbox stopped working: the box stopped. Shell and file tools are off until
   Tachikoma is launched again.`
@@ -2360,8 +2413,8 @@ it says so.
 - **The numbers are Claude Code's,** from its documentation, and none was measured for Tachikoma:
   a server's 30 s to start, a remote request's 60 s, the 300 ms before a server is killed, the
   4,096 and 16,384-character description cuts, the 5 search results, and an `mcp_tool` hook's
-  600 s and 30 s. The 64-character name limit is OpenAI's; the 30,000-character cut is Tachikoma's
-  own, as for a command's output; the 60 s wait for a resource or prompt list is the MCP
+  600 s and 30 s. The 64-character name limit is OpenAI's; the 30,000-character cut is Claude
+  Code's, its cut for a command's output; the 60 s wait for a resource or prompt list is the MCP
   library's.
 - **A yes covers the entry, not the files it runs,** as in Claude Code: a pulled change to the
   project's `server.js`, or an `npx` package named without a version, runs without a new question.

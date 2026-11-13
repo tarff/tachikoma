@@ -38,7 +38,8 @@ describe("readKeybindings", () => {
   });
 
   // The page's "Unbind default shortcuts" example, which reclaims Ctrl+X: its contexts Tachikoma lacks are counted in
-  // one line, and Ctrl+X, free once the Ctrl+X Ctrl+E chord is unbound, makes a new line.
+  // one line, and Ctrl+X, free once the Ctrl+X Ctrl+E chord is unbound, makes a new line. Its Task entry is read, as
+  // Tachikoma has Task (background commands plan, choice 20).
   it("counts the entries of Claude Code's example that Tachikoma has no use for in one line, and applies the rest", () => {
     const { table, problems } = read({
       bindings: [
@@ -60,8 +61,27 @@ describe("readKeybindings", () => {
         },
       ],
     });
-    expect(problems).toEqual(["keybindings.json: 8 entries skipped: Tachikoma has no Task, DiffPanel, Pane, PaneField"]);
+    expect(problems).toEqual(["keybindings.json: 7 entries skipped: Tachikoma has no DiffPanel, Pane, PaneField"]);
     expect(table.press(stroke("ctrl+x"), [...CHAT], 0)).toEqual({ action: "chat:newline" });
+    expect(table.press(stroke("ctrl+x"), ["Task", ...CHAT], 0)).toEqual({ action: "chat:newline" }); // its chord is unbound in Task
+  });
+
+  // Background commands plan, choice 20: Task is a context of Tachikoma's, Ctrl+B its task:background, and a keys file's
+  // Task block is read as any other's.
+  it("reads a Task block: task:background moved from Ctrl+B to Ctrl+G, or set to null", () => {
+    const task = (keys: Record<string, unknown>) => read({ bindings: [{ context: "Task", bindings: keys }] });
+    const defaults = new Bindings(tableOf(DEFAULTS));
+    expect(defaults.press(stroke("ctrl+b"), ["Task", ...CHAT], 0)).toEqual({ action: "task:background" });
+    expect(defaults.press(stroke("ctrl+b"), [...CHAT], 0)).toBeNull(); // Task not in force: Ctrl+B is free
+    const moved = task({ "ctrl+b": null, "ctrl+g": "task:background" });
+    expect(moved.problems).toEqual([]);
+    expect(moved.table.press(stroke("ctrl+g"), ["Task", ...CHAT], 0)).toEqual({ action: "task:background" });
+    expect(moved.table.press(stroke("ctrl+g"), [...CHAT], 0)).toEqual({ action: "chat:externalEditor" });
+    expect(moved.table.press(stroke("ctrl+b"), ["Task", ...CHAT], 0)).toBeNull();
+    expect(moved.table.keysFor("task:background", "Task")).toEqual(["ctrl+g"]);
+    const unbound = task({ "ctrl+b": null });
+    expect(unbound.problems).toEqual([]);
+    expect(unbound.table.keysFor("task:background", "Task")).toEqual([]);
   });
 
   it("counts Claude Code's own actions and cmd+ keys, each name once", () => {

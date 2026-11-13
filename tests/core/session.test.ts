@@ -12,21 +12,22 @@ import { type Ask, Declined, type Judge, PermissionGate } from "../../src/core/p
 import { type Conversation, Session, truncateLeaving, UNSAVED } from "../../src/core/session.js";
 import { CANCELLED, INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
-import { Tasks } from "../../src/core/tasks.js";
+import { type SubagentTask, Tasks } from "../../src/core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
 import { type CompletionRequest, type Message, type Part, type Provider, sentAll, type Turn } from "../../src/core/types.js";
-import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
+import { type Executor, MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import type { Event, Hook } from "../../src/hooks/config.js";
 import { Hooks, type Where } from "../../src/hooks/hooks.js";
 import { fitted, LIMITS } from "../../src/providers/pictures.js";
 import { judgeOf } from "../../src/safety/judge.js";
+import { shellTools } from "../../src/tools/commands.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files.js";
 import { shellText } from "../../src/tools/shell.js";
 import { defineTool, type Tool } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
-import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, standInRun, tempContext, texts, usage } from "../helpers.js";
 
 const echo = defineTool("echo", "Echo text back", z.object({ text: z.string() }), async ({ text }) => text);
 const boom = defineTool("boom", "Always fails", z.object({}), async () => {
@@ -1882,10 +1883,11 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // An answer may be a promise, for a question the test answers later.
   type Answers = (boolean | Promise<boolean>)[];
   // `judge` is auto mode's, which says no at once unless given. With `worker`, the lead has delegate, its subagents running
-  // on that model with the lead's hooks, and the session has their Tasks.
+  // on that model with the lead's hooks, and the session has their Tasks. With `commands`, a stand-in executor, the lead's
+  // shell, shell_output and stop_task are the real ones (tools/commands.ts), their commands in those Tasks.
   async function setup(o: {
     mode: Mode5; says: Says[]; turns: Turn[]; answers?: Answers; transcript?: Transcript; root?: string; tools?: Tool[]; judge?: Judge;
-    inbox?: () => string[]; worker?: Provider;
+    inbox?: () => string[]; worker?: Provider; commands?: Executor;
   }) {
     const root = o.root ?? (await folder());
     const { script, seq, out } = await hookFolder();
@@ -1936,16 +1938,22 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const outcomes: string[] = [];
     bus.on("tool-end", (e) => outcomes.push(e.outcome));
     const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
-    const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate };
+    const ctx = { root, executor: o.commands ?? new LocalExecutor(), workspace: new LocalWorkspace(root), gate };
     const lead = new FakeProvider("a", o.turns);
     const given = new Hooks({ hooks, off: false, leftOut: [] }, where, bus); // a test may set others in their place
     const worker = o.worker;
-    const tasks = worker
-      ? new Tasks({ bus, max: 8, worker: () => worker, system: "sub", tools: [readFileTool], ctx, transcript: () => session.transcript, hooks: given })
+    const tasks = worker || o.commands
+      ? new Tasks({
+        bus, max: 8, worker: () => worker ?? new FakeProvider("w", []), system: "sub", tools: [readFileTool], ctx,
+        transcript: () => session.transcript, hooks: given,
+      })
       : undefined;
+    // Every command a test starts is stopped when it finishes, a stand-in's too.
+    if (o.commands && tasks) onTestFinished(() => void tasks.stop());
+    const shells = o.commands && tasks ? shellTools(tasks, { shell: "sh", headless }) : [shell];
     const session: Session = new Session({
       lead,
-      tools: [shell, readFileTool, writeFileTool, editFileTool, ...(tasks ? [delegateTool(tasks, { headless })] : []), ...(o.tools ?? [])],
+      tools: [...shells, readFileTool, writeFileTool, editFileTool, ...(worker && tasks ? [delegateTool(tasks, { headless })] : []), ...(o.tools ?? [])],
       system: "t",
       ctx,
       bus,
@@ -1963,6 +1971,11 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   }
   const oneCall = (name: string, input: object) => [callTool("c1", name, input), reply("ok")];
   const shellCall = (command: string) => oneCall("shell", { command });
+  // A stand-in for `commands`: a command named "done" ends at once with exit code 0, any other runs until it is stopped.
+  const endless: Executor = {
+    exec: () => Promise.reject(new Error("exec is not used here")),
+    start: (command) => standInRun(command === "done" ? Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }) : new Promise(() => {})),
+  };
 
   it.each(FIVE)("in %s, a deny refuses the call, telling the model the hook's reason, and fires with the call in Claude Code's names", async (mode) => {
     const s = await setup({ mode, says: [{ stdout: decide("deny", "no shell here") }], turns: shellCall("echo hi") });
@@ -2084,6 +2097,18 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(danger.asked).toEqual([{ summary: `run: ${push}`, warnings: [`Danger: rewriting or deleting git history: ${push}`] }]);
   });
 
+  // Background commands plan, Task 8 (choice 16): run_in_background is the shell's own field now, so the tool's rules run on
+  // a rewrite that sets it, and its question says the command runs in the background (choice 13).
+  it("starts a command in the background when a PreToolUse hook's rewrite adds run_in_background: true, asking that question", async () => {
+    const says: Says[] = [{ names: ["Bash"], stdout: rewrite({ command: "npm run dev", run_in_background: true }) }];
+    const s = await setup({ mode: "ask", says, turns: shellCall("npm run dev"), answers: [true], commands: endless });
+    await s.session.send("go");
+    expect(s.asked).toEqual([{ summary: "run in the background: npm run dev" }]);
+    expect(s.results()).toEqual([{ output: "Started t1 in the background.", isError: false }]);
+    expect(s.tasks!.all.map((t) => [t.id, t.kind, t.state])).toEqual([["t1", "command", "running"]]);
+    expect(s.session.calls).toEqual([{ name: "shell", input: { command: "npm run dev", background: true } }]);
+  });
+
   it("names the rewritten call in a hook's question", async () => {
     const asks = rewrite({ command: "echo two" }, { permissionDecision: "ask" });
     const s = await setup({ mode: "ask", says: [{ stdout: asks }], turns: shellCall("echo one"), answers: [true] });
@@ -2185,7 +2210,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   it.each([
     ["a deny", { stdout: decide("deny", "no") }, 1],
     ["a block", { stdout: "", code: 2 }, 1],
-    ["a rewrite that cannot be used", { stdout: rewrite({ command: "echo x", run_in_background: true }) }, 1],
+    ["a rewrite that cannot be used", { stdout: rewrite({ command: "echo x", timeout: 0 }) }, 1],
     ["an ask -p cannot put", { stdout: decide("ask") }, 1],
     ["an allow", { stdout: decide("allow") }, 0],
     ["a rewrite that is used", { stdout: rewrite({ command: "echo x" }) }, 0],
@@ -2270,6 +2295,29 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       write("c3", "two", "update"),
     ]);
     expect([s.outcomes, s.notes]).toEqual([["ok", "ok", "ok"], []]);
+  });
+
+  // Background commands design, "Approval and hooks": Claude Code's docs give no tool_response for a background start, so
+  // hooks get the text the model reads; the call is sent as Bash with run_in_background.
+  it("fires PostToolUse after a background start with the text the model reads", async () => {
+    const turns = [callTool("c1", "shell", { command: "npm run dev", background: true }), reply("ok")];
+    const s = await setup({ mode: "never", says: [{ event: "PostToolUse", names: ["Bash"], stdout: "" }], turns, commands: endless });
+    await s.session.send("go");
+    const bash = { tool_name: "Bash", tool_input: { command: "npm run dev", run_in_background: true }, tool_use_id: "c1" };
+    const fired = { ...bash, tool_response: "Started t1 in the background." };
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "PostToolUse", ...fired })]);
+  });
+
+  // Background commands plan, choice 12: a sleep stopped at its timeout is an error, so PostToolUseFailure gets its line.
+  it("fires PostToolUseFailure for a sleep stopped at its timeout, its error the sleep line", async () => {
+    const turns = [callTool("c1", "shell", { command: "sleep 5", timeout: 1 }), reply("ok")];
+    const s = await setup({ mode: "never", says: [{ event: "PostToolUseFailure", names: ["Bash"], stdout: "" }], turns, commands: endless });
+    await s.session.send("go");
+    const line = "Stopped: the command did not complete within its 1s timeout. " +
+      "A command that starts with sleep is stopped at its timeout, not moved to the background.";
+    const fired = { tool_name: "Bash", tool_input: { command: "sleep 5", timeout: 1 }, tool_use_id: "c1", error: line, is_interrupt: false };
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "PostToolUseFailure", ...fired })]);
+    expect([s.outcomes, s.tasks!.all]).toEqual([["failed"], []]);
   });
 
   it("fires PostToolUseFailure after a failed call, its error starting Exit code 1, and neither for a declined, unknown or schema-refused call", async () => {
@@ -2721,6 +2769,34 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "Stop", background_tasks: [running] })]);
   });
 
+  // Background commands plan, choice 17: each running command as Claude Code's shell task, its description the command cut
+  // with the marker a delivery's first line uses (choice 24), its command cut at 1,000; one that ended or was stopped is not
+  // sent. Subagents and commands share one list, in the order they started.
+  it("sends Stop each background command still running, in background_tasks, a long one cut at 1,000 characters", async () => {
+    const long = `echo ${"a".repeat(1195)}`;
+    expect(long).toHaveLength(1200);
+    const background = (id: string, command: string) => callTool(id, "shell", { command, background: true });
+    const turns = [
+      background("c1", "npm run dev"),
+      callTool("c2", "delegate", { description: "look", task: "find x", background: true }),
+      background("c3", "done"),
+      background("c4", long),
+      background("c5", "npm run watch"),
+      callTool("c6", "stop_task", { id: "t5" }),
+      reply("started them"),
+    ];
+    const worker = new Held("fake:w"); // never answers, so the subagent is still running at Stop
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: "" }], turns, commands: endless, worker });
+    await s.session.send("go");
+    expect(s.tasks!.all.map((t) => [t.kind, t.state])).toEqual([
+      ["command", "running"], ["subagent", "running"], ["command", "done"], ["command", "running"], ["command", "stopped"],
+    ]);
+    const dev = { id: "t1", type: "shell", status: "running", description: "npm run dev", command: "npm run dev" };
+    const look = { id: "t2", type: "agent", status: "running", description: "look", agent_type: "Explore" };
+    const cut = { id: "t4", type: "shell", status: "running", description: `${long.slice(0, 1000)}… [+200 chars]`, command: long.slice(0, 1000) };
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "Stop", background_tasks: [dev, look, cut] })]);
+  });
+
   it("fires SubagentStart before a subagent's first request, matched on Explore, its text at the start of the subagent's first message", async () => {
     const worker = new FakeProvider("w", [reply("found it")]);
     const says: Says[] = [
@@ -2827,7 +2903,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const shape = /^(x+)\n\[cut: (\d+) more characters\]\nt1 was stopped by a hook: enough$/.exec(r!.output.slice(head.length));
     expect([r!.output.startsWith(head), r!.output.length <= MAX_TOOL_OUTPUT, shape !== null]).toEqual([true, true, true]);
     expect(shape![1]!.length + Number(shape![2])).toBe(long.length); // the cut's count is the characters left out
-    expect(s.tasks!.all[0]!.answer).toBe(`${long}\n${line}`);
+    expect((s.tasks!.all[0] as SubagentTask).answer).toBe(`${long}\n${line}`);
   });
 
   // Task 9's code review: a stop that comes as the Stop hooks answer, or while they run, sends nothing more.
@@ -2869,7 +2945,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(s.tasks!.stop("t1")).toBe(true);
     await sent;
     expect(s.results()).toEqual([{ output: "t1 was stopped by the user before it finished.", isError: false }]);
-    expect([worker.asked.length, s.tasks!.all[0]!.messages, s.tasks!.all[0]!.state]).toEqual([0, [], "stopped"]);
+    expect([worker.asked.length, (s.tasks!.all[0] as SubagentTask).messages, s.tasks!.all[0]!.state]).toEqual([0, [], "stopped"]);
   });
 
   // Task 7's build: a subagent a hook stops ends as stopped, with its own result, never as failed. At SubagentStop the stop
@@ -2887,7 +2963,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const s = await setup({ mode: "never", root, says, turns: [look, reply("ok")], worker });
     expect(await s.session.send("go")).toBeUndefined();
     expect(s.results()).toEqual([{ output: result, isError: false }]);
-    expect(s.tasks!.all.map((t) => [t.state, t.answer])).toEqual([["stopped", result]]);
+    expect((s.tasks!.all as SubagentTask[]).map((t) => [t.state, t.answer])).toEqual([["stopped", result]]);
     expect([s.lead.seen.length, s.errors]).toEqual([2, []]);
     expect(s.notes).toEqual([`t1: A ${event} hook stopped the turn${reason ? `: ${reason}` : "."}`]);
   });

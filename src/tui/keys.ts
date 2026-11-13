@@ -170,6 +170,9 @@ export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"], vim
     ),
     line(part(k("app:toggleTranscript", "Global", "ctrl+o"), "the last turn's tool calls in full"), "a space first starts a message with ?"),
     line(part(k("app:toggleTodos", "Global", "ctrl+t"), "show or hide the to-do list")),
+    // Task's key, in force while a foreground command runs, before the prompt's own contexts (app/constants.ts,
+    // contextsOf; background commands plan, Task 10, the user's choice 32).
+    line(part(named(b, "task:background", "Task", ["ctrl+b"], ["Task", ...prompt]), "move a running command to the background")),
     // Release 6's keys have no release 5 words to keep, so each names every key that runs it, as the command keys below
     // do: one the keys file adds shows beside the defaults (release 6 plan, Task 23's checklist, step 3).
     line(part(all("chat:externalEditor"), "open the prompt in your editor", either)),

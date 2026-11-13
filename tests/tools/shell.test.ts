@@ -1,13 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { type GateOptions, type Mode, PermissionGate } from "../../src/core/permissions.js";
-import { shellTool, shellToolOf } from "../../src/tools/shell.js";
-import { tempContext } from "../helpers.js";
+import { Tasks } from "../../src/core/tasks.js";
+import { shellFor } from "../../src/exec/local.js";
+import { shellTools } from "../../src/tools/commands.js";
+import type { ToolContext } from "../../src/tools/tool.js";
+import { Bus, FakeProvider, standInRun, tempContext } from "../helpers.js";
+
+// The shell tool as cli.tsx makes it, over a task list of its own for each call (background commands plan, Task 5).
+const shellToolOf = (shell: string, ctx: ToolContext) =>
+  shellTools(new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: [], ctx }), { shell, headless: false })[0]!;
+const shellTool = { run: (input: unknown, ctx: ToolContext) => shellToolOf(shellFor().name, ctx).run(input, ctx) as Promise<string> };
 
 // `echo` and `exit` behave the same in sh and PowerShell.
 describe("shell tool", () => {
   // In the box commands run in bash, whatever the host (Task 16), and the model is told so.
-  it("names the shell it is made for", () => {
-    expect(shellToolOf("bash").spec.description).toBe("Run a command with bash in the project root and return its output.");
+  it("names the shell it is made for", async () => {
+    expect(shellToolOf("bash", await tempContext()).spec.description).toMatch(/^Run a command with bash in the project root and return its output\. /);
   });
 
   it("returns the output of a command", async () => {
@@ -31,7 +39,7 @@ describe("shell tool", () => {
 
   it("says which signal killed a command instead of a null exit code", async () => {
     const ctx = await tempContext();
-    const executor = { ...ctx.executor, exec: async () => ({ code: null, signal: "SIGKILL" as const, stdout: "", stderr: "" }) };
+    const executor = { ...ctx.executor, start: () => standInRun(Promise.resolve({ code: null, signal: "SIGKILL" as const, stdout: "", stderr: "" })) };
     const run = shellTool.run({ command: "sleep 100" }, { ...ctx, executor });
     await expect(run).rejects.toThrow("killed by SIGKILL");
     await expect(run).rejects.not.toThrow("exit code");
@@ -55,7 +63,8 @@ describe("shell tool and the dangerous-command check", () => {
     const warned: (string[] | undefined)[] = [];
     const ask = async (_summary: string, _detail?: string, _owner?: unknown, _plain?: boolean, warnings?: string[]) => (warned.push(warnings), answer);
     const gate = new PermissionGate(mode, ask, refusal, { root: ctx.root, ...options });
-    const executor = { ...ctx.executor, exec: async (command: string) => (ran.push(command), { code: 0, signal: null, stdout: "", stderr: "" }) };
+    const ok = { code: 0, signal: null, stdout: "", stderr: "" };
+    const executor = { ...ctx.executor, start: (command: string) => (ran.push(command), standInRun(Promise.resolve(ok))) };
     return { ctx: { ...ctx, gate, executor }, ran, warned };
   }
 

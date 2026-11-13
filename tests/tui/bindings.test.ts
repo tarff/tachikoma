@@ -470,6 +470,8 @@ describe("DEFAULTS", () => {
     ["Review", "review:discard", ["d"]],
     ["Review", "review:merge", ["m"]],
     ["Review", "review:skip", ["s"]],
+    // Ctrl+B, while a foreground command runs (background commands plan, choice 20).
+    ["Task", "task:background", ["ctrl+b"]],
   ];
 
   it("binds every action App handles today, on today's keys, and nothing else but picture pasting", () => {

@@ -291,6 +291,21 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect([r.asked, r.damaged]).toEqual([["c1", "c2"], 1]);
   });
 
+  // Background commands plan, choice 15: a command's line and its ending line are kinds of their own, read back whole; one
+  // without its id is damaged, as any other is. Task 7 reads them.
+  it("keeps a command's line and its ending line, dropping one without an id as damaged", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "command", id: "t1", command: "npm run dev" });
+    for (const state of ["done", "failed", "stopped", "lost"] as const) t.write({ t: "command-ended", id: "t1", state });
+    expect(read(p).damaged).toBe(0);
+    appendFileSync(p.file, `${JSON.stringify({ t: "command", at: "2026-11-13T00:00:00.000Z", command: "npm test" })}\n`);
+    appendFileSync(p.file, `${JSON.stringify({ t: "command-ended", at: "2026-11-13T00:00:00.000Z", state: "done" })}\n`);
+    appendFileSync(p.file, `${JSON.stringify({ t: "command-ended", at: "2026-11-13T00:00:00.000Z", id: "t1", state: "waiting" })}\n`);
+    expect(read(p).damaged).toBe(3);
+  });
+
   // The quality review's finding 5: a later call with an asked call's id is another call, asked only by a mark after it.
   it("lets an asked mark go when a later message has a call of its id", async () => {
     const p = place();
@@ -460,6 +475,54 @@ describe("transcript", { timeout: 15_000 }, () => {
     mkdirSync(p.subagents, { recursive: true });
     writeFileSync(path.join(p.subagents, "t7.jsonl"), "");
     expect(read(p).nextTask).toBe(8);
+  });
+
+  // Background commands plan, choice 15: a command's id is one of the session's ids too, so a resume never gives it again.
+  it("numbers the next task past every command line as well as every subagent line", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "subagent", id: "t1", description: "one", file: "t1.jsonl" });
+    t.write({ t: "command", id: "t2", command: "npm run dev" });
+    expect(read(p).nextTask).toBe(3);
+  });
+
+  // Choice 15: a command with no ending line had not ended when the session did; one that ended in any way has.
+  it("lists the commands with no ending line, marked as commands, beside the unfinished subagents", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "subagent", id: "t1", description: "never started", file: "t1.jsonl" });
+    for (const [n, state] of [[2, "done"], [3, "failed"], [4, "stopped"], [5, "lost"], [6, null]] as const) {
+      t.write({ t: "command", id: `t${n}`, command: `run ${n}` });
+      if (state) t.write({ t: "command-ended", id: `t${n}`, state });
+    }
+    expect(read(p).unfinished).toEqual([
+      { id: "t1", description: "never started" },
+      { kind: "command", id: "t6", command: "run 6" },
+    ]);
+  });
+
+  // A damaged command line is skipped as any damaged line is: never listed, and its id never counted.
+  it("drops a damaged command line, listing nothing for it and counting no id of it", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    appendFileSync(p.file, `${JSON.stringify({ t: "command", at: "2026-11-13T00:00:00.000Z", command: "npm test" })}\n`); // no id
+    appendFileSync(p.file, `${JSON.stringify({ t: "command", at: "2026-11-13T00:00:00.000Z", id: "t9" })}\n`); // no command
+    const r = read(p);
+    expect([r.damaged, r.unfinished, r.nextTask]).toEqual([2, [], 1]);
+  });
+
+  // A damaged ending line ends nothing: its command is still one that had not ended.
+  it("keeps a command whose ending line is damaged among the unfinished", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "command", id: "t2", command: "npm run dev" });
+    appendFileSync(p.file, `${JSON.stringify({ t: "command-ended", at: "2026-11-13T00:00:00.000Z", id: "t2", state: "bogus" })}\n`);
+    const r = read(p);
+    expect([r.damaged, r.unfinished]).toEqual([1, [{ kind: "command", id: "t2", command: "npm run dev" }]]);
   });
 
   it("lists the subagents whose files hold no final answer", async () => {

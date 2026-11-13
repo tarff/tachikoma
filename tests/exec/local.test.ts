@@ -143,3 +143,100 @@ describe("LocalExecutor", () => {
     expect(r.stdout.trim()).toBe("tachi-shell");
   }, 15_000);
 });
+
+// Background commands plan, choices 1 and 2: start streams both streams into one log as they arrive, and done gives
+// each stream apart, as exec always has.
+describe("LocalExecutor.start", () => {
+  // The script records its pid in its own folder, so a test can stop it whatever the shell did with it.
+  const pidLine = `require("fs").writeFileSync(require("path").join(__dirname, "pid"), String(process.pid));`;
+  const killAfter = (pid: number) =>
+    onTestFinished(() => {
+      if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL");
+    });
+
+  it("logs both streams in the order they arrive, and done gives each apart", async () => {
+    // The pauses keep the three writes apart, so they reach us in the order they were made.
+    const root = await script(`process.stdout.write("a");
+      setTimeout(() => { process.stderr.write("b"); setTimeout(() => process.stdout.write("c"), 300); }, 300);`);
+    const run = new LocalExecutor().start("node script.js", root);
+    const r = await run.done;
+    expect(run.log.kept()).toBe("abc");
+    expect(r).toEqual({ code: 0, signal: null, stdout: "ac", stderr: "b" });
+  }, 15_000);
+
+  it("has the output in the log before the command ends", async () => {
+    const root = await script(`${pidLine} process.stdout.write("first"); setTimeout(() => {}, 60000);`);
+    const run = new LocalExecutor().start("node script.js", root);
+    let ended = false;
+    void run.done.then(
+      () => (ended = true),
+      () => {},
+    );
+    const pid = await readPid(path.join(root, "pid"));
+    killAfter(pid);
+    for (let i = 0; i < 100 && run.log.kept() !== "first"; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(run.log.kept()).toBe("first");
+    expect(ended).toBe(false);
+    run.stop();
+  }, 15_000);
+
+  it("stop kills the programs the command started and ends it at once", async () => {
+    const root = await script(`${pidLine} setTimeout(() => {}, 60000);`);
+    const run = new LocalExecutor().start("node script.js", root);
+    const pid = await readPid(path.join(root, "pid"));
+    killAfter(pid);
+    expect(alive(pid)).toBe(true);
+
+    run.stop();
+    run.stop(); // a second stop is harmless
+    expect(await run.done).toEqual({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
+    for (let i = 0; i < 40 && alive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(alive(pid)).toBe(false);
+  }, 15_000);
+
+  it("stop ends the command even when a program it started still holds the output pipes", async () => {
+    const { root } = await tempContext();
+    await writeFile(path.join(root, "grandchild.js"), `${pidLine} setTimeout(() => {}, 60000);`);
+    // As "cancel returns even when ..." above: on Windows the grandchild must be detached, or Node kills it with the
+    // launcher.
+    await writeFile(
+      path.join(root, "launcher.js"),
+      `process.stdout.write("launched");\n` +
+        `require("child_process").spawn(process.execPath, ["grandchild.js"], { stdio: "inherit", detached: process.platform === "win32" }).unref();`,
+    );
+    const run = new LocalExecutor().start("node launcher.js", root);
+    let ended = false;
+    void run.done.then(
+      () => (ended = true),
+      () => {},
+    );
+    const pid = await readPid(path.join(root, "pid"));
+    killAfter(pid);
+    expect(pid).toBeGreaterThan(0);
+    expect(ended).toBe(false);
+
+    run.stop();
+    expect(await run.done).toMatchObject({ code: null, signal: "SIGKILL", stdout: "launched" });
+    // Windows cannot find a tree whose root has exited, so the grandchild survives there.
+    if (process.platform !== "win32") {
+      for (let i = 0; i < 40 && alive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+      expect(alive(pid)).toBe(false);
+    }
+  }, 15_000);
+
+  // Background commands design, "Exit": the user's known limit. taskkill finds a command's programs only while its shell
+  // is alive, so a program started by Start-Process, whose shell has returned, keeps running after stop.
+  it.runIf(process.platform === "win32")("on Windows, stop leaves running a program that outlived its shell", async () => {
+    const root = await script(`${pidLine} setTimeout(() => {}, 60000);`);
+    const run = new LocalExecutor().start("Start-Process node -ArgumentList script.js -WindowStyle Hidden", root);
+    const pid = await readPid(path.join(root, "pid"));
+    killAfter(pid);
+    expect(pid).toBeGreaterThan(0);
+    expect((await run.done).code).toBe(0); // the shell has returned
+
+    // The shell has exited, so killTree does not run taskkill (it does only while the shell is alive), and the program
+    // lives on: the known limit.
+    run.stop();
+    expect(alive(pid)).toBe(true);
+  }, 15_000);
+});

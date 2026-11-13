@@ -7,7 +7,9 @@ import { onTestFinished } from "vitest";
 import { Bus, type ErrorEvent } from "../src/core/bus.js";
 import { type Mode, PermissionGate } from "../src/core/permissions.js";
 import type { CompletionRequest, Message, Part, Provider, Turn, Usage } from "../src/core/types.js";
+import type { ExecResult, Running } from "../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../src/exec/local.js";
+import { CommandLog } from "../src/exec/log.js";
 import type { Workspace } from "../src/exec/workspace.js";
 import type { ToolContext } from "../src/tools/tool.js";
 
@@ -106,6 +108,14 @@ export function fakeWorkspace(root: string, files: Record<string, string> = {}) 
     branch: async () => (calls.push("branch"), "made-up-branch"),
   };
   return { workspace, calls, files };
+}
+
+// What a stand-in executor's start gives, since the shell tool runs every command through start (background commands
+// plan, Task 5): it ends as `done` does, and a stop ends it at once as killed, as the executors' stop does (choice 1).
+export function standInRun(done: Promise<ExecResult>): Running {
+  let stop = () => {};
+  const killed = new Promise<ExecResult>((resolve) => (stop = () => resolve({ code: null, signal: "SIGKILL", stdout: "", stderr: "" })));
+  return { log: new CommandLog(), done: Promise.race([done, killed]), stop };
 }
 
 export const texts = (m: Message) => m.parts.flatMap((p: Part) => (p.type === "text" ? [p.text] : []));

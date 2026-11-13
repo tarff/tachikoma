@@ -37,7 +37,11 @@ export const keyRouting = (ui: UI, fns: Fns) => {
       !stroke.ctrl &&
       !stroke.alt &&
       (v.pending !== "" || v.count !== "" || (stroke.key === "escape" && v.mode !== "NORMAL"));
-    return fns.lookUp(stroke, contextsOf(kind, ui.fullNow.current), (field && printable(stroke)) || toVim ? ch : null, kind === "question");
+    // While the shell tool holds a foreground command, Task comes first, so its key moves it (background commands plan,
+    // choice 20); otherwise Task is not in force.
+    const c = contextsOf(kind, ui.fullNow.current);
+    const contexts: Context[] = ui.tasks.holding ? ["Task", ...c] : c;
+    return fns.lookUp(stroke, contexts, (field && printable(stroke)) || toVim ? ch : null, kind === "question");
   };
   // A stroke in the table (release 6 plan, Task 6): a chord under way first, so one ending in a plain letter completes
   // in a field too; then `typed`, the text of a key that goes into a field; then the table, in the contexts in force. A
@@ -137,9 +141,11 @@ export const keyRouting = (ui: UI, fns: Fns) => {
   // Global's actions, and Scroll's in full screen, outside the prompt: wherever Global is in force (choice 19, the
   // user's: "All three everywhere"). The detail view closes on app:toggleTranscript itself (detailKey), and each phase
   // keeps its own rule for app:interrupt, Ctrl-C being reserved. Scroll is in force at a question too, where a long
-  // detail can be read before answering.
+  // detail can be read before answering. Task's task:background moves the held foreground command (background commands
+  // plan, choice 20).
   const everywhere = (action: string, h: Now) => {
     if (action === "app:exit") return fns.twice("Ctrl-D", h);
+    if (action === "task:background") return void ui.tasks.moveForeground();
     const c = ACTIONS[action];
     if (c === "todos" || c === "lastTurn" || (c && isScroll(c))) fns.run(c);
   };
@@ -211,6 +217,7 @@ export const keyRouting = (ui: UI, fns: Fns) => {
       else if (action === "chat:externalEditor") void fns.externalEditor().catch((err) => fns.say({ text: errorText(err), color: "red" }));
       else if (action === "chat:stash") fns.swapStash(e);
       else if (action === "chat:imagePaste") fns.imagePaste(e);
+      else if (action === "task:background") fns.everywhere(action, h);
       else if (action?.startsWith("command:")) fns.command(`/${action.slice("command:".length)}`);
       else if (!got) for (const c of commands(ch, key)) fns.run(c);
     } else if (name === "Ctrl-C" && e.text) fns.clear(e); // one press clears

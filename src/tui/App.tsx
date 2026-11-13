@@ -19,7 +19,7 @@ import type { Shell } from "../safety/split.js";
 import { SETTINGS, type Settings, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
 import type { TodoItem } from "../tools/todo.js";
-import { characters, FROM, gray, isFile, type Question, SHORTEN_WORDS, STOPPING, visualSelection } from "./app/constants.js";
+import { characters, contextsOf, FROM, gray, isFile, type Question, SHORTEN_WORDS, STOPPING, visualSelection } from "./app/constants.js";
 import { handover } from "./app/handover.js";
 import { keyRouting } from "./app/keyRouting.js";
 import { liveEdits } from "./app/liveEdits.js";
@@ -58,7 +58,7 @@ import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 export interface AppProps {
   session: Session;
-  tasks: Tasks; // the lead's subagents
+  tasks: Tasks; // the lead's subagents and background commands
   bus: Bus;
   stats: Stats;
   mode: Mode; // the mode the session started in
@@ -157,7 +157,7 @@ export interface Fns {
   endRun: OutputArea["endRun"]; make: OutputArea["make"]; lookUpWindow: OutputArea["lookUpWindow"];
   submit: QueueArea["submit"]; next: QueueArea["next"]; recordToOpen: QueueArea["recordToOpen"]; leave: QueueArea["leave"];
   perform: QueueArea["perform"]; tasksCommand: QueueArea["tasksCommand"]; recordOf: QueueArea["recordOf"];
-  pick: QueueArea["pick"]; closePicker: QueueArea["closePicker"]; subagentsRunning: QueueArea["subagentsRunning"];
+  pick: QueueArea["pick"]; closePicker: QueueArea["closePicker"]; stillRunning: QueueArea["stillRunning"];
   startFresh: QueueArea["startFresh"]; resume: QueueArea["resume"];
   pickSession: QueueArea["pickSession"]; closeSessions: QueueArea["closeSessions"]; branch: QueueArea["branch"];
   rename: QueueArea["rename"]; exportTo: QueueArea["exportTo"]; mcpAction: QueueArea["mcpAction"]; closeMcp: QueueArea["closeMcp"];
@@ -344,7 +344,9 @@ export function App(props: AppProps) {
       ui.run.finished(id, Date.now());
       ui.rerender((n) => n + 1);
     };
-    // A background subagent's ending is shown when it comes; its answer is read at once when idle.
+    // A background subagent's or command's ending is shown when it comes, in the same words (background commands plan,
+    // Task 9): a command is `done` (finished) at exit code 0, `failed` at any other end of its own, `stopped` when stopped.
+    // Its answer or output is read at once when idle.
     const onTasks = () => {
       for (const t of ui.tasks.all) {
         if (!t.background || t.state === "running" || t.state === "waiting" || ui.announced.current.has(t.id)) continue;
@@ -491,15 +493,16 @@ export function App(props: AppProps) {
       ui.bus.off("mcp-note", onMcpNote);
       unbindForms?.();
       // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
-      // Ink ending on a drawing error would leave with nothing on screen.
-      ui.tasks.stop();
+      // Ink ending on a drawing error would leave with nothing on screen. Commands stop unrecorded, so a resume reports
+      // them (background commands plan, choice 29, the user's).
+      ui.tasks.close();
       ui.abort.current?.abort();
       ui.saved.release(); // the window leaves its session (release 8a plan, choice 8)
     };
   }, []);
 
   // The working line's spinner and time, while something runs; the panel's times, once a second, while
-  // only subagents do.
+  // only subagents or commands do.
   useEffect(() => {
     if (!ui.busy && !ui.running) return;
     const spin = setInterval(() => ui.setNow(Date.now()), ui.busy ? SPIN_MS : 1000);
@@ -777,6 +780,12 @@ export function App(props: AppProps) {
   // While the first prompt waits for the MCP servers, the waiting line names them (release 8c plan, choice 25), already
   // escaped (Servers, waitingFor); a hook's statusMessage first, as SessionStart's hooks are waited for before them.
   const servers = ui.session.waitingFor();
+  // While the shell tool holds a foreground command, the key that moves it to the background with the keys in force in the
+  // phase drawn, Task first (keyRouting.ts, route), spelled as the window spells keys, and none when the action is unbound
+  // (background commands plan, Task 10; choices 20, 33 and 34); the working line's redraws show it once held.
+  const moveKey = ui.tasks.holding
+    ? named(ui.table, "task:background", "Task", ["ctrl+b"], ["Task", ...contextsOf(ui.happening(() => menu !== null).phase.kind, ui.fullNow.current)])[0]
+    : undefined;
   const workingLine = ui.busy && (
     <WorkingLine
       label={
@@ -787,6 +796,7 @@ export function App(props: AppProps) {
             : ui.doing.current.label
       }
       stop={escFirst ? `${stop} ${stop}` : stop}
+      move={moveKey}
       ms={Math.max(0, ui.now - ui.doing.current.at)}
       spend={
         ui.doing.current.from && {

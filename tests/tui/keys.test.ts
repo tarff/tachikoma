@@ -131,6 +131,7 @@ describe("the keys named in help and hints", () => {
       "  /  commands · @  project paths · Shift+Tab  permission mode · Alt+P  pick the model",
       "  Ctrl+O  the last turn's tool calls in full · a space first starts a message with ?",
       "  Ctrl+T  show or hide the to-do list",
+      "  Ctrl+B  move a running command to the background",
       "  Ctrl+G or Ctrl+X Ctrl+E  open the prompt in your editor",
       "  Ctrl+S  stash the prompt or bring it back · Alt+V  paste a picture",
       "  PgUp PgDn  half a screen · Ctrl+Home Ctrl+End  top, latest · Shift+↑ Shift+↓  a line (full screen)",
@@ -242,6 +243,17 @@ describe("the keys named in help and hints", () => {
     expect(list).toHaveLength(keyList(defaults()).length - 1);
     expect(list.join("\n")).not.toContain("to-do list");
     expect(list).not.toContain("  ");
+  });
+
+  // Background commands plan, Task 10 (the user's choice 32): the key that moves a running command, which the Task
+  // context binds, named as the keys file binds it, and left out when it is set to null.
+  it("names the key that moves a running command to the background as the keys file binds it, and none when unbound", () => {
+    const list = keyList(over("Task", { "ctrl+b": null, "ctrl+g": "task:background" }));
+    expect(list).toContain("  Ctrl+G  move a running command to the background");
+    expect(list.join("\n")).not.toContain("Ctrl+B");
+    const unbound = keyList(over("Task", { "ctrl+b": null }));
+    expect(unbound).toHaveLength(keyList(defaults()).length - 1);
+    expect(unbound.join("\n")).not.toContain("to the background");
   });
 });
 

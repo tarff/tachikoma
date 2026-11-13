@@ -7,20 +7,25 @@ import { privateDir } from "../../src/auth/private.js";
 import { type Ask, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
-import { Tasks } from "../../src/core/tasks.js";
+import { type SubagentTask, Tasks } from "../../src/core/tasks.js";
 import { type Line, readTranscript, Transcript } from "../../src/core/transcript.js";
 import type { Provider, Turn } from "../../src/core/types.js";
-import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
+import { type ExecResult, MAX_TOOL_OUTPUT, type Running } from "../../src/exec/executor.js";
+import { CommandLog, deliver } from "../../src/exec/log.js";
 import type { Hook } from "../../src/hooks/config.js";
 import { Hooks, type Where } from "../../src/hooks/hooks.js";
 import type { ServerConfig } from "../../src/mcp/config.js";
 import { Servers } from "../../src/mcp/servers.js";
+import { BoxState } from "../../src/sandbox/executor.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { readFileTool } from "../../src/tools/files.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts } from "../helpers.js";
 import { fakeServer, readLog } from "../mcp/fake.js";
 
-async function setup(worker: Provider | (() => Provider), opts: { max?: number; ask?: Ask; transcript?: () => Transcript | undefined } = {}) {
+async function setup(
+  worker: Provider | (() => Provider),
+  opts: { max?: number; ask?: Ask; transcript?: () => Transcript | undefined; limits?: { started: number; moved: number; most: number } } = {},
+) {
   const bus = new Bus();
   const ctx = await tempContext();
   const gate = new PermissionGate("project", opts.ask ?? (async () => false));
@@ -32,6 +37,7 @@ async function setup(worker: Provider | (() => Provider), opts: { max?: number; 
     tools: [readFileTool],
     ctx: { ...ctx, gate },
     ...(opts.transcript ? { transcript: opts.transcript } : {}),
+    ...(opts.limits ? { limits: opts.limits } : {}),
   });
   return { bus, tasks, ctx, errors: collectErrors(bus) };
 }
@@ -47,7 +53,8 @@ describe("Tasks", () => {
     expect(worker.asked[0]!.system).toBe("sub");
     expect(worker.asked[0]!.tools.map((s) => s.name)).toEqual(["read_file"]);
     expect(worker.asked[0]!.messages).toEqual([{ role: "user", parts: [{ type: "text", text: "find the login code" }] }]);
-    expect(tasks.all.map((x) => [x.id, x.state, x.model])).toEqual([["t1", "running", "fake:held"]]);
+    expect(tasks.all).toEqual([t]);
+    expect([t.id, t.state, t.model]).toEqual(["t1", "running", "fake:held"]);
     worker.answer("It is in src/auth.ts:12");
     expect(await t.done).toEqual({ state: "done", text: "It is in src/auth.ts:12" });
     expect(tasks.all[0]!.state).toBe("done");
@@ -172,13 +179,13 @@ describe("Tasks", () => {
     await tasks.start("x", { background: false }).done;
     expect(marked).toEqual(["t1"]);
     expect([stats.input, stats.output, stats.context]).toEqual([110, 15, 110]);
-    expect([tasks.all[0]!.output, tasks.all[0]!.costUnknown]).toEqual([5, true]); // a fake model has no price
+    expect([(tasks.all[0] as SubagentTask).output, (tasks.all[0] as SubagentTask).costUnknown]).toEqual([5, true]); // a fake model has no price
   });
 
   it("keeps each subagent's latest tool call for the panel", async () => {
     const { tasks } = await setup(new FakeProvider("w", [callTool("c1", "read_file", { path: "a.txt" }), reply("none")]));
     await tasks.start("x", { background: false }).done;
-    expect(tasks.all[0]!.lastTool).toEqual({ name: "read_file", input: { path: "a.txt" } });
+    expect((tasks.all[0] as SubagentTask).lastTool).toEqual({ name: "read_file", input: { path: "a.txt" } });
   });
 
   it("asks before a read outside the project, naming the subagent, which Ctrl-C there stops", async () => {
@@ -430,7 +437,7 @@ describe("Tasks, saved", { timeout: 15_000 }, () => {
     const tools = [delegateTool(tasks, { headless: false })];
     session = new Session({ lead, tools, system: "t", ctx: { ...ctx, gate }, bus, inbox: () => tasks.take(), transcript: new Transcript(p.file, p.pictures) });
     await session.send("find a");
-    expect(tasks.all.map((t) => [t.id, t.state, t.answer])).toEqual([["t1", "done", "a is here"]]);
+    expect((tasks.all as SubagentTask[]).map((t) => [t.id, t.state, t.answer])).toEqual([["t1", "done", "a is here"]]);
     expect(existsSync(path.join(shared, p.id))).toBe(false); // no subagents folder, nor the session's own
     expect(errors.map((e) => [e.kind, e.message.split(":")[0]])).toEqual([["saving", "Saving this session stopped"]]);
   });
@@ -507,5 +514,430 @@ describe("Tasks, saved", { timeout: 15_000 }, () => {
       ["t2", "second"],
     ]);
     expect(read(p).unfinished).toEqual([]);
+  });
+});
+
+// Background commands plan, Task 4: a background command joins the task list. Its Running is a stand-in the test drives:
+// a log it adds to, a `done` it settles, and a stop that settles `done` at once, as the executors' does (choice 1).
+describe("Tasks, background commands", () => {
+  function command() {
+    const log = new CommandLog();
+    let s!: { end: (r: ExecResult) => void; fail: (err: Error) => void };
+    const done = new Promise<ExecResult>((end, fail) => (s = { end, fail }));
+    const stop = vi.fn(() => s.end({ code: null, signal: "SIGKILL", stdout: "", stderr: "" }));
+    const run: Running = { log, done, stop };
+    const end = (code: number | null, signal: NodeJS.Signals | null = null) => s.end({ code, signal, stdout: "", stderr: "" });
+    return { run, stop, end, fail: (err: Error) => s.fail(err) };
+  }
+  // A command in the box (user choice 36, PR #18 review): a stop only starts its kill there, which the test then lets run,
+  // ending `done` as a kill, or fail, rejecting it.
+  function boxCommand() {
+    const c = command();
+    const stop = vi.fn();
+    return { ...c, stop, run: { ...c.run, stop, stopsLater: true } as Running };
+  }
+  // The lead's transcript as the list writes to it, a stand-in so no file is made; `failed` keeps a subagent from saving a
+  // file of its own beside it.
+  function lead() {
+    const lines: object[] = [];
+    const transcript = () => ({ failed: "a stand-in", write: (l: object) => lines.push(l) }) as unknown as Transcript;
+    return { lines, transcript };
+  }
+  // The -p limits Task 11 passes, from the plan's "Numbers in this plan" (Claude Code's tools reference): 10 minutes for a
+  // start without a timeout and for a moved command, 2 hours at most.
+  const limits = { started: 600_000, moved: 600_000, most: 7_200_000 };
+  const fakeTimers = () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    onTestFinished(() => void vi.useRealTimers());
+  };
+
+  it("numbers commands and subagents from one counter, so no id is handed out twice", async () => {
+    const { tasks } = await setup(new Held());
+    tasks.start("a", { background: true });
+    const c = tasks.adopt(command().run, { command: "npm run dev" });
+    tasks.start("b", { background: true });
+    expect(tasks.all.map((t) => [t.id, t.kind])).toEqual([
+      ["t1", "subagent"],
+      ["t2", "command"],
+      ["t3", "subagent"],
+    ]);
+    expect(c).toMatchObject({ kind: "command", id: "t2", command: "npm run dev", background: true, state: "running", shown: true });
+    expect([tasks.get("t2"), tasks.get("t9")]).toEqual([c, undefined]);
+    tasks.stop();
+  });
+
+  it("writes the command's line to the lead's transcript before adopt returns, and its ending line at the end", async () => {
+    const saved = lead();
+    const { tasks } = await setup(new Held(), { transcript: saved.transcript });
+    const c = command();
+    const t = tasks.adopt(c.run, { command: "npm run dev" });
+    expect(saved.lines).toEqual([{ t: "command", id: "t1", command: "npm run dev" }]);
+    c.end(0);
+    await t.done;
+    expect(saved.lines).toEqual([
+      { t: "command", id: "t1", command: "npm run dev" },
+      { t: "command-ended", id: "t1", state: "done" },
+    ]);
+  });
+
+  // Choice 29, the user's: closing stops every command and subagent, but writes no ending line and leaves no note for a
+  // command, so a resume reports it; one stopped before keeps its ending. The -p limit's timer goes too.
+  it("stops everything on close, writing no ending line and leaving no note for a command still running", async () => {
+    fakeTimers();
+    const saved = lead();
+    const worker = new Held();
+    const { tasks } = await setup(worker, { transcript: saved.transcript, limits });
+    const [a, b] = [command(), command()];
+    const [ta, tb] = [tasks.adopt(a.run, { command: "npm run dev" }), tasks.adopt(b.run, { command: "npm test" })];
+    const sub = tasks.start("find x", { background: true });
+    tasks.stop("t2");
+    tasks.take();
+    tasks.close();
+    await Promise.all([ta.done, tb.done, sub.done]);
+    expect(a.stop).toHaveBeenCalled();
+    expect([ta.state, tb.state, sub.state, tasks.running]).toEqual(["stopped", "stopped", "stopped", 0]);
+    expect(saved.lines.filter((l) => (l as { t: string }).t.startsWith("command"))).toEqual([
+      { t: "command", id: "t1", command: "npm run dev" },
+      { t: "command", id: "t2", command: "npm test" },
+      { t: "command-ended", id: "t2", state: "stopped" },
+    ]);
+    expect(tasks.take()).toEqual(["Background task t3 (find x) was stopped by the user before it finished."]); // as release 8a
+    vi.advanceTimersByTime(limits.most);
+    expect(tasks.take()).toEqual([]);
+  });
+
+  it("wakes the lead when a command ends, its entry holding the output since the last read", async () => {
+    const { tasks } = await setup(new Held());
+    const c = command();
+    const t = tasks.adopt(c.run, { command: "npm test" });
+    expect(tasks.running).toBe(1);
+    c.run.log.add("one\n");
+    expect(deliver("read", c.run.log, "t1")).toBe("read\none\n"); // as a shell_output read before the end
+    c.run.log.add("two\n");
+    c.end(0);
+    await t.done;
+    expect([t.state, t.code, t.signal, typeof t.ended, tasks.running]).toEqual(["done", 0, null, "number", 0]);
+    expect(tasks.wakes()).toBe(true);
+    expect(tasks.answering()).toEqual([{ id: "t1", kind: "command" }]);
+    expect(tasks.take()).toEqual(["Background command t1 (npm test) ended with exit code 0:\ntwo\n"]);
+    expect([tasks.take(), tasks.wakes()]).toEqual([[], false]);
+  });
+
+  it("ends a command failed on any other exit, its entry saying the code or the signal", async () => {
+    const { tasks } = await setup(new Held());
+    const [a, b] = [command(), command()];
+    const [ta, tb] = [tasks.adopt(a.run, { command: "make" }), tasks.adopt(b.run, { command: "serve" })];
+    a.run.log.add("no rule\n");
+    b.run.log.add("listening\n");
+    a.end(2);
+    b.end(null, "SIGTERM");
+    await Promise.all([ta.done, tb.done]);
+    expect([ta.state, ta.code, tb.state, tb.signal]).toEqual(["failed", 2, "failed", "SIGTERM"]);
+    expect(tasks.take()).toEqual([
+      "Background command t1 (make) ended with exit code 2:\nno rule\n",
+      "Background command t2 (serve) was killed by SIGTERM:\nlistening\n",
+    ]);
+  });
+
+  // Choice 7: shell_output on an ended command calls told, so the exit code never reaches the model twice.
+  it("drops a command's ending from the inbox once the model was told of it", async () => {
+    const { tasks } = await setup(new Held());
+    const c = command();
+    const t = tasks.adopt(c.run, { command: "npm test" });
+    c.end(1);
+    await t.done;
+    expect(tasks.wakes()).toBe(true);
+    tasks.told("t1");
+    expect([tasks.wakes(), tasks.answering(), tasks.take()]).toEqual([false, [], []]);
+  });
+
+  it("gives the output once in all when it is read after the end and before the ending is taken", async () => {
+    const { tasks } = await setup(new Held());
+    const [a, b] = [command(), command()];
+    const [ta, tb] = [tasks.adopt(a.run, { command: "npm test" }), tasks.adopt(b.run, { command: "serve" })];
+    a.run.log.add("all of it\n");
+    a.end(0);
+    b.end(null, "SIGTERM");
+    await Promise.all([ta.done, tb.done]);
+    expect(deliver("t1 ended with exit code 0.", a.run.log, "t1")).toBe("t1 ended with exit code 0.\nall of it\n");
+    expect(tasks.take()).toEqual([
+      "Background command t1 (npm test) ended with exit code 0, with no new output.",
+      "Background command t2 (serve) was killed by SIGTERM, with no new output.",
+    ]);
+  });
+
+  // Choice 24: the first line cuts its command as Claude Code cuts one it shows a hook.
+  it("cuts a long command in an ending's first line at 1,000 characters", async () => {
+    const { tasks } = await setup(new Held());
+    const long = `echo ${"x".repeat(1_195)}`;
+    const c = command();
+    const t = tasks.adopt(c.run, { command: long });
+    c.end(0);
+    await t.done;
+    expect(tasks.take()).toEqual([`Background command t1 (${long.slice(0, 1_000)}… [+200 chars]) ended with exit code 0, with no new output.`]);
+  });
+
+  it("stops a command for the user and for stop_task, each said once at the next turn, waking no one", async () => {
+    const saved = lead();
+    const { tasks } = await setup(new Held(), { transcript: saved.transcript });
+    const [a, b] = [command(), command()];
+    const [ta, tb] = [tasks.adopt(a.run, { command: "npm run dev" }), tasks.adopt(b.run, { command: "npm run watch" })];
+    a.run.log.add("ready\n");
+    expect(tasks.stop("t1")).toBe(true);
+    expect(tasks.stop("t2", "tool")).toBe(true);
+    await Promise.all([ta.done, tb.done]); // each stop's SIGKILL end adds no ending of its own
+    expect([ta.state, tb.state, typeof ta.ended, tasks.running]).toEqual(["stopped", "stopped", "number", 0]);
+    expect([tasks.wakes(), tasks.answering()]).toEqual([false, []]);
+    expect(tasks.take()).toEqual([
+      "Background command t1 (npm run dev) was stopped by the user.",
+      "Background command t2 (npm run watch) was stopped by stop_task.",
+    ]);
+    expect(tasks.take()).toEqual([]);
+    expect(tasks.stop("t1")).toBe(false); // no longer running
+    expect([a.stop.mock.calls.length, b.stop.mock.calls.length]).toEqual([1, 1]);
+    expect(saved.lines.slice(2)).toEqual([
+      { t: "command-ended", id: "t1", state: "stopped" },
+      { t: "command-ended", id: "t2", state: "stopped" },
+    ]);
+  });
+
+  // Choice 23: Docker that cannot be reached, or a spawn error, rejects `done`.
+  it("ends a command whose run fails as failed, telling the lead with its output, its -p timer cleared", async () => {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    onTestFinished(() => void process.off("unhandledRejection", unhandled));
+    const saved = lead();
+    const { tasks } = await setup(new Held(), { transcript: saved.transcript, limits });
+    fakeTimers();
+    const [a, b] = [command(), command()];
+    const [ta, tb] = [tasks.adopt(a.run, { command: "npm run dev" }), tasks.adopt(b.run, { command: "serve" })];
+    expect(vi.getTimerCount()).toBe(2);
+    a.run.log.add("starting\n");
+    a.fail(new Error("Docker could not be reached"));
+    b.fail(new Error("e".repeat(1_200))); // a head stays short, so the output has room (As built, Task 1)
+    await Promise.all([ta.done, tb.done]);
+    expect([ta.state, tb.state, vi.getTimerCount()]).toEqual(["failed", "failed", 0]);
+    expect(tasks.wakes()).toBe(true);
+    expect(tasks.take()).toEqual([
+      "Background command t1 (npm run dev) failed: Docker could not be reached\nstarting\n",
+      `Background command t2 (serve) failed: ${"e".repeat(1_000)}… [+200 chars]\nNo new output.`,
+    ]);
+    expect(saved.lines.slice(2)).toEqual([
+      { t: "command-ended", id: "t1", state: "failed" },
+      { t: "command-ended", id: "t2", state: "failed" },
+    ]);
+    vi.advanceTimersByTime(limits.most);
+    expect([a.stop.mock.calls.length, tasks.take(), ta.state]).toEqual([0, [], "failed"]);
+    await new Promise((r) => setImmediate(r));
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it("stops every subagent and every command when no id is given", async () => {
+    const { tasks } = await setup(new Held());
+    const sub = tasks.start("find x", { background: true });
+    const c = command();
+    const t = tasks.adopt(c.run, { command: "npm run dev" });
+    await settle();
+    expect(tasks.stop()).toBe(true);
+    expect((await sub.done).state).toBe("stopped");
+    await t.done;
+    expect([t.state, c.stop.mock.calls.length, tasks.running]).toEqual(["stopped", 1, 0]);
+    expect(tasks.stop()).toBe(false);
+  });
+
+  // Choice 8: under -p a background command has a time limit, as Claude Code's does.
+  it("stops a -p command at its limit: 10 minutes without a timeout, its timeout up to 2 hours, 10 minutes from a move", async () => {
+    const saved = lead();
+    const { tasks } = await setup(new Held(), { transcript: saved.transcript, limits });
+    fakeTimers();
+    const [plain, long, over] = [command(), command(), command()];
+    const tp = tasks.adopt(plain.run, { command: "npm run dev" });
+    const tl = tasks.adopt(long.run, { command: "npm run e2e", limit: 7_200_000 });
+    const to = tasks.adopt(over.run, { command: "npm run soak", limit: 9_000_000 }); // more than the most is cut to it
+    plain.run.log.add("ready\n");
+    vi.advanceTimersByTime(600_000 - 1);
+    expect(plain.stop).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect([plain.stop.mock.calls.length, tp.state, typeof tp.ended, tasks.wakes()]).toEqual([1, "stopped", "number", true]);
+    expect(tasks.take()).toEqual(['Background command "npm run dev" was stopped after reaching its background time limit\nready\n']);
+    const moved = command();
+    const tm = tasks.adopt(moved.run, { command: "npm run build", moved: true });
+    vi.advanceTimersByTime(600_000 - 1);
+    expect(moved.stop).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(tm.state).toBe("stopped");
+    expect(tasks.take()).toEqual(['Background command "npm run build" was stopped after reaching its background time limit\nNo new output.']);
+    vi.advanceTimersByTime(7_200_000 - 1_200_000 - 1); // 1,200,000 have passed
+    expect([long.stop.mock.calls.length, over.stop.mock.calls.length]).toEqual([0, 0]);
+    vi.advanceTimersByTime(1);
+    expect([tl.state, to.state]).toEqual(["stopped", "stopped"]);
+    expect(tasks.take()).toEqual([
+      'Background command "npm run e2e" was stopped after reaching its background time limit\nNo new output.',
+      'Background command "npm run soak" was stopped after reaching its background time limit\nNo new output.',
+    ]);
+    await Promise.all([tp.done, tl.done, to.done, tm.done]);
+    expect(tasks.take()).toEqual([]); // a stop's SIGKILL end adds no ending
+    expect(saved.lines.filter((l) => (l as { t: string }).t === "command-ended")).toEqual(
+      ["t1", "t4", "t2", "t3"].map((id) => ({ t: "command-ended", id, state: "stopped" })),
+    );
+  });
+
+  it("clears a -p command's time limit when the user stops it", async () => {
+    const { tasks } = await setup(new Held(), { limits });
+    fakeTimers();
+    const c = command();
+    tasks.adopt(c.run, { command: "npm run dev" });
+    expect(tasks.stop("t1")).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(600_000 + 1);
+    expect(tasks.take()).toEqual(["Background command t1 (npm run dev) was stopped by the user."]);
+    expect(c.stop).toHaveBeenCalledTimes(1);
+  });
+
+  // User choice 37, PR #18 review and its fixes' review: under -p each turn the wait starts takes one ending, at its first
+  // take or at a later one, after a round of tool calls.
+  it("gives one ending in all, the first, with every note, in a turn -p's wait starts", async () => {
+    const { tasks } = await setup(new Held());
+    const [a, b, c, d, e, f] = [command(), command(), command(), command(), command(), command()];
+    const [ta, , tc, , te, tf] = [
+      tasks.adopt(a.run, { command: "make" }),
+      tasks.adopt(b.run, { command: "serve" }),
+      tasks.adopt(c.run, { command: "npm test" }),
+      tasks.adopt(d.run, { command: "npm run watch" }),
+      tasks.adopt(e.run, { command: "npm run e2e" }),
+      tasks.adopt(f.run, { command: "npm run lint" }),
+    ];
+    a.end(0);
+    await ta.done;
+    tasks.stop("t2");
+    c.end(1);
+    await tc.done;
+    await tasks.oneEnding(async () => {
+      expect(tasks.take()).toEqual([
+        "Background command t1 (make) ended with exit code 0, with no new output.",
+        "Background command t2 (serve) was stopped by the user.",
+      ]);
+      tasks.stop("t4");
+      expect(tasks.take()).toEqual(["Background command t4 (npm run watch) was stopped by the user."]); // t3's ending waits
+    });
+    await tasks.oneEnding(async () => {
+      expect(tasks.take()).toEqual(["Background command t3 (npm test) ended with exit code 1, with no new output."]);
+      e.end(0);
+      await te.done;
+      expect(tasks.take()).toEqual([]); // t5's, ended during the turn, waits for one of its own
+    });
+    f.end(0);
+    await tf.done;
+    // A turn that failed ends its hold, and a window's take takes everything.
+    await expect(tasks.oneEnding(() => Promise.reject(new Error("down")))).rejects.toThrow("down");
+    expect(tasks.take()).toEqual([
+      "Background command t5 (npm run e2e) ended with exit code 0, with no new output.",
+      "Background command t6 (npm run lint) ended with exit code 0, with no new output.",
+    ]);
+  });
+
+  // User choice 36, PR #18 review: in the box a stop counts once its kill has run there.
+  it("counts a box stop once its kill has run, the command running until then, said once at the next turn", async () => {
+    const saved = lead();
+    const { tasks } = await setup(new Held(), { transcript: saved.transcript, limits });
+    fakeTimers();
+    const c = boxCommand();
+    const t = tasks.adopt(c.run, { command: "npm run dev" });
+    expect(tasks.stop("t1")).toBe(true);
+    expect([t.state, t.stoppedBy, tasks.running, tasks.take()]).toEqual(["running", undefined, 1, []]);
+    expect(tasks.stop("t1")).toBe(false); // the first stop's words stand
+    vi.advanceTimersByTime(limits.started); // nor does the limit stop it again
+    expect(c.stop).toHaveBeenCalledTimes(1);
+    c.end(null, "SIGKILL");
+    await t.done;
+    expect([t.state, t.stoppedBy, tasks.running, tasks.wakes()]).toEqual(["stopped", "user", 0, false]);
+    expect(tasks.take()).toEqual(["Background command t1 (npm run dev) was stopped by the user."]);
+    expect(saved.lines.slice(1)).toEqual([{ t: "command-ended", id: "t1", state: "stopped" }]);
+  });
+
+  it("ends a box command failed when the user's stop cannot kill it, said once at the next turn, waking no one", async () => {
+    const saved = lead();
+    const { tasks } = await setup(new Held(), { transcript: saved.transcript });
+    const c = boxCommand();
+    const t = tasks.adopt(c.run, { command: "npm run dev" });
+    c.run.log.add("ready\n");
+    tasks.stop("t1");
+    // The sandbox's own failure, as the box's `done` rejects with it (sandbox/executor.ts, inGroup and BoxState.fail).
+    c.fail(new BoxState("b0x").fail("The stop could not reach the box (Docker is not running)"));
+    await t.done;
+    const error = "The sandbox stopped working: The stop could not reach the box (Docker is not running). Shell and file tools are off until Tachikoma is launched again.";
+    expect([t.state, t.stoppedBy, t.error, tasks.wakes()]).toEqual(["failed", undefined, error, false]);
+    expect(tasks.take()).toEqual([`Background command t1 (npm run dev) failed: ${error}\nready\n`]);
+    expect(saved.lines.slice(1)).toEqual([{ t: "command-ended", id: "t1", state: "failed" }]);
+  });
+
+  // PR #18 fixes' review: a command that ends by itself while the box's kill is on its way is said stopped.
+  it("says a box command stopped by its stopper when it ended by itself while the kill was on its way", async () => {
+    const { tasks } = await setup(new Held());
+    const c = boxCommand();
+    const t = tasks.adopt(c.run, { command: "npm test" });
+    tasks.stop("t1", "tool");
+    c.end(0);
+    await t.done;
+    expect([t.state, t.stoppedBy, t.code]).toEqual(["stopped", "tool", undefined]);
+    expect(tasks.take()).toEqual(["Background command t1 (npm test) was stopped by stop_task."]);
+  });
+
+  it("tells the lead of a box command's -p limit only once its kill has run, or that the kill failed", async () => {
+    const { tasks } = await setup(new Held(), { limits });
+    fakeTimers();
+    const [a, b] = [boxCommand(), boxCommand()];
+    const [ta, tb] = [tasks.adopt(a.run, { command: "npm run dev" }), tasks.adopt(b.run, { command: "npm run watch" })];
+    vi.advanceTimersByTime(limits.started);
+    expect([a.stop.mock.calls.length, b.stop.mock.calls.length, ta.state, tb.state]).toEqual([1, 1, "running", "running"]);
+    expect([tasks.wakes(), tasks.take()]).toEqual([false, []]);
+    a.end(null, "SIGKILL");
+    await ta.done;
+    expect([ta.state, ta.stoppedBy, tasks.wakes()]).toEqual(["stopped", "limit", true]);
+    expect(tasks.take()).toEqual(['Background command "npm run dev" was stopped after reaching its background time limit\nNo new output.']);
+    b.fail(new Error("The stop could not reach the box (Docker is not running)"));
+    await tb.done;
+    expect([tb.state, tb.stoppedBy, tasks.wakes()]).toEqual(["failed", undefined, true]);
+    expect(tasks.take()).toEqual([
+      "Background command t2 (npm run watch) failed at its background time limit: The stop could not reach the box (Docker is not running)\nNo new output.",
+    ]);
+  });
+
+  it("gives a command no time limit outside -p", async () => {
+    const { tasks } = await setup(new Held());
+    fakeTimers();
+    const c = command();
+    const t = tasks.adopt(c.run, { command: "npm run dev", limit: 600_000 });
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(7_200_000);
+    expect([t.state, c.stop.mock.calls.length, tasks.wakes()]).toEqual(["running", 0, false]);
+    tasks.stop();
+  });
+
+  // Choice 9: the shell tool holds its foreground command here while it runs, for Ctrl+B.
+  it("moves the held foreground command, and says when none is held", async () => {
+    const { tasks } = await setup(new Held());
+    expect(tasks.moveForeground()).toBe(false);
+    const move = vi.fn();
+    tasks.holding = { move };
+    expect([tasks.moveForeground(), move.mock.calls.length]).toEqual([true, 1]);
+    tasks.holding = undefined;
+    expect(tasks.moveForeground()).toBe(false);
+  });
+
+  // Choice 5: commands never take a place under --max-tasks.
+  it("never holds a command back for --max-tasks, nor takes a subagent's place", async () => {
+    const worker = new Held();
+    const { tasks } = await setup(worker, { max: 8 });
+    for (let n = 1; n <= 8; n++) tasks.start(`job ${n}`, { background: true });
+    await settle();
+    const t = tasks.adopt(command().run, { command: "npm run dev" });
+    tasks.start("job 9", { background: true });
+    await settle();
+    expect([t.state, tasks.all.at(-1)!.state, tasks.running, worker.asked.length]).toEqual(["running", "waiting", 10, 8]);
+    worker.answer("one");
+    await settle();
+    expect([tasks.all.at(-1)!.state, worker.asked.length]).toEqual(["running", 9]);
+    tasks.stop();
   });
 });
