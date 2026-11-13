@@ -91,6 +91,7 @@ export class Servers {
   #started = false;
   #offered = new Map<string, { server: string; tool: string }>(); // each name the last offer gave, with its owner (choice 7)
   #waiters = new Set<() => void>();
+  #stopping = new Set<Promise<void>>(); // the stops of servers a live edit removed, until each has stopped
   #prepared = new WeakMap<Tool, Prepared>();
   #ids = new WeakMap<Server, Map<number, number>>();
   #lastId = 0;
@@ -288,6 +289,11 @@ export class Servers {
     });
     const gone = [...old.values()];
     const stopping = new Map(gone.map((slot) => [slot.config.name, slot.server?.stop()]));
+    for (const stopped of stopping.values()) {
+      if (!stopped) continue;
+      this.#stopping.add(stopped);
+      void stopped.then(() => this.#stopping.delete(stopped));
+    }
     if (this.#started) {
       this.#sayUnreadable();
       // A restarted name's new server starts once its old one has stopped, as restart()'s does, so the two never run at
@@ -409,12 +415,13 @@ export class Servers {
     return slot.reconnecting;
   }
 
-  // At Tachikoma's exit: every server stopped (choice 3), all forgotten.
+  // At Tachikoma's exit: every server stopped (choice 3), all forgotten, and those a live edit removed waited for too,
+  // as on Windows a running server holds the folder it works in (CI on PR #18's merge).
   async stopAll(): Promise<void> {
     const slots = this.#slots;
     this.#slots = [];
     this.#wake();
-    await Promise.all(slots.map((s) => s.server?.stop()));
+    await Promise.all([...slots.map((s) => s.server?.stop()), ...this.#stopping]);
   }
 
   // A project's server starts only on the user's yes for its entry as written (choice 24; Task 9 asks); with the sandbox's

@@ -637,6 +637,22 @@ describe("Servers: starting, waiting and stopping", () => {
     await vi.waitFor(() => expect(live()).toBe(0), WAIT);
   });
 
+  // CI on PR #18's merge: stopAll waits too for a server a live edit removed, still stopping, as on Windows a running
+  // server holds the folder it works in. The fake takes 200 ms to exit once its input closes, inside the stop's 300 ms.
+  it("waits at stopAll for a server a live edit removed to have stopped", async () => {
+    const { dir, config, make } = await setup();
+    const pidFile = path.join(dir, "pid");
+    const start = `const pause = new Int32Array(new SharedArrayBuffer(4));
+      process.on("exit", () => Atomics.wait(pause, 0, 0, 200));`;
+    const servers = make([await config("s", { start, pidFile })]);
+    servers.startAll();
+    await servers.ready();
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    expect(servers.set([]).removed).toEqual(["s"]);
+    await servers.stopAll();
+    expect([...running].some((c) => c.pid === pid && c.exitCode === null && c.signalCode === null)).toBe(false);
+  });
+
   // Task 10's quality review: the table is built again after a live edit, so a kept server's count and left-out lines are
   // current at once: here "a_b"'s tool, left out while "a.b" held its name, is offered once "a.b" is removed.
   it("counts a kept server's tools again after a live edit removes the one whose name it clashed with", async () => {
