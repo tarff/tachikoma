@@ -415,7 +415,7 @@ describe("App", () => {
       { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "the notes", isError: false }] },
       { role: "assistant", parts: [{ type: "text", text: "They say hello." }] },
     ];
-    const folded = { asked: new Set<string>(), shell: "powershell" as const, names: mcpNames(), palette: DARK };
+    const folded = { asked: new Set<string>(), shell: "powershell" as const, names: mcpNames(), palette: DARK, root: tmpdir() };
     const { app } = await mount([], { intro: [...conversationLines(history, folded), { text: "Resumed: read the notes.", color: "gray" }] });
     const frame = app.lastFrame()!;
     expect(frame).toMatch(/^\n› read the notes\n\n\n● Read 1 file\n\n● They say hello\.\nResumed: read the notes\.\n/);
@@ -2761,7 +2761,7 @@ describe("App's folded tool rows", () => {
     const { file, pictures } = sessionPaths(sessions, session.id);
     const saved = readTranscript(file, pictures);
     if ("problem" in saved) throw new Error(saved.problem);
-    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK });
+    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: tmpdir() });
     expect(resumed.map((l) => l.text)).toEqual(["", "› look", "", "● Read 1 file, ran 1 shell command", "● done"]);
   });
 
@@ -3210,8 +3210,11 @@ describe("App's blocks and gaps", () => {
   // The resumed lines come through describe and foldRow as the live ones did, and say() puts the same gaps between them.
   it.each([true, false])("draws a resumed conversation as the live one was drawn (full screen: %s)", async (full) => {
     await inColour(3, async () => {
-      const turns = [both(reply("Looking."), callTool("c1", "read_file", { path: "a.txt" })), both(callTool("c2", "write_file", { path: "b.txt", content: "x" })), reply("done")];
-      const { app, ctx, session, sessions } = await mount(turns, { full, mode: "never", save: true });
+      // The write typed as its full path, which its row names relative, from the root the resume is given too (TUI design
+      // pass, Task 8's code review).
+      const turns: Turn[] = [];
+      const { app, ctx, session, sessions } = await mount([], { lead: new FakeProvider("a", turns), full, mode: "never", save: true });
+      turns.push(both(reply("Looking."), callTool("c1", "read_file", { path: "a.txt" })), both(callTool("c2", "write_file", { path: path.join(ctx.root, "b.txt"), content: "x" })), reply("done"));
       writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
       await type(app, "go");
       await showing(app, "● done");
@@ -3220,7 +3223,7 @@ describe("App's blocks and gaps", () => {
       const { file, pictures } = sessionPaths(sessions, session.id);
       const saved = readTranscript(file, pictures);
       if ("problem" in saved) throw new Error(saved.problem);
-      const lines = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK });
+      const lines = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: ctx.root });
       const resumed = await mount([], { full, intro: lines });
       expect(resumed.app.lastFrame()!.split("\n").slice(0, live.length)).toEqual(live);
     });
@@ -3494,6 +3497,67 @@ describe("App's one path per edit", () => {
     await press(app, "y");
     expect(await answer).toBe(true);
     expect(from(app, false, "┌ edit src/save.ts (2 lines)").slice(0, 4)).toEqual(["┌ edit src/save.ts (2 lines)", "- one", "+ uno", "t2 (x) to edit src/save.ts: You allowed this."]);
+  });
+
+  // Task 8's code review: the project's folder itself is named `.`, never left empty.
+  it.each([true, false])("names the project's own folder `.` on the row, heading and answer (full screen: %s)", async (full) => {
+    const { app, ask, ctx } = await mount([callTool("c1", "write_file", { path: ".", content: "x" }), reply("tried")], { full });
+    await type(app, "write it");
+    await until(app, `Allow write ${ctx.root}?`);
+    await press(app, "y");
+    await until(app, "tried");
+    expect(from(app, full, "● write_file .").slice(0, 5)).toEqual(["● write_file .", "", "┌ write . (1 line)", "x", "  ⎿ You allowed this."]);
+    const answer = ask(`write ${ctx.root}`, "x", asker("t2 (x)").owner);
+    await until(app, `Allow t2 (x) to write ${ctx.root}?`);
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    expect(rows(app, full)).toContain("t2 (x) to write .: You allowed this.");
+  });
+
+  // Task 8's code review: the question's text comes escaped (permissions.ts, visible), and Windows' path rules would read
+  // an escape's backslash as a folder's, so a path holding one is named in full in the heading and answer. The row, made
+  // from the model's own text and escaped after, names it relative.
+  it.each([true, false])("names a path holding an escaped character in full in its heading (full screen: %s)", async (full) => {
+    const name = `evil${String.fromCharCode(0x202e)}txt.exe`;
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: name, content: "x" }), reply("written")], { full });
+    const escaped = path.join(ctx.root, "evil\\u202etxt.exe");
+    await type(app, "write it");
+    await until(app, `Allow write ${escaped}?`);
+    await press(app, "y");
+    await until(app, "written");
+    expect(from(app, full, "● write_file evil\\u202etxt.exe").slice(0, 5)).toEqual(["● write_file evil\\u202etxt.exe", "", `┌ write ${escaped} (1 line)`, "x", "  ⎿ You allowed this."]);
+    expect(app.lastFrame()).not.toContain("evil/u202e");
+  });
+
+  // The user's choice at Task 8's code review, "Both": the running call's tool line names an edit's file as its row does.
+  it.each([true, false])("names a running edit's file on the tool line as its row does (full screen: %s)", async (full) => {
+    const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "./src/save.ts", old_text: "one", new_text: "uno" }), reply("edited")], { full });
+    mkdirSync(path.join(ctx.root, "src"));
+    writeFileSync(path.join(ctx.root, "src", "save.ts"), "one\n");
+    await type(app, "edit it");
+    await until(app, "Allow edit");
+    expect(stripVTControlCharacters(app.lastFrame()!)).toContain("◐ edit_file src/save.ts");
+    expect(app.lastFrame()).not.toContain("./src");
+    await press(app, "y");
+    await until(app, "edited");
+  });
+
+  // "Both": a subagent's latest tool on the panel names an edit's file as a row does.
+  it.each([true, false])("names a subagent's running edit's file on the panel as a row does (full screen: %s)", async (full) => {
+    const worker = new Held("fake:w");
+    const lead = new FakeProvider("a", [callTool("c1", "delegate", { description: "fix it", task: "fix it", background: true }), reply("started it")]);
+    const { app, ctx, tasks } = await mount([], { lead, worker, full, mode: "project" });
+    mkdirSync(path.join(ctx.root, "src"));
+    writeFileSync(path.join(ctx.root, "src", "save.ts"), "one\n");
+    await type(app, "go");
+    await until(app, "started it");
+    await waitFor(() => worker.asked.length === 1);
+    worker.answer(callTool("w1", "edit_file", { path: "./src/save.ts", old_text: "one", new_text: "uno" }));
+    await waitFor(() => worker.asked.length === 2);
+    await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("· edit_file src/save.ts"));
+    expect(app.lastFrame()).not.toContain("./src");
+    worker.answer("fixed");
+    await waitFor(() => tasks.all[0]!.state === "done");
   });
 });
 

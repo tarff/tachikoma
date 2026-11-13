@@ -147,28 +147,32 @@ export function gapped(lines: readonly Line[], before: { text: string; band?: tr
 
 // A file's path as the conversation names it (Task 8; audit 3): relative to the project's folder `root`, with forward
 // slashes, when inside it, and in full otherwise; read against `root` by its kind's rules, as the sandbox's folder,
-// /work, is a Linux path on any host.
+// /work, is a Linux path on any host. The folder itself is `.`, never left empty (Task 8's code review).
 export const fileShown = (root: string, file: string): string => {
   const paths = root.startsWith("/") ? path.posix : path;
-  return shownPath(root, paths.resolve(root, file), paths);
+  return shownPath(root, paths.resolve(root, file), paths) || ".";
+};
+
+// A call's detail as the window shows it, on its row, the tool line and the subagent panel: brief's, and with the
+// project's folder `root` an edit's or a write's file as its preview's heading names it (fileShown; the user's choices at
+// Task 8's reviews, "Edit/write rows too" and "Both"); any other call's names what the model typed.
+export const target = (name: string, input: unknown, root?: string): string | null => {
+  const typed = brief(name, input);
+  const isFile = root !== undefined && typed !== null && (name === "edit_file" || name === "write_file");
+  return isFile ? fileShown(root, typed) : typed;
 };
 
 // A call's row and its result's, as the scrollback shows them unfolded (fold.ts opens a folded row into these). The call's
 // row is a block, its `● ` the accent colour, as a printed row cannot change when the call ends, and its name and detail
 // the text colour (Task 3; choice P2); its result row is no block, and says how it went. With the project's folder
-// `root`, an edit's or a write's row names its file as its preview's heading does (fileShown; the user's choice at Task
-// 8's spec review, "Edit/write rows too"); any other row names what the model typed.
-export const callRow = (p: ToolCall, palette: Palette, names?: McpNames, root?: string): Line => {
-  const typed = brief(p.name, p.input);
-  const file = root !== undefined && typed !== null && (p.name === "edit_file" || p.name === "write_file");
-  return {
-    text: `● ${shownName(p.name, names)} ${file ? fileShown(root, typed) : (typed ?? JSON.stringify(p.input))}`,
-    color: palette.text,
-    styles: [dot(palette.accent)],
-    oneLine: true,
-    block: true,
-  };
-};
+// `root`, an edit's or a write's row names its file as its preview's heading does (target; Task 8).
+export const callRow = (p: ToolCall, palette: Palette, names?: McpNames, root?: string): Line => ({
+  text: `● ${shownName(p.name, names)} ${target(p.name, p.input, root) ?? JSON.stringify(p.input)}`,
+  color: palette.text,
+  styles: [dot(palette.accent)],
+  oneLine: true,
+  block: true,
+});
 export const resultRow = (p: ToolResult): Line => ({
   text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`,
   color: p.isError ? "red" : "gray",

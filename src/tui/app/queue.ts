@@ -398,7 +398,7 @@ export const queue = (ui: UI, fns: Fns) => {
       const now = Date.now();
       return [
         gray(`Tasks: ${all.length}`),
-        ...all.flatMap((t) => taskRow(t, now, ui.run.options.names)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true })),
+        ...all.flatMap((t) => taskRow(t, now, ui.run.options.names, ui.workspace.root)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true })),
       ];
     }
     if (verb === "stop" && !rest.length) {

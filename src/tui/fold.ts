@@ -19,13 +19,14 @@ export type Kind = Counted | "hidden" | "own";
 // What a run's calls are counted by: the asked calls (Session.asked), the shell the shell tool runs in (split.ts,
 // shellOf), and an MCP call's server and tool as the server gives them, from its full name (choice 68); and the palette
 // its rows' marks are drawn in (TUI design pass, Task 3); the project's folder, the workspace's, which an edit's or a
-// write's row names its file from (describe.ts, callRow; Task 8).
+// write's row names its file from (describe.ts, target; Task 8), given by every caller so a resumed conversation's rows
+// name them as the live ones did (Task 8's code review).
 export interface FoldOptions {
   asked: ReadonlySet<string>;
   shell: Shell;
   names: McpNames;
   palette: Palette;
-  root?: string;
+  root: string;
 }
 
 // An MCP call's server and tool as the last offer gave its full name (release 8c plan, Task 18; choice 68); for a name no

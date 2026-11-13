@@ -24,7 +24,8 @@ const OFFERED: Record<string, { server: string; tool: string }> = {
 const servers = { list: () => [{ name: "plugin:mempalace:mempalace" }], owner: (full: string) => OFFERED[full] } as unknown as Pick<Servers, "list" | "owner">;
 // The rows' colours: the dark full look's (TUI design pass, Task 3).
 const P = palette({ light: false, color: true, full: true });
-const opts = (asked: string[] = [], shell: "bash" | "powershell" = "bash") => ({ asked: new Set(asked), shell, names: mcpNames(servers), palette: P });
+// The project's folder, which an edit's or a write's row names its file from (TUI design pass, Task 8).
+const opts = (asked: string[] = [], shell: "bash" | "powershell" = "bash") => ({ asked: new Set(asked), shell, names: mcpNames(servers), palette: P, root: process.cwd() });
 const words = (calls: ToolCall[], shell: "bash" | "powershell" = "bash") =>
   rowText(calls.map((c) => ({ call: c, kinds: kindOf(c, new Set(), false, shell) })), opts().names);
 const gray = (t: string) => ({ text: t, color: "gray", oneLine: true });

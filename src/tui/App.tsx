@@ -33,7 +33,7 @@ import { useAppState } from "./app/state.js";
 import { type Bindings, keyText } from "./bindings.js";
 import { type Clipboard, imagePaths } from "./clipboard.js";
 import { Conversation, Printed } from "./Conversation.js";
-import { brief, describe, fileShown, gapAfter, type Line, notice as noticeLine, previewStyles, screen as escaped } from "./describe.js";
+import { describe, fileShown, gapAfter, type Line, notice as noticeLine, previewStyles, screen as escaped, target } from "./describe.js";
 import { DetailView, keyRow, searchFor } from "./DetailView.js";
 import { Field } from "./Field.js";
 import { History } from "./history.js";
@@ -224,10 +224,11 @@ export function App(props: AppProps) {
       // project when inside it, as the call row names it (TUI design pass, Task 8; audit 3), from the workspace's folder,
       // the sandbox's /work in the box. The question's own line keeps the full path, as it is what is allowed. A path with
       // one of files.ts's three notes after it, "(really …)", "(through a link that leads nowhere)" or "(where it really
-      // leads cannot be told)", stays in full (files.ts, noted).
+      // leads cannot be told)", stays in full (files.ts, noted); so does one holding an escape, which the summary comes
+      // with (permissions.ts, visible), as Windows' path rules would read its backslash as a folder's (Task 8's code review).
       const verb = /^(?:write|edit) /.exec(text)?.[0];
       const file = verb === undefined ? "" : text.slice(verb.length);
-      const asSaid = verb === undefined || noted(file) ? text : `${verb}${fileShown(ui.workspace.root, file)}`;
+      const asSaid = verb === undefined || noted(file) || /\\u[0-9a-f]{4}/.test(file) ? text : `${verb}${fileShown(ui.workspace.root, file)}`;
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface. One block, from its
       // heading, the empty line before it not in its range (TUI design pass, Task 3). An edit's preview, a diff, in colour
@@ -360,7 +361,7 @@ export function App(props: AppProps) {
       latest.current.lookUpWindow();
     };
     const onToolStart = ({ id, name, input }: Events["tool-start"][0]) => {
-      ui.calls.current.push({ id, name, target: brief(name, input) });
+      ui.calls.current.push({ id, name, target: target(name, input, ui.workspace.root) }); // as its row names it (TUI design pass, Task 8)
       ui.run.start(id, Date.now()); // the open run's live row (release 8c plan, choice 67; Task 17)
       ui.rerender((n) => n + 1);
     };
@@ -710,7 +711,7 @@ export function App(props: AppProps) {
     detail: d !== null,
     hint: hintFor(1) !== null, // whether there is a hint does not depend on the rows left (usualHint)
     menu: menu ? menu.entries.length : null,
-    taskRows: (rows) => taskRows(ui.tasks.all, rows, ui.now, ui.run.options.names),
+    taskRows: (rows) => taskRows(ui.tasks.all, rows, ui.now, ui.run.options.names, ui.workspace.root),
     todoRows: (rows) => (!ui.todos.current.hidden && unfinished(ui.todos.current.items) ? todoRows(ui.todos.current.items, rows) : []),
     queued: ui.queue.current.length,
     // The sessions' list: its heading and a row each; /mcp's, its heading and a row for each server, or for each action
