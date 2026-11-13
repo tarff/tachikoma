@@ -4,7 +4,7 @@ import type { Message } from "../../src/core/types.js";
 import type { Event, Hook } from "../../src/hooks/config.js";
 import type { Run } from "../../src/hooks/hooks.js";
 import type { Ran } from "../../src/hooks/run.js";
-import { callLines, lastTurn, describe as lines } from "../../src/tui/describe.js";
+import { callLines, lastTurn, describe as lines, previewStyles, screen } from "../../src/tui/describe.js";
 import { palette } from "../../src/tui/theme.js";
 
 describe("describe", () => {
@@ -55,6 +55,51 @@ describe("describe", () => {
       { text: "› /fake:greet Ann", band: true, indent: 2 },
       { text: "", band: true },
       { text: "  ⎿ [Image #2]", color: "gray", oneLine: true },
+    ]);
+  });
+});
+
+// TUI design pass, Task 7 (audit 2): an edit's preview in colour, a write's never; the text unchanged.
+describe("previewStyles", () => {
+  const FULL = palette({ light: false, color: true, full: true });
+  const NAMED = palette({ light: false, color: true, full: false });
+  const NONE = palette({ light: false, color: false, full: false });
+  const add = { color: FULL.success, bg: FULL.addTint };
+  const del = { color: FULL.error, bg: FULL.delTint };
+
+  // edit_file's detail (files.ts): old_text "a\nb", new_text "c". Each span runs to just past its line's line break.
+  it("colours an edit's `-` and `+` lines, each span over its whole line", () => {
+    expect(previewStyles("edit a.txt", "- a\n- b\n+ c", FULL)).toEqual([
+      { start: 0, end: 4, ...del },
+      { start: 4, end: 8, ...del },
+      { start: 8, end: 11, ...add },
+    ]);
+  });
+
+  it("leaves a write's preview without spans, its lines starting with `-` or `+` or not", () => {
+    expect(previewStyles("write a.md", "- one\n+ two\n-three", FULL)).toEqual([]);
+  });
+
+  it("gives no spans without colour, and colours without tints below full colour", () => {
+    expect(previewStyles("edit a.txt", "- a\n+ c", NONE)).toEqual([]);
+    expect(previewStyles("edit a.txt", "- a\n+ c", NAMED)).toEqual([
+      { start: 0, end: 4, color: "red" },
+      { start: 4, end: 7, color: "green" },
+    ]);
+  });
+
+  // Task 2's known limit: a span edge between \r and \n draws the \r. old_text "a\r\nb" and new_text "c\r\nd", as a model
+  // may send a CRLF file's text, keep each \r before its line break; screened, the \r goes with the break and the spans
+  // still meet, so the tint has no gap.
+  it("draws no \\r in a CRLF edit's preview, the spans meeting at each line", () => {
+    const detail = "- a\r\n- b\n+ c\r\n+ d";
+    const shown = screen({ text: detail, color: "gray", styles: previewStyles("edit a.txt", detail, FULL) });
+    expect(shown.text).toBe("- a\n- b\n+ c\n+ d");
+    expect(shown.styles).toEqual([
+      { start: 0, end: 4, ...del },
+      { start: 4, end: 8, ...del },
+      { start: 8, end: 12, ...add },
+      { start: 12, end: 15, ...add },
     ]);
   });
 });

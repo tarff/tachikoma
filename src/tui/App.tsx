@@ -32,7 +32,7 @@ import { useAppState } from "./app/state.js";
 import { type Bindings, keyText } from "./bindings.js";
 import { type Clipboard, imagePaths } from "./clipboard.js";
 import { Conversation, Printed } from "./Conversation.js";
-import { brief, describe, gapAfter, type Line, notice as noticeLine, screen as escaped } from "./describe.js";
+import { brief, describe, gapAfter, type Line, notice as noticeLine, previewStyles, screen as escaped } from "./describe.js";
 import { DetailView, keyRow, searchFor } from "./DetailView.js";
 import { Field } from "./Field.js";
 import { History } from "./history.js";
@@ -221,12 +221,17 @@ export function App(props: AppProps) {
       latest.current.endRun(call);
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface. One block, from its
-      // heading, the empty line before it not in its range (TUI design pass, Task 3).
+      // heading, the empty line before it not in its range (TUI design pass, Task 3). An edit's preview, a diff, in colour
+      // over the grey (Task 7).
       let range: [number, number] | undefined;
       if (detail !== undefined) {
         const lines = detail ? detail.replace(/\r?\n$/, "").split("\n").length : 0; // as read_file counts them
         const from = ui.kept.lines.length;
-        latest.current.say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray", block: true }, { text: detail || "(empty)", color: "gray" });
+        const styles = detail ? previewStyles(text, detail, ui.palette) : [];
+        latest.current.say(
+          { text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray", block: true },
+          { text: detail || "(empty)", color: "gray", ...(styles.length ? { styles } : {}) },
+        );
         if (ui.fullNow.current) range = [ui.kept.lines[from]!.text ? from : from + 1, ui.kept.lines.length - 1]; // past the gap: the heading is never empty
       }
       return new Promise((resolve) => {

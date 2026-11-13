@@ -77,6 +77,24 @@ export function screen(l: Line): Line {
   };
 }
 
+// A question's preview in colour (TUI design pass, Task 7; audit 2): only an edit's is a diff, edit_file's old text's
+// lines each marked `-` then the new text's `+` (files.ts), told from a write's, the file's own text, by its summary's
+// first word. A `+` line takes the success colour, a `-` line the error colour, each on its tint in full colour; none
+// without colour. Each span runs to just past its line's line break, so a CRLF line's \r is inside it and goes with the
+// break when screen() escapes it, never at a span's edge, where it would be drawn (Task 2's known limit).
+export function previewStyles(summary: string, detail: string, palette: Palette): Span[] {
+  if (!summary.startsWith("edit ")) return [];
+  const spans: Span[] = [];
+  let start = 0;
+  for (const l of detail.split("\n")) {
+    const end = Math.min(start + l.length + 1, detail.length); // 1: the line break, which the last line has not
+    const [color, bg] = l.startsWith("+") ? [palette.success, palette.addTint] : [palette.error, palette.delTint];
+    if (color !== undefined || bg !== undefined) spans.push({ start, end, ...(color === undefined ? {} : { color }), ...(bg === undefined ? {} : { bg }) });
+    start = end;
+  }
+  return spans;
+}
+
 // An MCP call's server and tool as the server gives them, by its full name (release 8c plan, Task 18; choice 68): the
 // window's from the names Servers offered (fold.ts, mcpNames); without them, the safe server and the full name's tool part.
 export type McpNames = (full: string) => { server: string; tool: string };

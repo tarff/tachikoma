@@ -3216,6 +3216,75 @@ describe("App's blocks and gaps", () => {
   });
 });
 
+// TUI design pass, Task 7 (audit 2): an edit's preview, its `-` lines in the error colour on the delete tint and its `+`
+// lines in the success colour on the add tint; a write's preview, the file's own text, stays grey.
+describe("App's diffs in colour", () => {
+  // 24-bit colour, so the dark look's hex is drawn as it is (theme.ts): success #5fbf6f on #1f3a26, error #f0605f on #432124.
+  const coloured = async (test: () => Promise<void>) => {
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      await test();
+    } finally {
+      chalk.level = level;
+    }
+  };
+  const ADD = ["\u001b[38;2;95;191;111m", "\u001b[48;2;31;58;38m"];
+  const DEL = ["\u001b[38;2;240;96;95m", "\u001b[48;2;67;33;36m"];
+  // The frame's raw row whose text, colours left out, is `text`.
+  const raw = (app: ReturnType<typeof render>, text: string) => {
+    const r = app.lastFrame()!.split("\n");
+    const at = r.findIndex((x) => stripVTControlCharacters(x).trimEnd().replace(/[│┃]$/, "").trimEnd() === text);
+    expect(at).toBeGreaterThan(-1);
+    return r[at]!;
+  };
+
+  it.each([true, false])("draws an edit's `-` lines red on the delete tint and `+` lines green on the add tint (full screen: %s)", async (full) => {
+    await coloured(async () => {
+      const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "a.txt", old_text: "one\ntwo", new_text: "uno" }), reply("edited")], { full });
+      writeFileSync(path.join(ctx.root, "a.txt"), "one\ntwo\n");
+      await type(app, "edit it");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow edit"));
+      for (const text of ["- one", "- two"]) for (const code of DEL) expect(raw(app, text)).toContain(code);
+      for (const code of ADD) expect(raw(app, "+ uno")).toContain(code);
+      for (const code of ADD) expect(raw(app, "- one")).not.toContain(code);
+      for (const code of DEL) expect(raw(app, "+ uno")).not.toContain(code);
+      const heading = app.lastFrame()!.split("\n").find((r) => stripVTControlCharacters(r).startsWith("┌ edit"))!;
+      for (const code of [...ADD, ...DEL]) expect(heading).not.toContain(code);
+    });
+  });
+
+  it("leaves a write's preview grey, though its lines start with `-` and `+`", async () => {
+    await coloured(async () => {
+      const { app } = await mount([callTool("c1", "write_file", { path: "a.md", content: "- one\n+ two\n" }), reply("written")]);
+      await type(app, "write it");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow write"));
+      expect(raw(app, "- one")).toBeTruthy();
+      for (const code of [...ADD, ...DEL]) expect(app.lastFrame()).not.toContain(code);
+    });
+  });
+
+  // Task 2's known limit: a span edge between \r and \n draws the \r. A model may send a CRLF file's text with its \r
+  // (files.ts, edited, finds it as sent); each line's tint is unbroken and no \r is drawn.
+  it.each([true, false])("draws a CRLF edit's diff with no \\r and its tint unbroken (full screen: %s)", async (full) => {
+    await coloured(async () => {
+      const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "a.txt", old_text: "a\r\nb", new_text: "c\r\nd" }), reply("edited")], { full });
+      writeFileSync(path.join(ctx.root, "a.txt"), "a\r\nb\r\n");
+      await type(app, "edit it");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow edit"));
+      expect(stripVTControlCharacters(app.lastFrame()!)).not.toContain("\\r");
+      expect(app.lastFrame()).not.toContain("\r");
+      for (const [text, [fg, bg]] of [["- a", DEL], ["- b", DEL], ["+ c", ADD], ["+ d", ADD]] as const) {
+        const row = raw(app, text);
+        // The line's text is drawn whole inside its colour and tint: no code between its characters.
+        expect(row).toMatch(new RegExp(`(${esc(fg!)}${esc(bg!)}|${esc(bg!)}${esc(fg!)})${esc(text)}\u001b\\[`));
+      }
+    });
+  });
+});
+
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 describe("App's to-do list", () => {
   const items: TodoItem[] = [
     { text: "read the login code", status: "done" },
