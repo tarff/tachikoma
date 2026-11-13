@@ -577,3 +577,20 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   in byte for byte (checked against the file before it was deleted) and deleted. The pixel art is
   for full colour only. Known limit: `▀ ▄ █` are drawn two columns wide by a terminal set to draw
   such characters wide, as `─` in Task 4.
+- **Task 6** (406c129, fixes 39c7b9d and 64299b3): the start-up box. The user chose (2026-11-13):
+  "Gap 2, right pad 2" (between the drawing and the list, and inside the right border; the
+  picture gives 2 on the left and 2 after a label); "Grey border+labels" (values and, "Own
+  colour", the title in the terminal's own); "Cut inside the box" (a too-wide value cut with `…`
+  inside the border); the folder row `<folder>  git:(<branch>)`, top-aligned, no blank rows,
+  the hint indented 2; "Never costs drawing" (the drawing is picked with the `read` and folder
+  rows at their shortest); "Short paths when repeated" (files sharing a name show their path,
+  home as `~`); "Cut the path's middle" (a long folder keeps its start, its own name and the
+  branch). Controller's calls: the shortcuts line always goes under the box (the plan's "in the
+  box's last line's place when there is no room under it" cannot happen, as there is always a
+  next line); the MCP count is the servers in the "starting" state; `textWidth` is in view.ts.
+  Under 7 columns the box is 7 wide (a border and padding around one column). For Task 14: the
+  README's "A grey line at the start lists them" (README.md:94) is now wrong; on the user's
+  machine the three CLAUDE.md files show as `~\.claude\CLAUDE.md and 2 more` beside the pixel
+  art, which needs 95 columns there; look at both at the check. Left as they are: App.tsx keeps
+  its own `columns - 1` beside `textWidth`; `Instructions.read[].size` is no longer shown;
+  `tilde` matches the home folder's letter case exactly.
