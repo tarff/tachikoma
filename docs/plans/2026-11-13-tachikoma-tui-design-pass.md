@@ -633,3 +633,20 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   console). Known limits: classic does not count a question line that wraps, the note or the red
   lines, so a tall classic question on a short terminal can still fill it; at 4 columns or fewer
   the box has no room inside.
+- **Task 10** (30c78d9, fixes 1f13366, a8a793b and 2bfeed3): the status line.
+  `zero()` leaves out errors at 0, tokens at 0 in and 0 out, and a cost of 0 with every price known
+  (a cost of 0 with an unknown price shows `$0.00+`); the line is measured with `string-width`
+  (the copy Ink uses) and parts drop from the end of the `--status` list. App.tsx passes
+  `columns` and the palette (outside the plan's Files, needed). The user chose (2026-11-14): "Keep
+  showing it" (a ChatGPT-plan lead at a known 0 still shows `ChatGPT plan`); a lone part too wide
+  is cut to the terminal's width with `…`, never dropped ("in relation to the terminal size");
+  "Mode drops first" (of `lead` and `mode`, the one listed later drops first); "Same everywhere"
+  (the task panel's rows use `costText`, so `$0.42+` there too); from the review, "Put back what
+  fits" (after dropping, the dropped parts are tried in list order and each that fits comes
+  back). Builder's call: nothing is put back while `lead` or `mode` is dropped, so a narrow line
+  never shows the cost without the mode. With colour off the labels are plain (they were dim).
+  For Task 14: the README's `+` sentence; at 60 columns the context bar drops before `perm ask`,
+  as the plan's order says (look at it at the check). Known limits: a line whose listed parts are
+  all zero draws nothing but keeps its row (user: "Known limit"; so before with `--status
+  tasks`); a part's width steps (`<1m` to `1m`, `999` to `1.0k`) can bring a dropped part back
+  once; `⏱` counts one column, as Ink counts it.
