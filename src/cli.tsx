@@ -879,8 +879,9 @@ if (parsed.print !== undefined) {
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();
   // The look from the launch's settings (TUI design pass, Task 1), the colour depth as Ink's own check gives it.
   const shown = look(loaded.settings, process.env, chalk.level);
+  const colours = palette(shown);
   ink = render(
-    <ThemeContext value={{ look: shown, palette: palette(shown) }}>
+    <ThemeContext value={{ look: shown, palette: colours }}>
       <App
         session={session}
         tasks={tasks}
@@ -901,10 +902,11 @@ if (parsed.print !== undefined) {
         branch={await workspace.branch().catch(() => null)}
         historyFile={historyFile(root)}
         // A resumed conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan,
-        // Task 6), its tool rows folded as they were live (release 8c plan, Task 15).
+        // Task 6), its tool rows folded as they were live (release 8c plan, Task 15), with the live lines' marks (TUI design
+        // pass, Task 3).
         intro={[
           ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
-          ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers) }),
+          ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours }),
           ...said.map((l) => ({ ...l, color: "gray" as const })),
         ]}
         pictures={pictures}

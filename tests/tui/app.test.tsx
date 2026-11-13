@@ -60,6 +60,7 @@ import { Pictures, type Read } from "../../src/tui/pictures.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
+import { palette } from "../../src/tui/theme.js";
 import { wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, standInRun, tempContext, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
@@ -340,6 +341,10 @@ const hanging = (): Provider => ({
 const OSC52 = "\u001b]52;c;Y3VybA==\u0007";
 const OSC52_SHOWN = "\\u001b]52;c;Y3VybA==\\u0007";
 
+// The palette the App draws in when no theme is given, the dark full one (theme.ts, ThemeContext), for the lines a test
+// makes as cli.tsx makes a resumed conversation's (TUI design pass, Task 3).
+const DARK = palette({ light: false, color: true, full: true });
+
 function expectNoRawControls(frame: string | undefined) {
   for (const c of ["\u001b", "\u0007", "\r", "\u202e", "\u009b"]) expect(frame).not.toContain(c);
 }
@@ -389,16 +394,16 @@ describe("App", () => {
       { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "the notes", isError: false }] },
       { role: "assistant", parts: [{ type: "text", text: "They say hello." }] },
     ];
-    const folded = { asked: new Set<string>(), shell: "powershell" as const, names: mcpNames() };
+    const folded = { asked: new Set<string>(), shell: "powershell" as const, names: mcpNames(), palette: DARK };
     const { app } = await mount([], { intro: [...conversationLines(history, folded), { text: "Resumed: read the notes.", color: "gray" }] });
     const frame = app.lastFrame()!;
-    expect(frame).toMatch(/^> read the notes\nRead 1 file\nThey say hello\.\nResumed: read the notes\.\n/);
+    expect(frame).toMatch(/^\n› read the notes\n\n● Read 1 file\n\n● They say hello\.\nResumed: read the notes\.\n/);
   });
 
   it("sends what the user types and shows the reply", async () => {
     const { app } = await mount([reply("hello there")]);
     await type(app, "hi");
-    expect(app.lastFrame()).toContain("> hi");
+    expect(app.lastFrame()).toContain("\n› hi\n"); // the conversation's row, not the prompt's
     await until(app, "hello there");
     expect(app.lastFrame()).toContain("lead fake:a");
   });
@@ -954,7 +959,7 @@ describe("App", () => {
     bus.emit("error", { kind: "provider", attempted: "x", message: `bad${OSC52}`, lead: "fake:a" });
     await until(app, "✗ provider");
     const frame = app.lastFrame();
-    expect(frame).toContain("> a\\u001b[8mb␍c");
+    expect(frame).toContain("› a\\u001b[8mb␍c");
     expect(frame).toContain(`✗ provider: bad${OSC52_SHOWN}`);
     expectNoRawControls(frame);
   });
@@ -1284,7 +1289,7 @@ describe("App's keys for stopping and exiting", () => {
     await until(app, "Esc to stop");
     await press(app, "\u001b");
     await gone(app, "Esc to stop");
-    expect(app.lastFrame()).toContain("> hi");
+    expect(app.lastFrame()).toContain("\n› hi\n");
   });
 
   // Release 7 plan, Task 10: Esc while the judge is out stops its request, and the action does not run.
@@ -1564,7 +1569,7 @@ describe("App's queue", () => {
     expect(prompts(session)).toEqual(["one", "two", "three"]);
     expect(fake.seen).toHaveLength(2);
     expect(b.seen).toHaveLength(1);
-    expect(app.lastFrame()).toMatch(/r2[\s\S]*lead is now fake:b[\s\S]*> three/);
+    expect(app.lastFrame()).toMatch(/r2[\s\S]*lead is now fake:b[\s\S]*› three/);
   });
 
   it("goes on with the queue after Esc stops a turn, and after a turn that ends in an error", async () => {
@@ -1576,7 +1581,7 @@ describe("App's queue", () => {
     await until(app, "last");
     release();
     expect(prompts(session)).toEqual(["one", "two", "three"]);
-    expect(app.lastFrame()).toMatch(/boom[\s\S]*No subagents or commands yet.[\s\S]*> three/);
+    expect(app.lastFrame()).toMatch(/boom[\s\S]*No subagents or commands yet.[\s\S]*› three/);
   });
 
   it("brings the queue back into the prompt on Ctrl-C, after what is typed, one entry a line, and sends nothing more", async () => {
@@ -2406,9 +2411,11 @@ describe("App's answers", () => {
       await press(app, "n");
       await until(app, "left it");
       const r = from(app, full, "● shell Set-Location");
-      const answer = r.slice(1, r.findIndex((x) => x.startsWith("left it")));
+      const end = r.findIndex((x) => x.startsWith("● left it"));
+      expect(r[end - 1]).toBe(""); // the reply's gap (TUI design pass, Task 3)
+      const answer = r.slice(1, end - 1);
       expect(answer[0]).toMatch(/^ {2}⎿ You declined this\. Danger: deleting whole folders: Remove-Item/);
-      // One line, wrapped: nothing else between the tool line and the reply, and no result row of its own.
+      // One line, wrapped: nothing else between the tool line and the reply's gap, and no result row of its own.
       const red = `Danger: deleting whole folders: Remove-Item -LiteralPath ${ctx.root} -Recurse -Force`;
       expect(answer.join("").replace(/\s+/g, "")).toBe(`⎿ You declined this. ${red}`.replace(/\s+/g, ""));
       expect(app.lastFrame()).toContain("\u001b[31m  ⎿ You declined this.");
@@ -2493,7 +2500,8 @@ describe("App's answers", () => {
     await press(app, "n");
     await until(app, "carried on");
     const r = from(app, full, "● write_file a.txt");
-    expect(r.slice(0, 5)).toEqual(["● write_file a.txt", `┌ write ${target} (1 line)`, "x", `write ${target}: You declined this.`, "  ⎿ You declined this."]);
+    // The preview a block of its own (TUI design pass, Task 3).
+    expect(r.slice(0, 6)).toEqual(["● write_file a.txt", "", `┌ write ${target} (1 line)`, "x", `write ${target}: You declined this.`, "  ⎿ You declined this."]);
     expect(app.lastFrame()).not.toContain("The user declined");
     expect(lead.seen[1]!.at(-1)!.parts[0]).toMatchObject({ output: `The user declined: write ${target}` });
     expect(existsSync(target)).toBe(false);
@@ -2511,9 +2519,10 @@ describe("App's answers", () => {
     await until(app, "Allow run: git log?");
     await press(app, "n");
     await until(app, "done");
-    expect(from(app, false, "● shell git status").slice(0, 6)).toEqual([
+    expect(from(app, false, "● shell git status").slice(0, 7)).toEqual([
       "● shell git status",
       "  ⎿ You allowed this.",
+      "", // each call's row a block (TUI design pass, Task 3)
       "● shell git log",
       "run: git log: You declined this.",
       "  ⎿ ok",
@@ -2533,11 +2542,13 @@ describe("App's answers", () => {
     await until(app, "Allow run: git push --force?");
     await press(app, "n");
     await until(app, "done");
-    expect(from(app, false, "Read 1 file").slice(0, 4)).toEqual([
-      "Read 1 file",
+    expect(from(app, false, "● Read 1 file").slice(0, 6)).toEqual([
+      "● Read 1 file",
+      "",
       "● shell git push --force",
       "  ⎿ You declined this. Danger: rewriting or deleting git history: git push --force",
-      "done",
+      "",
+      "● done",
     ]);
     expect(ran).toEqual([]);
   });
@@ -2547,7 +2558,7 @@ describe("App's answers", () => {
     const lead = new Held();
     const { app, ask } = await mount([], { lead, executor });
     await type(app, "look");
-    await until(app, "> look");
+    await until(app, "\n› look\n");
     const t2 = asker("t2 (x)");
     const first = ask("read /made/up/b.txt", undefined, t2.owner);
     await until(app, "Allow t2 (x) to read /made/up/b.txt?");
@@ -2580,7 +2591,7 @@ describe("App's answers", () => {
     await until(app, "Allow run: git log?");
     await press(app, "y");
     await until(app, "done");
-    expect(from(app, false, "● shell git status").slice(0, 4)).toEqual(["● shell git status", "  ⎿ You declined this.", "● shell git log", "  ⎿ You allowed this."]);
+    expect(from(app, false, "● shell git status").slice(0, 5)).toEqual(["● shell git status", "  ⎿ You declined this.", "", "● shell git log", "  ⎿ You allowed this."]);
     expect(from(app, false, "● shell git log")[2]).toBe("  ⎿ ok");
     expect(ran).toEqual(["git log"]);
   });
@@ -2608,13 +2619,13 @@ describe("App's answers", () => {
 describe("App's folded tool rows", () => {
   const rows = (app: ReturnType<typeof render>, full: boolean) =>
     stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
-  // The rows from the one that is `first` on, up to the first empty one.
+  // The rows from the one that is `first` on, the empty ones left out: the gaps between blocks and a message's band rows
+  // (TUI design pass, Task 3).
   const from = (app: ReturnType<typeof render>, full: boolean, first: string) => {
     const r = rows(app, full);
     const at = r.indexOf(first);
     expect(at).toBeGreaterThanOrEqual(0);
-    const end = r.indexOf("", at);
-    return r.slice(at, end === -1 ? undefined : end);
+    return r.slice(at).filter((x) => x !== "");
   };
   const both = (...calls: Turn[]): Turn => ({ parts: calls.flatMap((c) => c.parts), usage });
 
@@ -2630,7 +2641,7 @@ describe("App's folded tool rows", () => {
       writeFileSync(path.join(ctx.root, "b.txt"), "a\n");
       await type(app, "compare");
       await until(app, "They match.");
-      expect(from(app, full, "> compare").slice(0, 3)).toEqual(["> compare", "Searched for 1 pattern, read 2 files", "They match."]);
+      expect(from(app, full, "› compare").slice(0, 3)).toEqual(["› compare", "● Searched for 1 pattern, read 2 files", "● They match."]);
       expect(app.lastFrame()).toContain("\u001b[90mSearched for 1 pattern, read 2 files");
       expect(app.lastFrame()).not.toContain("● read_file");
     });
@@ -2644,10 +2655,10 @@ describe("App's folded tool rows", () => {
       writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
       await type(app, "look");
       await until(app, "One is missing.");
-      const r = from(app, false, "> look");
-      expect(r.slice(0, 3)).toEqual(["> look", "Read 1 file", "● read_file gone.txt"]);
+      const r = from(app, false, "› look");
+      expect(r.slice(0, 3)).toEqual(["› look", "● Read 1 file", "● read_file gone.txt"]);
       expect(r[3]).toMatch(/^ {2}⎿ \S/);
-      expect(r[4]).toBe("One is missing.");
+      expect(r[4]).toBe("● One is missing.");
       expect(app.lastFrame()).toContain("\u001b[31m  ⎿ ");
     });
   });
@@ -2660,10 +2671,10 @@ describe("App's folded tool rows", () => {
     writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
     await type(app, "look");
     await until(app, "Allow run: git status?");
-    expect(from(app, false, "> look").slice(0, 4)).toEqual(["> look", "Read 1 file", "● shell git status", "Allow run: git status? [y/n] · Esc to decline"]);
+    expect(from(app, false, "› look").slice(0, 4)).toEqual(["› look", "● Read 1 file", "● shell git status", "Allow run: git status? [y/n] · Esc to decline"]);
     await press(app, "y");
     await until(app, "done");
-    expect(from(app, false, "> look").slice(0, 6)).toEqual(["> look", "Read 1 file", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "done"]);
+    expect(from(app, false, "› look").slice(0, 6)).toEqual(["› look", "● Read 1 file", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "● done"]);
     expect(ran).toEqual(["git status"]);
   });
 
@@ -2678,7 +2689,7 @@ describe("App's folded tool rows", () => {
     expect(app.lastFrame()).not.toContain("Read 1 file"); // the run is still open
     await press(app, "\u001b");
     await gone(app, "Esc to stop");
-    expect(from(app, false, "> look")[1]).toBe("Read 1 file");
+    expect(from(app, false, "› look")[1]).toBe("● Read 1 file");
   });
 
   // The quality review's finding 3: a line the window says of its own (a provider's failure, a hook's or a server's note)
@@ -2689,8 +2700,8 @@ describe("App's folded tool rows", () => {
     writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
     await type(app, "look");
     await until(app, "overloaded");
-    const r = from(app, false, "> look");
-    expect(r[1]).toBe("Read 2 files");
+    const r = from(app, false, "› look");
+    expect(r[1]).toBe("● Read 2 files");
     expect(r[2]).toContain("overloaded");
     const lead = new Held();
     const held = await mount([], { lead });
@@ -2701,12 +2712,12 @@ describe("App's folded tool rows", () => {
     await waitFor(() => lead.asked.length === 2);
     held.bus.emit("hook-note", "A PostToolUse hook said: noted.");
     await until(held.app, "noted.");
-    expect(from(held.app, false, "> look").slice(1, 3)).toEqual(["Read 1 file", "A PostToolUse hook said: noted."]);
+    expect(from(held.app, false, "› look").slice(1, 3)).toEqual(["● Read 1 file", "● A PostToolUse hook said: noted."]);
     lead.answer(callTool("c2", "read_file", { path: "a.txt" }));
     await waitFor(() => lead.asked.length === 3);
     held.bus.emit("mcp-note", "MCP server sv is ready: 1 tool.");
     await until(held.app, "sv is ready");
-    expect(from(held.app, false, "> look").slice(3, 5)).toEqual(["Read 1 file", "MCP server sv is ready: 1 tool."]);
+    expect(from(held.app, false, "› look").slice(3, 5)).toEqual(["● Read 1 file", "● MCP server sv is ready: 1 tool."]);
   });
 
   // The re-check's item 2: a provider may use an id again, and the later call is not the asked one, so live it folds as it
@@ -2720,12 +2731,12 @@ describe("App's folded tool rows", () => {
     await until(app, "Allow run: git status?");
     await press(app, "y");
     await until(app, "done");
-    expect(from(app, false, "> look").slice(0, 6)).toEqual(["> look", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "Read 1 file", "done"]);
+    expect(from(app, false, "› look").slice(0, 6)).toEqual(["› look", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "● Read 1 file", "● done"]);
     const { file, pictures } = sessionPaths(sessions, session.id);
     const saved = readTranscript(file, pictures);
     if ("problem" in saved) throw new Error(saved.problem);
-    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames() });
-    expect(resumed.map((l) => l.text)).toEqual(["> look", "Read 1 file, ran 1 shell command", "done"]);
+    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK });
+    expect(resumed.map((l) => l.text)).toEqual(["", "› look", "", "● Read 1 file, ran 1 shell command", "● done"]);
   });
 
   // The quality review's finding 7: the click that opens a row starts the press count again, so a quick second click is a
@@ -2737,9 +2748,9 @@ describe("App's folded tool rows", () => {
     writeFileSync(path.join(ctx.root, "b.txt"), "b\n");
     await type(app, "read both");
     await until(app, "Both read.");
-    const row = shown(app).indexOf("Read 2 files");
+    const row = shown(app).indexOf("● Read 2 files");
     await pointer(mouse, ...click(3, row), ...click(3, row));
-    expect(shown(app).slice(row, row + 2)).toEqual(["Read 2 files", "Both read."]);
+    expect(shown(app).slice(row, row + 3)).toEqual(["● Read 2 files", "", "● Both read."]);
     expect(app.lastFrame()).not.toContain("Copied");
   });
 
@@ -2750,16 +2761,17 @@ describe("App's folded tool rows", () => {
     writeFileSync(path.join(ctx.root, "b.txt"), "b\n");
     await type(app, "read both");
     await until(app, "Both read.");
-    const row = shown(app).indexOf("Read 2 files");
+    const row = shown(app).indexOf("● Read 2 files");
     expect(row).toBeGreaterThan(-1);
     await pointer(mouse, ...click(3, row));
-    const opened = ["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ ok", "Both read."];
-    expect(shown(app).slice(row, row + 5)).toEqual(opened);
+    const opened = ["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ ok", "", "● Both read."];
+    expect(shown(app).slice(row, row + 6)).toEqual(opened);
     expect(app.lastFrame()).not.toContain("Copied"); // a click, not a selection
     await pointer(mouse, ...click(3, row + 2)); // any of its rows closes it
-    expect(shown(app).slice(row, row + 2)).toEqual(["Read 2 files", "Both read."]);
-    await pointer(mouse, ...click(3, row + 1)); // a row of no fold does nothing
-    expect(shown(app).slice(row, row + 2)).toEqual(["Read 2 files", "Both read."]);
+    const closed = ["● Read 2 files", "", "● Both read."];
+    expect(shown(app).slice(row, row + 3)).toEqual(closed);
+    await pointer(mouse, ...click(3, row + 2)); // a row of no fold does nothing
+    expect(shown(app).slice(row, row + 3)).toEqual(closed);
   });
 });
 
@@ -2820,9 +2832,9 @@ describe("App's live folded row", () => {
         lead.answer("They match.");
         await until(app, "They match.");
         expect(live(app, full)).toEqual([]);
-        expect(said(app, "Searched for 1 pattern, read 1 file, ran 1 shell command")).toBe(1);
+        expect(said(app, "● Searched for 1 pattern, read 1 file, ran 1 shell command")).toBe(1);
         const r = rows(app, full);
-        expect(r[r.indexOf("They match.") - 1]).toBe("Searched for 1 pattern, read 1 file, ran 1 shell command");
+        expect(r.slice(r.indexOf("● They match.") - 2, r.indexOf("● They match."))).toEqual(["● Searched for 1 pattern, read 1 file, ran 1 shell command", ""]);
       });
     } finally {
       vi.useRealTimers();
@@ -2846,7 +2858,7 @@ describe("App's live folded row", () => {
     await waitFor(() => lead.asked.length === 3);
     lead.answer("done");
     await until(app, "done");
-    expect(said(app, "Searched for 1 pattern")).toBe(1);
+    expect(said(app, "● Searched for 1 pattern")).toBe(1);
     expect(ran).toEqual(["git status"]);
   });
 
@@ -2864,7 +2876,7 @@ describe("App's live folded row", () => {
     else lead.answer({ parts: [], usage });
     await gone(app, "Esc to stop");
     expect(live(app)).toEqual([]);
-    expect(said(app, "Read 1 file")).toBe(1);
+    expect(said(app, "● Read 1 file")).toBe(1);
   });
 
   // tool_search sets neither line, so a run of only tool_search draws nothing.
@@ -2876,7 +2888,7 @@ describe("App's live folded row", () => {
     lead.answer(callTool("t1", "tool_search", { query: "quote" }));
     await waitFor(() => lead.asked.length === 2);
     const r = rows(app, false);
-    expect(r[r.indexOf("> find a tool") + 1]).toEqual(working);
+    expect(r[r.indexOf("› find a tool") + 2]).toEqual(working); // under the band's last row
     expect(app.lastFrame()).not.toContain("⎿  ");
   });
 
@@ -2893,20 +2905,20 @@ describe("App's live folded row", () => {
     await waitFor(() => lead.asked.length === 1);
     lead.answer(both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "b.txt" }), callTool("c3", "shell", { command: "npm test" })));
     await until(app, "● shell npm test");
-    const row = shown(app).indexOf("Read 2 files");
-    expect(shown(app)[row + 1]).toBe("● shell npm test");
+    const row = shown(app).indexOf("● Read 2 files");
+    expect(shown(app).slice(row + 1, row + 3)).toEqual(["", "● shell npm test"]);
     if (open) {
       await pointer(mouse, ...click(3, row));
-      expect(shown(app).slice(row, row + 4)).toEqual(["● read_file a.txt", "● read_file b.txt", "● shell npm test", ""]);
+      expect(shown(app).slice(row, row + 5)).toEqual(["● read_file a.txt", "● read_file b.txt", "", "● shell npm test", ""]);
     }
     shell.end();
     await waitFor(() => lead.asked.length === 2);
     await until(app, "  ⎿ ok");
-    const after = open ? ["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ ok", "● shell npm test", "  ⎿ ok"] : ["Read 2 files", "● shell npm test", "  ⎿ ok"];
+    const after = open ? ["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ ok", "", "● shell npm test", "  ⎿ ok"] : ["● Read 2 files", "", "● shell npm test", "  ⎿ ok"];
     expect(shown(app).slice(row, row + after.length + 1)).toEqual([...after, ""]);
     lead.answer("done");
     await until(app, "done");
-    expect(shown(app).slice(row, row + after.length + 1)).toEqual([...after, "done"]);
+    expect(shown(app).slice(row, row + after.length + 2)).toEqual([...after, "", "● done"]);
   });
 
   // A press held on a folded row below an opened one, which the opened row's results move down before the release, still
@@ -2923,9 +2935,9 @@ describe("App's live folded row", () => {
     await waitFor(() => lead.asked.length === 1);
     lead.answer(both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "shell", { command: "npm test" }), callTool("c3", "read_file", { path: "b.txt" }), callTool("c4", "shell", { command: "npm run build" })));
     await until(app, "● shell npm run build");
-    await pointer(mouse, ...click(3, shown(app).indexOf("Read 1 file")));
+    await pointer(mouse, ...click(3, shown(app).indexOf("● Read 1 file")));
     await until(app, "● read_file a.txt");
-    const b = shown(app).indexOf("Read 1 file");
+    const b = shown(app).indexOf("● Read 1 file");
     await pointer(mouse, at("press", 3, b));
     shell.end();
     await waitFor(() => ran.length === 2);
@@ -2934,7 +2946,7 @@ describe("App's live folded row", () => {
     await until(app, "  ⎿ ok");
     await pointer(mouse, at("release", 3, b));
     await until(app, "● read_file b.txt");
-    expect(shown(app)).not.toContain("Read 1 file");
+    expect(shown(app)).not.toContain("● Read 1 file");
     lead.answer("done");
     await until(app, "done");
   });
@@ -2951,7 +2963,7 @@ describe("App's live folded row", () => {
     await waitFor(() => lead.asked.length === 1);
     lead.answer(both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "b.txt" }), callTool("c3", "shell", { command: "npm test" })));
     await until(app, "● shell npm test");
-    await pointer(mouse, ...click(3, shown(app).indexOf("Read 2 files")));
+    await pointer(mouse, ...click(3, shown(app).indexOf("● Read 2 files")));
     await until(app, "● read_file b.txt");
     const detail = (name: string) => Array.from({ length: 100 }, (_, i) => `${name} ${i}.`).join("\n");
     const first = ask("write a.txt", detail("a"), asker("t2 (a)").owner);
@@ -2971,6 +2983,145 @@ describe("App's live folded row", () => {
     expect(await second).toBe(true);
     lead.answer("done");
     await gone(app, "Esc to stop");
+  });
+});
+
+// TUI design pass, Task 3: the conversation in blocks, an empty line before each but the first said, and none after an
+// empty line; your message on three band lines, `› ` in the middle; a reply's and a call's `● ` the accent colour, a folded
+// row's and a notice's grey.
+describe("App's blocks and gaps", () => {
+  const rows = (app: ReturnType<typeof render>, full = false) =>
+    stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
+  // The conversation's rows, from the first to `last`.
+  const upTo = (app: ReturnType<typeof render>, last: string, full = false) => {
+    const r = rows(app, full);
+    expect(r).toContain(last);
+    return r.slice(0, r.indexOf(last) + 1);
+  };
+  const both = (...turns: Turn[]): Turn => ({ parts: turns.flatMap((t) => t.parts), usage });
+  // 24-bit colour, so the band's hex is drawn as it is (lines.test.tsx, Printed).
+  const coloured = async (test: () => Promise<void>) => {
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      await test();
+    } finally {
+      chalk.level = level;
+    }
+  };
+  // The dark look's band #2a2a2a, muted #8a8a8a and accent #4278de (theme.ts), as 24-bit colour draws them.
+  const BAND = "\u001b[48;2;42;42;42m";
+  const MUTED = "\u001b[38;2;138;138;138m";
+  const ACCENT = "\u001b[38;2;66;120;222m";
+  // Wait until the screen shows `text`, its colours left out: a marker's colour comes between it and the text after it.
+  const showing = (app: ReturnType<typeof render>, text: string) => waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes(text));
+
+  // Two replies, the two texts of one answer; the first line said has no gap, and a reply after the band's last line, an
+  // empty one, none either.
+  it("puts an empty line between two replies, none before the first line and none after an empty one", async () => {
+    const turns = [both(reply("First."), reply("Second."))];
+    const { app } = await mount(turns);
+    await type(app, "go");
+    await until(app, "● Second.");
+    expect(upTo(app, "● Second.")).toEqual(["", "› go", "", "● First.", "", "● Second."]);
+  });
+
+  it("puts an empty line before a call and before the reply after its result, none before the result", async () => {
+    const turns = [both(reply("Writing."), callTool("c1", "write_file", { path: "a.txt", content: "x" })), reply("Done.")];
+    const { app } = await mount(turns, { mode: "never" });
+    await type(app, "go");
+    await until(app, "● Done.");
+    expect(upTo(app, "● Done.")).toEqual(["", "› go", "", "● Writing.", "", "● write_file a.txt", "  ⎿ ok", "", "● Done."]);
+  });
+
+  // A turn's replies come between calls, so the run of a quiet read is said too, at the notice (release 8c plan, Task 15's
+  // quality review).
+  it("makes a notice a block of its own between two replies, its `● ` grey, and an error one too", async () => {
+    await coloured(async () => {
+      const lead = new Held();
+      const { app, bus, ctx } = await mount([], { lead });
+      writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+      await type(app, "go");
+      await waitFor(() => lead.asked.length === 1);
+      lead.answer(both(reply("First."), callTool("c1", "read_file", { path: "a.txt" })));
+      await waitFor(() => lead.asked.length === 2);
+      bus.emit("hook-note", "A PostToolUse hook said: noted.");
+      await showing(app, "noted.");
+      lead.answer("Second.");
+      await showing(app, "● Second.");
+      const notice = ["● Read 1 file", "", "● A PostToolUse hook said: noted."];
+      expect(upTo(app, "● Second.")).toEqual(["", "› go", "", "● First.", "", ...notice, "", "● Second."]);
+      expect(app.lastFrame()).toContain(`${MUTED}● `); // the notice's dot, and the folded row's
+      expect(app.lastFrame()).toContain(`${ACCENT}● `); // a reply's
+      bus.emit("error", { kind: "hook", attempted: "x", message: "A hook failed.", lead: "fake:a" });
+      await showing(app, "✗ A hook failed.");
+      expect(upTo(app, "✗ A hook failed.").slice(-3)).toEqual(["● Second.", "", "✗ A hook failed."]);
+    });
+  });
+
+  // The band's colour reaches the screen's edge on each of the three rows: the frame's width less the scroll bar's
+  // column in full screen, the terminal's in classic.
+  it.each([true, false])("draws your message as three band rows, `› ` before its text (full screen: %s)", async (full) => {
+    await coloured(async () => {
+      const { app } = await mount([reply("ok")], { full });
+      await press(app, "hi", "\u001b[13;2u", "there", "\r"); // Shift+Enter in the kitty keyboard protocol
+      await showing(app, "● ok");
+      const raw = app.lastFrame()!.split("\n");
+      const at = rows(app, full).indexOf("› hi");
+      expect(rows(app, full).slice(at - 1, at + 4)).toEqual(["", "› hi", "  there", "", "● ok"]);
+      for (const r of raw.slice(at - 1, at + 3)) {
+        expect(r).toContain(BAND);
+        expect(stripVTControlCharacters(r).slice(0, 99)).toHaveLength(99); // padded to the edge with the band
+      }
+      expect(raw[at + 3]).not.toContain(BAND);
+      expect(app.lastFrame()).not.toContain("> hi");
+    });
+  });
+
+  // The live row is drawn, not said, so its gap is drawn with it: after a reply, none after an empty line (classic, where
+  // the live part follows the conversation's last line).
+  it("puts an empty row above the live row's top after a reply, as say() puts one before a block", async () => {
+    const lead = new Held();
+    const { app, ctx } = await mount([], { lead });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    await type(app, "go");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(both(reply("Looking."), callTool("c1", "read_file", { path: "a.txt" })));
+    await waitFor(() => lead.asked.length === 2);
+    await showing(app, "● Reading a.txt");
+    expect(upTo(app, "● Reading a.txt")).toEqual(["", "› go", "", "● Looking.", "", "● Reading a.txt"]);
+    lead.answer("Done.");
+    await showing(app, "● Done.");
+    expect(upTo(app, "● Done.").slice(3)).toEqual(["● Looking.", "", "● Read 1 file", "", "● Done."]);
+  });
+
+  it("copies a selection across a gap with an empty line there", async () => {
+    const { app, mouse, copies } = await mount([both(reply("First."), reply("Second."))], { full: true });
+    await type(app, "go");
+    await until(app, "● Second.");
+    const first = shown(app).indexOf("● First.");
+    expect(shown(app)[first + 1]).toBe("");
+    await pointer(mouse, at("press", 0, first), at("drag", 50, first + 2), at("release", 50, first + 2));
+    expect(copies).toEqual(["● First.\n\n● Second."]);
+  });
+
+  // The resumed lines come through describe and foldRow as the live ones did, and say() puts the same gaps between them.
+  it.each([true, false])("draws a resumed conversation as the live one was drawn (full screen: %s)", async (full) => {
+    await coloured(async () => {
+      const turns = [both(reply("Looking."), callTool("c1", "read_file", { path: "a.txt" })), both(callTool("c2", "write_file", { path: "b.txt", content: "x" })), reply("done")];
+      const { app, ctx, session, sessions } = await mount(turns, { full, mode: "never", save: true });
+      writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+      await type(app, "go");
+      await showing(app, "● done");
+      const live = app.lastFrame()!.split("\n").slice(0, upTo(app, "● done", full).length);
+      expect(live.map((r) => stripVTControlCharacters(r).trimEnd())).toEqual(["", "› go", "", "● Looking.", "", "● Read 1 file", "", "● write_file b.txt", "  ⎿ ok", "", "● done"]);
+      const { file, pictures } = sessionPaths(sessions, session.id);
+      const saved = readTranscript(file, pictures);
+      if ("problem" in saved) throw new Error(saved.problem);
+      const lines = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK });
+      const resumed = await mount([], { full, intro: lines });
+      expect(resumed.app.lastFrame()!.split("\n").slice(0, live.length)).toEqual(live);
+    });
   });
 });
 
@@ -3284,7 +3435,7 @@ describe("App's working line and tool lines", () => {
     await writeFile(path.join(ctx.root, "a.txt"), "x");
     await type(app, "go");
     await until(app, "done");
-    expect(app.lastFrame()).toContain("\nRead 2 files\n"); // the calls' rows fold (release 8c plan, Task 15)
+    expect(app.lastFrame()).toContain("\n● Read 2 files\n"); // the calls' rows fold (release 8c plan, Task 15)
     expect(app.lastFrame()).toMatch(/⏱[^\n]*\n✓ read_file ×2$/);
     await type(app, "more");
     await until(app, "again");
@@ -3355,7 +3506,8 @@ describe("App in full screen", () => {
     await until(app, "hello there");
     const rows = shown(app);
     expect(rows).toHaveLength(23); // 24 rows: Ink clears the whole terminal for a frame as tall as it
-    expect(rows.slice(0, 4)).toEqual(["Instructions: CLAUDE.md (12 bytes)", "> hi", "hello there", ""]);
+    // Your message's band rows after a gap, then the reply (TUI design pass, Task 3).
+    expect(rows.slice(0, 7)).toEqual(["Instructions: CLAUDE.md (12 bytes)", "", "", "› hi", "", "● hello there", ""]);
     expect(rows.at(-1)).toContain("lead fake:a");
   });
 
@@ -3368,17 +3520,17 @@ describe("App in full screen", () => {
     expect(shown(app)[0]).toBe("said 30.");
     expect(shown(app)[19]).toBe("said 49.");
     await type(app, "hi"); // sending goes to the bottom
-    await until(app, "> hi");
-    expect(shown(app)[19]).toBe("> hi"); // the working line takes the hint's row
-    await press(app, PG_UP); // from row 41 of 61
-    expect(shown(app)[0]).toBe("said 31.");
+    await until(app, "\n› hi");
+    expect(shown(app).slice(18, 20)).toEqual(["› hi", ""]); // the working line takes the hint's row
+    await press(app, PG_UP); // from row 44 of 64: the gap and three band rows after said 59. (TUI design pass, Task 3)
+    expect(shown(app)[0]).toBe("said 34.");
     lead.answer("a\nb");
     await until(app, "↓ 2 new lines · Ctrl+End");
     await gone(app, "Esc to stop");
-    expect(shown(app)[0]).toBe("said 31.");
-    expect(app.lastFrame()).not.toContain("> hi");
+    expect(shown(app)[0]).toBe("said 34.");
+    expect(app.lastFrame()).not.toContain("› hi");
     await press(app, CTRL_END);
-    expect(shown(app).slice(17, 20)).toEqual(["> hi", "a", "b"]);
+    expect(shown(app).slice(16, 20)).toEqual(["› hi", "", "● a", "  b"]);
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -3508,9 +3660,9 @@ describe("App in full screen", () => {
     await type(app, "next"); // queued: a turn is running
     await until(app, "↑ to edit queued messages");
     await press(app, PG_UP);
-    expect(app.lastFrame()).not.toContain("> go");
+    expect(app.lastFrame()).not.toContain("› go");
     lead.answer("first reply");
-    await until(app, "> next");
+    await until(app, "› next");
     expect(app.lastFrame()).toContain("first reply");
     expect(app.lastFrame()).not.toContain("new lines");
     lead.answer("second reply"); // following: it shows as it comes
@@ -3678,11 +3830,11 @@ describe("App's wheel and scroll bar in full screen", () => {
     const lead = new Held();
     const { app, mouse } = await mount([], { full: true, lead, intro: said(80) });
     await type(app, "go");
-    await until(app, "> go");
+    await until(app, "› go");
     await wheel(mouse, "up", 2);
-    expect(app.lastFrame()).not.toContain("> go");
+    expect(app.lastFrame()).not.toContain("› go");
     await wheel(mouse, "down", 5); // past the bottom
-    expect(app.lastFrame()).toContain("> go");
+    expect(app.lastFrame()).toContain("› go");
     lead.answer("fresh");
     await until(app, "fresh");
     expect(app.lastFrame()).not.toContain("new lines");
@@ -3720,10 +3872,10 @@ describe("App's wheel and scroll bar in full screen", () => {
     const lead = new Held();
     const { app, mouse } = await mount([], { full: true, lead, intro: said(80) });
     await type(app, "go");
-    await until(app, "> go");
+    await until(app, "› go");
     await press(app, CTRL_HOME);
     await pointer(mouse, at("press", BAR, 0), at("drag", BAR, 19), at("release", BAR, 19));
-    expect(shown(app)[19]).toBe("> go");
+    expect(shown(app).slice(18, 20)).toEqual(["› go", ""]); // your message's last band row at the foot (TUI design pass, Task 3)
     lead.answer("fresh");
     await until(app, "fresh");
     expect(app.lastFrame()).not.toContain("new lines");
@@ -3922,11 +4074,11 @@ describe("App's selecting and copying in full screen", () => {
       expect(reversed(app)[19]).toBe("said 79.");
       bus.emit("error", { kind: "fallback", attempted: "x", message: "moved on", lead: "fake:a" });
       await until(app, "↪ moved on");
-      expect(reversed(app)[18]).toBe("said 79.");
+      expect(reversed(app)[17]).toBe("said 79."); // a block: its gap and its line (TUI design pass, Task 3)
       await wheel(mouse, "up"); // 3 rows: said 79. goes below the view
       expect(reversed(app).slice(0, 20).join("")).toBe("");
       await wheel(mouse, "down");
-      expect(reversed(app)[18]).toBe("said 79.");
+      expect(reversed(app)[17]).toBe("said 79.");
     });
   });
 
@@ -4102,7 +4254,7 @@ describe("App's selecting and copying in full screen", () => {
     const { app, mouse, bus, copies } = await mount([], { full: true, intro: said(80) });
     await press(app, PG_UP); // said 50. to said 69.
     bus.emit("error", { kind: "fallback", attempted: "x", message: "moved on", lead: "fake:a" });
-    await until(app, "↓ 1 new line");
+    await until(app, "↓ 2 new lines"); // a block: its gap and its line (TUI design pass, Task 3)
     await pointer(mouse, at("press", 0, 17), at("drag", 3, 19), at("drag", 50, 19), at("release", 50, 19));
     expect(copies).toEqual(["said 67.\nsaid 68."]);
     await pointer(mouse, ...click(2, 19), ...click(2, 19)); // a double-click on the row
@@ -4118,12 +4270,13 @@ describe("App's selecting and copying in full screen", () => {
     Object.assign(app.stdout, { rows: 30 }); // 26 rows of conversation: said 0. to said 21., then 4 blank
     app.stdout.emit("resize");
     await tick();
-    bus.emit("message", { role: "assistant", parts: [{ type: "text", text: "one\ntwo\nthree\nfour" }] });
-    await until(app, "four");
-    expect(shown(app)[25]).toBe("four");
+    // A reply of three lines, after its gap, fills the 4 (TUI design pass, Task 3).
+    bus.emit("message", { role: "assistant", parts: [{ type: "text", text: "one\ntwo\nthree" }] });
+    await until(app, "three");
+    expect(shown(app).slice(22, 26)).toEqual(["", "● one", "  two", "  three"]);
     expect(app.lastFrame()).not.toContain("new line");
-    await pointer(mouse, ...click(1, 25), ...click(1, 25));
-    expect(copies).toEqual(["four"]);
+    await pointer(mouse, ...click(3, 25), ...click(3, 25));
+    expect(copies).toEqual(["three"]);
   });
 
   it("takes away the line about a copy on a paste, as on a key", async () => {
@@ -4405,7 +4558,7 @@ describe("App's questions in full screen", () => {
     const lead = new Held();
     const { app, mouse, ask } = await mount([], { full: true, lead, intro: said(60) });
     await type(app, "go");
-    await until(app, "> go");
+    await until(app, "\n› go");
     if (up) await press(app, PG_UP);
     const answer = ask("write a.txt", detail(100));
     await until(app, "[y/n]");
@@ -4421,7 +4574,7 @@ describe("App's questions in full screen", () => {
       await gone(app, "Esc to stop");
       expect(shown(app)[0]).toBe("line 12.");
       expect(app.lastFrame()).not.toContain("later reply");
-      expect(app.lastFrame()).toContain("↓ 2 new lines · Ctrl+End"); // the answer's line and the reply
+      expect(app.lastFrame()).toContain("↓ 3 new lines · Ctrl+End"); // the answer's line, the reply's gap and the reply
       await press(app, CTRL_END);
     }
     await until(app, "later reply");
@@ -4443,27 +4596,27 @@ describe("App's questions in full screen", () => {
     const lead = new Held();
     const { app, ask } = await mount([], { full: true, lead, intro: said(60) });
     await type(app, "go");
-    await until(app, "> go");
+    await until(app, "\n› go");
     const t2 = asker("t2 (a)");
     const t3 = asker("t3 (b)");
     const first = ask("write a.txt", detail(5, "a"), t2.owner);
     await until(app, "Allow t2 (a) to write a.txt? [y/n]");
     expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt", "a"), ""]);
     const second = ask("write b.txt", detail(5, "b"), t3.owner);
-    await until(app, "↓ 6 new lines · Ctrl+End"); // the second's heading and detail, below
+    await until(app, "↓ 7 new lines · Ctrl+End"); // the second's gap, heading and detail, below (TUI design pass, Task 3)
     expect(shown(app).slice(14, 20)).toEqual(headed("write a.txt", "a"));
     lead.answer("a reply");
-    await until(app, "↓ 7 new lines · Ctrl+End");
+    await until(app, "↓ 9 new lines · Ctrl+End");
     expect(shown(app).slice(14, 20)).toEqual(headed("write a.txt", "a"));
     await press(app, "y");
     expect(await first).toBe(true);
     await until(app, "Allow t3 (b) to write b.txt? [y/n]");
-    // Below the second's detail: the reply and the first's answer.
-    expect(shown(app).slice(14, 21)).toEqual([...headed("write b.txt", "b"), "↓ 2 new lines · Ctrl+End"]);
+    // Below the second's detail: the reply, with its gap, and the first's answer.
+    expect(shown(app).slice(14, 21)).toEqual([...headed("write b.txt", "b"), "↓ 3 new lines · Ctrl+End"]);
     await press(app, "y");
     expect(await second).toBe(true);
     await gone(app, "[y/n]");
-    expect(shown(app).slice(16, 20)).toEqual(["b 4.", "a reply", "t2 (a) to write a.txt: You allowed this.", "t3 (b) to write b.txt: You allowed this."]);
+    expect(shown(app).slice(15, 20)).toEqual(["b 4.", "", "● a reply", "t2 (a) to write a.txt: You allowed this.", "t3 (b) to write b.txt: You allowed this."]);
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -4472,13 +4625,14 @@ describe("App's questions in full screen", () => {
     const lead = new Held();
     const { app, ask } = await mount([], { full: true, lead, intro: said(3) });
     await type(app, "go");
-    await until(app, "> go");
+    await until(app, "\n› go");
     const answer = ask("write a.txt", detail(5), asker("t2 (a)").owner);
     await until(app, "[y/n]");
-    expect(shown(app).slice(3, 10)).toEqual(["> go", ...headed("write a.txt")]);
+    // The prompt's gap and band rows, then the detail, no gap after the band's last row (TUI design pass, Task 3).
+    expect(shown(app).slice(3, 13)).toEqual(["", "", "› go", "", ...headed("write a.txt")]);
     lead.answer("short reply");
     await until(app, "short reply");
-    expect(shown(app)[10]).toBe("short reply");
+    expect(shown(app).slice(13, 15)).toEqual(["", "● short reply"]);
     expect(app.lastFrame()).not.toContain("new line");
     await press(app, "y");
     expect(await answer).toBe(true);
@@ -4742,12 +4896,12 @@ describe("App's detail view in full screen", () => {
     expect(rows.slice(0, 4)).toEqual(["Last turn: 1 tool call", "● read_file {", '  "path": "a.txt"', "}"]);
     expect(rows.slice(20)).toEqual([KEYS, expect.stringContaining("lead fake:a"), expect.stringContaining("read_file")]);
     expect(rows).not.toContain("›");
-    expect(app.lastFrame()).not.toContain("> go");
+    expect(app.lastFrame()).not.toContain("› go");
     await press(app, key);
     rows = shown(app);
     expect(rows).toHaveLength(23);
     expect(rows[19]).toBe("›");
-    expect(app.lastFrame()).toContain("> go");
+    expect(app.lastFrame()).toContain("› go");
     expect(app.lastFrame()).not.toContain("Last turn"); // not put in the conversation
   });
 
@@ -5801,7 +5955,7 @@ describe("App's /screen", () => {
     await until(app, "the reply");
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows.slice(0, 7)).toEqual(["said 0.", "said 1.", "said 2.", "screen is now full", "> hi", "the reply", ""]);
+    expect(rows.slice(0, 10)).toEqual(["said 0.", "said 1.", "said 2.", "screen is now full", "", "", "› hi", "", "● the reply", ""]);
   });
 
   it("prints a reply that comes after /screen to classic", async () => {
@@ -5810,7 +5964,7 @@ describe("App's /screen", () => {
     await until(app, "screen is now classic");
     await type(app, "hi");
     await until(app, "the reply");
-    expect(app.lastFrame()).toMatch(/^said 0\.\nsaid 1\.\nsaid 2\.\nscreen is now classic\n> hi\nthe reply\n›/);
+    expect(app.lastFrame()).toMatch(/^said 0\.\nsaid 1\.\nsaid 2\.\nscreen is now classic\n\n\n› hi\n\n● the reply\n›/);
   });
 
   // bindAsk is set up at mount too (Task 11): after a switch to full screen a question's detail is kept and brought into view.
@@ -5904,7 +6058,7 @@ describe("App's /screen", () => {
     await type(app, "/screen");
     await until(app, `screen is now ${to}`);
     expect(app.lastFrame()!.split("mid-switch reply")).toHaveLength(2);
-    expect(app.lastFrame()).toMatch(/said 2\.\nmid-switch reply\nscreen is now/);
+    expect(app.lastFrame()).toMatch(/said 2\.\s*\n\s*\n● mid-switch reply\s*\nscreen is now/); // a block, after its gap (TUI design pass, Task 3)
   });
 
   // Found at Task 7's review: what the mouse was doing belongs to the screen before the switch.
@@ -6060,7 +6214,9 @@ describe("App's /screen", () => {
     await until(app, "No subagents or commands yet.");
     await type(app, "/screen");
     await until(app, "screen is now full");
-    expect(shown(app).slice(0, 8)).toEqual(["> hi", "alpha", "beta", "screen is now classic", "No subagents or commands yet.", "screen is now full", "", ""]);
+    // Your message's band rows and the reply, a block, its later line indented (TUI design pass, Task 3).
+    const said = ["", "› hi", "", "● alpha", "  beta", "screen is now classic", "No subagents or commands yet.", "screen is now full"];
+    expect(shown(app).slice(0, 10)).toEqual([...said, "", ""]);
   });
 
   // Found at Task 14's spec review: a switch holds the queue as a turn does. What is sent while it runs waits for it, and a
@@ -6072,7 +6228,7 @@ describe("App's /screen", () => {
     await until(app, "screen is now full");
     const frame = app.lastFrame()!;
     expect(frame).not.toContain("suspended");
-    expect(inOrder(...["screen is now classic", "> hi", "ok", "screen is now full"].map((s) => frame.indexOf(s)))).toBe(true);
+    expect(inOrder(...["screen is now classic", "› hi", "● ok", "screen is now full"].map((s) => frame.indexOf(s)))).toBe(true);
   });
 
   // Found at Task 14's spec review: a question asked as the switch to full screen starts has its detail kept and brought
@@ -6787,7 +6943,7 @@ describe("App's pictures", () => {
     pictures.set(1, PNG);
     await until(app, "seen");
     expect(userParts(session)).toEqual([[{ type: "text", text: "look at " }, { type: "image", id: 1, ...PNG }]]);
-    expect(app.lastFrame()).toContain("> look at [Image #1]\n"); // in the conversation, one line (choice 22)
+    expect(app.lastFrame()).toContain("\n› look at [Image #1]\n"); // in the conversation, one line (choice 22)
   });
 
   it("keeps the spans of a queued message and of the stash", async () => {
@@ -7035,7 +7191,8 @@ describe("App's pictures", () => {
     expect(app.lastFrame()).not.toContain("Allow Send"); // a plain question, not a permission one
     await press(app, "y");
     await until(app, "next one");
-    expect(app.lastFrame()).toContain("Send again without the pictures: yes\nPictures are left out for fake:a from now on.\nseen");
+    // The note a notice and the reply a block, each after its gap (TUI design pass, Task 3).
+    expect(app.lastFrame()).toContain("Send again without the pictures: yes\n\n● Pictures are left out for fake:a from now on.\n\n● seen");
     expect(fake.seen).toHaveLength(3);
     expect(userParts(session)).toEqual([looked, [{ type: "text", text: "queued" }]]); // the conversation is never changed
   });
@@ -9365,7 +9522,7 @@ describe("App's sessions", () => {
     expect(app.lastFrame()).toContain("↑↓ move · Enter opens · Esc closes");
     await press(app, "\r");
     await until(app, "Resumed: remember apple.");
-    expect(app.lastFrame()).toMatch(/> remember apple\nnoted\nResumed: remember apple\.\n/);
+    expect(app.lastFrame()).toMatch(/› remember apple\n\n● noted\nResumed: remember apple\.\n/);
     expect(session.id).toBe(first.session.id);
     expect(free(own)).toBe(true);
     await type(app, "which fruit?");
@@ -9384,7 +9541,7 @@ describe("App's sessions", () => {
     await press(app, "\r");
     await until(app, "lead is now fake:a");
     expect(made).toEqual(["fake:a"]);
-    expect(app.lastFrame()).toMatch(/Resumed: lead a's session\.\nlead is now fake:a\n/);
+    expect(app.lastFrame()).toMatch(/Resumed: lead a's session\.\n\n● lead is now fake:a\n/); // a notice, after its gap (TUI design pass, Task 3)
     expect(app.lastFrame()).toMatch(/lead fake:a/); // the status line
     expect(session.lead).toBe(saidAgain);
     await type(app, "go on");
@@ -9624,8 +9781,8 @@ describe("App's sessions", () => {
     await type(app, "/branch side road");
     await until(app, "Branched:");
     // The same conversation, so it is not drawn again (release 8a final review, user, 2026-11-07: "Drop the reprint").
-    expect(bare(app.lastFrame()!)).toContain(bare(`> first\none\nBranched: this window is now side road; the original is kept as ${original}.`));
-    expect(app.lastFrame()!.split("> first")).toHaveLength(2);
+    expect(bare(app.lastFrame()!)).toContain(bare(`› first\n● one\nBranched: this window is now side road; the original is kept as ${original}.`));
+    expect(app.lastFrame()!.split("› first")).toHaveLength(2);
     expect(session.id).not.toBe(original);
     expect(free(original)).toBe(true);
     await type(app, "second");
@@ -10558,8 +10715,9 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     });
     await type(app, "go");
     await untilSlow(app, "all done");
-    expect(app.lastFrame()).toContain("t1: SubagentStop hook: hi\nA SubagentStop hook kept t1 going: again\n");
-    expect(app.lastFrame()).toContain("t1: A SubagentStop hook stopped the turn: enough\n");
+    // Each a notice, a block of its own (TUI design pass, Task 3).
+    expect(app.lastFrame()).toContain("● t1: SubagentStop hook: hi\n\n● A SubagentStop hook kept t1 going: again\n");
+    expect(app.lastFrame()).toContain("\n● t1: A SubagentStop hook stopped the turn: enough\n");
   });
 
   // Choice 24, and Task 6's review: the call is shown as the model sent it, and the rewrite under its hook's run.
@@ -11336,9 +11494,10 @@ describe("App's MCP", () => {
     await shows(first.app, "done");
     const rows = (app: ReturnType<typeof render>) => {
       const r = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
-      return r.slice(r.indexOf("> go"));
+      return r.slice(r.indexOf("› go"));
     };
-    expect(rows(first.app).slice(0, 6)).toEqual(["> go", "Read 1 file", '● s echo {"text":"hi"}', "  ⎿ You allowed this.", "  ⎿ ok", "done"]);
+    // After your message's last band row, the blocks with their gaps (TUI design pass, Task 3).
+    expect(rows(first.app).slice(0, 9)).toEqual(["› go", "", "● Read 1 file", "", '● s echo {"text":"hi"}', "  ⎿ You allowed this.", "  ⎿ ok", "", "● done"]);
     const file = sessionPaths(sessions, first.session.id).file;
     first.app.unmount();
     // Resumed, the asked line keeps its row; the answer line was the window's, not the conversation's.
@@ -11351,11 +11510,11 @@ describe("App's MCP", () => {
       return m;
     };
     const again = await resumed();
-    expect(rows(again.app).slice(0, 5)).toEqual(["> go", "Read 1 file", '● s echo {"text":"hi"}', "  ⎿ ok", "done"]);
+    expect(rows(again.app).slice(0, 8)).toEqual(["› go", "", "● Read 1 file", "", '● s echo {"text":"hi"}', "  ⎿ ok", "", "● done"]);
     again.app.unmount();
     writeFileSync(file, readFileSync(file, "utf8").split("\n").filter((l) => !l.includes('"t":"asked"')).join("\n"));
     const before = await resumed();
-    expect(rows(before.app).slice(0, 3)).toEqual(["> go", "Read 1 file, called s", "done"]);
+    expect(rows(before.app).slice(0, 5)).toEqual(["› go", "", "● Read 1 file, called s", "", "● done"]);
   });
 
   // Release 8c plan, choice 68 and Task 18: an MCP call's row names its server and its tool as the server gives them, as
@@ -11369,11 +11528,11 @@ describe("App's MCP", () => {
     await type(app, "go");
     await soon(() => expect(flat(app)).toContain('Allow my.s: foo.bar {"x":1}?'));
     const r = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
-    expect(r.slice(r.indexOf("> go"), r.indexOf("> go") + 2)).toEqual(["> go", '● my.s foo.bar {"x":1}']);
+    expect(r.slice(r.indexOf("› go"), r.indexOf("› go") + 3)).toEqual(["› go", "", '● my.s foo.bar {"x":1}']); // under the band's last row
     await press(app, "y");
     await shows(app, "finished");
     const done = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
-    expect(done.slice(done.indexOf("> go"), done.indexOf("finished") + 1)).toEqual(["> go", '● my.s foo.bar {"x":1}', "  ⎿ You allowed this.", "  ⎿ ok", "finished"]);
+    expect(done.slice(done.indexOf("› go"), done.indexOf("● finished") + 1)).toEqual(["› go", "", '● my.s foo.bar {"x":1}', "  ⎿ You allowed this.", "  ⎿ ok", "", "● finished"]);
     // So do the tool line under the prompt and Ctrl+O's full record (the user's answer, 2026-11-12).
     expect(done.at(-1)).toBe("✓ my.s foo.bar ×1");
     await press(app, "\u000f");
@@ -11730,7 +11889,7 @@ describe("App's MCP", () => {
       { type: "text", text: "@fake:note://a summarise" },
       { type: "text", text: "Resource @fake:note://a:\nthe note's text", from: "server" },
     ]);
-    expect(app.lastFrame()).toContain("> @fake:note://a summarise\n");
+    expect(app.lastFrame()).toContain("\n› @fake:note://a summarise\n");
     expect(app.lastFrame()).not.toContain("the note's text");
   });
 
@@ -11754,7 +11913,7 @@ describe("App's MCP", () => {
       { type: "text", text: "Resource @fake:pic://dot:", from: "server" },
       { type: "image", id: 1, mediaType: "image/png", data, from: "server" },
     ]);
-    expect(app.lastFrame()).toContain("> look at @fake:pic://dot now\n  ⎿ [Image #1]\n");
+    expect(app.lastFrame()).toContain("\n› look at @fake:pic://dot now\n\n  ⎿ [Image #1]\n"); // under your message's band rows
     await type(app, "/fake:talk");
     await shows(app, "talked");
     expect(lastSent(lead, 1)).toEqual([
@@ -11793,7 +11952,7 @@ describe("App's MCP", () => {
       { type: "text", text: "/fake:greet Ann" },
       { type: "text", text: "Say hello to Ann.", from: "server" },
     ]);
-    expect(app.lastFrame()).toContain("> /fake:greet Ann\n");
+    expect(app.lastFrame()).toContain("\n› /fake:greet Ann\n");
   });
 
   // The fix round: the check is made once the prompt is let through, so its words come back, with the grey line saying so.

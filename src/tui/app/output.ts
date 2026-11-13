@@ -1,14 +1,20 @@
 import type { Fns } from "../App.js";
-import { type Line, screen as escaped } from "../describe.js";
+import { type Line, notice, screen as escaped } from "../describe.js";
 import { arrived, FOLLOWING } from "../view.js";
 import type { UI } from "./state.js";
 
 export const output = (ui: UI, fns: Fns) => {
   // In full screen the lines go to the view's rows too, and a view held away from the bottom counts them (release 5
-  // design, "Scrolling"); setting `lines` draws them either way.
+  // design, "Scrolling"); setting `lines` draws them either way. One empty line goes before a block, unless it is the
+  // first line said or the line before it is empty already (TUI design pass, Task 3).
   const say = (...add: Line[]) => {
     ui.toolLine.current = null; // a tool line's own message sets it again after (App.tsx, onMessage; release 7 plan, choice 66)
-    const shown = add.map(escaped);
+    const spaced: Line[] = [];
+    for (const l of add) {
+      if (l.block && ui.lastSaid.current !== null && ui.lastSaid.current.text !== "") spaced.push({ text: "" });
+      spaced.push((ui.lastSaid.current = l));
+    }
+    const shown = spaced.map(escaped);
     if (ui.fullNow.current) {
       const before = ui.kept.lines.length;
       ui.kept.add(shown);
@@ -23,8 +29,9 @@ export const output = (ui: UI, fns: Fns) => {
     ui.view.current = FOLLOWING;
     fns.say(...add);
   };
+  // A live edit's lines go to the conversation as notices (TUI design pass, Task 3), and to the hint row as they are.
   const note = (...add: Line[]) => {
-    fns.say(...add);
+    fns.say(...add.map((l) => notice(l, ui.palette)));
     ui.notes.current = [...(ui.newEdit.current ? [] : ui.notes.current), ...add.map(escaped)];
     ui.newEdit.current = false;
   };

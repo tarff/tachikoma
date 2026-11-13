@@ -32,7 +32,7 @@ import { useAppState } from "./app/state.js";
 import { type Bindings, keyText } from "./bindings.js";
 import { type Clipboard, imagePaths } from "./clipboard.js";
 import { Conversation, Printed } from "./Conversation.js";
-import { brief, describe, type Line, screen as escaped } from "./describe.js";
+import { brief, describe, type Line, notice as noticeLine, screen as escaped } from "./describe.js";
 import { DetailView, keyRow, searchFor } from "./DetailView.js";
 import { Field } from "./Field.js";
 import { History } from "./history.js";
@@ -219,13 +219,14 @@ export function App(props: AppProps) {
       // a row of its own (release 8c plan, choice 65).
       latest.current.endRun(call);
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
-      // Grey, under a heading, so file text cannot pass for the conversation or the interface.
+      // Grey, under a heading, so file text cannot pass for the conversation or the interface. One block, from its
+      // heading, the empty line before it not in its range (TUI design pass, Task 3).
       let range: [number, number] | undefined;
       if (detail !== undefined) {
         const lines = detail ? detail.replace(/\r?\n$/, "").split("\n").length : 0; // as read_file counts them
         const from = ui.kept.lines.length;
-        latest.current.say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
-        if (ui.fullNow.current) range = [from, ui.kept.lines.length - 1];
+        latest.current.say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray", block: true }, { text: detail || "(empty)", color: "gray" });
+        if (ui.fullNow.current) range = [ui.kept.lines[from]!.text ? from : from + 1, ui.kept.lines.length - 1]; // past the gap: the heading is never empty
       }
       return new Promise((resolve) => {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
@@ -301,7 +302,7 @@ export function App(props: AppProps) {
     // before its results came is put again, so each shows under its call (choice 70; Task 21). An answered call's id is
     // let go with its result, as a provider may use an id again.
     const onMessage = (m: Message) => {
-      latest.current.say(...describe(m, ui.answered.current, ui.run));
+      latest.current.say(...describe(m, ui.palette, ui.answered.current, ui.run));
       for (const fold of ui.run.filled()) if (fold.open) latest.current.putFold(fold);
       for (const p of m.parts) if (p.type === "tool_result") ui.answered.current.delete(p.callId);
       const last = m.parts.at(-1);
@@ -310,19 +311,23 @@ export function App(props: AppProps) {
     };
     // Each line said here, outside describe, ends the open run of quiet calls first, so the calls before it are said above
     // it (release 8c plan, Task 15's quality review); a failed call's error event says nothing, its result row coming next.
+    // Each is a block, its `✗` red, or the fallback's `↪` (TUI design pass, Task 3).
     const onError = (e: ErrorEvent) => {
       if (e.kind !== "tool") latest.current.endRun();
+      const say = (l: Line) => latest.current.say({ ...l, block: true });
       if (e.kind === "tool") ui.rerender((n) => n + 1);
-      else if (e.kind === "fallback") latest.current.say({ text: `↪ ${e.message}`, color: "magenta" });
+      else if (e.kind === "fallback") say({ text: `↪ ${e.message}`, color: "magenta" });
       // Its line names what failed, so it goes without a label (release 8a plan, Task 5; user, 2026-11-06), as a
       // shortening's does (Task 12), and a hook's (release 8b plan, choice 22), whose line is escaped whole, as its grey
       // lines are (onHookNote).
       // An MCP failure's line names its server too (release 8c plan, choice 26), and is escaped whole, as it carries what
       // the server or the system said.
-      else if (e.kind === "hook" || e.kind === "mcp") latest.current.say({ text: `✗ ${visible(e.message, { tabs: true })}`, color: "red" });
-      else if (e.kind === "saving" || e.kind === "shortening") latest.current.say({ text: `✗ ${e.message}`, color: "red" });
-      else latest.current.say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
+      else if (e.kind === "hook" || e.kind === "mcp") say({ text: `✗ ${visible(e.message, { tabs: true })}`, color: "red" });
+      else if (e.kind === "saving" || e.kind === "shortening") say({ text: `✗ ${e.message}`, color: "red" });
+      else say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
     };
+    // A notice said from the bus: a block, a grey `● ` before it (Task 3; audit 7).
+    const sayNotice = (l: Line) => latest.current.say(noticeLine(l, ui.palette));
     const onUsage = () => {
       ui.rerender((n) => n + 1);
       latest.current.lookUpWindow(false);
@@ -330,7 +335,7 @@ export function App(props: AppProps) {
     const onLead = (id: string) => {
       latest.current.endRun();
       if (ui.leadFromFile.current) latest.current.note(gray(`lead is now ${id}${FROM}`));
-      else latest.current.say({ text: `lead is now ${id}`, color: "magenta" });
+      else sayNotice({ text: `lead is now ${id}`, color: "magenta" });
       latest.current.lookUpWindow();
     };
     const onToolStart = ({ id, name, input }: Events["tool-start"][0]) => {
@@ -352,7 +357,7 @@ export function App(props: AppProps) {
         if (!t.background || t.state === "running" || t.state === "waiting" || ui.announced.current.has(t.id)) continue;
         ui.announced.current.add(t.id);
         latest.current.endRun();
-        latest.current.say({ text: `${t.id} ${t.state === "done" ? "finished" : t.state}`, color: "gray" });
+        sayNotice({ text: `${t.id} ${t.state === "done" ? "finished" : t.state}`, color: "gray" });
       }
       ui.rerender((n) => n + 1);
       latest.current.next();
@@ -363,18 +368,18 @@ export function App(props: AppProps) {
     };
     const onNote = (text: string) => {
       latest.current.endRun();
-      latest.current.say(gray(text));
+      sayNotice(gray(text));
     };
     // A hook's grey line (release 8b plan, choice 23), escaped whole: it carries the hook's own words, raw, and its command,
     // so a line break in them cannot pass for a line of the window's own (Task 6's review).
     const onHookNote = (line: string) => {
       latest.current.endRun();
-      latest.current.say(gray(visible(line, { tabs: true })));
+      sayNotice(gray(visible(line, { tabs: true })));
     };
     // An MCP grey line (release 8c plan, choice 26), escaped whole as a hook's is: it carries a server's names and words.
     const onMcpNote = (line: string) => {
       latest.current.endRun();
-      latest.current.say(gray(visible(line, { tabs: true })));
+      sayNotice(gray(visible(line, { tabs: true })));
     };
     // The waiting line's label while a hook with a statusMessage runs (release 8b design, "What the user sees").
     const onHookStatus = (message: string, running: boolean) => {
@@ -389,7 +394,7 @@ export function App(props: AppProps) {
       ui.summary.current = summary;
       ui.stats.context = 0;
       latest.current.endRun();
-      latest.current.say(gray(SHORTEN_WORDS.shortened));
+      sayNotice(gray(SHORTEN_WORDS.shortened));
     };
     ui.bus.on("message", onMessage);
     ui.bus.on("error", onError);
@@ -571,8 +576,10 @@ export function App(props: AppProps) {
   const picking = ui.picker !== null || ui.sessions !== null || ui.mcpList || ui.form !== null;
   const menu = picking || ui.question || d ? null : fns.menuFor(prompt);
   // The open run's live row, above the working line where the prompt is drawn (release 8c plan, choice 67; Task 17): it
-  // takes no click, and its seconds grow with the working line's redraws, every SPIN_MS while a turn runs.
-  const liveRow = picking || ui.question || d ? [] : ui.run.live(ui.now).map(escaped);
+  // takes no click, and its seconds grow with the working line's redraws, every SPIN_MS while a turn runs. Its top line
+  // starts a block, so an empty row goes above it as say() would put one (TUI design pass, Task 3).
+  const live = picking || ui.question || d ? [] : ui.run.live(ui.now).map(escaped);
+  const liveRow = live[0]?.block && ui.lastSaid.current?.text ? [{ text: "" }, ...live] : live;
   if (menu?.kind !== "path") ui.listed.current = null;
 
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the
@@ -731,13 +738,14 @@ export function App(props: AppProps) {
       const from = ui.kept.lines.length;
       // Its red lines go with it, above its text, so "shown above" shows the dangers too (release 7 plan, Task 8), and so
       // does its grey line, auto mode's pause, above any red lines, which the gate never sends with it today (Task 10).
+      // One block, from its heading, the empty line before it not in its range (TUI design pass, Task 3).
       fns.say(
-        { text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" },
+        { text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray", block: true },
         ...(ui.question.note === undefined ? [] : [{ text: ui.question.note, color: "gray", ...(ui.question.oneRow ? { oneLine: true } : {}) }]),
         ...ui.question.warnings.map((text): Line => ({ text, color: "red" })),
         { text: ui.question.text, color: "gray" },
       );
-      ui.question.detail = [from, ui.kept.lines.length - 1];
+      ui.question.detail = [ui.kept.lines[from]!.text ? from : from + 1, ui.kept.lines.length - 1]; // past the gap: the heading is never empty
     }
     ui.question.short = shortOf(ui.question);
   }
@@ -917,7 +925,7 @@ export function App(props: AppProps) {
         <>
           {liveRow.map((l, i) => (
             <Text key={`r${i}`} color={l.color} wrap="truncate-end">
-              {l.text}
+              {l.text || " " /* an empty Text takes no row */}
             </Text>
           ))}
           {workingLine}

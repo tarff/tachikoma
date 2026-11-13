@@ -7,7 +7,8 @@ import type { TodoItem } from "../../src/tools/todo.js";
 import type { CommandTask, Task } from "../../src/core/tasks.js";
 import { names } from "../../src/tui/app/constants.js";
 import { Printed } from "../../src/tui/Conversation.js";
-import type { Line } from "../../src/tui/describe.js";
+import type { Message } from "../../src/core/types.js";
+import { callRow, describe as describeMessage, type Line, resultRow } from "../../src/tui/describe.js";
 import { taskRows } from "../../src/tui/TaskPanel.js";
 import { type Look, palette, ThemeContext } from "../../src/tui/theme.js";
 import { Rows } from "../../src/tui/view.js";
@@ -263,6 +264,36 @@ describe("Printed", () => {
       expect(within(none, "1", "22")).toBe("a");
       expect(plain(none)).toBe("ab");
     }));
+});
+
+// TUI design pass, Task 3: the blocks and markers describe gives a message's lines, in the dark full look's colours.
+describe("describe's blocks and markers", () => {
+  const P = palette({ light: false, color: true, full: true });
+  const accent = { start: 0, end: 2, color: P.accent };
+
+  it("gives your message as three band lines, `› ` and its text in the middle, a block from the first, later lines indented", () => {
+    const typed: Message = { role: "user", parts: [{ type: "text", text: "one\ntwo" }] };
+    expect(describeMessage(typed, P)).toEqual([
+      { text: "", band: true, block: true },
+      { text: "› one\ntwo", band: true, indent: 2 },
+      { text: "", band: true },
+    ]);
+  });
+
+  it("starts a reply with `● ` in the accent colour, indented under its first word, a block", () => {
+    const answer: Message = { role: "assistant", parts: [{ type: "text", text: "Done.\nAll of it." }] };
+    expect(describeMessage(answer, P)).toEqual([{ text: "● Done.\nAll of it.", styles: [accent], indent: 2, block: true }]);
+  });
+
+  // Choice P2: the dot is the accent colour on every call row, as a printed row cannot change; its result row says how it
+  // went, and is no block.
+  it("starts a call row with `● ` in the accent colour, its name and detail in the text colour, a block; its result row no block", () => {
+    const call = { type: "tool_call" as const, id: "c", name: "read_file", input: { path: "a.txt" } };
+    expect(callRow(call, P)).toEqual({ text: "● read_file a.txt", color: P.text, styles: [accent], oneLine: true, block: true });
+    expect(resultRow({ type: "tool_result", callId: "c", output: "x", isError: false })).toEqual({ text: "  ⎿ ok", color: "gray", oneLine: true });
+    const asked: Message = { role: "assistant", parts: [call] };
+    expect(describeMessage(asked, P)).toEqual([callRow(call, P)]);
+  });
 });
 
 // Background commands plan, choice 19: what a wake reads, subagents first, whatever the order they ended in.

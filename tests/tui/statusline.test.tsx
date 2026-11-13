@@ -14,6 +14,7 @@ import {
   type StatusInfo,
   StatusLine,
 } from "../../src/tui/StatusLine.js";
+import { palette } from "../../src/tui/theme.js";
 
 const info: StatusInfo = {
   lead: "anthropic:claude-opus-5-5",
@@ -251,13 +252,17 @@ describe("StatusLine", () => {
 });
 
 describe("describe", () => {
+  // The dark full look's colours, and the user's prompt as its three band lines (TUI design pass, Task 3).
+  const P = palette({ light: false, color: true, full: true });
+  const typed = (text: string) => [{ text: "", band: true, block: true }, { text: `› ${text}`, band: true, indent: 2 }, { text: "", band: true }];
+
   it("shows tool calls and failed results on one line each", () => {
-    const lines = describeMessage({ role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] });
+    const lines = describeMessage({ role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] }, P);
     expect(lines.map(screen)).toEqual([{ text: "  ⎿ exit code: 1", color: "red", oneLine: true }]);
   });
 
   it("shows a call's main detail: the path for the file tools, the command's first line for shell", () => {
-    const shown = (name: string, input: unknown) => describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name, input }] })[0]!.text;
+    const shown = (name: string, input: unknown) => describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name, input }] }, P)[0]!.text;
     expect(shown("read_file", { path: "src/x.ts", offset: 5 })).toBe("● read_file src/x.ts");
     expect(shown("write_file", { path: "src/x.ts", content: "a" })).toBe("● write_file src/x.ts");
     expect(shown("edit_file", { path: "src/x.ts", old_text: "a", new_text: "b" })).toBe("● edit_file src/x.ts");
@@ -271,14 +276,14 @@ describe("describe", () => {
   it("leaves out or shortens the result rows of the calls given as answered, and only theirs", () => {
     const result = (callId: string) => ({ type: "tool_result", callId, output: `The user declined: run: ${callId}`, isError: true }) as const;
     const answered = new Map([["c1", null], ["c2", "You declined this."]]);
-    expect(describeMessage({ role: "user", parts: [result("c1"), result("c2"), result("c3")] }, answered)).toEqual([
+    expect(describeMessage({ role: "user", parts: [result("c1"), result("c2"), result("c3")] }, P, answered)).toEqual([
       { text: "  ⎿ You declined this.", color: "gray", oneLine: true },
       { text: "  ⎿ The user declined: run: c3", color: "red", oneLine: true },
     ]);
   });
 
   it("does not show text a background task added for the lead", () => {
-    expect(describeMessage({ role: "user", parts: [{ type: "text", text: "go" }, { type: "text", text: "t3 finished: x", from: "tasks" }] })).toEqual([{ text: "> go", color: "cyan" }]);
+    expect(describeMessage({ role: "user", parts: [{ type: "text", text: "go" }, { type: "text", text: "t3 finished: x", from: "tasks" }] }, P)).toEqual(typed("go"));
   });
 
   // Release 6 plan, choice 22: one line, in the line's colour.
@@ -289,20 +294,20 @@ describe("describe", () => {
       { type: "image", id: 1, mediaType: "image/png", data },
       { type: "text", text: " please" },
     ] as const;
-    expect(describeMessage({ role: "user", parts: [...parts] })).toEqual([{ text: "> look at [Image #1] please", color: "cyan" }]);
+    expect(describeMessage({ role: "user", parts: [...parts] }, P)).toEqual(typed("look at [Image #1] please"));
   });
 
   it("puts a space between two pictures next to each other, so their markers do not run together", () => {
     const picture = (id: number) => ({ type: "image", id, mediaType: "image/png", data: Buffer.from([0x89, 0x50]) }) as const;
-    expect(describeMessage({ role: "user", parts: [picture(1), picture(2)] })).toEqual([{ text: "> [Image #1] [Image #2]", color: "cyan" }]);
+    expect(describeMessage({ role: "user", parts: [picture(1), picture(2)] }, P)).toEqual(typed("[Image #1] [Image #2]"));
   });
 
   it("does not show an unknown kind of part as a tool result", () => {
-    expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] })).toEqual([]);
+    expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] }, P)).toEqual([]);
   });
 
   it("escapes a one-line entry's line breaks too, so it stays one line", () => {
-    const [line] = describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name: "a\nb", input: 1 }] });
+    const [line] = describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name: "a\nb", input: 1 }] }, P);
     expect(screen(line!).text).toBe("● a⏎b 1");
   });
 });

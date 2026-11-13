@@ -9,6 +9,7 @@ import type { Ran } from "../hooks/run.js";
 import { isMcp, outputFrom, tachikomaName } from "../hooks/tools.js";
 import type { Fold, OpenRun } from "./fold.js";
 import { marker } from "./pictures.js";
+import type { Palette } from "./theme.js";
 
 // A run of style over text[start, end), drawn over the line's own colour; a later span over an earlier one (TUI design
 // pass, Task 2).
@@ -93,8 +94,23 @@ export function shownName(name: string, names: McpNames = safeNames): string {
   return tool ? `${server} ${tool}` : server;
 }
 
-// A call's row and its result's, as the scrollback shows them unfolded (fold.ts opens a folded row into these).
-export const callRow = (p: ToolCall, names?: McpNames): Line => ({ text: `● ${shownName(p.name, names)} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
+// A line's `● `, its first two characters, in a colour of the palette (TUI design pass, Task 3): the lead an indented line
+// wraps under (choice P3).
+const dot = (color: string | undefined): Span => ({ start: 0, end: 2, color });
+
+// A notice (Task 3; audit 7): a grey `● ` before its text, which keeps its own colour; a block.
+export const notice = (l: Line, palette: Palette): Line => ({ ...l, text: `● ${l.text}`, styles: [dot(palette.muted)], block: true });
+
+// A call's row and its result's, as the scrollback shows them unfolded (fold.ts opens a folded row into these). The call's
+// row is a block, its `● ` the accent colour, as a printed row cannot change when the call ends, and its name and detail
+// the text colour (Task 3; choice P2); its result row is no block, and says how it went.
+export const callRow = (p: ToolCall, palette: Palette, names?: McpNames): Line => ({
+  text: `● ${shownName(p.name, names)} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`,
+  color: palette.text,
+  styles: [dot(palette.accent)],
+  oneLine: true,
+  block: true,
+});
 export const resultRow = (p: ToolResult): Line => ({
   text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`,
   color: p.isError ? "red" : "gray",
@@ -104,8 +120,9 @@ export const resultRow = (p: ToolResult): Line => ({
 // How one message appears in the scrollback. `answered`: the calls a question was declined for, each with the short row
 // that takes its result row's place, or null for none, as its answer line under the tool line says what came of it
 // (release 7 plan, choices 66 and 67; App.tsx). `run`: the open run of quiet calls (fold.ts), which takes them, and which
-// what is shown next ends, its row said first (release 8c plan, Task 15).
-export function describe(m: Message, answered?: ReadonlyMap<string, string | null>, run?: OpenRun): Line[] {
+// what is shown next ends, its row said first (release 8c plan, Task 15). `palette`: the colours of the marks (TUI design
+// pass, Task 3).
+export function describe(m: Message, palette: Palette, answered?: ReadonlyMap<string, string | null>, run?: OpenRun): Line[] {
   const lines: Line[] = [];
   let typed: Line | null = null; // the user's prompt so far, its text and pictures one line
   let picture = false; // the last part put in it was a picture
@@ -127,13 +144,16 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
     }
     // A picture is its marker in its place, in the line's colour (release 6 plan, choice 22). Two next to each other
     // get a space between, as the blanks between them were left out of the message (pictures.ts, messageParts).
+    // A reply's text is a block, `● ` in the accent colour before it, its later rows under its first word; the user's
+    // prompt is a block of three band lines, `› ` and the prompt in the middle one, its later rows under the prompt's
+    // first word (TUI design pass, Task 3; choice P3).
     if (p.type === "text" || p.type === "image") {
       const text = p.type === "image" ? `${picture ? " " : ""}${marker(p.id)}` : p.text;
       picture = p.type === "image";
-      if (m.role !== "user") lines.push({ text });
+      if (m.role !== "user") lines.push({ text: `● ${text}`, styles: [dot(palette.accent)], indent: 2, block: true });
       else if (typed) typed.text += text;
-      else lines.push((typed = { text: `> ${text}`, color: "cyan" }));
-    } else if (p.type === "tool_call") lines.push(...(run ? run.call(p) : [callRow(p)]));
+      else lines.push({ text: "", band: true, block: true }, (typed = { text: `› ${text}`, band: true, indent: 2 }), { text: "", band: true });
+    } else if (p.type === "tool_call") lines.push(...(run ? run.call(p) : [callRow(p, palette)]));
     else if (p.type === "tool_result") {
       const folded = run?.result(p) ?? null;
       const short = answered?.get(p.callId);

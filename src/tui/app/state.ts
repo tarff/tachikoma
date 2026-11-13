@@ -1,5 +1,5 @@
 import { useApp, useWindowSize } from "ink";
-import { useRef, useState } from "react";
+import { useContext, useRef, useState } from "react";
 import { type Ask, type Mode, type Protection, visible } from "../../core/permissions.js";
 import type { Row } from "../../core/sessions.js";
 import type { Effort } from "../../providers/anthropic.js";
@@ -24,6 +24,7 @@ import { TerminalOwner } from "../owner.js";
 import { now as nowOf, phaseInputs } from "../phase.js";
 import { type Draft, Pictures } from "../pictures.js";
 import type { ReviewEnd } from "../Review.js";
+import { ThemeContext } from "../theme.js";
 import type { Call } from "../ToolLine.js";
 import { FOLLOWING, type Pos, Rows, type View } from "../view.js";
 import { type Vim, start as vimStart } from "../vim.js";
@@ -205,8 +206,12 @@ export function useAppState({
   // when its answer is under its tool line (release 7 plan, choices 66 and 67; describe.ts).
   const toolLine = useRef<string | null>(null);
   const answered = useRef(new Map<string, string | null>());
+  // The colours of the conversation's marks, the launch's (theme.ts; TUI design pass, Task 3); the last line said, null
+  // before the first, for the empty line before a block (output.ts, say).
+  const { palette } = useContext(ThemeContext);
+  const lastSaid = useRef<Line | null>(null);
   // The lead's quiet calls not yet said, and the runs said, for their results (fold.ts; release 8c plan, Task 15).
-  const [run] = useState(() => new OpenRun({ asked: session.asked, shell: shell ?? shellOf("host"), names: mcpNames(mcp?.servers) }));
+  const [run] = useState(() => new OpenRun({ asked: session.asked, shell: shell ?? shellOf("host"), names: mcpNames(mcp?.servers), palette }));
   // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
   const todos = useRef<{ items: TodoItem[]; hidden: boolean }>({ items: [], hidden: false });
   // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a
@@ -317,7 +322,7 @@ export function useAppState({
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
     happening, late, toolLine, answered, run, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
-    editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm,
+    editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm, palette, lastSaid,
   } as const;
 }
 
