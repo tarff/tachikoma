@@ -447,15 +447,14 @@ export class Tasks {
   }
 
   // Choice 23. The error is cut as a command is, so the head stays short and the output has room (As built, Task 1). A
-  // box stop whose kill failed ends so too, and the model is told once (choice 7): stop_task's reply says it, so no entry;
-  // a /tasks stop's entry starts no turn, as its stop's would not; the -p limit's wakes the lead, saying it failed at the
-  // limit (user choices 36 and 39, PR #18 review).
+  // box stop whose kill failed ends so too, and the model is told once (choice 7): a user's or stop_task's entry starts no
+  // turn, as its stop's would not, and stop_task's reply, when it came, takes it (told); the -p limit's wakes the lead,
+  // saying it failed at the limit (user choices 36 and 39, PR #18 review and its second review).
   #failed(t: CommandTask, err: unknown): void {
     if (t.state !== "running") return;
     t.error = headCommand(errorText(err));
     const head = `Background command ${t.id} (${headCommand(t.command)}) failed${t.stopping === "limit" ? " at its background time limit" : ""}: ${t.error}`;
-    const said = t.stopping === "tool" ? null : { text: () => deliver(head, t.run.log, t.id), wake: t.stopping !== "user" };
-    this.#ended(t, "failed", said);
+    this.#ended(t, "failed", { text: () => deliver(head, t.run.log, t.id), wake: !t.stopping || t.stopping === "limit" });
   }
 
   // The -p limit (choice 8). A stop already waiting for the box's kill stands (user choice 36, PR #18 review).
@@ -484,16 +483,15 @@ export class Tasks {
     this.#ended(t, "stopped", { text, wake: false });
   }
 
-  // `said`: the ending's entry for the lead, with its line written; none for a close (choice 29, the user's); null for
-  // the line alone, for a stop_task whose kill failed, which its reply says (user choice 36, PR #18 review).
-  #ended(t: CommandTask, state: "done" | "failed" | "stopped", said?: { text: string | (() => string); wake: boolean } | null): void {
+  // `said`: the ending's entry for the lead, with its line written; none for a close (choice 29, the user's).
+  #ended(t: CommandTask, state: "done" | "failed" | "stopped", said?: { text: string | (() => string); wake: boolean }): void {
     clearTimeout(this.#timers.get(t.id));
     this.#timers.delete(t.id);
     t.state = state;
     t.ended = Date.now();
-    if (said !== undefined) {
+    if (said) {
       this.opts.transcript?.()?.write({ t: "command-ended", id: t.id, state });
-      if (said) this.#inbox.push({ id: t.id, kind: "command", ...said });
+      this.#inbox.push({ id: t.id, kind: "command", ...said });
     }
     this.#changed();
   }

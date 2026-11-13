@@ -132,12 +132,15 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
     async ({ id }, ctx) => {
       const t = tasks.get(id);
       if (!t) return `No task ${id}.`;
-      // A command in the box is still running until its kill has run there; a kill that failed is said here alone (user
-      // choice 36, PR #18 review). A stop already on its way there is waited for as a new one is (its fixes' review).
+      // A command in the box is still running until its kill has run there; a kill that failed is said here, so its entry
+      // goes, unless Esc ended the wait first (user choice 36, PR #18 review and its second review). A stop already on its
+      // way there is waited for as a new one is (its fixes' review).
       const pending = t.kind === "command" && t.stopping !== undefined && t.state === "running";
       if (!pending && !tasks.stop(id, "tool")) return `${id} is not running.`;
       if (t.kind === "command" && t.state === "running") await killed(t, ctx.signal);
-      return t.kind === "command" && t.state === "failed" ? `Could not stop ${id}: ${t.error}` : `Stopped ${id}.`;
+      if (t.kind !== "command" || t.state !== "failed") return `Stopped ${id}.`;
+      tasks.told(id);
+      return `Could not stop ${id}: ${t.error}`;
     },
   );
 

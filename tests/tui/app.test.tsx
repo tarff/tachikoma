@@ -2035,7 +2035,8 @@ describe("App's background commands", () => {
   });
 
   // User choice 40: /tasks stop with no id that stops nothing new names the box stops still on their way, as the lines
-  // list ids; one that stops something says so as ever.
+  // list ids; one that stops something says it is stopping them while any is (user choice 41), or Stopped on the host
+  // (the test above).
   it("names the box stops still on their way when /tasks stop stops nothing new", async () => {
     const settles: ((r: ExecResult) => void)[] = [];
     const executor: Executor = {
@@ -2054,7 +2055,7 @@ describe("App's background commands", () => {
     await type(app, "/tasks stop t1");
     await until(app, "Stopping t1.");
     await type(app, "/tasks stop");
-    await until(app, "Stopped every subagent and command.");
+    await until(app, "Stopping every subagent and command."); // its stops still on their way (user choice 41)
     await type(app, "/tasks stop");
     await until(app, "Stopping t1, t2 and t3.");
     await killed(2);

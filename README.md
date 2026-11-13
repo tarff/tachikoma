@@ -2089,9 +2089,10 @@ it says so.
   detaching itself as some servers do, keeps running after `stop_task` or `/tasks stop`, as a stop
   there kills only the command's group. It stops when the box is removed at the session's end.
 - **A background command's stop in the box waits for Docker's kill there:** until it has run the
-  command still shows as running, `/tasks stop t1` says `Stopping t1.`, and `stop_task` answers
-  only then. A kill that cannot reach the box ends the command as failed, `stop_task` answering
-  `Could not stop t1: <error>`, and the sandbox stops.
+  command still shows as running, `/tasks stop t1` says `Stopping t1.` (`/tasks stop`, `Stopping
+  every subagent and command.`), and `stop_task` answers only then. A kill that cannot reach the
+  box ends the command as failed, `stop_task` answering `Could not stop t1: <error>`, and the
+  sandbox stops.
 - **A command can stop its own box:** `kill -9 -1` ends every process of the box's user, and the box
   with them: `The sandbox stopped working: the box stopped. Shell and file tools are off until
   Tachikoma is launched again.`

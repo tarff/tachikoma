@@ -397,9 +397,11 @@ export const queue = (ui: UI, fns: Fns) => {
     }
     if (verb === "stop" && !rest.length) {
       if (id === undefined) {
-        if (ui.tasks.stop()) return [gray("Stopped every subagent and command.")];
-        // Nothing new stopped: box stops still on their way are named, as /tasks stop t1 names one (user choice 40).
+        const any = ui.tasks.stop();
+        // Box stops still on their way after it: a bulk stop says it is stopping (user choice 41), and one that stopped
+        // nothing new names them, as /tasks stop t1 names one (user choice 40).
         const pending = ui.tasks.all.filter((t) => t.kind === "command" && t.stopping !== undefined && t.state === "running").map((t) => t.id);
+        if (any) return [gray(`${pending.length ? "Stopping" : "Stopped"} every subagent and command.`)];
         return [gray(pending.length ? `Stopping ${listed(pending)}.` : "No subagent or command is running.")];
       }
       const t = ui.tasks.get(id);

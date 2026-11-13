@@ -589,6 +589,22 @@ describe("stop_task", () => {
     expect(tasks.take()).toEqual(["Background command t1 (npm run dev) was stopped by stop_task."]);
   });
 
+  // PR #18 second review: no reply said the failed kill, so the next turn does, waking no one.
+  it("tells the next turn of a box command's kill that failed after Esc ended stop_task's wait", async () => {
+    const box = boxDriven();
+    const { call, use, tasks } = await setup({ start: () => box.run });
+    await call({ command: "npm run dev", background: true });
+    const esc = new AbortController();
+    const replied = use("stop_task", { id: "t1" }, esc.signal);
+    esc.abort();
+    await expect(replied).rejects.toThrow("Cancelled");
+    box.fail(new Error("The stop could not reach the box (Docker is not running)"));
+    await tasks.get("t1")!.done;
+    expect([tasks.get("t1")!.state, tasks.wakes()]).toEqual(["failed", false]);
+    expect(tasks.take()).toEqual(["Background command t1 (npm run dev) failed: The stop could not reach the box (Docker is not running)\nNo new output."]);
+    expect(tasks.take()).toEqual([]);
+  });
+
   // PR #18 fixes' review: a box stop on its way is waited for again, not answered as not running; the first stop's words
   // stand.
   it("waits again for a box command's kill already on its way, replying how it went", async () => {
@@ -607,10 +623,8 @@ describe("stop_task", () => {
     expect([await first, await again]).toEqual(["Stopped t1.", "Stopped t1."]);
     expect(await byModel).toBe("Could not stop t2: The stop could not reach the box (Docker is not running)");
     expect([a.stop.mock.calls.length, b.stop.mock.calls.length]).toEqual([1, 1]);
-    expect(tasks.take()).toEqual([
-      "Background command t1 (npm run dev) was stopped by stop_task.",
-      "Background command t2 (npm run watch) failed: The stop could not reach the box (Docker is not running)\nNo new output.", // the user's stop's (accepted)
-    ]);
+    // t2's failure was said in stop_task's reply, so its note goes, the user's stop's too (PR #18 second review).
+    expect(tasks.take()).toEqual(["Background command t1 (npm run dev) was stopped by stop_task."]);
     expect(await use("stop_task", { id: "t1" })).toBe("t1 is not running.");
   });
 
