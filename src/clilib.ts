@@ -309,8 +309,8 @@ export async function waitForBackground(
         continue;
       }
       const before = session.messages.at(-1);
-      tasks.oneEnding = true; // endings that came together still get a turn each (user choice 37, PR #18 review)
-      const ended = await session.send("", signal);
+      // Endings that came together, or during the turn, still get a turn each (user choice 37, PR #18 review).
+      const ended = await tasks.oneEnding(() => session.send("", signal));
       opts.answer(before);
       if (ended) return ended;
     }

@@ -397,8 +397,13 @@ export const queue = (ui: UI, fns: Fns) => {
     }
     if (verb === "stop" && !rest.length) {
       if (id === undefined) return [gray(ui.tasks.stop() ? "Stopped every subagent and command." : "No subagent or command is running.")];
-      if (!ui.tasks.all.some((t) => t.id === id)) return [none(id)];
-      return [gray(ui.tasks.stop(id) ? `Stopped ${id}.` : `${id} is not running.`)];
+      const t = ui.tasks.get(id);
+      if (!t) return [none(id)];
+      // A command in the box is still running until its kill has run there, and a stop already on its way says so again
+      // (user choice 38, PR #18 fixes' review).
+      const pending = t.kind === "command" && t.stopping !== undefined && t.state === "running";
+      if (!pending && !ui.tasks.stop(id)) return [gray(`${id} is not running.`)];
+      return [gray(t.kind === "command" && t.state === "running" ? `Stopping ${id}.` : `Stopped ${id}.`)];
     }
     if (id !== undefined) return [{ text: "Usage: /tasks, /tasks <number>, /tasks stop [<number>]", color: "red" }];
     const t = ui.tasks.get(verb);

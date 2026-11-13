@@ -106,6 +106,7 @@ export class Tasks {
   // (background commands plan, choice 7).
   #inbox: { id: string; kind: Task["kind"]; text: string | (() => string); wake: boolean }[] = [];
   #timers = new Map<string, NodeJS.Timeout>(); // each -p command's time limit, by its id (choice 8)
+  #one: "waiting" | "taken" | undefined; // in a turn -p's wait started, whether its ending has been taken (oneEnding)
   // The foreground command Ctrl+B can move, set by the shell tool while one runs (choice 9).
   holding?: { move(): void };
   #max: number;
@@ -264,16 +265,25 @@ export class Tasks {
     return this.#inbox.filter((i) => i.wake).map(({ id, kind }) => ({ id, kind }));
   }
 
-  // Set by -p's wait before each turn it starts: that turn's take() takes the first waking entry alone, with the notes
-  // waiting, so each ending gets a turn of its own (user choice 37, PR #18 review). A window's takes take everything.
-  oneEnding = false;
+  // -p's wait runs each turn it starts through here: in that turn the takes give one waking entry in all, the first, and
+  // every note waiting, holding back the other endings, those that arrive during the turn too, so each gets a turn of
+  // its own (user choice 37, PR #18 review). A window's takes, and -p's first turn's, take everything.
+  async oneEnding<T>(turn: () => Promise<T>): Promise<T> {
+    this.#one = "waiting";
+    try {
+      return await turn();
+    } finally {
+      this.#one = undefined;
+    }
+  }
 
   // Everything waiting for the lead, removed, so each goes into exactly one request.
   take(): string[] {
-    const first = this.oneEnding ? this.#inbox.find((i) => i.wake) : undefined;
-    this.oneEnding = false;
-    const taken = first ? this.#inbox.filter((i) => !i.wake || i === first) : this.#inbox;
-    this.#inbox = first ? this.#inbox.filter((i) => i.wake && i !== first) : [];
+    const one = this.#one;
+    const first = one === "waiting" ? this.#inbox.find((i) => i.wake) : undefined;
+    if (first) this.#one = "taken";
+    const taken = one ? this.#inbox.filter((i) => !i.wake || i === first) : this.#inbox;
+    this.#inbox = one ? this.#inbox.filter((i) => i.wake && i !== first) : [];
     return taken.map((i) => (typeof i.text === "string" ? i.text : i.text()));
   }
 
@@ -425,7 +435,10 @@ export class Tasks {
   // in place of deliver's "No new output." ("Lines this plan adds").
   #exited(t: CommandTask, r: ExecResult): void {
     if (t.state !== "running") return;
-    if (t.stopping) return this.#stopped(t, t.stopping); // the box's kill has run: the stop counts now (user choice 36)
+    // The box's kill has run: the stop counts now (user choice 36). A command that ended by itself while the kill was on
+    // its way is said stopped by whoever stopped it too: it was asked to stop, and the end it raced the kill with is not
+    // said (kept so in the PR #18 fixes' review).
+    if (t.stopping) return this.#stopped(t, t.stopping);
     t.code = r.code;
     t.signal = r.signal;
     const head = `Background command ${t.id} (${headCommand(t.command)}) ${r.code !== null ? `ended with exit code ${r.code}` : `was killed by ${r.signal}`}`;
@@ -435,12 +448,12 @@ export class Tasks {
 
   // Choice 23. The error is cut as a command is, so the head stays short and the output has room (As built, Task 1). A
   // box stop whose kill failed ends so too, and the model is told once (choice 7): stop_task's reply says it, so no entry;
-  // a /tasks stop's entry starts no turn, as its stop's would not; the -p limit's wakes the lead (user choice 36, PR #18
-  // review).
+  // a /tasks stop's entry starts no turn, as its stop's would not; the -p limit's wakes the lead, saying it failed at the
+  // limit (user choices 36 and 39, PR #18 review).
   #failed(t: CommandTask, err: unknown): void {
     if (t.state !== "running") return;
     t.error = headCommand(errorText(err));
-    const head = `Background command ${t.id} (${headCommand(t.command)}) failed: ${t.error}`;
+    const head = `Background command ${t.id} (${headCommand(t.command)}) failed${t.stopping === "limit" ? " at its background time limit" : ""}: ${t.error}`;
     const said = t.stopping === "tool" ? null : { text: () => deliver(head, t.run.log, t.id), wake: t.stopping !== "user" };
     this.#ended(t, "failed", said);
   }

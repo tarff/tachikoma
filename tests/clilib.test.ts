@@ -407,6 +407,28 @@ describe("waitForBackground", () => {
     expect(s.sent(3)).toContain("Background command t2 (node b.js) ended with exit code 0, with no new output.");
   });
 
+  // PR #18 fixes' review: the session takes waiting entries again after each round of tool calls, so a turn that uses a
+  // tool must still hold back an ending it was not started for, one waiting before it or one that arrives during it.
+  it.each([
+    ["waiting before the turn", false],
+    ["arriving during it", true],
+  ])("gives an ending %s its own turn when the turn before uses a tool", async (_, during) => {
+    const s = await setup([both("node a.js", "node b.js"), reply("Started both."), callTool("c3", "shell_output", { id: "t9" }), reply("a ended."), reply("b ended.")]);
+    const stop = new AbortController();
+    const first = await s.first(stop.signal);
+    s.runs[0]!.end(ok(""));
+    if (during) s.bus.on("message", (m) => void (carriesT1(m) && s.runs[1]!.end(ok(""))));
+    else s.runs[1]!.end(ok(""));
+    await Promise.all(s.tasks.all.slice(0, during ? 1 : 2).map((t) => t.done));
+    expect(await s.wait(first, stop.signal)).toBeUndefined();
+    expect(s.answers).toEqual(["Started both.", "a ended.", "b ended."]);
+    expect(s.lead.seen).toHaveLength(5);
+    expect(s.sent(2)).toContain("Background command t1 (node a.js) ended with exit code 0, with no new output.");
+    expect(s.sent(3)).toContain("No task t9."); // the tool's round, after which the session takes again
+    expect([s.sent(2), s.sent(3)].join()).not.toContain("Background command t2");
+    expect(s.sent(4)).toContain("Background command t2 (node b.js) ended with exit code 0, with no new output.");
+  });
+
   it("stops at Ctrl-C during the wait: the command stopped unrecorded, no turn, exit 130, no timer or listener left", async () => {
     vi.useFakeTimers();
     onTestFinished(() => void vi.useRealTimers());

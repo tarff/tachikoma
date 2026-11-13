@@ -2008,6 +2008,35 @@ describe("App's background commands", () => {
     ]);
   });
 
+  // User choice 38, PR #18 fixes' review: in the box the command runs on until its kill has run there, so /tasks stop t1
+  // says the stop is on its way, again while it is; the host's and a subagent's say Stopped (the tests above).
+  it("says Stopping for a command in the box until its kill has run there", async () => {
+    let settle = (_r: ExecResult) => {};
+    const executor: Executor = {
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: () => ({ ...standInRun(new Promise<ExecResult>((resolve) => (settle = resolve))), stop: () => {}, stopsLater: true }),
+    };
+    const lead = new FakeProvider("a", [start("c1", "npm run dev"), reply("started"), reply("noted")]);
+    const { app, tasks } = await mount([], { lead, executor, mode: "never" });
+    await type(app, "go");
+    await until(app, "started");
+    await type(app, "/tasks stop t1");
+    await until(app, "Stopping t1.");
+    await type(app, "/tasks stop t1");
+    await vi.waitFor(() => expect(app.lastFrame()!.split("Stopping t1.")).toHaveLength(3));
+    // With no id, the stop on its way is not counted, as a subagent's still ending is not (PR #18 fixes' review, point 5).
+    await type(app, "/tasks stop");
+    await until(app, "No subagent or command is running.");
+    expect(tasks.all[0]!.state).toBe("running");
+    settle({ code: null, signal: "SIGKILL", stdout: "", stderr: "" });
+    await vi.waitFor(() => expect(tasks.all[0]!.state).toBe("stopped"));
+    await type(app, "/tasks stop t1");
+    await until(app, "t1 is not running.");
+    await type(app, "next");
+    await until(app, "noted");
+    expect(lead.seen[2]!.at(-1)!.parts).toEqual([{ type: "text", text: "next" }, note("Background command t1 (npm run dev) was stopped by the user.")]);
+  });
+
   it("reads an ending that comes while the lead is idle in a turn of its own, as reading the command's output, and tells the model once", async () => {
     const { runs, executor } = held();
     const lead = new Held("fake:a");

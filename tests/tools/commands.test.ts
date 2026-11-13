@@ -65,8 +65,9 @@ async function setup(
   const reports: unknown[] = [];
   const call = (input: unknown, signal?: AbortSignal) =>
     tools[0]!.run(input, { ...ctx, executor, report: (p) => reports.push(p), ...(signal ? { signal } : {}) });
-  // shell_output or stop_task.
-  const use = (name: string, input: unknown) => tools.find((t) => t.spec.name === name)!.run(input, { ...ctx, executor });
+  // shell_output or stop_task, with the turn's signal when given.
+  const use = (name: string, input: unknown, signal?: AbortSignal) =>
+    tools.find((t) => t.spec.name === name)!.run(input, { ...ctx, executor, ...(signal ? { signal } : {}) });
   // The gate answers in promises and the stand-in at once, so a call reaches its wait within a few turns of the loop.
   // setImmediate, which the fake timers below leave real.
   const reached = async () => {
@@ -378,7 +379,7 @@ describe("the shell tool, in the foreground", () => {
     const stop = new AbortController();
     const out = call({ command: "npm test" }, stop.signal);
     await reached();
-    const failure = "The sandbox stopped working: Esc could not reach the box (made up).";
+    const failure = "The sandbox stopped working: The stop could not reach the box (made up).";
     started[0]!.run.stop.mockImplementation(() => started[0]!.run.fail(new Error(failure)));
     stop.abort();
     await expect(out).rejects.toThrow(failure);
@@ -564,11 +565,68 @@ describe("stop_task", () => {
     const { call, use, tasks } = await setup({ start: () => box.run });
     await call({ command: "npm run dev", background: true });
     const replied = use("stop_task", { id: "t1" });
-    box.fail(new Error(`Esc could not reach the box (${"x".repeat(1_000)})`)); // cut as #failed cuts it
-    const error = `Esc could not reach the box (${"x".repeat(971)}… [+30 chars]`;
+    box.fail(new Error(`The stop could not reach the box (${"x".repeat(1_000)})`)); // cut as #failed cuts it
+    const error = `The stop could not reach the box (${"x".repeat(966)}… [+35 chars]`;
     expect(await replied).toBe(`Could not stop t1: ${error}`);
     expect([tasks.get("t1")!.state, tasks.wakes(), tasks.take()]).toEqual(["failed", false, []]);
     expect(await use("shell_output", { id: "t1" })).toBe(`t1 failed: ${error}\nNo new output.`);
+  });
+
+  // PR #18 fixes' review: a kill that hangs holds no turn.
+  it("ends its wait for a box command's kill at Esc with Cancelled, the stop counting once the kill has run", async () => {
+    const box = boxDriven();
+    const { call, use, tasks } = await setup({ start: () => box.run });
+    await call({ command: "npm run dev", background: true });
+    const esc = new AbortController();
+    const replied = use("stop_task", { id: "t1" }, esc.signal);
+    expect(await settled(replied)).toBe(false);
+    esc.abort();
+    await expect(replied).rejects.toThrow("Cancelled");
+    expect(tasks.get("t1")!.state).toBe("running");
+    box.end({ code: null, signal: "SIGKILL" });
+    await tasks.get("t1")!.done;
+    expect(tasks.get("t1")!.state).toBe("stopped");
+    expect(tasks.take()).toEqual(["Background command t1 (npm run dev) was stopped by stop_task."]);
+  });
+
+  // PR #18 fixes' review: a box stop on its way is waited for again, not answered as not running; the first stop's words
+  // stand.
+  it("waits again for a box command's kill already on its way, replying how it went", async () => {
+    const [a, b] = [boxDriven(), boxDriven()];
+    const runs = [a.run, b.run];
+    const { call, use, tasks } = await setup({ start: () => runs.shift()! });
+    await call({ command: "npm run dev", background: true });
+    await call({ command: "npm run watch", background: true });
+    const first = use("stop_task", { id: "t1" });
+    const again = use("stop_task", { id: "t1" });
+    tasks.stop("t2"); // by the user
+    const byModel = use("stop_task", { id: "t2" });
+    expect([await settled(again), await settled(byModel)]).toEqual([false, false]);
+    a.end({ code: null, signal: "SIGKILL" });
+    b.fail(new Error("The stop could not reach the box (Docker is not running)"));
+    expect([await first, await again]).toEqual(["Stopped t1.", "Stopped t1."]);
+    expect(await byModel).toBe("Could not stop t2: The stop could not reach the box (Docker is not running)");
+    expect([a.stop.mock.calls.length, b.stop.mock.calls.length]).toEqual([1, 1]);
+    expect(tasks.take()).toEqual([
+      "Background command t1 (npm run dev) was stopped by stop_task.",
+      "Background command t2 (npm run watch) failed: The stop could not reach the box (Docker is not running)\nNo new output.", // the user's stop's (accepted)
+    ]);
+    expect(await use("stop_task", { id: "t1" })).toBe("t1 is not running.");
+  });
+
+  // PR #18 fixes' review: a close while stop_task waits (the window or the session closing) ends the command at once,
+  // unrecorded (choice 29); the reply still comes once the box's kill has run.
+  it("replies Stopped once the kill has run when a close came while it waited", async () => {
+    const box = boxDriven();
+    const { call, use, tasks } = await setup({ start: () => box.run });
+    await call({ command: "npm run dev", background: true });
+    const replied = use("stop_task", { id: "t1" });
+    tasks.close();
+    expect(tasks.get("t1")!.state).toBe("stopped");
+    expect(await settled(replied)).toBe(false);
+    box.end({ code: null, signal: "SIGKILL" });
+    expect(await replied).toBe("Stopped t1.");
+    expect(tasks.take()).toEqual([]);
   });
 });
 

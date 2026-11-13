@@ -327,7 +327,7 @@ describe("DockerExecutor with a stand-in Docker", () => {
     const running = box.exec("sleep 600", "/work", stop.signal);
     await new Promise((resolve) => setImmediate(resolve)); // the command is started
     stop.abort();
-    const message = `The sandbox stopped working: Esc could not reach the box (${words}). Shell and file tools are off until Tachikoma is launched again.`;
+    const message = `The sandbox stopped working: The stop could not reach the box (${words}). Shell and file tools are off until Tachikoma is launched again.`;
     await expect(running).rejects.toThrow(message);
     await expect(box.exec("echo hi", "/work")).rejects.toThrow(message);
   });

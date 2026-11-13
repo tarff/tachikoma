@@ -370,8 +370,9 @@ export async function inGroup(
     got = await run(["exec", ...flags, id, "bash", "-c", wrapper, "_", arg], opts);
   } catch (err) {
     if (signal?.aborted) {
+      // Said for a background command's stop as for Esc, so it names neither (user choice 39, PR #18 review).
       const unreached = await kill;
-      return unreached !== undefined ? { unreached: `Esc could not reach the box (${unreached})` } : { cancelled: true };
+      return unreached !== undefined ? { unreached: `The stop could not reach the box (${unreached})` } : { cancelled: true };
     }
     return { unreached: (err as Error).message };
   } finally {

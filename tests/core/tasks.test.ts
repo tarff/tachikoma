@@ -16,6 +16,7 @@ import type { Hook } from "../../src/hooks/config.js";
 import { Hooks, type Where } from "../../src/hooks/hooks.js";
 import type { ServerConfig } from "../../src/mcp/config.js";
 import { Servers } from "../../src/mcp/servers.js";
+import { BoxState } from "../../src/sandbox/executor.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { readFileTool } from "../../src/tools/files.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts } from "../helpers.js";
@@ -793,25 +794,46 @@ describe("Tasks, background commands", () => {
     expect(c.stop).toHaveBeenCalledTimes(1);
   });
 
-  // User choice 37, PR #18 review: under -p each turn the wait starts takes one ending.
-  it("takes the first ending alone, with the notes waiting, when -p's wait asks for one", async () => {
+  // User choice 37, PR #18 review and its fixes' review: under -p each turn the wait starts takes one ending, at its first
+  // take or at a later one, after a round of tool calls.
+  it("gives one ending in all, the first, with every note, in a turn -p's wait starts", async () => {
     const { tasks } = await setup(new Held());
-    const [a, b, c] = [command(), command(), command()];
-    const [ta, , tc] = [tasks.adopt(a.run, { command: "make" }), tasks.adopt(b.run, { command: "serve" }), tasks.adopt(c.run, { command: "npm test" })];
+    const [a, b, c, d, e, f] = [command(), command(), command(), command(), command(), command()];
+    const [ta, , tc, , te, tf] = [
+      tasks.adopt(a.run, { command: "make" }),
+      tasks.adopt(b.run, { command: "serve" }),
+      tasks.adopt(c.run, { command: "npm test" }),
+      tasks.adopt(d.run, { command: "npm run watch" }),
+      tasks.adopt(e.run, { command: "npm run e2e" }),
+      tasks.adopt(f.run, { command: "npm run lint" }),
+    ];
     a.end(0);
     await ta.done;
     tasks.stop("t2");
     c.end(1);
     await tc.done;
-    tasks.oneEnding = true;
+    await tasks.oneEnding(async () => {
+      expect(tasks.take()).toEqual([
+        "Background command t1 (make) ended with exit code 0, with no new output.",
+        "Background command t2 (serve) was stopped by the user.",
+      ]);
+      tasks.stop("t4");
+      expect(tasks.take()).toEqual(["Background command t4 (npm run watch) was stopped by the user."]); // t3's ending waits
+    });
+    await tasks.oneEnding(async () => {
+      expect(tasks.take()).toEqual(["Background command t3 (npm test) ended with exit code 1, with no new output."]);
+      e.end(0);
+      await te.done;
+      expect(tasks.take()).toEqual([]); // t5's, ended during the turn, waits for one of its own
+    });
+    f.end(0);
+    await tf.done;
+    // A turn that failed ends its hold, and a window's take takes everything.
+    await expect(tasks.oneEnding(() => Promise.reject(new Error("down")))).rejects.toThrow("down");
     expect(tasks.take()).toEqual([
-      "Background command t1 (make) ended with exit code 0, with no new output.",
-      "Background command t2 (serve) was stopped by the user.",
+      "Background command t5 (npm run e2e) ended with exit code 0, with no new output.",
+      "Background command t6 (npm run lint) ended with exit code 0, with no new output.",
     ]);
-    expect([tasks.oneEnding, tasks.wakes()]).toEqual([false, true]);
-    tasks.oneEnding = true;
-    expect(tasks.take()).toEqual(["Background command t3 (npm test) ended with exit code 1, with no new output."]);
-    expect(tasks.take()).toEqual([]);
   });
 
   // User choice 36, PR #18 review: in the box a stop counts once its kill has run there.
@@ -840,11 +862,25 @@ describe("Tasks, background commands", () => {
     const t = tasks.adopt(c.run, { command: "npm run dev" });
     c.run.log.add("ready\n");
     tasks.stop("t1");
-    c.fail(new Error("Esc could not reach the box (Docker is not running)"));
+    // The sandbox's own failure, as the box's `done` rejects with it (sandbox/executor.ts, inGroup and BoxState.fail).
+    c.fail(new BoxState("b0x").fail("The stop could not reach the box (Docker is not running)"));
     await t.done;
-    expect([t.state, t.stoppedBy, t.error, tasks.wakes()]).toEqual(["failed", undefined, "Esc could not reach the box (Docker is not running)", false]);
-    expect(tasks.take()).toEqual(["Background command t1 (npm run dev) failed: Esc could not reach the box (Docker is not running)\nready\n"]);
+    const error = "The sandbox stopped working: The stop could not reach the box (Docker is not running). Shell and file tools are off until Tachikoma is launched again.";
+    expect([t.state, t.stoppedBy, t.error, tasks.wakes()]).toEqual(["failed", undefined, error, false]);
+    expect(tasks.take()).toEqual([`Background command t1 (npm run dev) failed: ${error}\nready\n`]);
     expect(saved.lines.slice(1)).toEqual([{ t: "command-ended", id: "t1", state: "failed" }]);
+  });
+
+  // PR #18 fixes' review: a command that ends by itself while the box's kill is on its way is said stopped.
+  it("says a box command stopped by its stopper when it ended by itself while the kill was on its way", async () => {
+    const { tasks } = await setup(new Held());
+    const c = boxCommand();
+    const t = tasks.adopt(c.run, { command: "npm test" });
+    tasks.stop("t1", "tool");
+    c.end(0);
+    await t.done;
+    expect([t.state, t.stoppedBy, t.code]).toEqual(["stopped", "tool", undefined]);
+    expect(tasks.take()).toEqual(["Background command t1 (npm test) was stopped by stop_task."]);
   });
 
   it("tells the lead of a box command's -p limit only once its kill has run, or that the kill failed", async () => {
@@ -859,10 +895,12 @@ describe("Tasks, background commands", () => {
     await ta.done;
     expect([ta.state, ta.stoppedBy, tasks.wakes()]).toEqual(["stopped", "limit", true]);
     expect(tasks.take()).toEqual(['Background command "npm run dev" was stopped after reaching its background time limit\nNo new output.']);
-    b.fail(new Error("Esc could not reach the box (Docker is not running)"));
+    b.fail(new Error("The stop could not reach the box (Docker is not running)"));
     await tb.done;
     expect([tb.state, tb.stoppedBy, tasks.wakes()]).toEqual(["failed", undefined, true]);
-    expect(tasks.take()).toEqual(["Background command t2 (npm run watch) failed: Esc could not reach the box (Docker is not running)\nNo new output."]);
+    expect(tasks.take()).toEqual([
+      "Background command t2 (npm run watch) failed at its background time limit: The stop could not reach the box (Docker is not running)\nNo new output.",
+    ]);
   });
 
   it("gives a command no time limit outside -p", async () => {

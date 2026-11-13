@@ -129,16 +129,29 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
     "stop_task",
     "Stop a background command or a background subagent by its id, such as t4.",
     z.object({ id: z.string().min(1) }),
-    async ({ id }) => {
+    async ({ id }, ctx) => {
       const t = tasks.get(id);
       if (!t) return `No task ${id}.`;
-      if (!tasks.stop(id, "tool")) return `${id} is not running.`;
       // A command in the box is still running until its kill has run there; a kill that failed is said here alone (user
-      // choice 36, PR #18 review).
-      if (t.kind === "command" && t.state === "running") await t.done;
+      // choice 36, PR #18 review). A stop already on its way there is waited for as a new one is (its fixes' review).
+      const pending = t.kind === "command" && t.stopping !== undefined && t.state === "running";
+      if (!pending && !tasks.stop(id, "tool")) return `${id} is not running.`;
+      if (t.kind === "command" && t.state === "running") await killed(t, ctx.signal);
       return t.kind === "command" && t.state === "failed" ? `Could not stop ${id}: ${t.error}` : `Stopped ${id}.`;
     },
   );
+
+  // stop_task's wait for the box's kill, which Esc ends as it ends a foreground command, with Cancelled, so a kill that
+  // hangs holds no turn; the stop still counts once the kill has run (PR #18 fixes' review).
+  function killed(t: CommandTask, signal: AbortSignal | undefined): Promise<void> {
+    let onAbort = () => {};
+    return new Promise<void>((resolve, reject) => {
+      void t.done.then(resolve);
+      onAbort = () => reject(new Error("Cancelled"));
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+    }).finally(() => signal?.removeEventListener("abort", onAbort));
+  }
 
   return [shell, shellOutput, stopTask];
 }
