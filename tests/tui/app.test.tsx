@@ -2619,13 +2619,13 @@ describe("App's answers", () => {
 describe("App's folded tool rows", () => {
   const rows = (app: ReturnType<typeof render>, full: boolean) =>
     stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
-  // The rows from the one that is `first` on, the empty ones left out: the gaps between blocks and a message's band rows
-  // (TUI design pass, Task 3).
+  // The rows from the one that is `first` on, empty ones kept: the gaps between blocks and a message's last band row (TUI
+  // design pass, Task 3), so a gap missing or doubled shows.
   const from = (app: ReturnType<typeof render>, full: boolean, first: string) => {
     const r = rows(app, full);
     const at = r.indexOf(first);
     expect(at).toBeGreaterThanOrEqual(0);
-    return r.slice(at).filter((x) => x !== "");
+    return r.slice(at);
   };
   const both = (...calls: Turn[]): Turn => ({ parts: calls.flatMap((c) => c.parts), usage });
 
@@ -2641,7 +2641,7 @@ describe("App's folded tool rows", () => {
       writeFileSync(path.join(ctx.root, "b.txt"), "a\n");
       await type(app, "compare");
       await until(app, "They match.");
-      expect(from(app, full, "› compare").slice(0, 3)).toEqual(["› compare", "● Searched for 1 pattern, read 2 files", "● They match."]);
+      expect(from(app, full, "› compare").slice(0, 5)).toEqual(["› compare", "", "● Searched for 1 pattern, read 2 files", "", "● They match."]);
       expect(app.lastFrame()).toContain("\u001b[90mSearched for 1 pattern, read 2 files");
       expect(app.lastFrame()).not.toContain("● read_file");
     });
@@ -2656,9 +2656,9 @@ describe("App's folded tool rows", () => {
       await type(app, "look");
       await until(app, "One is missing.");
       const r = from(app, false, "› look");
-      expect(r.slice(0, 3)).toEqual(["› look", "● Read 1 file", "● read_file gone.txt"]);
-      expect(r[3]).toMatch(/^ {2}⎿ \S/);
-      expect(r[4]).toBe("● One is missing.");
+      expect(r.slice(0, 5)).toEqual(["› look", "", "● Read 1 file", "", "● read_file gone.txt"]);
+      expect(r[5]).toMatch(/^ {2}⎿ \S/);
+      expect(r.slice(6, 8)).toEqual(["", "● One is missing."]);
       expect(app.lastFrame()).toContain("\u001b[31m  ⎿ ");
     });
   });
@@ -2671,10 +2671,11 @@ describe("App's folded tool rows", () => {
     writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
     await type(app, "look");
     await until(app, "Allow run: git status?");
-    expect(from(app, false, "› look").slice(0, 4)).toEqual(["› look", "● Read 1 file", "● shell git status", "Allow run: git status? [y/n] · Esc to decline"]);
+    const asked = ["› look", "", "● Read 1 file", "", "● shell git status"];
+    expect(from(app, false, "› look").slice(0, 6)).toEqual([...asked, "Allow run: git status? [y/n] · Esc to decline"]);
     await press(app, "y");
     await until(app, "done");
-    expect(from(app, false, "› look").slice(0, 6)).toEqual(["› look", "● Read 1 file", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "● done"]);
+    expect(from(app, false, "› look").slice(0, 9)).toEqual([...asked, "  ⎿ You allowed this.", "  ⎿ ok", "", "● done"]);
     expect(ran).toEqual(["git status"]);
   });
 
@@ -2689,7 +2690,7 @@ describe("App's folded tool rows", () => {
     expect(app.lastFrame()).not.toContain("Read 1 file"); // the run is still open
     await press(app, "\u001b");
     await gone(app, "Esc to stop");
-    expect(from(app, false, "› look")[1]).toBe("● Read 1 file");
+    expect(from(app, false, "› look").slice(0, 3)).toEqual(["› look", "", "● Read 1 file"]);
   });
 
   // The quality review's finding 3: a line the window says of its own (a provider's failure, a hook's or a server's note)
@@ -2701,8 +2702,8 @@ describe("App's folded tool rows", () => {
     await type(app, "look");
     await until(app, "overloaded");
     const r = from(app, false, "› look");
-    expect(r[1]).toBe("● Read 2 files");
-    expect(r[2]).toContain("overloaded");
+    expect(r.slice(1, 4)).toEqual(["", "● Read 2 files", ""]);
+    expect(r[4]).toContain("overloaded");
     const lead = new Held();
     const held = await mount([], { lead });
     writeFileSync(path.join(held.ctx.root, "a.txt"), "a\n");
@@ -2712,12 +2713,12 @@ describe("App's folded tool rows", () => {
     await waitFor(() => lead.asked.length === 2);
     held.bus.emit("hook-note", "A PostToolUse hook said: noted.");
     await until(held.app, "noted.");
-    expect(from(held.app, false, "› look").slice(1, 3)).toEqual(["● Read 1 file", "● A PostToolUse hook said: noted."]);
+    expect(from(held.app, false, "› look").slice(1, 5)).toEqual(["", "● Read 1 file", "", "● A PostToolUse hook said: noted."]);
     lead.answer(callTool("c2", "read_file", { path: "a.txt" }));
     await waitFor(() => lead.asked.length === 3);
     held.bus.emit("mcp-note", "MCP server sv is ready: 1 tool.");
     await until(held.app, "sv is ready");
-    expect(from(held.app, false, "› look").slice(3, 5)).toEqual(["● Read 1 file", "● MCP server sv is ready: 1 tool."]);
+    expect(from(held.app, false, "› look").slice(5, 9)).toEqual(["", "● Read 1 file", "", "● MCP server sv is ready: 1 tool."]);
   });
 
   // The re-check's item 2: a provider may use an id again, and the later call is not the asked one, so live it folds as it
@@ -2731,7 +2732,7 @@ describe("App's folded tool rows", () => {
     await until(app, "Allow run: git status?");
     await press(app, "y");
     await until(app, "done");
-    expect(from(app, false, "› look").slice(0, 6)).toEqual(["› look", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "● Read 1 file", "● done"]);
+    expect(from(app, false, "› look").slice(0, 9)).toEqual(["› look", "", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "", "● Read 1 file", "", "● done"]);
     const { file, pictures } = sessionPaths(sessions, session.id);
     const saved = readTranscript(file, pictures);
     if ("problem" in saved) throw new Error(saved.problem);
@@ -2763,13 +2764,17 @@ describe("App's folded tool rows", () => {
     await until(app, "Both read.");
     const row = shown(app).indexOf("● Read 2 files");
     expect(row).toBeGreaterThan(-1);
+    const before = shown(app);
     await pointer(mouse, ...click(3, row));
-    const opened = ["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ ok", "", "● Both read."];
-    expect(shown(app).slice(row, row + 6)).toEqual(opened);
+    // Spaced as say() spaces the calls' rows live: a gap before each call's row but the first, which follows the gap the
+    // folded row had (TUI design pass, Task 3).
+    const opened = ["● read_file a.txt", "  ⎿ ok", "", "● read_file b.txt", "  ⎿ ok", "", "● Both read."];
+    expect(shown(app).slice(row - 1, row + 7)).toEqual(["", ...opened]);
     expect(app.lastFrame()).not.toContain("Copied"); // a click, not a selection
-    await pointer(mouse, ...click(3, row + 2)); // any of its rows closes it
+    await pointer(mouse, ...click(3, row + 3)); // any of its rows closes it
     const closed = ["● Read 2 files", "", "● Both read."];
     expect(shown(app).slice(row, row + 3)).toEqual(closed);
+    expect(shown(app)).toEqual(before); // nothing of the opened rows left behind
     await pointer(mouse, ...click(3, row + 2)); // a row of no fold does nothing
     expect(shown(app).slice(row, row + 3)).toEqual(closed);
   });
@@ -2909,12 +2914,15 @@ describe("App's live folded row", () => {
     expect(shown(app).slice(row + 1, row + 3)).toEqual(["", "● shell npm test"]);
     if (open) {
       await pointer(mouse, ...click(3, row));
-      expect(shown(app).slice(row, row + 5)).toEqual(["● read_file a.txt", "● read_file b.txt", "", "● shell npm test", ""]);
+      // Each call's row a block, spaced as said live (TUI design pass, Task 3).
+      expect(shown(app).slice(row, row + 6)).toEqual(["● read_file a.txt", "", "● read_file b.txt", "", "● shell npm test", ""]);
     }
     shell.end();
     await waitFor(() => lead.asked.length === 2);
     await until(app, "  ⎿ ok");
-    const after = open ? ["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ ok", "", "● shell npm test", "  ⎿ ok"] : ["● Read 2 files", "", "● shell npm test", "  ⎿ ok"];
+    const after = open
+      ? ["● read_file a.txt", "  ⎿ ok", "", "● read_file b.txt", "  ⎿ ok", "", "● shell npm test", "  ⎿ ok"]
+      : ["● Read 2 files", "", "● shell npm test", "  ⎿ ok"];
     expect(shown(app).slice(row, row + after.length + 1)).toEqual([...after, ""]);
     lead.answer("done");
     await until(app, "done");
@@ -3076,6 +3084,38 @@ describe("App's blocks and gaps", () => {
       expect(raw[at + 3]).not.toContain(BAND);
       expect(app.lastFrame()).not.toContain("> hi");
     });
+  });
+
+  // The user's choice at Task 3's review: a slash command's output is one block, a gap before its first line only, with no
+  // dot and its own colours.
+  it("makes a slash command's output one block: a gap before its first line, no dot", async () => {
+    const hooks = { hooks: [], off: false, leftOut: ["one left out"] };
+    const { app } = await mount([reply("Done.")], { hooks });
+    await type(app, "go");
+    await showing(app, "● Done.");
+    await type(app, "/hooks");
+    await showing(app, "  one left out");
+    const listed = [`No hooks in force. They go in "hooks" in ${shownFile()}.`, "Left out:", "  one left out"];
+    expect(upTo(app, "  one left out").slice(-5)).toEqual(["● Done.", "", ...listed]);
+    await type(app, "/tasks");
+    await showing(app, "No subagents or commands yet.");
+    expect(upTo(app, "No subagents or commands yet.").slice(-3)).toEqual(["  one left out", "", "No subagents or commands yet."]);
+  });
+
+  // The user's choice at Task 3's review: the start-up's warnings are notices, a grey `● ` and a block each; the launch's
+  // red line, as a live edit's problem is, a block without the dot.
+  it("makes the start-up's warnings notices, the history's and the launch's", async () => {
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "history.jsonl"); // a folder: unreadable
+    mkdirSync(dir);
+    const classic = await mount([reply("ok")], { historyFile: dir });
+    await showing(classic.app, "The prompt history could not be read or saved");
+    expect(rows(classic.app)[0]).toMatch(/^● The prompt history could not be read or saved/); // the first line said: no gap
+    const line = "--network acts only with the sandbox on; it was ignored";
+    const live = { loaded: { settings: { dangerousCommands: { off: ["git history"], add: [] } }, warnings: ["a launch warning"] }, given: {}, networkLine: line };
+    const full = await mount([], { full: true, home: mkdtempSync(path.join(tmpdir(), "tachi-home-")), live: live as AppProps["live"] });
+    const r = rows(full.app, true);
+    expect(r.slice(0, 4)).toEqual(["● a launch warning", "", `● ${line}`, ""]);
+    expect(r[4]).toMatch(/^The dangerous-command check is off for: git history/); // red: a block, no dot
   });
 
   // The live row is drawn, not said, so its gap is drawn with it: after a reply, none after an empty line (classic, where
@@ -5955,7 +5995,8 @@ describe("App's /screen", () => {
     await until(app, "the reply");
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows.slice(0, 10)).toEqual(["said 0.", "said 1.", "said 2.", "screen is now full", "", "", "› hi", "", "● the reply", ""]);
+    // /screen's line a block of its own (the user's choice at TUI design pass Task 3's review), your message after a gap.
+    expect(rows.slice(0, 11)).toEqual(["said 0.", "said 1.", "said 2.", "", "screen is now full", "", "", "› hi", "", "● the reply", ""]);
   });
 
   it("prints a reply that comes after /screen to classic", async () => {
@@ -5964,7 +6005,7 @@ describe("App's /screen", () => {
     await until(app, "screen is now classic");
     await type(app, "hi");
     await until(app, "the reply");
-    expect(app.lastFrame()).toMatch(/^said 0\.\nsaid 1\.\nsaid 2\.\nscreen is now classic\n\n\n› hi\n\n● the reply\n›/);
+    expect(app.lastFrame()).toMatch(/^said 0\.\nsaid 1\.\nsaid 2\.\n\nscreen is now classic\n\n\n› hi\n\n● the reply\n›/);
   });
 
   // bindAsk is set up at mount too (Task 11): after a switch to full screen a question's detail is kept and brought into view.
@@ -6058,7 +6099,8 @@ describe("App's /screen", () => {
     await type(app, "/screen");
     await until(app, `screen is now ${to}`);
     expect(app.lastFrame()!.split("mid-switch reply")).toHaveLength(2);
-    expect(app.lastFrame()).toMatch(/said 2\.\s*\n\s*\n● mid-switch reply\s*\nscreen is now/); // a block, after its gap (TUI design pass, Task 3)
+    // Each a block after one gap: the reply, and /screen's line, its output (TUI design pass, Task 3).
+    expect(app.lastFrame()).toMatch(/said 2\.[ ]*\n[ ]*\n● mid-switch reply[ ]*\n[ ]*\nscreen is now/);
   });
 
   // Found at Task 7's review: what the mouse was doing belongs to the screen before the switch.
@@ -6214,9 +6256,10 @@ describe("App's /screen", () => {
     await until(app, "No subagents or commands yet.");
     await type(app, "/screen");
     await until(app, "screen is now full");
-    // Your message's band rows and the reply, a block, its later line indented (TUI design pass, Task 3).
-    const said = ["", "› hi", "", "● alpha", "  beta", "screen is now classic", "No subagents or commands yet.", "screen is now full"];
-    expect(shown(app).slice(0, 10)).toEqual([...said, "", ""]);
+    // Your message's band rows and the reply, a block, its later line indented; each command's output a block (TUI design
+    // pass, Task 3).
+    const said = ["", "› hi", "", "● alpha", "  beta", "", "screen is now classic", "", "No subagents or commands yet.", "", "screen is now full"];
+    expect(shown(app).slice(0, said.length + 2)).toEqual([...said, "", ""]);
   });
 
   // Found at Task 14's spec review: a switch holds the queue as a turn does. What is sent while it runs waits for it, and a
@@ -7905,6 +7948,11 @@ describe("App's live settings", () => {
     write({ autoCompactWindow: 0 });
     await sees(app, 'settings.json: "autoCompactWindow" must be a whole number from 1 (got "0"); the last good settings still apply');
     expect(session.autoCompact).toBe(200_000);
+    // The edit's line a notice, its problem an error: red, a block of its own, no grey dot (TUI design pass, Task 3).
+    const r = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
+    expect(r.some((x) => x.startsWith("● autoCompactWindow is now 200,000"))).toBe(true);
+    const problem = r.findIndex((x) => x.startsWith('settings.json: "autoCompactWindow" must be'));
+    expect(r[problem - 1]).toBe("");
     write({});
     await sees(app, `autoCompactWindow is now off ${FROM}`);
     expect(session.autoCompact).toBeNull();

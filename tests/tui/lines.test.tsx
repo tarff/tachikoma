@@ -8,7 +8,7 @@ import type { CommandTask, Task } from "../../src/core/tasks.js";
 import { names } from "../../src/tui/app/constants.js";
 import { Printed } from "../../src/tui/Conversation.js";
 import type { Message } from "../../src/core/types.js";
-import { callRow, describe as describeMessage, type Line, resultRow } from "../../src/tui/describe.js";
+import { callRow, describe as describeMessage, gapped, type Line, resultRow } from "../../src/tui/describe.js";
 import { taskRows } from "../../src/tui/TaskPanel.js";
 import { type Look, palette, ThemeContext } from "../../src/tui/theme.js";
 import { Rows } from "../../src/tui/view.js";
@@ -293,6 +293,15 @@ describe("describe's blocks and markers", () => {
     expect(resultRow({ type: "tool_result", callId: "c", output: "x", isError: false })).toEqual({ text: "  ⎿ ok", color: "gray", oneLine: true });
     const asked: Message = { role: "assistant", parts: [call] };
     expect(describeMessage(asked, P)).toEqual([callRow(call, P)]);
+  });
+
+  // As say() and an opened folded row space lines: a gap before each block, none first, none after an empty line.
+  it("puts one empty line before each block, none before the first line and none after an empty one", () => {
+    const block = (text: string): Line => ({ text, block: true });
+    const texts = (ls: Line[]) => ls.map((l) => l.text);
+    expect(texts(gapped([block("a"), { text: "  ⎿ ok" }, block("b")], null))).toEqual(["a", "  ⎿ ok", "", "b"]);
+    expect(texts(gapped([block("a")], { text: "before" }))).toEqual(["", "a"]);
+    expect(texts(gapped([block("a"), { text: "" }, block("b")], { text: "" }))).toEqual(["a", "", "b"]);
   });
 });
 

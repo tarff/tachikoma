@@ -1,5 +1,5 @@
 import type { Fns } from "../App.js";
-import { screen as escaped } from "../describe.js";
+import { screen as escaped, gapped } from "../describe.js";
 import { move } from "../editor.js";
 import { type Fold, foldRow, openRows } from "../fold.js";
 import type { Mouse } from "../input.js";
@@ -216,7 +216,10 @@ export const mouse = (ui: UI, fns: Fns) => {
     const to = kept.lines.findLastIndex((l) => l.fold === fold) + 1;
     let from = to - 1;
     while (from > 0 && kept.lines[from - 1]!.fold === fold) from--;
-    const put = (fold.open ? openRows(fold, ui.run.options) : [foldRow(fold, ui.palette)]).map(escaped);
+    // Spaced as say() spaces lines, so an opened row's calls look as they did live, the gaps the fold's own, so closing it
+    // takes them away (TUI design pass, Task 3's review).
+    const rows = fold.open ? openRows(fold, ui.run.options) : [foldRow(fold, ui.palette)];
+    const put = gapped(rows, kept.lines[from - 1] ?? null).map((l) => escaped({ ...l, fold }));
     kept.replace(from, to - from, put);
     const moved = (n: number) => (n >= to ? n + put.length - (to - from) : Math.min(n, from));
     const at = ui.view.current.at;

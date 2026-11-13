@@ -101,6 +101,20 @@ const dot = (color: string | undefined): Span => ({ start: 0, end: 2, color });
 // A notice (Task 3; audit 7): a grey `● ` before its text, which keeps its own colour; a block.
 export const notice = (l: Line, palette: Palette): Line => ({ ...l, text: `● ${l.text}`, styles: [dot(palette.muted)], block: true });
 
+// The lines with one empty line before each block, unless the block comes first (`before` null: no line before it) or
+// after an empty line (Task 3): as say() says them (output.ts), and as an opened folded row puts its calls' rows, so they
+// look as they did live (mouse.ts, putFold).
+export function gapped(lines: readonly Line[], before: { text: string } | null): Line[] {
+  const out: Line[] = [];
+  let last = before;
+  for (const l of lines) {
+    if (l.block && last !== null && last.text !== "") out.push({ text: "" });
+    out.push(l);
+    last = l;
+  }
+  return out;
+}
+
 // A call's row and its result's, as the scrollback shows them unfolded (fold.ts opens a folded row into these). The call's
 // row is a block, its `● ` the accent colour, as a printed row cannot change when the call ends, and its name and detail
 // the text colour (Task 3; choice P2); its result row is no block, and says how it went.

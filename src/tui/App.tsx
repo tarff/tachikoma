@@ -203,7 +203,8 @@ export function App(props: AppProps) {
     mouse(ui, fns),
     promptKeys(ui, fns),
   );
-  ui.history.current ??= new History(ui.historyFile, (line) => fns.say({ text: line, color: "magenta" }));
+  // Its warning a notice, as the start-up's are (TUI design pass, Task 3's review).
+  ui.history.current ??= new History(ui.historyFile, (line) => fns.say(noticeLine({ text: line, color: "magenta" }, ui.palette)));
 
   useEffect(() => {
     ui.bindAsk((text, detail, owner, plain, warnings, note, oneRow) => {
@@ -444,7 +445,8 @@ export function App(props: AppProps) {
     const off = ui.fullNow.current && ui.live ? checkOffLine(ui.live.loaded.settings.dangerousCommands) : null;
     const said = ui.live ? [ui.live.networkLine, ui.live.bashLine, ui.live.gitLine].filter((l) => l !== undefined) : [];
     const warnings = ui.fullNow.current && ui.live ? [...ui.live.loaded.warnings, ...said] : [];
-    const launchLines: Line[] = [...warnings.map(gray), ...(off ? [{ text: off, color: "red" }] : [])];
+    // Each a notice, the red one a block without the grey dot, as a live edit's problem is (TUI design pass, Task 3's review).
+    const launchLines: Line[] = [...warnings.map((w) => noticeLine(gray(w), ui.palette)), ...(off ? [{ text: off, color: "red", block: true as const }] : [])];
     fns.say(...launchLines, ...ui.intro);
     // A watch that cannot start leaves the session as the launch set it, and says so.
     let unwatch: (() => void) | undefined;
@@ -461,7 +463,7 @@ export function App(props: AppProps) {
           () => void (ui.newEdit.current = true),
         );
     } catch (err) {
-      fns.say(gray(`${SETTINGS} and ${KEYBINDINGS} are not watched this session (${errorText(err)})`));
+      fns.say(noticeLine(gray(`${SETTINGS} and ${KEYBINDINGS} are not watched this session (${errorText(err)})`), ui.palette));
     }
     ui.launched.current = true; // the watcher's first read, done at once inside watchSettings, was the launch's (onKeys)
     ui.history.current!.load();

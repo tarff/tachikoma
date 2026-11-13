@@ -107,6 +107,9 @@ export const queue = (ui: UI, fns: Fns) => {
     // `/lead` alone opens the model list, as `/model` does, in every respect (release 6 plan, choice 34, the user's:
     // "can we have lead list the models?"); `/lead <provider:model>` switches as before.
     const listing = alone("/model") || alone("/lead");
+    // A slash command's output is one block, from its first line said (the user's choice at TUI design pass Task 3's review;
+    // output.ts, say); a turn's lines are blocks of their own, so a prompt command's or a "/tmp is full" turn drops it.
+    ui.command.current = command.startsWith("/");
     try {
       if (alone("/exit")) {
         ui.queue.current = [];
@@ -172,6 +175,7 @@ export const queue = (ui: UI, fns: Fns) => {
         return fns.say({ text: `${command} takes nothing after it.`, color: "red" });
       ui.abort.current = new AbortController();
       const turn = !account && !listing;
+      if (turn) ui.command.current = false;
       const label =
         account === "login"
           ? "Waiting for the browser"
@@ -243,6 +247,8 @@ export const queue = (ui: UI, fns: Fns) => {
       }
     } catch (err) {
       fns.say({ text: errorText(err), color: "red" });
+    } finally {
+      ui.command.current = false; // a command that said nothing leaves no mark for what comes after
     }
   };
 

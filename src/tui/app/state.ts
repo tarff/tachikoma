@@ -207,9 +207,11 @@ export function useAppState({
   const toolLine = useRef<string | null>(null);
   const answered = useRef(new Map<string, string | null>());
   // The colours of the conversation's marks, the launch's (theme.ts; TUI design pass, Task 3); the last line said, null
-  // before the first, for the empty line before a block (output.ts, say).
+  // before the first, for the empty line before a block; and whether a slash command runs that has said no line yet, whose
+  // first starts its block (output.ts, say).
   const { palette } = useContext(ThemeContext);
   const lastSaid = useRef<Line | null>(null);
+  const command = useRef(false);
   // The lead's quiet calls not yet said, and the runs said, for their results (fold.ts; release 8c plan, Task 15).
   const [run] = useState(() => new OpenRun({ asked: session.asked, shell: shell ?? shellOf("host"), names: mcpNames(mcp?.servers), palette }));
   // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
@@ -322,7 +324,7 @@ export function useAppState({
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
     happening, late, toolLine, answered, run, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
-    editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm, palette, lastSaid,
+    editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm, palette, lastSaid, command,
   } as const;
 }
 
