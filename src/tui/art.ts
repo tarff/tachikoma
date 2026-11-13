@@ -51,17 +51,18 @@ export const PIXEL_COLORS: Record<string, string> = {
 };
 
 // Two pixel rows to a text row: `▀` in the top pixel's colour on the bottom's, `▄` or `▀` where only one is set, `█` where
-// both are the same, a space where neither is; an odd last row has an empty bottom.
+// both are the same, a space where neither is. For full colour only, as Task 6 picks it: without colour a cell where two
+// colours meet loses its bottom half, and in named colours the three blues blur together.
 export function pixelRows(): Line[] {
   const rows: Line[] = [];
   for (let r = 0; r < PIXELS.length; r += 2) {
     const top = PIXELS[r]!;
-    const bottom = PIXELS[r + 1] ?? "";
+    const bottom = PIXELS[r + 1]!; // PIXELS has an even number of rows, all the same length (tests)
     let text = "";
     const styles: Span[] = [];
     for (let c = 0; c < top.length; c++) {
       const up = PIXEL_COLORS[top[c]!];
-      const down = PIXEL_COLORS[bottom[c] ?? "."];
+      const down = PIXEL_COLORS[bottom[c]!];
       const span = { start: c, end: c + 1 };
       if (up && down && up !== down) styles.push({ ...span, color: up, bg: down });
       else if (up || down) styles.push({ ...span, color: (up ?? down)! });

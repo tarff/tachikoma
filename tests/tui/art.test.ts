@@ -1,13 +1,14 @@
 import stringWidth from "string-width";
 import { describe, expect, it } from "vitest";
 import { ASCII, asciiRows, PIXEL_COLORS, PIXELS, pixelRows } from "../../src/tui/art.js";
+import { screen } from "../../src/tui/describe.js";
 import { palette } from "../../src/tui/theme.js";
 
 // TUI design pass, Task 5: the start-up box's two drawings, the pixel art (plan, appendix "The pixel art") and the user's
 // ASCII drawing, moved from tachikoma.txt (choice E).
 describe("pixel art", () => {
   it("has rows all the same width, and a colour for every letter in them", () => {
-    expect(PIXELS).toHaveLength(30);
+    expect(PIXELS).toHaveLength(30); // even, so pixelRows always has a bottom row
     for (const row of PIXELS) expect(row).toHaveLength(48);
     for (const letter of new Set(PIXELS.join(""))) if (letter !== ".") expect(PIXEL_COLORS[letter]).toMatch(/^#[0-9a-f]{6}$/);
   });
@@ -63,5 +64,12 @@ describe("ASCII drawing", () => {
     const P = palette({ light: false, color: true, full: true });
     expect(asciiRows(P)).toEqual(ASCII.map((text) => ({ text, color: "#4278de", oneLine: true })));
     expect(asciiRows(palette({ light: false, color: true, full: false }))[0]!.color).toBe("blue");
+  });
+
+  // With no colour the accent is undefined; screen() drops an undefined colour, so the row is drawn in the terminal's own.
+  it("draws each row in the terminal's own colour when there is no colour", () => {
+    const rows = asciiRows(palette({ light: false, color: false, full: false }));
+    expect(rows).toStrictEqual(ASCII.map((text) => ({ text, color: undefined, oneLine: true })));
+    for (const row of rows) expect(Object.hasOwn(screen(row), "color")).toBe(false);
   });
 });
