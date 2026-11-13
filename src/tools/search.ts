@@ -107,8 +107,8 @@ function capped(lines: string[], noun: string, beyond = 0): string {
 }
 
 // Paths inside the project are shown relative to it, with forward slashes, as the model gives them to
-// read_file; others in full.
-const shownPath = (base: string, real: string) => {
+// read_file; others in full. A write's or an edit's question names its file so too (App.tsx; TUI design pass, Task 8).
+export const shownPath = (base: string, real: string) => {
   const rel = path.relative(base, real);
   return rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) ? real : posix(rel);
 };

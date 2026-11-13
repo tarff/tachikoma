@@ -18,6 +18,7 @@ import type { UserRules } from "../safety/rules.js";
 import type { Shell } from "../safety/split.js";
 import { SETTINGS, type Settings, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
+import { shownPath } from "../tools/search.js";
 import type { TodoItem } from "../tools/todo.js";
 import { characters, contextsOf, FROM, gray, isFile, type Question, SHORTEN_WORDS, STOPPING, visualSelection } from "./app/constants.js";
 import { handover } from "./app/handover.js";
@@ -219,6 +220,12 @@ export function App(props: AppProps) {
       // A question ends the open run of quiet calls before anything of its own is said, the asked call taken out of it for
       // a row of its own (release 8c plan, choice 65).
       latest.current.endRun(call);
+      // A write's or an edit's file as the conversation names it, in the preview's heading and the answer: relative to the
+      // project when inside it, as the call row names it (TUI design pass, Task 8; audit 3). The question's own line keeps
+      // the full path, as it is what is allowed. A path with a note after it, "(really …)" (files.ts), stays in full.
+      const verb = /^(?:write|edit) /.exec(text)?.[0];
+      const file = verb === undefined ? "" : text.slice(verb.length);
+      const asSaid = verb === undefined || file.endsWith(")") ? text : `${verb}${shownPath(ui.root, file)}`;
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface. One block, from its
       // heading, the empty line before it not in its range (TUI design pass, Task 3). An edit's preview, a diff, in colour
@@ -228,10 +235,14 @@ export function App(props: AppProps) {
         const lines = detail ? detail.replace(/\r?\n$/, "").split("\n").length : 0; // as read_file counts them
         const from = ui.kept.lines.length;
         const styles = detail ? previewStyles(text, detail, ui.palette) : [];
+        const follows = call !== undefined && ui.toolLine.current === call; // its call's row the last said
         latest.current.say(
-          { text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray", block: true },
+          { text: `┌ ${asSaid} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray", block: true },
           { text: detail || "(empty)", color: "gray", ...(styles.length ? { styles } : {}) },
         );
+        // The answer goes under the call while the preview straight after its row is the last said, as under its row
+        // alone (Task 8).
+        if (follows) ui.toolLine.current = call;
         if (ui.fullNow.current) range = [ui.kept.lines[from]!.text ? from : from + 1, ui.kept.lines.length - 1]; // past the gap: the heading is never empty
       }
       return new Promise((resolve) => {
@@ -242,8 +253,9 @@ export function App(props: AppProps) {
         // A subagent's plain question, only an MCP server's visit request (release 8c plan, Task 12's re-check), names the
         // subagent itself, its id first, so it is not named again here; its owner still stops and cancels it.
         const named = owner && !plain;
+        const who = named ? `${visible(owner.name)} to ` : "";
         const q: Question = {
-          text: named ? `${visible(owner.name)} to ${text}` : text,
+          text: `${who}${text}`,
           // A subagent's name is its id, then its description in brackets (tasks.ts); a summary starts with its action:
           // "run: …", "write …", "read …".
           label: `${named ? `${visible(owner.name.split(" ", 1)[0]!)} to ` : ""}${text.split(/[\s:]/, 1)[0]}`,
@@ -268,9 +280,10 @@ export function App(props: AppProps) {
             // list, a chord typed in the list to the list's keys (the code re-checks).
             if (typedAt) latest.current.dropChord();
             if (q.detail && q.following) ui.view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
-            // A permission's answer is one line (release 7 plan, choice 66): under its call's tool line while that is still
-            // the conversation's last line, and otherwise naming what it answers, as a subagent's does, a write's after its
-            // preview and one that waited in the line. Each danger follows it, the whole line red then. A declined call's
+            // A permission's answer is one line (release 7 plan, choice 66): under its call's tool line while that, or the
+            // preview straight after it, is still the conversation's last line (TUI design pass, Task 8), and otherwise
+            // naming what it answers, its file as the preview's heading names it, as a subagent's does and one that waited
+            // in the line. Each danger follows it, the whole line red then. A declined call's
             // result row is left out under its tool line, as this line says it, and is otherwise the answer alone, so the
             // results keep their places in call order (choice 67); the model is still told its full message. A plain
             // question keeps its own record.
@@ -279,7 +292,7 @@ export function App(props: AppProps) {
               const said = [how, ...q.warnings].join(" ");
               const under = q.call !== undefined && ui.toolLine.current === q.call;
               if (!ok && q.call !== undefined) ui.answered.current.set(q.call, under ? null : how);
-              latest.current.say({ text: under ? `  ⎿ ${said}` : `${q.short ?? q.text}: ${said}`, color: q.warnings.length ? "red" : "gray" });
+              latest.current.say({ text: under ? `  ⎿ ${said}` : `${q.short ?? `${who}${asSaid}`}: ${said}`, color: q.warnings.length ? "red" : "gray" });
             }
             resolve(ok);
             ui.rerender((n) => n + 1);

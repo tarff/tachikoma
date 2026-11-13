@@ -443,9 +443,10 @@ describe("App", () => {
     const target = path.join(ctx.root, "a.txt");
     await until(app, `Allow write ${target}? [y/n]`);
     app.stdin.write("\u0003");
-    await until(app, `write ${target}: You cancelled this.`);
+    await until(app, "  ⎿ You cancelled this.");
     await gone(app, "Esc to stop");
-    expect(app.lastFrame()).toContain("  ⎿ You cancelled this."); // its result row, short, after the preview (release 7 plan, choice 67)
+    // Under the call after its preview, without a result row of its own (TUI design pass, Task 8; choice 67).
+    expect(app.lastFrame()!.split("You cancelled this.")).toHaveLength(2);
     expect(app.lastFrame()).not.toContain("[y/n]");
     expect(app.lastFrame()).not.toContain("written");
     expect(existsSync(target)).toBe(false);
@@ -471,7 +472,7 @@ describe("App", () => {
     app.stdin.write("y");
     app.stdin.write("n");
     await until(app, "written");
-    expect(app.lastFrame()).toContain(`write ${target}: You allowed this.`);
+    expect(app.lastFrame()).toContain("  ⎿ You allowed this."); // under the call after its preview (TUI design pass, Task 8)
     expect(app.lastFrame()).not.toContain("declined");
   });
 
@@ -931,10 +932,10 @@ describe("App", () => {
   });
 
   it("shows what a write will put in the file before asking, under a heading", async () => {
-    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two\n" }), reply("written")]);
+    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two\n" }), reply("written")]);
     await type(app, "make a file");
     await until(app, "Allow write");
-    expect(app.lastFrame()).toContain(`┌ write ${path.join(ctx.root, "a.txt")} (2 lines)\nline one\nline two`);
+    expect(app.lastFrame()).toContain("┌ write a.txt (2 lines)\nline one\nline two"); // the file relative to the project (TUI design pass, Task 8)
   });
 
   it("says so when a write would leave the file empty", async () => {
@@ -1335,7 +1336,7 @@ describe("App's keys for stopping and exiting", () => {
     await until(app, `Allow write ${target}? [y/n] · Esc to decline`);
     await press(app, "\u001b");
     await until(app, "carried on");
-    expect(app.lastFrame()).toContain(`write ${target}: You declined this.`);
+    expect(app.lastFrame()).toContain("  ⎿ You declined this."); // under the call after its preview (TUI design pass, Task 8)
     expect(existsSync(target)).toBe(false);
   });
 
@@ -2512,7 +2513,9 @@ describe("App's answers", () => {
     });
   });
 
-  it.each([true, false])("names a write in its answer, as its preview comes between, and keeps a short result row (full screen: %s)", async (full) => {
+  // TUI design pass, Task 8: the preview straight after the call's row, its file named relative to the project, and the
+  // answer under the call, as under its row alone, with no result row of its own.
+  it.each([true, false])("puts a write's answer under its call after its preview, without its result row (full screen: %s)", async (full) => {
     const lead = new FakeProvider("a", [callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("carried on")]);
     const { app, ctx } = await mount([], { lead, full });
     await type(app, "make a file");
@@ -2522,7 +2525,7 @@ describe("App's answers", () => {
     await until(app, "carried on");
     const r = from(app, full, "● write_file a.txt");
     // The preview a block of its own (TUI design pass, Task 3).
-    expect(r.slice(0, 6)).toEqual(["● write_file a.txt", "", `┌ write ${target} (1 line)`, "x", `write ${target}: You declined this.`, "  ⎿ You declined this."]);
+    expect(r.slice(0, 7)).toEqual(["● write_file a.txt", "", "┌ write a.txt (1 line)", "x", "  ⎿ You declined this.", "", "● carried on"]);
     expect(app.lastFrame()).not.toContain("The user declined");
     expect(lead.seen[1]!.at(-1)!.parts[0]).toMatchObject({ output: `The user declined: write ${target}` });
     expect(existsSync(target)).toBe(false);
@@ -3309,6 +3312,94 @@ describe("App's diffs in colour", () => {
       await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow edit"));
       for (const text of ["- one", "+ uno"]) expect(raw(app, text).replace(/\u001b\[(90|39)m/g, "").trimEnd()).toBe(text);
     });
+  });
+});
+
+// TUI design pass, Task 8 (audit 3): an edit's preview heading and its answer name the file relative to the project, as
+// its call row does; the question line keeps the full path, as it is what is allowed. The answer goes under the call when
+// the preview is the last thing said. A file outside the project keeps its full path everywhere.
+describe("App's one path per edit", () => {
+  // The frame's rows without colour, in full screen without the scroll bar's column; and those from the row `first` on.
+  const rows = (app: ReturnType<typeof render>, full: boolean) =>
+    stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
+  const from = (app: ReturnType<typeof render>, full: boolean, first: string) => {
+    const r = rows(app, full);
+    expect(r).toContain(first);
+    return r.slice(r.indexOf(first));
+  };
+
+  it.each([true, false])("names an allowed edit's file relative to the project, its answer under the call (full screen: %s)", async (full) => {
+    const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "src/save.ts", old_text: "one", new_text: "uno" }), reply("edited")], { full });
+    const file = path.join(ctx.root, "src", "save.ts");
+    mkdirSync(path.dirname(file));
+    writeFileSync(file, "one\n");
+    await type(app, "edit it");
+    await until(app, `Allow edit ${file}?`);
+    await press(app, "y");
+    await until(app, "edited");
+    expect(from(app, full, "● edit_file src/save.ts").slice(0, 9)).toEqual([
+      "● edit_file src/save.ts",
+      "",
+      "┌ edit src/save.ts (2 lines)",
+      "- one",
+      "+ uno",
+      "  ⎿ You allowed this.",
+      "  ⎿ ok",
+      "",
+      "● edited",
+    ]);
+    expect(app.lastFrame()).not.toContain(file);
+    expect(readFileSync(file, "utf8")).toBe("uno\n");
+  });
+
+  it.each([true, false])("keeps an edit of a file outside the project in full everywhere (full screen: %s)", async (full) => {
+    const outside = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    onTestFinished(() => removeTree(outside));
+    const file = path.join(outside, "save.ts");
+    writeFileSync(file, "one\n");
+    const { app } = await mount([callTool("c1", "edit_file", { path: file, old_text: "one", new_text: "uno" }), reply("edited")], { full });
+    await type(app, "edit it");
+    await until(app, `Allow edit ${file}?`);
+    await press(app, "y");
+    await until(app, "edited");
+    expect(from(app, full, `● edit_file ${file}`).slice(0, 7)).toEqual([
+      `● edit_file ${file}`,
+      "",
+      `┌ edit ${file} (2 lines)`,
+      "- one",
+      "+ uno",
+      "  ⎿ You allowed this.",
+      "  ⎿ ok",
+    ]);
+  });
+
+  // A subagent's call row is not in the conversation, so its answer names what it answers: the file as its heading does.
+  it.each([true, false])("names a subagent's edit relative to the project in its heading and answer, a file outside in full (full screen: %s)", async (full) => {
+    const { app, ask, ctx } = await mount([], { full });
+    const inside = path.join(ctx.root, "src", "save.ts");
+    const first = ask(`edit ${inside}`, "- one\n+ uno", asker("t2 (x)").owner);
+    await until(app, `Allow t2 (x) to edit ${inside}?`);
+    await press(app, "y");
+    expect(await first).toBe(true);
+    expect(from(app, full, "┌ edit src/save.ts (2 lines)").slice(0, 4)).toEqual(["┌ edit src/save.ts (2 lines)", "- one", "+ uno", "t2 (x) to edit src/save.ts: You allowed this."]);
+    expect(app.lastFrame()).not.toContain(inside);
+    const outside = path.join(path.dirname(ctx.root), "elsewhere.ts");
+    const second = ask(`edit ${outside}`, "- one\n+ uno", asker("t3 (y)").owner);
+    await until(app, `Allow t3 (y) to edit ${outside}?`);
+    await press(app, "y");
+    expect(await second).toBe(true);
+    expect(from(app, full, `┌ edit ${outside} (2 lines)`).slice(0, 4)).toEqual([`┌ edit ${outside} (2 lines)`, "- one", "+ uno", `t3 (y) to edit ${outside}: You allowed this.`]);
+  });
+
+  // A path with files.ts's note after it, where a link really leads, is named in full, as the question names it.
+  it("keeps an edit's path in full when a note says where it really leads", async () => {
+    const { app, ask, ctx } = await mount([]);
+    const summary = `edit ${path.join(ctx.root, "a.ts")} (really b.ts)`; // a short note, so each line fits on one row
+    const answer = ask(summary, "- one\n+ uno", asker("t2 (x)").owner);
+    await until(app, `Allow t2 (x) to ${summary}?`);
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    expect(from(app, false, `┌ ${summary} (2 lines)`).slice(0, 4)).toEqual([`┌ ${summary} (2 lines)`, "- one", "+ uno", `t2 (x) to ${summary}: You allowed this.`]);
   });
 });
 
