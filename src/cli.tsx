@@ -932,7 +932,7 @@ if (parsed.print !== undefined) {
         intro={[
           ...startLines,
           ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
-          ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours }),
+          ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours, root: workspace.root }),
           ...said.map((l) => ({ ...l, color: "gray" as const })),
         ]}
         pictures={pictures}

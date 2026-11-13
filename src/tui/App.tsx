@@ -18,7 +18,7 @@ import type { UserRules } from "../safety/rules.js";
 import type { Shell } from "../safety/split.js";
 import { SETTINGS, type Settings, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
-import { shownPath } from "../tools/search.js";
+import { noted } from "../tools/files.js";
 import type { TodoItem } from "../tools/todo.js";
 import { characters, contextsOf, FROM, gray, isFile, type Question, SHORTEN_WORDS, STOPPING, visualSelection } from "./app/constants.js";
 import { handover } from "./app/handover.js";
@@ -33,7 +33,7 @@ import { useAppState } from "./app/state.js";
 import { type Bindings, keyText } from "./bindings.js";
 import { type Clipboard, imagePaths } from "./clipboard.js";
 import { Conversation, Printed } from "./Conversation.js";
-import { brief, describe, gapAfter, type Line, notice as noticeLine, previewStyles, screen as escaped } from "./describe.js";
+import { brief, describe, fileShown, gapAfter, type Line, notice as noticeLine, previewStyles, screen as escaped } from "./describe.js";
 import { DetailView, keyRow, searchFor } from "./DetailView.js";
 import { Field } from "./Field.js";
 import { History } from "./history.js";
@@ -221,11 +221,13 @@ export function App(props: AppProps) {
       // a row of its own (release 8c plan, choice 65).
       latest.current.endRun(call);
       // A write's or an edit's file as the conversation names it, in the preview's heading and the answer: relative to the
-      // project when inside it, as the call row names it (TUI design pass, Task 8; audit 3). The question's own line keeps
-      // the full path, as it is what is allowed. A path with a note after it, "(really …)" (files.ts), stays in full.
+      // project when inside it, as the call row names it (TUI design pass, Task 8; audit 3), from the workspace's folder,
+      // the sandbox's /work in the box. The question's own line keeps the full path, as it is what is allowed. A path with
+      // one of files.ts's three notes after it, "(really …)", "(through a link that leads nowhere)" or "(where it really
+      // leads cannot be told)", stays in full (files.ts, noted).
       const verb = /^(?:write|edit) /.exec(text)?.[0];
       const file = verb === undefined ? "" : text.slice(verb.length);
-      const asSaid = verb === undefined || file.endsWith(")") ? text : `${verb}${shownPath(ui.root, file)}`;
+      const asSaid = verb === undefined || noted(file) ? text : `${verb}${fileShown(ui.workspace.root, file)}`;
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface. One block, from its
       // heading, the empty line before it not in its range (TUI design pass, Task 3). An edit's preview, a diff, in colour

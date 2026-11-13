@@ -18,12 +18,14 @@ export type Kind = Counted | "hidden" | "own";
 
 // What a run's calls are counted by: the asked calls (Session.asked), the shell the shell tool runs in (split.ts,
 // shellOf), and an MCP call's server and tool as the server gives them, from its full name (choice 68); and the palette
-// its rows' marks are drawn in (TUI design pass, Task 3).
+// its rows' marks are drawn in (TUI design pass, Task 3); the project's folder, the workspace's, which an edit's or a
+// write's row names its file from (describe.ts, callRow; Task 8).
 export interface FoldOptions {
   asked: ReadonlySet<string>;
   shell: Shell;
   names: McpNames;
   palette: Palette;
+  root?: string;
 }
 
 // An MCP call's server and tool as the last offer gave its full name (release 8c plan, Task 18; choice 68); for a name no
@@ -167,11 +169,11 @@ export interface Fold {
 
 // A folded row opened (full screen, a click): its calls' rows as they look unfolded, an MCP call's by `names` (choice 68),
 // each of them holding the fold, so a click on any closes it again. tool_search has no row.
-export const openRows = (fold: Fold, { names, palette }: Pick<FoldOptions, "names" | "palette">): Line[] =>
+export const openRows = (fold: Fold, { names, palette, root }: Pick<FoldOptions, "names" | "palette" | "root">): Line[] =>
   fold.calls.flatMap(({ call, kinds }) => {
     if (kinds[0] === "hidden") return [];
     const r = fold.results.get(call.id);
-    return [callRow(call, palette, names), ...(r ? [r] : [])].map((l) => ({ ...l, fold }));
+    return [callRow(call, palette, names, root), ...(r ? [r] : [])].map((l) => ({ ...l, fold }));
   });
 
 // The folded row's own line, which a closed fold goes back to: a block, a grey `● ` before its words (TUI design pass,
@@ -214,7 +216,7 @@ export class OpenRun {
     this.#said.delete(c.id);
     if (this.own(c)) {
       this.#rowed.add(c.id);
-      return [...this.end(), callRow(c, this.options.palette, this.options.names)];
+      return [...this.end(), callRow(c, this.options.palette, this.options.names, this.options.root)];
     }
     // A new run starting says the failed rows waiting from a run said before it, as their calls ran first.
     if (!this.#run.length) this.#quiet();
@@ -242,7 +244,7 @@ export class OpenRun {
       this.#run.splice(i, 1);
       this.#results.delete(r.callId);
     }
-    this.#failed.push(callRow(call, this.options.palette, this.options.names), resultRow(r));
+    this.#failed.push(callRow(call, this.options.palette, this.options.names, this.options.root), resultRow(r));
     return [];
   }
 
@@ -279,7 +281,7 @@ export class OpenRun {
     }
     const under = this.#rowed.size === 0;
     this.#rowed.add(id);
-    return { lines: [...lines, callRow(call, this.options.palette, this.options.names)], under };
+    return { lines: [...lines, callRow(call, this.options.palette, this.options.names, this.options.root)], under };
   }
 
   // The run said, as one row, and emptied, then the rows of its calls that failed meanwhile. A run of only tool_search has

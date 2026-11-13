@@ -3391,15 +3391,109 @@ describe("App's one path per edit", () => {
     expect(from(app, full, `┌ edit ${outside} (2 lines)`).slice(0, 4)).toEqual([`┌ edit ${outside} (2 lines)`, "- one", "+ uno", `t3 (y) to edit ${outside}: You allowed this.`]);
   });
 
-  // A path with files.ts's note after it, where a link really leads, is named in full, as the question names it.
-  it("keeps an edit's path in full when a note says where it really leads", async () => {
-    const { app, ask, ctx } = await mount([]);
-    const summary = `edit ${path.join(ctx.root, "a.ts")} (really b.ts)`; // a short note, so each line fits on one row
+  // A path with one of files.ts's three notes after it (resolveIn) is named in full, as the question names it. The lines
+  // can wrap at the test screen's 100 columns, so they are compared without their blanks and line breaks.
+  const bare = (s: string) => s.replace(/\s/g, "");
+  const notes = [(root: string) => ` (really ${path.join(root, "b.ts")})`, () => " (through a link that leads nowhere)", () => " (where it really leads cannot be told)"];
+  it.each(notes.flatMap((note, i) => [true, false].map((full) => ({ note, i, full }))))("keeps an edit's path in full under note $i (full screen: $full)", async ({ note, full }) => {
+    const { app, ask, ctx } = await mount([], { full });
+    const summary = `edit ${path.join(ctx.root, "a.ts")}${note(ctx.root)}`;
     const answer = ask(summary, "- one\n+ uno", asker("t2 (x)").owner);
-    await until(app, `Allow t2 (x) to ${summary}?`);
+    await waitFor(() => bare(app.lastFrame()!).includes(bare(`Allow t2 (x) to ${summary}?`)));
     await press(app, "y");
     expect(await answer).toBe(true);
-    expect(from(app, false, `┌ ${summary} (2 lines)`).slice(0, 4)).toEqual([`┌ ${summary} (2 lines)`, "- one", "+ uno", `t2 (x) to ${summary}: You allowed this.`]);
+    const shown = bare(stripVTControlCharacters(app.lastFrame()!).replace(/│/g, ""));
+    expect(shown).toContain(bare(`┌ ${summary} (2 lines)- one+ uno`));
+    expect(shown).toContain(bare(`t2 (x) to ${summary}: You allowed this.`));
+    expect(app.lastFrame()).not.toContain("edit a.ts");
+  });
+
+  // A file name ending in a bracket that is none of the notes is named relative, as any other.
+  it.each([true, false])("names a file such as `notes (1)` relative to the project (full screen: %s)", async (full) => {
+    const { app, ask, ctx } = await mount([], { full });
+    const file = path.join(ctx.root, "notes (1)");
+    const answer = ask(`edit ${file}`, "- one\n+ uno", asker("t2 (x)").owner);
+    await until(app, `Allow t2 (x) to edit ${file}?`);
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    expect(from(app, full, "┌ edit notes (1) (2 lines)").slice(0, 4)).toEqual(["┌ edit notes (1) (2 lines)", "- one", "+ uno", "t2 (x) to edit notes (1): You allowed this."]);
+  });
+
+  // The user's choice at Task 8's spec review, "Edit/write rows too": an edit's or a write's call row names its file as
+  // the heading does, however the model typed it: `./`, an absolute path in the project, or on Windows backslashes.
+  const forms = ["./src/save.ts", "absolute", ...(process.platform === "win32" ? ["src\\save.ts"] : [])];
+  it.each(forms.flatMap((form) => [true, false].map((full) => ({ form, full }))))("names an edit typed as $form in the same form on its row and heading (full screen: $full)", async ({ form, full }) => {
+    const turns: Turn[] = [];
+    const { app, ctx } = await mount([], { lead: new FakeProvider("a", turns), full });
+    const file = path.join(ctx.root, "src", "save.ts");
+    mkdirSync(path.dirname(file));
+    writeFileSync(file, "one\n");
+    turns.push(callTool("c1", "edit_file", { path: form === "absolute" ? file : form, old_text: "one", new_text: "uno" }), reply("edited"));
+    await type(app, "edit it");
+    await until(app, `Allow edit ${file}?`);
+    await press(app, "y");
+    await until(app, "edited");
+    expect(from(app, full, "● edit_file src/save.ts").slice(0, 7)).toEqual(["● edit_file src/save.ts", "", "┌ edit src/save.ts (2 lines)", "- one", "+ uno", "  ⎿ You allowed this.", "  ⎿ ok"]);
+    expect(app.lastFrame()).not.toContain(file);
+  });
+
+  it.each([true, false])("names a write typed as an absolute path in the project relative on its row and heading (full screen: %s)", async (full) => {
+    const turns: Turn[] = [];
+    const { app, ctx } = await mount([], { lead: new FakeProvider("a", turns), full });
+    const file = path.join(ctx.root, "new.ts");
+    turns.push(callTool("c1", "write_file", { path: file, content: "x" }), reply("written"));
+    await type(app, "write it");
+    await until(app, `Allow write ${file}?`);
+    await press(app, "y");
+    await until(app, "written");
+    expect(from(app, full, "● write_file new.ts").slice(0, 6)).toEqual(["● write_file new.ts", "", "┌ write new.ts (1 line)", "x", "  ⎿ You allowed this.", "  ⎿ ok"]);
+    expect(app.lastFrame()).not.toContain(file);
+  });
+
+  // Only an edit's and a write's rows: a read's row, here one of its own as it failed, names the path as typed.
+  it.each([true, false])("leaves a read's row as the model typed it (full screen: %s)", async (full) => {
+    const { app } = await mount([callTool("c1", "read_file", { path: "./missing.txt" }), reply("looked")], { full });
+    await type(app, "read it");
+    await until(app, "looked");
+    expect(rows(app, full)).toContain("● read_file ./missing.txt");
+  });
+
+  // The user's choice at Task 8's spec review, "Fix it in Task 8": in the sandbox, the question names the box's path under
+  // /work, the workspace's root, while the App's root is the host folder (cli.tsx). A stand-in for the box's workspace,
+  // whose files are one line, and none written.
+  const boxed = () =>
+    Object.assign(new LocalWorkspace(tmpdir()), {
+      root: "/work",
+      resolve: async (p: string) => {
+        const abs = path.posix.resolve("/work", p);
+        return { abs, outside: !abs.startsWith("/work/"), shown: abs };
+      },
+      readText: async () => "one\n",
+      writeText: async () => {},
+      branch: async () => null,
+    });
+  it.each([true, false])("names a sandbox edit under /work relative, and one outside it in full (full screen: %s)", async (full) => {
+    const edit = (p: string) => callTool("c1", "edit_file", { path: p, old_text: "one", new_text: "uno" });
+    const { app } = await mount([edit("src/save.ts"), reply("edited"), edit("/etc/save.ts"), reply("edited again")], { full, workspace: boxed() });
+    await type(app, "edit it");
+    await until(app, "Allow edit /work/src/save.ts?");
+    await press(app, "y");
+    await until(app, "edited");
+    expect(from(app, full, "● edit_file src/save.ts").slice(0, 7)).toEqual(["● edit_file src/save.ts", "", "┌ edit src/save.ts (2 lines)", "- one", "+ uno", "  ⎿ You allowed this.", "  ⎿ ok"]);
+    await type(app, "and that one");
+    await until(app, "Allow edit /etc/save.ts?");
+    await press(app, "y");
+    await until(app, "edited again");
+    expect(from(app, full, "● edit_file /etc/save.ts").slice(0, 7)).toEqual(["● edit_file /etc/save.ts", "", "┌ edit /etc/save.ts (2 lines)", "- one", "+ uno", "  ⎿ You allowed this.", "  ⎿ ok"]);
+  });
+
+  it("names a subagent's sandbox edit under /work relative in its answer", async () => {
+    const { app, ask } = await mount([], { workspace: boxed() });
+    const answer = ask("edit /work/src/save.ts", "- one\n+ uno", asker("t2 (x)").owner);
+    await until(app, "Allow t2 (x) to edit /work/src/save.ts?");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    expect(from(app, false, "┌ edit src/save.ts (2 lines)").slice(0, 4)).toEqual(["┌ edit src/save.ts (2 lines)", "- one", "+ uno", "t2 (x) to edit src/save.ts: You allowed this."]);
   });
 });
 

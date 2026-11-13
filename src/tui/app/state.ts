@@ -215,7 +215,7 @@ export function useAppState({
   const lastSaid = useRef<Line | null>(null);
   const command = useRef(false);
   // The lead's quiet calls not yet said, and the runs said, for their results (fold.ts; release 8c plan, Task 15).
-  const [run] = useState(() => new OpenRun({ asked: session.asked, shell: shell ?? shellOf("host"), names: mcpNames(mcp?.servers), palette }));
+  const [run] = useState(() => new OpenRun({ asked: session.asked, shell: shell ?? shellOf("host"), names: mcpNames(mcp?.servers), palette, root: workspace.root }));
   // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
   const todos = useRef<{ items: TodoItem[]; hidden: boolean }>({ items: [], hidden: false });
   // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a

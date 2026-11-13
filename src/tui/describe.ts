@@ -1,3 +1,4 @@
+import path from "node:path";
 import { callText } from "../core/exportText.js";
 import { visible } from "../core/permissions.js";
 import { FEEDBACK } from "../core/session.js";
@@ -7,6 +8,7 @@ import type { Event } from "../hooks/config.js";
 import type { Run } from "../hooks/hooks.js";
 import type { Ran } from "../hooks/run.js";
 import { isMcp, outputFrom, tachikomaName } from "../hooks/tools.js";
+import { shownPath } from "../tools/search.js";
 import type { Fold, OpenRun } from "./fold.js";
 import { marker } from "./pictures.js";
 import type { Palette } from "./theme.js";
@@ -143,16 +145,30 @@ export function gapped(lines: readonly Line[], before: { text: string; band?: tr
   return out;
 }
 
+// A file's path as the conversation names it (Task 8; audit 3): relative to the project's folder `root`, with forward
+// slashes, when inside it, and in full otherwise; read against `root` by its kind's rules, as the sandbox's folder,
+// /work, is a Linux path on any host.
+export const fileShown = (root: string, file: string): string => {
+  const paths = root.startsWith("/") ? path.posix : path;
+  return shownPath(root, paths.resolve(root, file), paths);
+};
+
 // A call's row and its result's, as the scrollback shows them unfolded (fold.ts opens a folded row into these). The call's
 // row is a block, its `● ` the accent colour, as a printed row cannot change when the call ends, and its name and detail
-// the text colour (Task 3; choice P2); its result row is no block, and says how it went.
-export const callRow = (p: ToolCall, palette: Palette, names?: McpNames): Line => ({
-  text: `● ${shownName(p.name, names)} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`,
-  color: palette.text,
-  styles: [dot(palette.accent)],
-  oneLine: true,
-  block: true,
-});
+// the text colour (Task 3; choice P2); its result row is no block, and says how it went. With the project's folder
+// `root`, an edit's or a write's row names its file as its preview's heading does (fileShown; the user's choice at Task
+// 8's spec review, "Edit/write rows too"); any other row names what the model typed.
+export const callRow = (p: ToolCall, palette: Palette, names?: McpNames, root?: string): Line => {
+  const typed = brief(p.name, p.input);
+  const file = root !== undefined && typed !== null && (p.name === "edit_file" || p.name === "write_file");
+  return {
+    text: `● ${shownName(p.name, names)} ${file ? fileShown(root, typed) : (typed ?? JSON.stringify(p.input))}`,
+    color: palette.text,
+    styles: [dot(palette.accent)],
+    oneLine: true,
+    block: true,
+  };
+};
 export const resultRow = (p: ToolResult): Line => ({
   text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`,
   color: p.isError ? "red" : "gray",
