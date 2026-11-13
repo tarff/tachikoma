@@ -187,9 +187,9 @@ describe("StatusLine's fit", () => {
     [100, full],
     [94, full],
     [93, " lead anthropic:claude-opus-5-5 | █████░░░░░ 50% left | 12.3k in / 678 out | perm ask"],
-    [60, " lead anthropic:claude-opus-5-5 | perm ask"],
-    [40, " lead anthropic:claude-opus-5-5"],
-  ])("drops parts from the end at %d columns", (columns, shown) => {
+    [60, " lead anthropic:claude-opus-5-5 | $0.42 | perm ask | ⏱ 14m"], // the cost and the time put back
+    [40, " lead anthropic:claude-opus-5-5"], // nothing put back while `mode` is out
+  ])("drops parts from the end, putting back those that fit, at %d columns", (columns, shown) => {
     const line = lineAt(columns, all, SEGMENTS);
     expect(line).toBe(shown);
     expect(line).not.toContain("…");
@@ -199,6 +199,27 @@ describe("StatusLine's fit", () => {
     const segments: Segment[] = ["time", "mode", "project", "lead", "errors"];
     expect(lineAt(43, info, segments)).toBe(" perm ask | lead anthropic:claude-opus-5-5");
     expect(lineAt(42, info, segments)).toBe(" perm ask");
+  });
+
+  // The user's "Put back what fits" (2026-11-14): a long part dropped does not take the short ones after it with it.
+  const long = { ...info, errors: 0, project: "my-rather-long-project-folder-name", branch: "feature/status-line-fit" };
+  const kept = " lead anthropic:claude-opus-5-5 | █████░░░░░ 50% left | 12.3k in / 678 out | $0.42 | perm ask"; // 94
+
+  it("puts back a part listed after a dropped one when it fits", () => {
+    expect(lineAt(120, long, SEGMENTS)).toBe(`${kept} | ⏱ 14m`); // the project dropped, the time back at 102
+  });
+
+  it("puts back, in the list's order, only the dropped parts that still fit after those put back before them", () => {
+    const busy = { ...long, running: 1 };
+    expect(lineAt(105, busy, SEGMENTS)).toBe(`${kept} | ⏱ 14m`); // the tasks part would make 114
+    expect(lineAt(114, busy, SEGMENTS)).toBe(`${kept} | ⏱ 14m | 1 running`);
+  });
+
+  it("counts a two-column character as two when it decides what drops", () => {
+    const wide = { ...info, project: "日本語のフォルダ" }; // 8 characters, 16 columns
+    const segments: Segment[] = ["mode", "project", "time"];
+    expect(lineAt(48, wide, segments)).toBe(" perm ask | 日本語のフォルダ git:(main) | ⏱ 14m");
+    expect(lineAt(47, wide, segments)).toBe(" perm ask | 日本語のフォルダ git:(main)");
   });
 });
 

@@ -65,7 +65,7 @@ export function costText(lead: string, cost: number, costUnknown: boolean): stri
 // and as the bar's empty cells are drawn below; the labels are the palette's muted (TUI design pass, Task 10).
 export interface Piece {
   text: string;
-  color?: string | undefined;
+  color?: string;
   dim?: boolean;
 }
 
@@ -109,28 +109,42 @@ export function pieces(s: LineSegment, i: StatusInfo, p: Palette): Piece[] {
 }
 
 // A part with nothing to say yet (TUI design pass, Task 10): no errors, no tokens either way, a cost of 0 that is known.
-// The ChatGPT plan's cost part still says the plan is in use (costText).
+// The ChatGPT plan's cost part still says the plan is in use (costText). `tasks` shows only while a subagent runs.
 function zero(s: LineSegment, i: StatusInfo): boolean {
+  if (s === "tasks") return i.running === 0;
   if (s === "errors") return i.errors === 0;
   if (s === "tokens") return i.input === 0 && i.output === 0;
   return s === "cost" && i.cost === 0 && !i.costUnknown && !i.lead.startsWith("chatgpt:");
 }
 
 // One line, `columns` wide at most, instead of wrapping: too long, parts drop from the end of the list one at a time,
-// `lead` and `mode` last (TUI design pass, Task 10); a last part still too long alone is cut at the end (Ink measures it
-// in columns). On the terminal's own background, its parts split by a grey ` | ` (release 5 design, "The status line's
-// colours").
+// `lead` and `mode` last (TUI design pass, Task 10), and then each dropped part that fits again is put back, in the list's
+// order (the user's "Put back what fits", 2026-11-14); a last part still too long alone is cut at the end (Ink measures
+// it in columns). On the terminal's own background, its parts split by a grey ` | ` (release 5 design, "The status
+// line's colours").
 export function StatusLine({ info, segments, columns, palette }: { info: StatusInfo; segments: Segment[]; columns: number; palette: Palette }) {
-  // `tasks` shows only while a subagent runs.
-  const shown = segments.filter((s): s is LineSegment => s !== "tools" && (s !== "tasks" || info.running > 0) && !zero(s, info));
+  const listed = segments.filter((s): s is LineSegment => s !== "tools" && !zero(s, info));
+  const on = listed.map(() => true);
   // A part's columns: its bar's cells and the space after them, then its words; the line's, a space at each end and
   // ` | ` between parts.
   const width = (s: LineSegment) => (s === "context" && info.contextWindow ? BAR_CELLS + 1 : 0) + stringWidth(pieces(s, info, palette).map((p) => p.text).join(""));
-  const lineWidth = () => 2 + shown.reduce((sum, s) => sum + width(s), 0) + 3 * (shown.length - 1);
-  while (shown.length > 1 && lineWidth() > columns) {
-    const last = shown.findLastIndex((s) => s !== "lead" && s !== "mode");
-    shown.splice(last === -1 ? shown.length - 1 : last, 1);
+  const lineWidth = () => {
+    const parts = listed.filter((_, n) => on[n]);
+    return 2 + parts.reduce((sum, s) => sum + width(s), 0) + 3 * (parts.length - 1);
+  };
+  const last = (s: LineSegment) => s === "lead" || s === "mode";
+  while (on.filter(Boolean).length > 1 && lineWidth() > columns) {
+    const n = on.findLastIndex((o, m) => o && !last(listed[m]!));
+    on[n === -1 ? on.lastIndexOf(true) : n] = false;
   }
+  // None put back while `lead` or `mode` is out, so they still go last.
+  if (listed.every((s, n) => on[n] || !last(s)))
+    for (let n = 0; n < listed.length; n++) {
+      if (on[n]) continue;
+      on[n] = true;
+      if (lineWidth() > columns) on[n] = false;
+    }
+  const shown = listed.filter((_, n) => on[n]);
   return (
     <Text wrap="truncate-end">
       {shown.map((s, n) => {
