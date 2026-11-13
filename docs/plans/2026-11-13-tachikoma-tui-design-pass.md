@@ -605,3 +605,19 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   wrap-ansi counting from the line's start, so it lands a column or two off full screen; a row
   mixing an untinted tab before a tinted one can break one character differently; the tint
   covers a line's characters only, not the rest of its row (look at it in Task 14's check).
+- **Task 8** (4427ae5, fixes 28248ac and 403eb74): one path per edit. The preview's heading and
+  the answer name the file through `fileShown` (describe.ts, over `shownPath`), against the
+  workspace's folder; the answer goes under the call when the call's row came straight before
+  its preview and nothing was said after it, so a declined write shows one row, not two. The
+  question keeps the full path. The plan's "as the call row does" was wrong: the row showed the
+  path as typed. The user chose (2026-11-13): "Edit/write rows too" (edit and write call rows
+  name the file the same way, through `target`; other tools' rows stay as typed); "Match the 3
+  notes exactly" (only the three notes files.ts adds keep a path in full, `noted()`; `notes (1)`
+  is relative); "Fix it in Task 8" (in the box, `/work/src/save.ts` shows `src/save.ts`, read by
+  POSIX rules on a Windows host; the question keeps `/work/…`); "Both" (the live tool line and
+  the subagent panel's and `/tasks`' rows use `target` too). From the review: the project folder
+  itself shows `.`; a path holding a `\uXXXX` escape (made by the question's `visible()`) keeps
+  its full path, so a bidi character is never read as a folder split; `FoldOptions.root` is
+  required. Known limits: a file really named like `draft (really final)`, or a folder named like
+  `u0041x`, keeps its full path; a path through a link or a Windows short name is relative on its
+  row but full, with its note, in the heading.
