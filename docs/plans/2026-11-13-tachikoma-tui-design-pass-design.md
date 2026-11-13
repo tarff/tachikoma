@@ -10,6 +10,11 @@ The user chose the scope on 2026-11-13: their own list, an audit of every screen
 Claude Code, and colour and themes ("use them all" for the 13 audit points). Choices quoted below
 are theirs; the rest is mine for them to review.
 
+A review of this design on 2026-11-13 found three gaps, each checked against the code and marked
+"(review)" where it lands: copying drawn markdown (the user chose "what you see"), streaming (there
+is none today, so the section is dropped), and asking the terminal for its background (the user
+chose a setting instead, nothing sent to the terminal).
+
 ## Sources
 
 - **Today's screens:** 44 captures of every screen state at 100 and 50 columns, made from the
@@ -118,12 +123,13 @@ At launch (and after `-c`/`-r`, above the history it redraws), a rounded box:
 - **One palette** in `src/tui/theme.ts`, used by every component instead of colour names written in
   each: accent (Tachikoma blue), text, muted (grey), success (green), error (red), warning (yellow),
   band, and the diff tints.
-- **Light and dark:** the band and the tints need different greys on a light background. At
-  launch Tachikoma asks the terminal for its background colour (the OSC 11 query); the answer, if it
-  comes, picks dark or light. A `theme` setting (`"auto"`, `"dark"`, `"light"`; default `"auto"`)
-  wins over the answer, and with no answer and `"auto"`, dark is used. Which terminals answer, and
-  how long to wait, are not known yet: the build measures them in your terminal before anything is
-  set.
+- **Light and dark (review; option chosen: "Setting, no asking"):** the band and the tints need
+  different greys on a light background. A `theme` setting in the settings file picks them:
+  `"auto"` (default), `"dark"` or `"light"`. `"auto"` reads `COLORFGBG`, which some terminals set
+  to "foreground;background" colour numbers (a background of 7 or 15 means light, any other number
+  dark), and is dark where it is not set, as on Windows Terminal. Nothing is sent to the terminal,
+  so no answer can arrive in the prompt. The greys themselves are picked by eye with the user at
+  the terminal check, on a dark and a light background.
 - **Colour depth:** the pixel art and the tints need full colour; with 256 or 16 colours the art is
   the ASCII one and the tints are left out. The check is the one Ink itself uses, through chalk's
   own copy of supports-color (chalk 5.6, which Ink 7.1.1 depends on): full colour on Windows 10
@@ -138,9 +144,13 @@ At launch (and after `-c`/`-r`, above the history it redraws), a rounded box:
   when it differs), code blocks (on the band colour, one colour, no highlighting; see choice B), and
   rules. Tables: drawn with box lines when they fit the width, else left as the raw text.
 - **Only replies:** your messages, tool output and notices are never read as markdown.
-- **While a reply streams:** finished lines are drawn as markdown as they arrive; an open code block
-  is drawn as code until it closes.
-- **Copying and /export** give the raw markdown, as the model wrote it.
+- **Whole replies only (review):** a provider hands back a reply whole (`Provider.complete` returns
+  the finished `Turn`), and nothing on screen arrives piece by piece today, so each reply is drawn
+  as markdown once, when it arrives. Streaming is not part of this work.
+- **Copying (review; option chosen: "What you see"):** a selection copies the text as drawn, as
+  selecting in the terminal itself would: `**hello**` copies as `hello`, a table with its drawn
+  borders. So the drawn lines are the lines kept, with their styles, and selection, search and
+  copying work on them unchanged. `/export` keeps the raw markdown, from the saved messages.
 
 ## 6. Choices
 
@@ -164,15 +174,16 @@ E. **`tachikoma.txt`:** (recommended) its drawing moves into `src/tui/art.ts` an
   only with `-t`, file by file.
 - New tests: style runs across wrapped rows, selection and copying over a styled line, the band in
   both modes, the start-up box at 120, 80 and 50 columns and with `NO_COLOR`, the status line's drop
-  order, the theme setting and an OSC 11 answer swallowed by the input filter (not typed into the
-  prompt), and for PR 2 each markdown piece, streamed and whole.
+  order, the theme setting and `COLORFGBG` (light, dark, unset, malformed), and for PR 2 each
+  markdown piece, and a selection over drawn markdown copying what is drawn.
 - The 44 captures are made again after each PR and put side by side with today's.
 - A terminal check with you for each PR: the band, the art and the colours on your dark terminal
   and, if you have one, a light one.
 
 ## Known limits
 
-- **Terminals that ignore OSC 11** get the dark look unless `theme` is set.
+- **A light terminal that does not set `COLORFGBG`** (Windows Terminal among them) gets the dark
+  look until `theme` is set to `"light"`.
 - **Fonts without half-block or box-drawing characters** show the art and the box as gaps or
   boxes. No setting is added for that: the ASCII drawing is chosen by colour depth only, and
   `NO_COLOR` gives it on any terminal.
