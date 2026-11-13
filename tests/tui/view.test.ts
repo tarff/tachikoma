@@ -224,6 +224,26 @@ describe("styled lines", () => {
     expect([a, b]).toEqual([{ line: 0, offset: 42 }, { line: 0, offset: 51 }]);
     expect(textOf(rows.lines, a, b)).toBe("word word");
   });
+
+  // Task 7's review: an edit's preview has a span for each of its lines, so a long one has thousands. Each kept line's
+  // spans are found by stepping through them, not by looking at every span for every kept line: the spans' fields read
+  // grow with the lines, where the quadratic way read 2 for each span on each line (180,000 here).
+  it("finds each kept line's spans by stepping through them, not by reading every span for each line", () => {
+    const n = 300;
+    const text = Array.from({ length: n }, (_, k) => `- line ${k}`).join("\n");
+    let reads = 0;
+    let start = 0;
+    const styles = text.split("\n").map((l) => {
+      const s = { start, end: Math.min(start + l.length + 1, text.length), color: "red" };
+      start = s.end;
+      return new Proxy(s, { get: (t, k) => (reads++, t[k as keyof typeof t]) });
+    });
+    const rows = new Rows(100);
+    rows.add([{ text, styles }]);
+    expect(rows.lines).toHaveLength(n);
+    expect(rows.lines[299]).toEqual({ text: "- line 299", styles: [{ start: 0, end: 10, color: "red" }] });
+    expect(reads).toBeLessThan(20 * n);
+  });
 });
 
 describe("View", () => {

@@ -264,6 +264,27 @@ describe("Printed", () => {
       expect(within(none, "1", "22")).toBe("a");
       expect(plain(none)).toBe("ab");
     }));
+
+  // Task 7's review: an edit's preview has a span for each of its lines, so a long one has thousands. A character's style
+  // is found by stepping through the spans, not by looking at every span for every character: the spans' fields read
+  // grow with the text, where the quadratic way read 2 or more for each span at each character (about 2,000,000 here).
+  it("finds each character's spans by stepping through them, not by reading every span for each", () =>
+    coloured(() => {
+      const n = 300;
+      const text = Array.from({ length: n }, (_, k) => `- line ${k}`).join("\n");
+      let reads = 0;
+      let start = 0;
+      const styles = text.split("\n").map((l, k) => {
+        const s = { start, end: Math.min(start + l.length + 1, text.length), color: k % 2 ? "green" : "red" };
+        start = s.end;
+        return new Proxy(s, { get: (t, key) => (reads++, t[key as keyof typeof t]) });
+      });
+      const shown = print({ text, styles }, 100);
+      expect(shown.map(plain)).toEqual(text.split("\n"));
+      expect(within(shown[0]!, "31", "39")).toBe("- line 0");
+      expect(within(shown[299]!, "32", "39")).toBe("- line 299");
+      expect(reads).toBeLessThan(20 * (text.length + n));
+    }));
 });
 
 // TUI design pass, Task 3: the blocks and markers describe gives a message's lines, in the dark full look's colours.

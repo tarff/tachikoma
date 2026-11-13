@@ -61,7 +61,7 @@ import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { startBox } from "../../src/tui/startup.js";
-import { palette } from "../../src/tui/theme.js";
+import { palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
 import { textWidth, wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, standInRun, tempContext, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
@@ -181,6 +181,7 @@ async function mount(
     // Real MCP servers made on the mount's bus, as cli.tsx hands them to the session and the App, started once the App
     // listens and stopped at the test's end, with the project's from .mcp.json for live edits (Task 10); none when not given.
     mcp?: (bus: Bus) => { servers: Servers; project?: ServerConfig[] };
+    theme?: Theme; // the look and palette, as cli.tsx gives them; the dark full one when not given (TUI design pass, Task 7)
   } = {},
 ) {
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
@@ -259,7 +260,7 @@ async function mount(
   const copies: string[] = [];
   const write = (s: string) => copies.push(Buffer.from(s.slice(7, -1), "base64").toString("utf8")); // 7: ESC ] 52 ; c ;
   const run = opts.run === undefined ? async () => {} : opts.run;
-  const app = render(
+  const tree = (
     <App
       session={session}
       tasks={tasks}
@@ -312,8 +313,9 @@ async function mount(
       leftLines={opts.leftLines}
       hooks={hooks}
       {...(mcp ? { mcp } : {})}
-    />,
+    />
   );
+  const app = render(opts.theme ? <ThemeContext value={opts.theme}>{tree}</ThemeContext> : tree);
   mounted.push(app);
   mcp?.servers.startAll(); // once the App listens, as cli.tsx starts them
   // ink-testing-library's terminal has no height; 24 rows is Ink's own default size (getWindowSize).
@@ -347,6 +349,22 @@ const OSC52_SHOWN = "\\u001b]52;c;Y3VybA==\\u0007";
 const DARK = palette({ light: false, color: true, full: true });
 // The prompt's line above it and below it, the terminal's width: ink-testing-library's 100 columns (TUI design pass, Task 4).
 const RULE = "─".repeat(100);
+
+// The frame with its colours: Ink colours through chalk, which finds no colour in a test's output, so a test that looks
+// for colours turns them on for itself at chalk's `level` and back off after: 1, chalk's basic 16 colours, enough for
+// reverse (\u001b[7m); 3, 24-bit colour, so the palette's hex is drawn as it is (theme.ts). chalk is now a dependency of
+// ours at Ink's own version (TUI design pass, choice P1).
+async function inColour(level: 1 | 3, test: () => Promise<void>) {
+  const before = chalk.level;
+  chalk.level = level;
+  try {
+    await test();
+  } finally {
+    chalk.level = before;
+  }
+}
+// `s` as a pattern matching it exactly.
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 function expectNoRawControls(frame: string | undefined) {
   for (const c of ["\u001b", "\u0007", "\r", "\u202e", "\u009b"]) expect(frame).not.toContain(c);
@@ -970,7 +988,7 @@ describe("App", () => {
   // Release 7 plan, Task 8: one red line per danger above the yellow question, in full screen and classic mode, with the
   // model's text escaped as the question's is. The gate is asked directly, so nothing runs the command.
   it.each([true, false])("draws a dangerous command's red lines above its question, escaped (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, gate } = await mount([], { full });
       const line = "git push --force origin a\u202eb\u001b[8m; git reset --hard HEAD~3";
       const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
@@ -1012,7 +1030,7 @@ describe("App", () => {
 
   // Release 8a plan, Task 5: the "Saving fails" line in red after ✗, with no label (user, 2026-11-06, "✗ then the line").
   it("shows saving stopped as ✗ and the line alone, in red", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session, bus } = await mount([reply("still here")]);
       const errors: string[] = [];
       bus.on("error", (e) => errors.push(e.message));
@@ -1038,7 +1056,7 @@ describe("App", () => {
   // Release 7 plan, Task 10: after 3 refusals in a row the next action that would go to the judge asks, with auto mode's
   // pause in grey just above it, in full screen and classic; approving it resumes auto mode, so the next goes to the judge.
   it.each([true, false])("says auto mode's pause in grey above its question, and approving resumes it (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const folder = await mkdtemp(path.join(tmpdir(), "tachi-"));
       const writes = ["a", "b", "c", "d", "e"].map((n, i) => callTool(`c${i + 1}`, "write_file", { path: path.join(folder, `${n}.txt`), content: n }).parts).flat();
       const no = reply('{"allow": false, "reason": "No."}');
@@ -1065,7 +1083,7 @@ describe("App", () => {
   // screen takes both, the grey row above.
   const PAUSE = "Auto mode paused after 3 refusals; approving this resumes it.";
   it.each([true, false])("draws a question's grey line with that question, not under one ahead of it in the line (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ask } = await mount([], { full });
       const first = ask("run: git push --force", undefined, undefined, undefined, ["Danger: rewriting or deleting git history: git push --force"]);
       const second = ask("read /made/up/elsewhere/notes.txt", undefined, undefined, undefined, [], PAUSE);
@@ -1084,7 +1102,7 @@ describe("App", () => {
   });
 
   it("puts a moved question's grey line in its block in the conversation, above any red lines, and keeps it above the short line", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = `echo ${"x".repeat(900)}`;
       const { app, ask } = await mount([], { full: true, rows: 12 });
       const asking = ask(`run: ${line}`, undefined, undefined, undefined, ["Danger: a made-up danger"], PAUSE);
@@ -1139,7 +1157,7 @@ describe("App", () => {
   });
 
   it("fits a question's grey line in a small terminal, with red lines given too, keeping a red row", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const warnings = Array.from({ length: 7 }, (_, i) => `Danger: rewriting or deleting git history: git push --force origin b${i + 1}`);
       const { app, ask } = await mount([], { full: true, rows: 8 });
       const asking = ask("run: git push --force origin b1", undefined, undefined, undefined, warnings, PAUSE);
@@ -1159,7 +1177,7 @@ describe("App", () => {
   // Release 7 plan, Task 8's code review: a question too long to fit moves into the conversation, its red lines with it,
   // in red, under its heading and above its text, so its short line's "shown above" shows the dangers too.
   it("puts a moved question's red lines in the conversation, above its text", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = `echo ${"x".repeat(900)}; git push --force`;
       const { app, gate } = await mount([], { full: true, rows: 12 });
       const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
@@ -1182,7 +1200,7 @@ describe("App", () => {
   // Release 7 plan, choice 63: in full screen the red lines are a row each, cut at the terminal's width, and those that do
   // not fit are counted in the last red row, so the frame stays inside the terminal. Classic mode draws them whole.
   it("cuts the red lines to a row each in full screen, and counts those that do not fit, keeping the frame inside the terminal", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = [`git push --force origin ${"x".repeat(120)}`, ...Array.from({ length: 6 }, (_, i) => `git push --force origin b${i + 1}`)].join("; ");
       const { app, gate } = await mount([], { full: true, rows: 10 });
       const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
@@ -2140,7 +2158,7 @@ describe("App's background commands", () => {
   });
 
   it("refuses /clear in red while a command runs, naming it, and takes it once the command is stopped", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { executor } = held();
       const { app } = await mount([start("c1", "npm run dev"), reply("started")], { executor, mode: "never" });
       await type(app, "go");
@@ -2402,7 +2420,7 @@ describe("App's answers", () => {
   // The user's own example, from the auto-mode terminal check after Part 2, where the folder deleted was the project's,
   // so the check finds it whole: here the test's own project folder, which nothing runs against.
   it.each([true, false])("says a declined dangerous command once, its danger kept, red, under its tool line (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { ran, executor } = noShell();
       const turns: Turn[] = [];
       const lead = new FakeProvider("a", turns);
@@ -2431,7 +2449,7 @@ describe("App's answers", () => {
   });
 
   it.each([true, false])("says an allowed command without a danger in grey under its tool line, its result after (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { ran, executor } = noShell();
       const { app } = await mount([callTool("c1", "shell", { command: "git status" }), reply("looked")], { full, executor });
       await type(app, "look");
@@ -2446,7 +2464,7 @@ describe("App's answers", () => {
   });
 
   it("says an allowed command's danger, red, under its tool line, its result after", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { ran, executor } = noShell();
       const { app } = await mount([callTool("c1", "shell", { command: "git push --force" }), reply("pushed")], { executor });
       await type(app, "push");
@@ -2480,7 +2498,7 @@ describe("App's answers", () => {
   });
 
   it("names a subagent's question in its answer, as the subagent's tool line is not in the conversation", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ask } = await mount([]);
       const t2 = asker("t2 (tidy up)");
       const red = "Danger: rewriting or deleting git history: git push --force";
@@ -2633,7 +2651,7 @@ describe("App's folded tool rows", () => {
   const both = (...calls: Turn[]): Turn => ({ parts: calls.flatMap((c) => c.parts), usage });
 
   it.each([true, false])("folds quiet calls across replies into one grey row, said before the text that ends the run (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const turns = [
         callTool("c1", "read_file", { path: "a.txt" }),
         both(callTool("c2", "find_files", { pattern: "*.txt" }), callTool("c3", "read_file", { path: "b.txt" })),
@@ -2653,7 +2671,7 @@ describe("App's folded tool rows", () => {
 
   // A call that fails leaves the run open at the time, its row said where the run ends, red, as its first line stays seen.
   it("says a quiet call that fails while its run is open as its own red row, the run's count without it", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const reads = both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "gone.txt" }));
       const { app, ctx } = await mount([reads, reply("One is missing.")]);
       writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
@@ -2811,7 +2829,7 @@ describe("App's live folded row", () => {
   it.each([true, false])("draws the run's live row as its calls go, then says the finished row once at the text (full screen: %s)", async (full) => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     try {
-      await inColour(async () => {
+      await inColour(1, async () => {
         const lead = new Held();
         const shell = heldShell();
         const { app, ctx } = await mount([], { lead, full, mode: "never", executor: shell.executor });
@@ -3011,16 +3029,6 @@ describe("App's blocks and gaps", () => {
     return r.slice(0, r.indexOf(last) + 1);
   };
   const both = (...turns: Turn[]): Turn => ({ parts: turns.flatMap((t) => t.parts), usage });
-  // 24-bit colour, so the band's hex is drawn as it is (lines.test.tsx, Printed).
-  const coloured = async (test: () => Promise<void>) => {
-    const level = chalk.level;
-    chalk.level = 3;
-    try {
-      await test();
-    } finally {
-      chalk.level = level;
-    }
-  };
   // The dark look's band #2a2a2a, muted #8a8a8a and accent #4278de (theme.ts), as 24-bit colour draws them.
   const BAND = "\u001b[48;2;42;42;42m";
   const MUTED = "\u001b[38;2;138;138;138m";
@@ -3096,7 +3104,7 @@ describe("App's blocks and gaps", () => {
   // A turn's replies come between calls, so the run of a quiet read is said too, at the notice (release 8c plan, Task 15's
   // quality review).
   it("makes a notice a block of its own between two replies, its `● ` grey, and an error one too", async () => {
-    await coloured(async () => {
+    await inColour(3, async () => {
       const lead = new Held();
       const { app, bus, ctx } = await mount([], { lead });
       writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
@@ -3121,7 +3129,7 @@ describe("App's blocks and gaps", () => {
   // The band's colour reaches the screen's edge on each of the three rows: the frame's width less the scroll bar's
   // column in full screen, the terminal's in classic.
   it.each([true, false])("draws your message as three band rows, `› ` before its text (full screen: %s)", async (full) => {
-    await coloured(async () => {
+    await inColour(3, async () => {
       const { app } = await mount([reply("ok")], { full });
       await press(app, "hi", "\u001b[13;2u", "there", "\r"); // Shift+Enter in the kitty keyboard protocol
       await showing(app, "● ok");
@@ -3198,7 +3206,7 @@ describe("App's blocks and gaps", () => {
 
   // The resumed lines come through describe and foldRow as the live ones did, and say() puts the same gaps between them.
   it.each([true, false])("draws a resumed conversation as the live one was drawn (full screen: %s)", async (full) => {
-    await coloured(async () => {
+    await inColour(3, async () => {
       const turns = [both(reply("Looking."), callTool("c1", "read_file", { path: "a.txt" })), both(callTool("c2", "write_file", { path: "b.txt", content: "x" })), reply("done")];
       const { app, ctx, session, sessions } = await mount(turns, { full, mode: "never", save: true });
       writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
@@ -3219,16 +3227,7 @@ describe("App's blocks and gaps", () => {
 // TUI design pass, Task 7 (audit 2): an edit's preview, its `-` lines in the error colour on the delete tint and its `+`
 // lines in the success colour on the add tint; a write's preview, the file's own text, stays grey.
 describe("App's diffs in colour", () => {
-  // 24-bit colour, so the dark look's hex is drawn as it is (theme.ts): success #5fbf6f on #1f3a26, error #f0605f on #432124.
-  const coloured = async (test: () => Promise<void>) => {
-    const level = chalk.level;
-    chalk.level = 3;
-    try {
-      await test();
-    } finally {
-      chalk.level = level;
-    }
-  };
+  // The dark look's success #5fbf6f on #1f3a26 and error #f0605f on #432124 (theme.ts), as 24-bit colour draws them.
   const ADD = ["\u001b[38;2;95;191;111m", "\u001b[48;2;31;58;38m"];
   const DEL = ["\u001b[38;2;240;96;95m", "\u001b[48;2;67;33;36m"];
   // The frame's raw row whose text, colours left out, is `text`.
@@ -3240,7 +3239,7 @@ describe("App's diffs in colour", () => {
   };
 
   it.each([true, false])("draws an edit's `-` lines red on the delete tint and `+` lines green on the add tint (full screen: %s)", async (full) => {
-    await coloured(async () => {
+    await inColour(3, async () => {
       const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "a.txt", old_text: "one\ntwo", new_text: "uno" }), reply("edited")], { full });
       writeFileSync(path.join(ctx.root, "a.txt"), "one\ntwo\n");
       await type(app, "edit it");
@@ -3255,7 +3254,7 @@ describe("App's diffs in colour", () => {
   });
 
   it("leaves a write's preview grey, though its lines start with `-` and `+`", async () => {
-    await coloured(async () => {
+    await inColour(3, async () => {
       const { app } = await mount([callTool("c1", "write_file", { path: "a.md", content: "- one\n+ two\n" }), reply("written")]);
       await type(app, "write it");
       await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow write"));
@@ -3267,7 +3266,7 @@ describe("App's diffs in colour", () => {
   // Task 2's known limit: a span edge between \r and \n draws the \r. A model may send a CRLF file's text with its \r
   // (files.ts, edited, finds it as sent); each line's tint is unbroken and no \r is drawn.
   it.each([true, false])("draws a CRLF edit's diff with no \\r and its tint unbroken (full screen: %s)", async (full) => {
-    await coloured(async () => {
+    await inColour(3, async () => {
       const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "a.txt", old_text: "a\r\nb", new_text: "c\r\nd" }), reply("edited")], { full });
       writeFileSync(path.join(ctx.root, "a.txt"), "a\r\nb\r\n");
       await type(app, "edit it");
@@ -3281,9 +3280,22 @@ describe("App's diffs in colour", () => {
       }
     });
   });
-});
 
-const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // The spec review: with colour off (theme.ts, look; NO_COLOR, say), an edit's preview draws no colour of its own, though
+  // chalk would draw one. Only the preview's grey is left, the line's own, which Task 13 takes from the palette.
+  it("draws an edit's preview with no colour of its own when colour is off", async () => {
+    await inColour(3, async () => {
+      const off = { light: false, color: false, full: false };
+      const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "a.txt", old_text: "one", new_text: "uno" }), reply("edited")], {
+        theme: { look: off, palette: palette(off) },
+      });
+      writeFileSync(path.join(ctx.root, "a.txt"), "one\n");
+      await type(app, "edit it");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow edit"));
+      for (const text of ["- one", "+ uno"]) expect(raw(app, text).replace(/\u001b\[(90|39)m/g, "").trimEnd()).toBe(text);
+    });
+  });
+});
 
 describe("App's to-do list", () => {
   const items: TodoItem[] = [
@@ -3790,7 +3802,7 @@ describe("App in full screen", () => {
   // TUI design pass, Task 6 (design, "Resizing"): the start-up box is laid out once, for 120 columns, and never again; each
   // of its rows is one screen row at any width, cut with "…" when the screen is narrower.
   it("keeps the start-up box as drawn at 120 columns, each row cut to one at 50, and the frame as at first back at 120, a selection and the held view on the same text", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const resize = async (app: ReturnType<typeof render>, columns: number) => {
         Object.defineProperty(app.stdout, "columns", { value: columns, configurable: true });
         app.stdout.emit("resize");
@@ -4161,19 +4173,6 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 });
 
-// The frame with its colours: Ink colours through chalk, which finds no colour in a test's output, so a test that looks
-// for reverse colours turns them on for itself and back off after. chalk is Ink's dependency, not ours, reached through
-// Ink's install; that is acceptable, as were it ever to move, the import fails loudly rather than a test passing
-// silently.
-async function inColour(test: () => Promise<void>) {
-  const level = chalk.level;
-  chalk.level = 1; // 1: chalk's basic 16 colours, enough for reverse (\u001b[7m)
-  try {
-    await test();
-  } finally {
-    chalk.level = level;
-  }
-}
 // The text drawn in reverse colours on each row of the frame; the status line has some of its own.
 const reverse = (row: string) => [...row.matchAll(/\u001b\[7m(.*?)\u001b\[27m/g)].map((m) => m[1]).join("");
 const reversed = (app: ReturnType<typeof render>) => app.lastFrame()!.split("\n").map(reverse);
@@ -4199,7 +4198,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("shows the selection in reverse colours as it grows, never on the scroll bar's column", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
       await pointer(mouse, at("press", 2, 5), at("drag", 3, 6));
       expect(reversed(app).slice(4, 8)).toEqual(["", "id 65.", "said", ""]);
@@ -4234,7 +4233,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("clears a selection on a click without a drag, copying nothing", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
       await pointer(mouse, at("press", 0, 3), at("drag", 4, 3), at("release", 4, 3));
       expect(reversed(app)[3]).toBe("said ");
@@ -4268,7 +4267,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("keeps the selection on its text as new output moves the view, and as the wheel scrolls it", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, mouse, bus } = await mount([], { full: true, rows: 26, intro: said(80) });
       await pointer(mouse, at("press", 0, 19), at("drag", 98, 19)); // said 79., the button still held
       expect(reversed(app)[19]).toBe("said 79.");
@@ -4285,7 +4284,7 @@ describe("App's selecting and copying in full screen", () => {
   // Shift+Up and Shift+Down only scroll: moving the selection's end and copying again would put an old selection back
   // over newer clipboard contents (the user's choice at Task 9's review, 2026-10-27, dropping the plan's choice 9).
   it("only scrolls on Shift+Up with a selection showing, copying nothing and leaving the selection on its text", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
       await press(app, PG_UP);
       await pointer(mouse, at("press", 0, 2), at("drag", 50, 2), at("release", 50, 2));
@@ -4298,7 +4297,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("keeps a double-clicked word and a dragged selection on their text when a resize wraps the line again", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const narrow = async (app: ReturnType<typeof render>) => {
         Object.defineProperty(app.stdout, "columns", { value: 50, configurable: true });
         app.stdout.emit("resize");
@@ -4427,7 +4426,7 @@ describe("App's selecting and copying in full screen", () => {
   // A selection stays until a click: any press but one on the scroll bar, which scrolls as the wheel does (the user's
   // choice at Task 9's review, 2026-10-27).
   it("clears a selection on a press on the prompt, on the status line, or with another button, copying nothing", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
       for (const [i, press] of [at("press", 5, 21), at("press", 5, 24), at("press", 10, 10, { button: "right" })].entries()) {
         await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
@@ -4440,7 +4439,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("keeps a selection while the scroll bar's thumb is dragged", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
       await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
       await pointer(mouse, at("press", BAR, 17), at("drag", BAR, 15), at("release", BAR, 15));
@@ -5191,7 +5190,7 @@ describe("App's detail view in full screen", () => {
   const logins = () => lines(100, (i) => (i > 0 && i % 30 === 0 ? `the login ${i}.` : `line ${i}.`));
 
   it("searches as the query is typed, in any case, matches in reverse colours, keeps the search on Enter, and goes round with n and N", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await record(logins());
       await press(app, "/");
       expect(plain(app)[20]).toBe("/");
@@ -5218,7 +5217,7 @@ describe("App's detail view in full screen", () => {
   });
 
   it("edits the query with Backspace, and on Esc while typing drops the search and puts the view back where it was", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await record(logins());
       await press(app, "j", "/", "loginx");
       expect(plain(app)[20]).toBe("/loginx (no match)"); // as Ctrl+R's row says it (the user's choice at Task 12's review)
@@ -5292,7 +5291,7 @@ describe("App's detail view in full screen", () => {
   });
 
   it("selects and copies in the view, saying so in the key row's place until a key, and clears the selection when it closes", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, mouse, copies } = await record(lines(100));
       await pointer(mouse, at("press", 0, 2), at("drag", 98, 3), at("release", 98, 3));
       expect(copies).toEqual(["line 0.\nline 1."]);
@@ -5366,7 +5365,7 @@ describe("App's detail view in full screen", () => {
   });
 
   it("clears a selection in the conversation when the view opens, so none shows on the record's lines", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const worker = new FakeProvider("w", [reply(lines(100))]);
       const turns = [callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")];
       const { app, mouse } = await mount(turns, { full: true, worker, intro: said(10) });
@@ -5794,7 +5793,7 @@ describe("App's detail view printed out", () => {
   };
 
   it("prints the view on [: keyboard held, mouse off, Ink suspended, the normal screen, the lines and how to go back, keys to a reader", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { steps, key } = await record();
       steps.length = 0;
       await key("[");
@@ -6162,7 +6161,7 @@ describe("App's /screen", () => {
   // Found at the final review: where the session started in classic as full screen can't draw (the output is not a
   // terminal, or CI), /screen says so in grey, as a note, and stays in classic.
   it("stays in classic, saying why, where full screen can't draw", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const writes: string[] = [];
       const { app } = await mount([], { fullPossible: false, written: (s) => writes.push(s) });
       await type(app, "/screen");
@@ -7310,7 +7309,7 @@ describe("App's pictures", () => {
   });
 
   it("sends without a picture whose read fails after Enter, its marker gone, and says so in red", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const pictures = new Pictures();
       const { app, session } = await mount([reply("ok")], { pictures });
       await press(app, "look ", PICTURE, " here", "\r");
@@ -7322,7 +7321,7 @@ describe("App's pictures", () => {
   });
 
   it("sends without a picture the read found none of, and says so in grey", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const pictures = new Pictures();
       const { app, session } = await mount([reply("ok")], { pictures });
       await press(app, "look ", PICTURE, "\r");
@@ -7614,7 +7613,7 @@ describe("App's picture reads", () => {
   });
 
   it("says so in red where there is no clipboard reader, and puts no marker in", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await mount([], { readPicture: null });
       await press(app, "see ", PICTURE);
       await until(app, "\u001b[31mNo clipboard reader here: install wl-paste or xclip.");
@@ -7677,7 +7676,7 @@ describe("App's picture reads", () => {
   });
 
   it("says in red that a pasted file that is not a picture could not be read, naming the file, and takes its marker out", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ctx } = await mount([]);
       writeFileSync(path.join(ctx.root, "notes.png"), "hello"); // a path in the project, as typed relative to it
       onTestFinished(() => rmSync(path.join(ctx.root, "notes.png"), { force: true }));
@@ -7884,7 +7883,7 @@ describe("App's vim mode", () => {
 
   // The plan's choice 28: VISUAL's selection in reverse colours, as Claude Code 2.1.312 draws it.
   it("draws VISUAL's selection in reverse colours, the cursor's character in it, and clears it on leaving", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await mount([]);
       await normal(app, "one two");
       await press(app, "0", "v");
@@ -7909,7 +7908,7 @@ describe("App's vim mode", () => {
     { name: "a past prompt recalled", keys: ["\u{1b}[A"] },
     { name: "a paste", keys: ["\u{1b}[200~\u{1f600}\u{1b}[201~"] },
   ])("leaves VISUAL for NORMAL when $name changes the text, and o then works", async ({ keys }) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       // On from the settings file, so no /vim is in the history for Up to bring back.
       const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
       onTestFinished(() => rmSync(home, { recursive: true, force: true }));
@@ -7936,7 +7935,7 @@ describe("App's vim mode", () => {
   });
 
   it("leaves VISUAL for NORMAL when a picture's failed read takes its marker out", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const pictures = new Pictures();
       const { app } = await mount([], { pictures });
       await type(app, "/vim");
@@ -7978,7 +7977,7 @@ describe("App's vim mode", () => {
   });
 
   it("draws VISUAL LINE's selection over whole lines", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await mount([]);
       await type(app, "/vim");
       await until(app, "-- INSERT --");
@@ -7991,7 +7990,7 @@ describe("App's vim mode", () => {
   });
 
   it("draws the whole of a picture's marker the selection reaches into, as a delete there takes all of it", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await mount([]);
       await type(app, "/vim");
       await until(app, "-- INSERT --");
@@ -8161,7 +8160,7 @@ describe("App's live settings", () => {
     const plain = (app: ReturnType<typeof render>) => stripVTControlCharacters(app.lastFrame()!).replaceAll(/ *\n */g, " ");
 
     it("leaves a kind switched off for the next launch, with a red warning, and applies an added rule at once, in grey", async () => {
-      await inColour(async () => {
+      await inColour(1, async () => {
         const { app, gate, write } = await watching([], {});
         write({ dangerousCommands: { off: ["installing software"] } });
         await vi.waitFor(() => expect(plain(app)).toContain(OFF), WATCHED);
@@ -8178,7 +8177,7 @@ describe("App's live settings", () => {
     });
 
     it("leaves a removed rule for the next launch, with a red warning, and applies a kind switched back on at once, in grey", async () => {
-      await inColour(async () => {
+      await inColour(1, async () => {
         const { app, gate, write } = await watching([], { dangerousCommands: { add: ["make deploy"], off: ["installing software"] } });
         expect(kinds("npm install left-pad", gate)).toEqual([]);
         write({});
@@ -8591,7 +8590,7 @@ describe("App's live settings", () => {
   // Release 7 plan, Task 4: the launch's line naming the kinds of the dangerous-command check that are off, in red, as it
   // says the check is weaker (the user's choice); in classic mode and -p only on stderr.
   it("shows in full screen, in red, which kinds of the dangerous-command check are off, and nothing while none is", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const start = "The dangerous-command check is off for: installing software, sending files out;";
       const line = `${start} in auto and never, those commands run without it.`;
       const launch = (dangerousCommands: Settings["dangerousCommands"]) => ({ loaded: { settings: { dangerousCommands }, warnings: [] }, given: {} });
@@ -8610,7 +8609,7 @@ describe("App's live settings", () => {
   // on stderr until the user quits, so it shows in the session too, grey as the settings file's warnings; in classic mode
   // only on stderr.
   it("shows in full screen, in grey, that --network was ignored without the sandbox, and nothing without the line", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = "--network acts only with the sandbox on; it was ignored";
       const live = { loaded: { settings: {}, warnings: [] }, given: { network: "--network" }, networkLine: line };
       const full = await mount([], { full: true, home: freshHome(), live });
@@ -8625,7 +8624,7 @@ describe("App's live settings", () => {
   // Release 7 plan, Task 8: the launch's line saying git's settings could not be read, repeated in full screen as the
   // --network line is, grey as the settings file's warnings; in classic mode only on stderr.
   it("shows in full screen, in grey, that git's settings could not be read, and nothing without the line", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = "git's settings could not be read (stdout maxBuffer length exceeded); only the fixed list of protected paths applies";
       const live = { loaded: { settings: {}, warnings: [] }, given: {}, gitLine: line };
       const full = await mount([], { full: true, home: freshHome(), live });
@@ -9073,7 +9072,7 @@ describe("App's live settings", () => {
   });
 
   it("shows a problem from a live edit in the hint row in red, until the next key", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, write } = await watching([], {});
       write('{"mode": ');
       const red = "\u001b[31msettings.json is not valid JSON";
@@ -9895,7 +9894,7 @@ describe("App's sessions", () => {
   });
 
   it("says in red that a picked session could not be read, and stays in this one", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const first = await earlier("soon gone");
       const { app, session } = await saved([]);
       const own = session.id;
@@ -10077,7 +10076,7 @@ describe("App's sessions", () => {
   });
 
   it("says in red that this session could not be copied for /branch, and stays in it", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session } = await saved([reply("one")]);
       await type(app, "first");
       await until(app, "one");
@@ -10091,7 +10090,7 @@ describe("App's sessions", () => {
   });
 
   it("names the session on /rename, as the list shows it, and says how it is used when given no name", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session } = await saved([reply("one")]);
       await type(app, "hello");
       await until(app, "one");
@@ -10117,7 +10116,7 @@ describe("App's sessions", () => {
   });
 
   it.each(["/clear", "/resume", "/branch"])("refuses %s in red while a subagent runs, naming it", async (command) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session } = await saved([bg("c1", "find x"), reply("started it")], { worker: new Held("fake:w") });
       await type(app, "go");
       await until(app, "started it");
@@ -10209,7 +10208,7 @@ describe("App's /export", () => {
   });
 
   it("refuses a file that already exists, in red, and leaves it as it was", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ctx } = await talk();
       const file = path.join(ctx.root, "talk.txt");
       writeFileSync(file, "mine");
@@ -10225,7 +10224,7 @@ describe("App's /export", () => {
   // The reason is Node's code and words, without the path they end with, so the file is named once (quality review). Windows
   // reports a path through a file as missing.
   it("says in red when the file cannot be written", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ctx } = await talk();
       writeFileSync(path.join(ctx.root, "notes"), "a file, not a folder");
       await type(app, "/export notes/talk.txt");
@@ -10249,7 +10248,7 @@ describe("App's /export", () => {
   // there counts as a file already there. The junction is this test's own, in the mount's own folder, and is unlinked,
   // never followed. Links in the folders above are a known limit.
   it("refuses a link standing at the file's name, writing nothing where it points", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ctx } = await talk();
       const link = path.join(ctx.root, "planted.txt");
       const target = path.join(ctx.root, "elsewhere");
@@ -10374,7 +10373,7 @@ describe("App's /compact and /autocompact", () => {
   });
 
   it("says a failed /compact in red, the conversation unchanged", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session } = await talked([new Error("overloaded")]);
       await type(app, "/compact");
       await waitFor(() => flat(app).includes("✗ The conversation could not be shortened (overloaded); it is unchanged."));
@@ -10448,7 +10447,7 @@ describe("App's /compact and /autocompact", () => {
   });
 
   it("gives the usage line in red for a wrong /autocompact, leaving the size as it was", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session } = await mount([]);
       session.autoCompact = 5;
       const wrongs = ["/autocompact", "/autocompact 0", "/autocompact 2g", "/autocompact 1.5k", "/autocompact 200k more", "/autocompact 9007199254740992"];
@@ -10915,7 +10914,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   const squashed = (text: string) => stripVTControlCharacters(text).replace(/\s/g, "");
 
   it("shows a hook's systemMessage grey and escaped, and a hook's failure red with the line alone", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const said = nodeHook('process.stdout.write(JSON.stringify({ systemMessage: "look\\u0007\\nnow" }));');
       const broken = nodeHook('process.stderr.write("broken\\n"); process.exitCode = 1;');
       const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], {
@@ -11112,7 +11111,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // Choice 2: the launch's line, which full screen hides on stderr until the user quits, shows in the session too, grey as
   // the settings file's warnings, as the --network line does.
   it("shows in full screen, in grey, that Git Bash was not found", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = "Git Bash was not found, so hooks run by a shell use Windows PowerShell; set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe to change that.";
       const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
       onTestFinished(() => removeTree(home));
@@ -11164,7 +11163,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   });
 
   it("shows in grey that never mode cannot put a PreToolUse hook's question", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const h = nodeHook(`process.stdout.write(${JSON.stringify(pre({ permissionDecision: "ask", permissionDecisionReason: "Sure?" }))});`);
       const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { mode: "never", hooks: [h.hook("PreToolUse")] });
       await type(app, "go");
@@ -11203,7 +11202,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     ["block", 'process.stderr.write("no\\n"); process.exitCode = 2;', "asked to block, but an \"async\" hook cannot block"],
     ["stop", 'process.stdout.write(JSON.stringify({ continue: false, stopReason: "enough" }));', "asked to stop, but an \"async\" hook cannot stop"],
   ])("shows in red that an async hook cannot %s", async (_name, body, words) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const h = nodeHook(body);
       const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { hooks: [h.hook("PreToolUse", { async: true })] });
       await type(app, "go");
@@ -11413,7 +11412,7 @@ describe("App's MCP", () => {
   // Choice 26: an MCP grey line is grey, a failure red, each line alone, as it names what failed, as a hook's is; both
   // escaped whole, as they carry what a server sent.
   it("says an MCP note in grey and an MCP failure in red, escaped", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, bus } = await mount([]);
       bus.emit("mcp-note", "MCP server tv is ready: 3 tools.\u0007");
       const message = "MCP server tv failed to start: it exited with code 3: bad\u001b[2J";
@@ -12164,7 +12163,7 @@ describe("App's MCP", () => {
   });
 
   it("says in red that a picked resource could not be read, sends nothing, and keeps the words in the prompt box", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { config, servers } = await mcpSetup();
       const lead = new FakeProvider("a", [reply("never")]);
       const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", { resources: [{ ...NOTE, fails: "it is gone" }] })]) });
@@ -12213,7 +12212,7 @@ describe("App's MCP", () => {
 
   // The fix round: the check is made once the prompt is let through, so its words come back, with the grey line saying so.
   it("says in red which argument a prompt needs, sending nothing, and gives the words back", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { config, servers } = await mcpSetup();
       const lead = new FakeProvider("a", [reply("never")]);
       const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", { prompts: [GREET] })]) });

@@ -156,12 +156,22 @@ export function cut(text: string, width: number): string {
   return `${shown}…`;
 }
 
-// A Line as the lines it is kept as, one for each of its line breaks, each with the part of each span over its text.
+// A Line as the lines it is kept as, one for each of its line breaks, each with the part of each span over its text. The
+// spans are stepped through in order of their starts, those over the kept line kept in their own order (a later over an
+// earlier), so a line with a span for each of thousands of lines, a long edit's preview, is kept in time that grows with
+// its length (TUI design pass, Task 7's review).
 const keptOf = (l: Line): KeptLine[] => {
   let from = 0; // where the kept line starts in the Line's text
+  const spans = l.styles ?? [];
+  const order = spans.map((_, i) => i).sort((a, b) => spans[a]!.start - spans[b]!.start);
+  let next = 0; // the first in `order` not yet reached
+  let open: number[] = []; // the spans reached that may still be over a kept line
   return l.text.split("\n").map((text, k) => {
     const to = from + text.length;
-    const styles = l.styles?.flatMap((s) => (s.end > from && s.start < to ? [{ ...s, start: Math.max(s.start, from) - from, end: Math.min(s.end, to) - from }] : []));
+    while (next < order.length && spans[order[next]!]!.start < to) open.push(order[next++]!);
+    open = open.filter((i) => spans[i]!.end > from);
+    const over = open.length > 1 ? [...open].sort((a, b) => a - b) : open;
+    const styles = l.styles && over.map((i) => ({ ...spans[i]!, start: Math.max(spans[i]!.start, from) - from, end: Math.min(spans[i]!.end, to) - from }));
     from = to + 1; // 1: the line break
     return {
       text,

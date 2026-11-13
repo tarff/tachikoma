@@ -91,14 +91,25 @@ const STYLE = ["color", "bg", "bold", "italic", "dim", "underline"] as const;
 
 // Characters in runs of one style and one reverse colouring: a run with neither as its text, a reversed one as a Text in
 // reverse, a styled one as a Run. A character's style is the spans' over it, a later span's fields over an earlier one's,
-// a field it leaves undefined keeping the earlier one's (Task 2's review).
+// a field it leaves undefined keeping the earlier one's (Task 2's review). The characters come in order of their offsets,
+// so the spans are stepped through in order of their starts, and a style made again only where the spans over a
+// character change: a line with a span for each of thousands of lines, a long edit's preview, is drawn in time that grows
+// with its length (Task 7's review).
 function runs(chars: Iterable<{ offset: number; text: string; inverse: boolean }>, spans: readonly Span[] = []): ReactNode[] {
   const parts: { text: string; style: Style; inverse: boolean }[] = [];
+  const order = spans.map((_, i) => i).sort((a, b) => spans[a]!.start - spans[b]!.start);
+  let next = 0; // the first in `order` not yet reached
+  let open: number[] = []; // the spans over the character before, in their own order
+  let style: Style = {};
   for (const c of chars) {
-    const style: Style = {};
-    for (const s of spans) {
-      if (c.offset < s.start || c.offset >= s.end) continue;
-      for (const k of STYLE) if (s[k] !== undefined) Object.assign(style, { [k]: s[k] });
+    const before = open.length;
+    while (next < order.length && spans[order[next]!]!.start <= c.offset) open.push(order[next++]!);
+    const reached = open.length > before;
+    const over = open.filter((i) => spans[i]!.end > c.offset);
+    if (reached || over.length < open.length) {
+      open = reached ? over.sort((a, b) => a - b) : over;
+      style = {};
+      for (const i of open) for (const k of STYLE) if (spans[i]![k] !== undefined) Object.assign(style, { [k]: spans[i]![k] });
     }
     const last = parts.at(-1);
     if (last && last.inverse === c.inverse && STYLE.every((k) => last.style[k] === style[k])) last.text += c.text;
