@@ -963,3 +963,11 @@ What changed from the plan while building, for the later tasks and the reviewers
   - If `close()` runs while stop_task waits and the kill then fails, the reply still says
     `Stopped t1.`, as close marked it stopped; closing also aborts the turn, so Esc's `Cancelled`
     usually comes first.
+- **The owner's second look at PR #18** (at `cab8214`, same review file) found two gaps:
+  - **A failed kill after Esc is told:** a box stop whose kill fails always leaves the failure
+    note, waking no one for a user's or stop_task's stop; stop_task's reply, when it comes, says
+    it and takes the note (`told`), so the model hears it once, and after Esc it comes at the
+    next turn.
+  - **`/tasks stop` says `Stopping every subagent and command.`** when a box stop is still on its
+    way after it (choice 41, the user's, 2026-11-13); `Stopped every subagent and command.` when
+    every stop has taken effect.
