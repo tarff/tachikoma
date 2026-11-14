@@ -41,20 +41,35 @@ describe("Menu", () => {
     expect(drawn([long], 1, 50)).toEqual([`  /${"x".repeat(46)}…`]);
   });
 
-  // The user's choice, 2026-11-15 ("No room left"): a label whose row has no room for a note, the label and its two
-  // spaces reaching the width, does not set the column; its own note follows it by two spaces, cut at the row's end.
+  // The user's choice, 2026-11-15 ("No room left"): a label whose row has no room for a note does not set the column;
+  // its own note follows it by two spaces, cut at the row's end.
   it("leaves a label with no room for a note out of the column", () => {
     const long = label(61, "A note");
     expect(drawn([long, MODEL, EXIT], 3, 50)).toEqual([cut(row(long, 61), 50), cut(row(MODEL, 6), 50), row(EXIT, 6)]);
   });
 
-  it("lets a label one column short of the width set the column, and not one at the width", () => {
-    // At 34 columns, the row's first two spaces, a label 29 columns wide and its two spaces leave the note one column; a
-    // label 30 wide leaves it none.
-    const short = label(29, "Note");
-    const edge = label(30, "Note");
-    expect(drawn([short, EXIT], 2, 34)).toEqual([cut(row(short, 29), 34), cut(row(EXIT, 29), 34)]);
-    expect(drawn([edge, EXIT], 2, 34)).toEqual([cut(row(edge, 30), 34), row(EXIT, 5)]);
+  // The user's choice, 2026-11-15 ("Count the …"): Ink's cut puts `…` in the row's last column, so a label sets the
+  // column only when its note shows at least one character before it.
+  it("lets a label whose note shows one character before the … set the column, and not one whose note shows none", () => {
+    // At 34 columns, the row's first two spaces, a label 28 columns wide and its two spaces leave the note one character
+    // and the …; a label 29 wide leaves it only the ….
+    const short = label(28, "Note");
+    const edge = label(29, "Note");
+    expect(drawn([short, EXIT], 2, 34)).toEqual([cut(row(short, 28), 34), cut(row(EXIT, 28), 34)]);
+    expect(drawn([short], 1, 34)).toEqual([`  ${short.label}  N…`]);
+    expect(drawn([edge, EXIT], 2, 34)).toEqual([cut(row(edge, 29), 34), row(EXIT, 5)]);
+  });
+
+  // The user's choice, 2026-11-15 ("Leave it out"): a row with no note, as an MCP prompt with no description, shows its
+  // label alone and does not set the column.
+  it("leaves a label with no note out of the column", () => {
+    const bare = label(40);
+    expect(drawn([bare, MODEL, EXIT], 3, 100)).toEqual([`  ${bare.label}`, row(MODEL, 6), row(EXIT, 6)]);
+  });
+
+  it("counts a wide label by its columns, not its characters", () => {
+    const wide = entry("/日本語", "Note"); // 4 characters, 7 columns
+    expect(drawn([wide, EXIT], 2, 100)).toEqual(["  /日本語  Note", `  /exit${" ".repeat(4)}Quit`]);
   });
 
   it("draws every row when no label shown has room for a note", () => {

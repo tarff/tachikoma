@@ -18,22 +18,22 @@ export function Menu({ entries, chosen, rows, columns, top: given }: { entries: 
   // Each note starts in one column, two spaces after the longest label among the entries on screen, not the rows counting
   // those cut off (TUI design pass, Task 11; audit 9).
   const drawn = entries.slice(w.top, w.top + shown);
-  // A label whose row has no room for any note, its first two spaces, the label and its two spaces reaching the width,
-  // does not set the column; its own note follows it by two spaces, cut at the row's end (Task 11; the user's choice,
-  // 2026-11-15, "No room left").
+  // Whether the row at `i` counts the entries cut off above or below, in an entry's place.
+  const counting = (i: number) => (i === 0 && w.above > 0) || (i === shown - 1 && w.below > 0);
+  // A label sets the column only when its row has a note and room to show at least one character of it: Ink's cut keeps
+  // the row's first columns less one and puts `…` in the last, so the row's first two spaces, the label, its two spaces
+  // and that character must come before it. A long label's own note follows it by two spaces, cut at the row's end
+  // (Task 11; the user's choices, 2026-11-15, "No room left", "Count the …" and "Leave it out").
   const width = (e: Entry) => stringWidth(visible(e.label));
-  const labels = drawn.filter((_, i) => !(i === 0 && w.above) && !(i === shown - 1 && w.below));
-  const wide = Math.max(0, ...labels.map(width).filter((n) => 2 + n + 2 < columns));
+  const labels = drawn.filter((e, i) => !counting(i) && e.note);
+  const wide = Math.max(0, ...labels.map(width).filter((n) => 2 + n + 2 + 1 < columns));
   return (
     <>
       {drawn.map((e, i) =>
-        i === 0 && w.above ? (
+        counting(i) ? (
           <Text key={i} dimColor>
-            {"  "}↑ {w.above} more
-          </Text>
-        ) : i === shown - 1 && w.below ? (
-          <Text key={i} dimColor>
-            {"  "}↓ {w.below} more
+            {"  "}
+            {i === 0 && w.above > 0 ? `↑ ${w.above}` : `↓ ${w.below}`} more
           </Text>
         ) : (
           <Text key={i} wrap="truncate-end" color={e.error ? "red" : undefined}>
