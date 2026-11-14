@@ -45,7 +45,23 @@ describe("SessionList", () => {
     expect(lines[1]).toMatch(/^the fix +5m ago +openai:lead +2\.0k bytes$/);
     expect(lines[2]).toMatch(/^why is⏎the build red\? +3h ago +anthropic:claude-opus-5-5 +512 bytes$/);
     expect(lines[3]).toMatch(/^the fix +2d ago +openai:lead +2\.0k bytes$/);
-    expect(lines.at(-1)).toBe("↑↓ move · Enter opens · Esc quits");
+    expect(lines.at(-1)).toBe("↑↓ move · Enter open · Esc quit");
+  });
+
+  // TUI design pass, Task 11 (audit 8): the hint's verbs in their plain form, `tachi -r`'s Esc quitting (the user's choice,
+  // 2026-11-15, "Plain verbs"), /resume's in the window closing; the keys named from the bindings, a part with none left out.
+  it("names its keys, then plain verbs, alone and in the window", () => {
+    const rebound = new Bindings(tableOf({ ...DEFAULTS, Select: { "ctrl+p": "select:previous", "ctrl+n": "select:next", q: "select:cancel" } }));
+    const hint = (bindings: Bindings, inWindow: boolean) => {
+      const given = inWindow ? { keys: { current: null }, maxRows: 10 } : {};
+      const r = render(<SessionList rows={ROWS} now={now} bindings={bindings} onPick={() => {}} onClose={() => {}} {...given} />);
+      const line = r.lastFrame()!.split("\n").at(-1);
+      r.unmount();
+      return line;
+    };
+    const usual = new Bindings(tableOf(DEFAULTS));
+    expect([hint(usual, false), hint(usual, true)]).toEqual(["↑↓ move · Enter open · Esc quit", "↑↓ move · Enter open · Esc close"]);
+    expect([hint(rebound, false), hint(rebound, true)]).toEqual(["Ctrl+P Ctrl+N move · q quit", "Ctrl+P Ctrl+N move · q close"]);
   });
 
   it("moves with Up and Down, opens with Enter, and quits with Esc or Ctrl-C", async () => {

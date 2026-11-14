@@ -139,7 +139,7 @@ export function McpList({
         </Text>
       ))}
       <Text color="gray" wrap="truncate-end">
-        {o ? hint("runs", "back") : hint("opens", SESSION_WORDS.closes)}
+        {o ? hint("run", "back") : hint("open", SESSION_WORDS.closes)}
       </Text>
     </>
   );

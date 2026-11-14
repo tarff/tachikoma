@@ -90,7 +90,7 @@ export function SessionList({
   const key = (action: string, usual: string) => named(bindings, action, "Select", [usual])[0];
   const moves = both(key("select:previous", "up"), key("select:next", "down"));
   const [enter, esc] = [key("select:accept", "enter"), key("select:cancel", "escape")];
-  const hint = [moves && `${moves} move`, enter && `${enter} opens`, esc && `${esc} ${keys ? SESSION_WORDS.closes : "quits"}`].filter(Boolean).join(" · ");
+  const hint = [moves && `${moves} move`, enter && `${enter} open`, esc && `${esc} ${keys ? SESSION_WORDS.closes : "quit"}`].filter(Boolean).join(" · ");
 
   // The list in the rows between the heading and the hint, its window moved only as far as keeps the chosen row in it.
   const room = Math.max(1, (maxRows ?? tall - 2) - 1); // the terminal's rows, less the one Ink ends on and the hint's

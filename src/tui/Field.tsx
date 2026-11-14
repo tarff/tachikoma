@@ -101,7 +101,7 @@ export function Field({
   const key = (action: string, usual: string) => named(bindings, action, "Select", [usual])[0];
   const moves = both(key("select:previous", "up"), key("select:next", "down"));
   const [enter, esc] = [key("select:accept", "enter"), key("select:cancel", "escape")];
-  const hint = [moves && `${moves} move`, marks && "Space marks", enter && `${enter} answers`, esc && `${esc} declines the form`]
+  const hint = [moves && `${moves} move`, marks && "Space mark", enter && `${enter} answer`, esc && `${esc} decline`]
     .filter(Boolean)
     .join(" · ");
   return (

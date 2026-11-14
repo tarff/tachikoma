@@ -125,7 +125,7 @@ export function ModelPicker({
   const key = (action: string, usual: string) => named(bindings, action, "Select", [usual])[0];
   const [up, down, enter, esc] = [key("select:previous", "up"), key("select:next", "down"), key("select:accept", "enter"), key("select:cancel", "escape")];
   const moves = both(up, down);
-  const help = [moves && `${moves} move`, enter && `${enter} picks`, esc && `${esc} closes`].filter(Boolean).join(" · ");
+  const help = [moves && `${moves} move`, enter && `${enter} pick`, esc && `${esc} close`].filter(Boolean).join(" · ");
 
   return (
     <>

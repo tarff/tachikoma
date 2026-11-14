@@ -68,7 +68,7 @@ export const SESSION_WORDS = {
   noOther: "No other saved sessions in this folder.",
   nothingToBranch: "Nothing to branch yet: this session has no prompt.",
   unsaved: (command: string) => `${command} needs this session saved, and saving it stopped.`,
-  closes: "closes",
+  closes: "close", // a plain verb, as every hint's since the TUI design pass's Task 11 (audit 8)
 };
 // Release 8a plan, Task 8's words, approved by the user on 2026-11-06: the `/` menu's note, and a file that cannot be
 // written for another reason than being there already.

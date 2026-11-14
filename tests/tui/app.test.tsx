@@ -3629,11 +3629,12 @@ describe("App's menus", () => {
     const { app } = await mount([]);
     await press(app, "/");
     // The whole list fills the rows, so the prompt's lines give way (TUI design pass, Task 4); three entries leave them room.
-    expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model; alone, pick it from a list\n  /model  Pick the lead model from a list\n");
+    // Each note in one column, after the longest label shown (Task 11).
+    expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model; alone, pick it from a list\n  /model                  Pick the lead model from a list\n");
     expect(app.lastFrame()).toContain("↑↓ choose · Tab fill · Enter run · Esc close");
     await press(app, "e");
     expect(app.lastFrame()).toContain(
-      `› /e\n${RULE}\n  /export [file]  Write the conversation to a file as text; alone, copy it\n  /errors  Summarise the error log\n  /exit  Quit\n`,
+      `› /e\n${RULE}\n  /export [file]  Write the conversation to a file as text; alone, copy it\n  /errors         Summarise the error log\n  /exit           Quit\n`,
     );
     expect(app.lastFrame()).not.toContain("/model");
   });
@@ -3663,7 +3664,7 @@ describe("App's menus", () => {
     await press(app, "m");
     expect(app.lastFrame()).toContain("/model  Pick the lead model from a list");
     await press(app, "\u007f"); // back at the text Esc closed it at, after a change: open
-    expect(app.lastFrame()).toContain("/model  Pick the lead model from a list");
+    expect(app.lastFrame()).toContain("/model                  Pick the lead model from a list"); // the whole list's column (Task 11)
     await press(app, "\u007f", "/tmp is full", "\r");
     await until(app, "ok");
     expect(sent(session)).toEqual({ type: "text", text: "/tmp is full" });
@@ -4255,7 +4256,7 @@ describe("App in full screen", () => {
     rows = shown(app);
     expect(rows).toHaveLength(23);
     expect(rows[16]).toBe("said 59.");
-    expect(rows.slice(19)).toEqual(["fake", "  fake:c", "Filter: c · ↑↓ move · Enter picks · Esc closes", rows[22]]);
+    expect(rows.slice(19)).toEqual(["fake", "  fake:c", "Filter: c · ↑↓ move · Enter pick · Esc close", rows[22]]);
     expect(rows[22]).toContain("lead fake:a");
   });
 });
@@ -4880,7 +4881,7 @@ describe("App's clicks in full screen", () => {
     await type(app, "/model");
     await until(app, "fake:b");
     await tick(); // the picker starts reading keys just after it first appears
-    expect(shown(app).slice(18, 22)).toEqual(["fake", "● fake:a", "  fake:b", "Filter: (type to filter) · ↑↓ move · Enter picks · Esc closes"]);
+    expect(shown(app).slice(18, 22)).toEqual(["fake", "● fake:a", "  fake:b", "Filter: (type to filter) · ↑↓ move · Enter pick · Esc close"]);
     await pointer(mouse, ...click(4, 20));
     await until(app, "lead is now fake:b");
     expect(made).toEqual(["fake:b"]);
@@ -4973,7 +4974,7 @@ describe("App's clicks in full screen", () => {
     await type(app, "/model");
     await until(app, "fake:b");
     await tick(); // the picker starts reading keys just after it first appears
-    expect(shown(app).slice(18, 22)).toEqual(["fake", "● fake:a", "  fake:b", "Filter: (type to filter) · ↑↓ move · Enter picks · Esc closes"]);
+    expect(shown(app).slice(18, 22)).toEqual(["fake", "● fake:a", "  fake:b", "Filter: (type to filter) · ↑↓ move · Enter pick · Esc close"]);
     await pointer(mouse, ...click(4, 18), ...click(4, 21));
     expect(made).toEqual([]);
     expect(app.lastFrame()).toContain("Filter: (type to filter)");
@@ -6563,7 +6564,7 @@ describe("App's /screen", () => {
     await until(app, "Unknown command: /nope.");
     expect(app.lastFrame()!.replaceAll(/ *\n */g, " ")).toContain("/errors, /screen, /settings, /keybindings, /vim, /exit"); // a long line wraps
     await press(app, "/", "s");
-    expect(app.lastFrame()).toContain(`› /s\n${RULE}\n  /screen  Switch between full screen and classic\n`);
+    expect(app.lastFrame()).toContain(`› /s\n${RULE}\n  /screen    Switch between full screen and classic\n`);
   });
 
   // Found at the final review: where the session started in classic as full screen can't draw (the output is not a
@@ -7181,7 +7182,7 @@ describe("App's keys from the table of actions", () => {
   it("presses a wheel notch in a menu's contexts, Autocomplete first", async () => {
     const { app, mouse } = await mount([], { full: true, bindings: table("Autocomplete", { wheeldown: "autocomplete:next" }) });
     await press(app, "/", "e");
-    await until(app, "  /exit  Quit");
+    await until(app, "  /exit           Quit");
     await wheel(mouse, "down");
     await press(app, "\t");
     // /export comes first, so a notch down is the second entry.
@@ -7239,7 +7240,7 @@ describe("App's keys from the table of actions", () => {
     const { app } = await mount([], { bindings, models: [{ provider: "fake", models: ["a", "b"] }] });
     await type(app, "/model");
     await until(app, "fake:a");
-    expect(app.lastFrame()).toContain("Filter: (type to filter) · Ctrl+P Ctrl+N move · Enter picks · Esc closes");
+    expect(app.lastFrame()).toContain("Filter: (type to filter) · Ctrl+P Ctrl+N move · Enter pick · Esc close");
   });
 
   it("names a menu's moved keys in its hint, leaving out what no key does", async () => {
@@ -10161,7 +10162,7 @@ describe("App's sessions", () => {
     await type(app, "/resume");
     await until(app, "Saved sessions in this folder, newest first:");
     expect(app.lastFrame()).toMatch(/Saved sessions in this folder, newest first:\nremember apple +<1m ago +fake:a +[\d.]+k? bytes\n/);
-    expect(app.lastFrame()).toContain("↑↓ move · Enter opens · Esc closes");
+    expect(app.lastFrame()).toContain("↑↓ move · Enter open · Esc close");
     await press(app, "\r");
     await until(app, "Resumed: remember apple.");
     expect(app.lastFrame()).toMatch(/› remember apple\n\n\n● noted\nResumed: remember apple\.\n/);
@@ -11914,12 +11915,12 @@ describe("App's MCP", () => {
         "ends · stopped: it exited with code 3",
         "asks (project) · waiting for your yes",
         "nope (project) · you said no",
-        "↑↓ move · Enter opens · Esc closes", // choice 51's hint, as /resume's list ends
+        "↑↓ move · Enter open · Esc close", // choice 51's hint, as /resume's list ends
       ].join("\n"),
     );
     // A ready server's actions, with their own hint; Esc goes back to the list.
     await press(app, "\r");
-    await shows(app, "ready · 2 tools · trusted\nReconnect\nShow tools\n↑↓ move · Enter runs · Esc back\n");
+    await shows(app, "ready · 2 tools · trusted\nReconnect\nShow tools\n↑↓ move · Enter run · Esc back\n");
     expect(app.lastFrame()).not.toContain(HEADING);
     await press(app, "\u001b");
     await shows(app, `${HEADING}\nready`);
@@ -11988,9 +11989,9 @@ describe("App's MCP", () => {
     await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
     await type(app, "/mcp");
     await shows(app, `${HEADING}\ns · 1 tool\n`);
-    expect(app.lastFrame()).toMatch(/s · 1 tool\n↑↓ move · Enter opens · Esc closes\n.*lead fake:a/);
+    expect(app.lastFrame()).toMatch(/s · 1 tool\n↑↓ move · Enter open · Esc close\n.*lead fake:a/);
     await press(app, "\r");
-    await shows(app, "s · 1 tool\nReconnect\nShow tools\n↑↓ move · Enter runs · Esc back\n");
+    await shows(app, "s · 1 tool\nReconnect\nShow tools\n↑↓ move · Enter run · Esc back\n");
     await press(app, "\u001b", "\u001b");
     await gone(app, HEADING);
   });
@@ -12325,7 +12326,7 @@ describe("App's MCP", () => {
     await shows(app, "Name: Ada");
     // The field's description is the server's grey note above its question.
     await shows(app, "In years\nAge (a number):");
-    expect(app.lastFrame()).not.toContain("Enter answers");
+    expect(app.lastFrame()).not.toContain("Enter answer");
     await type(app, "x");
     await shows(app, "That is not a number; type one, or Esc to decline the form.");
     expect(app.lastFrame()).toContain("Age (a number): x");
@@ -12334,7 +12335,7 @@ describe("App's MCP", () => {
     // A pick is a menu of the server's labels under its question.
     await shows(app, "Size:\n  Small\n  Medium");
     // A pick of one has its hint row, as /mcp's lists end (choice 51), without Space's part; a typed field has none.
-    await shows(app, "  Medium\n↑↓ move · Enter answers · Esc declines the form\n");
+    await shows(app, "  Medium\n↑↓ move · Enter answer · Esc decline\n");
     await press(app, DOWN, "\r");
     await shows(app, "Size: Medium");
     await press(app, "\r"); // an empty optional field is left out
@@ -12366,8 +12367,8 @@ describe("App's MCP", () => {
     await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
     await type(app, "go");
     // A pick of several names Space too, in its hint row under the menu.
-    await shows(app, "Tops (optional):\n  Cheese\n  Ham\n↑↓ move · Space marks · Enter answers · Esc declines the form\n");
-    expect(app.lastFrame()).toMatch(/Esc declines the form\n.*lead fake:a/);
+    await shows(app, "Tops (optional):\n  Cheese\n  Ham\n↑↓ move · Space mark · Enter answer · Esc decline\n");
+    expect(app.lastFrame()).toMatch(/Esc decline\n.*lead fake:a/);
     await press(app, " ", DOWN, " ");
     await shows(app, "Tops (optional): Cheese, Ham");
     await press(app, "\r");
@@ -12398,7 +12399,7 @@ describe("App's MCP", () => {
     const { app, session, mcp } = await mount(asking(formOf(schema)), { mcp: servers([await config("s", {}, trusted)]) });
     await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
     await type(app, "go");
-    await shows(app, "A (optional):\n  Small\n  Medium\n↑↓ move · Space marks · Enter answers · Esc declines the form\n");
+    await shows(app, "A (optional):\n  Small\n  Medium\n↑↓ move · Space mark · Enter answer · Esc decline\n");
     await press(app, " ", DOWN, " ");
     await shows(app, "A (optional): Medium\n");
     await press(app, "\r");
