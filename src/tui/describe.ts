@@ -1,5 +1,4 @@
 import path from "node:path";
-import { callText } from "../core/exportText.js";
 import { visible } from "../core/permissions.js";
 import { FEEDBACK } from "../core/session.js";
 import type { Message, ToolCall, ToolResult } from "../core/types.js";
@@ -277,10 +276,46 @@ function runLine(r: Run): Line {
   return { text: [head, ...under.map((u) => `  ⎿ ${u}`)].join("\n"), color: "gray" };
 }
 
+// One input of a call as Ctrl+O shows it (TUI design pass, Task 12; audit 10; the user's layout, 2026-11-15): `name:
+// value`, two in; a string with line breaks under its `name:` four in, a CRLF one's \r going with its break as in prose;
+// any other value its JSON on one line. Each is escaped, as JSON.stringify did before. A key of anything but letters,
+// digits, _, $, . and - is quoted as JSON, so an empty one, or one with a colon, a line break or leading spaces, cannot
+// pass for another key or a value's line.
+const BARE_KEY = /^[\p{L}\p{N}_$.-]+$/u;
+function inputLines([key, value]: [string, unknown]): string[] {
+  const name = visible(BARE_KEY.test(key) ? key : JSON.stringify(key));
+  if (typeof value !== "string") return [`  ${name}: ${visible(String(JSON.stringify(value)))}`];
+  if (!value.includes("\n")) return [`  ${name}: ${visible(value, { tabs: true })}`];
+  return [`  ${name}:`, ...value.split(/\r?\n/).map((l) => `    ${visible(l, { tabs: true })}`)];
+}
+
+// A shell result (shellText, tools/shell.ts) without its empty stderr or stdout section (Task 12): the status alone when
+// both are. The stderr marker follows the one-line status; the stdout marker is the real one only when it comes once,
+// as either stream's text can hold it, so a result with it twice, or of another shape, is shown as it is.
+const STDOUT = "\n--- stdout ---\n";
+function shellShown(result: string): string {
+  const m = /^((?:exit code: |killed by ).*)\n--- stderr ---\n([^]*)$/.exec(result);
+  const at = m ? m[2]!.indexOf(STDOUT) : -1;
+  if (!m || at === -1 || m[2]!.indexOf(STDOUT, at + 1) !== -1) return result;
+  const [err, out] = [m[2]!.slice(0, at), m[2]!.slice(at + STDOUT.length)];
+  return [m[1]!, ...(err ? ["--- stderr ---", err] : []), ...(out ? ["--- stdout ---", out] : [])].join("\n");
+}
+
 // Each tool call in `messages`, with its full input and result, grey: for Ctrl+O and `/tasks t3`, an MCP call named by
-// its server and tool as its row is (release 8c plan, Task 18; choice 68).
+// its server and tool as its row is (release 8c plan, Task 18; choice 68). Its input as name: value lines, none for an
+// empty input, and a shell call's result without its empty sections (Task 12); /export keeps the JSON (callText).
 export function callLines(messages: Message[], names?: McpNames): Line[] {
   const parts = messages.flatMap((m) => m.parts);
   const results = new Map(parts.flatMap((p) => (p.type === "tool_result" ? [[p.callId, p.output] as const] : [])));
-  return parts.flatMap((c) => (c.type === "tool_call" ? [{ text: callText(c, results.get(c.id), shownName(c.name, names)), color: "gray" }] : []));
+  return parts.flatMap((c) => {
+    if (c.type !== "tool_call") return [];
+    const name = shownName(c.name, names);
+    // Every provider gives an object (openai.ts, parseArgs); anything else keeps its JSON after the name, as before.
+    const { input } = c;
+    const fields = typeof input === "object" && input !== null && !Array.isArray(input);
+    const head = fields ? [`● ${name}`, ...Object.entries(input).flatMap(inputLines)] : [`● ${name} ${visible(String(JSON.stringify(input)))}`];
+    const result = results.get(c.id);
+    const shown = result === undefined ? "(not finished)" : c.name === "shell" ? shellShown(result) : result;
+    return [{ text: [...head, `  ⎿ ${shown}`].join("\n"), color: "gray" }];
+  });
 }

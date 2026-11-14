@@ -1852,7 +1852,7 @@ describe("App's background subagents", () => {
     await until(app, "done");
     await type(app, "/tasks t1");
     await until(app, "t1 (find x), done: 1 tool call");
-    expect(app.lastFrame()).toContain('● find_files {\n  "pattern": "*.ts"\n}\n  ⎿ No files match *.ts');
+    expect(app.lastFrame()).toContain("● find_files\n  pattern: *.ts\n  ⎿ No files match *.ts"); // name: value lines (TUI design pass, Task 12)
     expect(app.lastFrame()).toContain("Answer:\nIt is in a.ts");
     await type(app, "/tasks t9");
     await until(app, "No task t9. /tasks lists them.");
@@ -3845,7 +3845,7 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     await type(app, "go");
     await until(app, "done");
     await press(app, "\u000f");
-    expect(app.lastFrame()).toContain('Last turn: 1 tool call\n● read_file {\n  "path": "a.txt"\n}\n  ⎿ ');
+    expect(app.lastFrame()).toContain("Last turn: 1 tool call\n● read_file\n  path: a.txt\n  ⎿ ");
     expect(app.lastFrame()).toMatch(/⎿ [^\n]*hello there/);
   });
 });
@@ -5528,7 +5528,7 @@ describe("App's detail view in full screen", () => {
     await press(app, "\u000f");
     let rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows.slice(0, 4)).toEqual(["Last turn: 1 tool call", "● read_file {", '  "path": "a.txt"', "}"]);
+    expect(rows.slice(0, 3)).toEqual(["Last turn: 1 tool call", "● read_file", "  path: a.txt"]);
     expect(rows.slice(20)).toEqual([KEYS, expect.stringContaining("lead fake:a"), expect.stringContaining("read_file")]);
     expect(rows).not.toContain("›");
     expect(app.lastFrame()).not.toContain("› go");
@@ -11374,7 +11374,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     await untilSlow(app, "done");
     await press(app, "\u000f");
     const frame = app.lastFrame()!;
-    expect(frame).toContain('Last turn: 1 tool call\n● read_file {\n  "path": "a.txt"\n}\n  ⎿ ');
+    expect(frame).toContain("Last turn: 1 tool call\n● read_file\n  path: a.txt\n  ⎿ ");
     expect(frame).toMatch(/⎿ [^\n]*from b/);
     const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     // Named as /hooks names it, its program and script (the user's choice, 2026-11-10, terminal checklist).
@@ -12184,7 +12184,7 @@ describe("App's MCP", () => {
     // So do the tool line under the prompt and Ctrl+O's full record (the user's answer, 2026-11-12).
     expect(done.at(-1)).toBe("✓ my.s foo.bar ×1");
     await press(app, "\u000f");
-    await shows(app, 'Last turn: 1 tool call\n● my.s foo.bar {\n  "x": 1\n}\n  ⎿ set');
+    await shows(app, "Last turn: 1 tool call\n● my.s foo.bar\n  x: 1\n  ⎿ set");
     expect(readFileSync(sessionPaths(sessions, session.id).file, "utf8")).toContain('"name":"mcp__my_s__foo_bar"');
   });
 

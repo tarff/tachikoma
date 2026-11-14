@@ -414,8 +414,8 @@ describe("lastTurn", () => {
     ]);
     expect(lines).toEqual([
       { text: "Last turn: 2 tool calls", color: "gray" },
-      { text: '● read_file {\n  "path": "a"\n}\n  ⎿ line 1\nline 2', color: "gray" },
-      { text: '● shell {\n  "command": "npm test"\n}\n  ⎿ (not finished)', color: "gray" }, // the turn is still running
+      { text: "● read_file\n  path: a\n  ⎿ line 1\nline 2", color: "gray" }, // name: value lines (TUI design pass, Task 12)
+      { text: "● shell\n  command: npm test\n  ⎿ (not finished)", color: "gray" }, // the turn is still running
     ]);
   });
 
@@ -436,7 +436,7 @@ describe("lastTurn", () => {
       { role: "assistant", parts: [{ type: "tool_call", id: "c", name: "shell", input: {} }] },
       { role: "user", parts: [{ type: "tool_result", callId: "c", output: "a\u001b]52;c;eA==\u0007", isError: true }] },
     ]);
-    expect(screen(call!).text).toBe("● shell {}\n  ⎿ a\\u001b]52;c;eA==\\u0007");
+    expect(screen(call!).text).toBe("● shell\n  ⎿ a\\u001b]52;c;eA==\\u0007");
   });
 });
 

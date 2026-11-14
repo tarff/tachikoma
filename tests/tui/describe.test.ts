@@ -244,10 +244,115 @@ describe("lastTurn", () => {
       { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "set", isError: false }] },
     ];
     const names = (full: string) => (full === "mcp__my_tv__foo_bar" ? { server: "my.tv", tool: "foo.bar" } : { server: "?", tool: "?" });
-    const record = '● my.tv foo.bar {\n  "x": 1\n}\n  ⎿ set';
+    const record = "● my.tv foo.bar\n  x: 1\n  ⎿ set"; // its input as name: value lines (Task 12)
     expect(lastTurn(messages, [], names)).toEqual([{ text: "Last turn: 1 tool call", color: "gray" }, { text: record, color: "gray" }]);
     expect(callLines(messages, names)).toEqual([{ text: record, color: "gray" }]);
-    expect(callLines(messages)[0]!.text).toBe('● my_tv foo_bar {\n  "x": 1\n}\n  ⎿ set'); // without the window's names
+    expect(callLines(messages)[0]!.text).toBe("● my_tv foo_bar\n  x: 1\n  ⎿ set"); // without the window's names
     expect(exportText(messages, "fake:a")).toContain('● mcp__my_tv__foo_bar {\n  "x": 1\n}\n  ⎿ set');
+  });
+});
+
+// TUI design pass, Task 12 (audit 10; the user's layout, 2026-11-15, "As shown"): Ctrl+O's and /tasks t3's full record
+// gives a call's input as name: value lines and a shell result without its empty sections; /export keeps the JSON and the
+// result as the model read it.
+describe("callLines", () => {
+  // One call's record, with its result when given.
+  const call = (name: string, input: unknown, output?: string, isError = false): Message[] => [
+    { role: "assistant", parts: [{ type: "tool_call", id: "c", name, input }] },
+    ...(output === undefined ? [] : [{ role: "user", parts: [{ type: "tool_result", callId: "c", output, isError }] } satisfies Message]),
+  ];
+  const record = (name: string, input: unknown, output?: string, isError = false) => callLines(call(name, input, output, isError))[0]!.text;
+  const shellResult = (stderr: string, stdout: string, status = "exit code: 0") => `${status}\n--- stderr ---\n${stderr}\n--- stdout ---\n${stdout}`;
+
+  it("shows the approved layout, grey, one line per call, and /export unchanged", () => {
+    const messages = [
+      ...call("shell", { command: "npm test", timeout: 60000 }, shellResult("", "12 passed")),
+      { role: "assistant", parts: [{ type: "tool_call", id: "w", name: "write_file", input: { path: "src/a.ts", content: "export const a = 1;\nexport const b = 2;" } }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "w", output: "ok", isError: false }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "l", name: "list_tasks", input: {} }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "l", output: "(no tasks)", isError: false }] },
+    ] satisfies Message[];
+    expect(callLines(messages)).toEqual([
+      { text: "● shell\n  command: npm test\n  timeout: 60000\n  ⎿ exit code: 0\n--- stdout ---\n12 passed", color: "gray" },
+      { text: "● write_file\n  path: src/a.ts\n  content:\n    export const a = 1;\n    export const b = 2;\n  ⎿ ok", color: "gray" },
+      { text: "● list_tasks\n  ⎿ (no tasks)", color: "gray" },
+    ]);
+    const exported = exportText(messages, "fake:a");
+    expect(exported).toContain(`● shell {\n  "command": "npm test",\n  "timeout": 60000\n}\n  ⎿ ${shellResult("", "12 passed")}`);
+    expect(exported).toContain('● list_tasks {}\n  ⎿ (no tasks)');
+  });
+
+  it("gives a string on its line, numbers, booleans, null, arrays and objects as JSON on one line", () => {
+    const input = { s: "a b", e: "", n: 1.5, t: true, f: false, z: null, list: [1, "two"], obj: { a: { b: "c\nd" } } };
+    expect(record("x", input, "ok")).toBe(
+      '● x\n  s: a b\n  e: \n  n: 1.5\n  t: true\n  f: false\n  z: null\n  list: [1,"two"]\n  obj: {"a":{"b":"c\\nd"}}\n  ⎿ ok',
+    );
+  });
+
+  // A CRLF value's \r goes with its line break, as screen() takes it in prose; a lone \r is no line break, and is escaped.
+  it("puts a multi-line string's lines under its name, a CRLF one's without the \\r, and keeps an ending line break", () => {
+    expect(record("x", { content: "a\r\nb\r\n" }, "ok")).toBe("● x\n  content:\n    a\n    b\n    \n  ⎿ ok");
+    expect(record("x", { content: "a\rb" }, "ok")).toBe("● x\n  content: a␍b\n  ⎿ ok");
+    expect(record("x", { content: "\ta\n\tb" }, "ok")).toBe("● x\n  content:\n    \ta\n    \tb\n  ⎿ ok"); // tabs kept, as in prose
+  });
+
+  // JSON.stringify escaped a value's control characters before; each value is escaped now as every scrollback line is.
+  it("escapes control characters and escape codes in a value, on one line and on many, and screen() keeps it so", () => {
+    const text = record("x", { a: "x\u001b]52;c;eA==\u0007", b: "one\n\u001b[31mred\u202e", c: ["\u202e"] }, "ok");
+    expect(text).toBe("● x\n  a: x\\u001b]52;c;eA==\\u0007\n  b:\n    one\n    \\u001b[31mred\\u202e\n  c: [\"\\u202e\"]\n  ⎿ ok");
+    expect(screen({ text }).text).toBe(text);
+  });
+
+  // A key a model or an MCP server could make odd is quoted as JSON, so each line reads one way: an empty key, one with a
+  // colon, a line break, a quote, spaces or a control character, which could pass for another key or a value's line.
+  it("quotes a key that is empty or holds anything but letters, digits, _, $, . and -", () => {
+    expect(record("x", { file_path: 1, $ref: 2, "a.b-c": 3, 名前: 4 }, "ok")).toBe("● x\n  file_path: 1\n  $ref: 2\n  a.b-c: 3\n  名前: 4\n  ⎿ ok");
+    const odd = { "": 1, "a: b": 2, "a\nb": 3, '"q"': 4, "  pad": 5, "e\u001b": 6, "r\u202e": 7 };
+    expect(record("x", odd, "ok")).toBe(
+      '● x\n  "": 1\n  "a: b": 2\n  "a\\nb": 3\n  "\\"q\\"": 4\n  "  pad": 5\n  "e\\u001b": 6\n  "r\\u202e": 7\n  ⎿ ok',
+    );
+  });
+
+  it("says a call with no result yet is not finished", () => {
+    expect(record("shell", { command: "npm test" })).toBe("● shell\n  command: npm test\n  ⎿ (not finished)");
+  });
+
+  // No provider gives one (openai.ts, parseArgs wraps it), but a record must still show it.
+  it("keeps an input that is not an object as JSON after the name, as before", () => {
+    expect(record("x", ["a"], "ok")).toBe('● x ["a"]\n  ⎿ ok');
+    expect(record("x", undefined, "ok")).toBe("● x undefined\n  ⎿ ok");
+  });
+
+  it("leaves a shell result's empty stderr or stdout out, both for the status alone, neither when both have text", () => {
+    expect(record("shell", {}, shellResult("", "out\n"))).toBe("● shell\n  ⎿ exit code: 0\n--- stdout ---\nout\n");
+    expect(record("shell", {}, shellResult("bad\n", ""), true)).toBe("● shell\n  ⎿ exit code: 0\n--- stderr ---\nbad\n");
+    expect(record("shell", {}, shellResult("", "", "exit code: 1"), true)).toBe("● shell\n  ⎿ exit code: 1");
+    expect(record("shell", {}, shellResult("", "", "killed by SIGTERM"), true)).toBe("● shell\n  ⎿ killed by SIGTERM");
+    expect(record("shell", {}, shellResult("warn", "out"))).toBe(`● shell\n  ⎿ ${shellResult("warn", "out")}`);
+    // A result the session cut keeps its cut note in its stdout.
+    const cut = `${shellResult("", "out")}\n[cut: 5 more characters]`;
+    expect(record("shell", {}, cut)).toBe("● shell\n  ⎿ exit code: 0\n--- stdout ---\nout\n[cut: 5 more characters]");
+  });
+
+  // Which marker is the real one cannot be told when the stdout marker comes twice, so nothing is left out: either
+  // stream's text can hold it.
+  it("shows a shell result unchanged when its stderr or stdout holds the stdout marker, or it has another shape", () => {
+    const marker = "\n--- stdout ---\n";
+    for (const result of [
+      shellResult(`${marker}x`, ""), // stderr starting with the marker, which would read as an empty stderr
+      shellResult("", `a${marker}b`), // stdout holding the marker after an empty stderr
+      shellResult("e\n--- stdout ---", "--- stdout ---\nb"), // the marker made across the real one
+      "exit code: 0\n--- stderr ---\nno stdout marker, as a cut in stderr leaves it",
+      "Moved to the background as t3 by the user.",
+      `before\n${shellResult("", "out")}`, // not a status line first
+    ]) {
+      expect(record("shell", {}, result)).toBe(`● shell\n  ⎿ ${result}`);
+    }
+  });
+
+  it("leaves another tool's result alone though it holds the shell markers", () => {
+    const result = shellResult("", "out");
+    expect(record("read_file", { path: "log.txt" }, result)).toBe(`● read_file\n  path: log.txt\n  ⎿ ${result}`);
+    expect(record("mcp__s__shell", {}, result)).toBe(`● s shell\n  ⎿ ${result}`);
   });
 });
