@@ -1398,6 +1398,7 @@ describe("App's keys for stopping and exiting", () => {
 
   it("forgets a first press after 800 ms, and after any other key", async () => {
     const { app } = await mount([]);
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       // Then one turn of the event loop (setImmediate is not faked), in which the screen is drawn again.
@@ -1424,8 +1425,35 @@ describe("App's keys for stopping and exiting", () => {
     }
   });
 
+  // TUI design pass, Task 14 (the user's choice): at launch the start-up box's line names `?` already, so the hint row
+  // is a blank row until the prompt first holds text, Enter and `?` on the empty prompt typing none; then as before,
+  // an emptied prompt too. Its row stays, so the first key moves nothing, and the exit warning still takes it.
+  it.each([
+    { screen: "classic", full: false },
+    { screen: "full screen", full: true },
+  ])("keeps the hint row blank until the prompt first holds text, in $screen", async ({ full }) => {
+    const { app } = await mount([], { full });
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+    await press(app, "\r");
+    await press(app, "?");
+    await until(app, "Ctrl+O");
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+    await press(app, "\u0003");
+    expect(app.lastFrame()).toContain("Press Ctrl-C again to exit");
+    await press(app, "\u001b"); // another key forgets the first press
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+    const rows = app.lastFrame()!.split("\n").length;
+    await press(app, "a");
+    expect(app.lastFrame()).toContain("? for shortcuts");
+    expect(app.lastFrame()!.split("\n")).toHaveLength(rows);
+    await press(app, "\u0015"); // Ctrl+U empties the prompt
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    expect(app.lastFrame()).toContain("? for shortcuts");
+  });
+
   it("shows the shortcuts hint only while the prompt waits for the user", async () => {
     const { app } = await mount([], { lead: hanging() });
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     expect(app.lastFrame()).toContain("? for shortcuts");
     await type(app, "hi");
     await until(app, "Esc to stop");
@@ -1732,6 +1760,7 @@ describe("App's space on screen", () => {
 
   it("drops the hint line when the terminal is too short for it and the cursor's row", async () => {
     const { app } = await mount([], { rows: 3 });
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     expect(app.lastFrame()).toMatch(/^›\n[^\n]*$/);
     Object.assign(app.stdout, { rows: 4 });
     app.stdout.emit("resize");
@@ -3858,6 +3887,16 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     expect(app.lastFrame()).toContain("Last turn: 1 tool call\n● read_file\n  path: a.txt\n  ⎿ ");
     expect(app.lastFrame()).toMatch(/⎿ [^\n]*hello there/);
   });
+
+  // TUI design pass, Task 14: Ctrl+O's printed lines are one block, with an empty line above them, as /tasks's are.
+  it("prints Ctrl+O's lines in classic as a block, an empty line above them", async () => {
+    const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")]);
+    await type(app, "go");
+    await until(app, "done");
+    await press(app, "\u000f");
+    await until(app, "Last turn: 1 tool call");
+    expect(app.lastFrame()).toContain("● done\n\nLast turn: 1 tool call\n● read_file\n");
+  });
 });
 
 describe("App's working line and tool lines", () => {
@@ -4673,6 +4712,7 @@ describe("App's selecting and copying in full screen", () => {
   // as in "forgets a first press after 800 ms", so the mouse reports are sent without pointer's real wait.
   async function behindExitWarning(run?: (text: string) => Promise<void>) {
     const { app, mouse, copies } = await mount([], { full: true, intro: said(80), ...(run ? { run } : {}) });
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const wait = async (ms: number) => {
       await vi.advanceTimersByTimeAsync(ms);
@@ -7009,6 +7049,7 @@ describe("App's keys from the table of actions", () => {
   // with the editor ("App's external editor").
   it("shows a chord's first key in the hint row until the second key, or for 3 s", async () => {
     const { app } = await mount([], { bindings: table("Chat", { "ctrl+x ctrl+e": "app:toggleTodos" }) });
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     await onFakeClock(async (wait) => {
       app.stdin.write(CTRL_X);
       await wait(10);
@@ -7564,6 +7605,7 @@ describe("App's stash", () => {
 
   it("does nothing on Ctrl+S with an empty prompt and an empty slot", async () => {
     const { app } = await mount([]);
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     const frame = app.lastFrame();
     await press(app, CTRL_S);
     expect(app.lastFrame()).toBe(frame);
@@ -8133,6 +8175,7 @@ describe("App's vim mode", () => {
     const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
     onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const { app } = await mount([], { home });
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     expect(app.lastFrame()).toContain("? for shortcuts");
     await type(app, "/vim");
     await until(app, "editorMode is now vim");
@@ -10760,7 +10803,7 @@ describe("App's /compact and /autocompact", () => {
     expect(texts(lead.seen[1]!.at(-1)!).at(-1)).toBe(INSTRUCTIONS);
     expect(session.messages.map(texts)).toEqual([[`${HISTORY}Compacted.`]]);
     await press(app, "\u000f");
-    expect(app.lastFrame()).toContain(`${LINE}\nThe summary the conversation was shortened to:\nCompacted.\n`);
+    expect(app.lastFrame()).toContain(`${LINE}\n\nThe summary the conversation was shortened to:\nCompacted.\n`); // a block (Task 14)
     await type(app, "more");
     await until(app, "again");
     await press(app, "\u000f");

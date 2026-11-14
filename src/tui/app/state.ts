@@ -300,6 +300,9 @@ export function useAppState({
   // a turn to end, joins them.
   const notes = useRef<Line[]>([]);
   const newEdit = useRef(true);
+  // Whether the prompt has held text yet, for the hint row's "? for shortcuts", which the start-up box's line says until
+  // then (TUI design pass, Task 14; App.tsx, usualHint).
+  const typed = useRef(false);
   const history = useRef<History | null>(null);
   const running = tasks.running > 0;
   // What is happening now (phase.ts), from the refs only, the model list and the question as last drawn among them
@@ -324,7 +327,7 @@ export function useAppState({
     pictures, reading, reads, doing, calls, summary, todos, perm, cycle, questions, question, contextWindow, setContextWindow,
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
-    leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
+    leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, typed, history, running, phaseRefs,
     happening, late, toolLine, answered, run, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
     editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm, palette, lastSaid, command,
   } as const;

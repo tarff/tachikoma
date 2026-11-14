@@ -1,7 +1,7 @@
 import path from "node:path";
 import stringWidth from "string-width";
 import { describe, expect, it } from "vitest";
-import { ASCII, pixelRows } from "../../src/tui/art.js";
+import { ASCII, LIGHT_PIXEL_COLORS, PIXEL_COLORS, pixelRows } from "../../src/tui/art.js";
 import type { Line } from "../../src/tui/describe.js";
 import { type StartInfo, startBox } from "../../src/tui/startup.js";
 import { type Look, palette } from "../../src/tui/theme.js";
@@ -126,6 +126,17 @@ describe("the start-up box", () => {
     const pixels = startBox(INFO, 120, FULL)[2]!;
     const art = pixelRows()[1]!;
     for (const s of art.styles!) expect(pixels.styles).toContainEqual({ ...s, start: s.start + 3, end: s.end + 3 });
+  });
+
+  // Task 14 (the user's choice): the light look's pixel art has its own, darker shades (art.ts, LIGHT_PIXEL_COLORS).
+  it("draws the pixel art in the light look's colours in the light look", () => {
+    const light = startBox(INFO, 120, { ...FULL, light: true })[2]!;
+    const dark = startBox(INFO, 120, FULL)[2]!;
+    for (const s of pixelRows(true)[1]!.styles!) expect(light.styles).toContainEqual({ ...s, start: s.start + 3, end: s.end + 3 });
+    const colours = (l: Line) => new Set(l.styles!.flatMap((s) => [s.color, s.bg]));
+    expect(colours(light).has(LIGHT_PIXEL_COLORS.L) && !colours(light).has(PIXEL_COLORS.L)).toBe(true);
+    expect(colours(dark).has(PIXEL_COLORS.L) && !colours(dark).has(LIGHT_PIXEL_COLORS.L)).toBe(true);
+    expect(light.text).toBe(dark.text);
   });
 
   it("draws no colour at all without colour", () => {

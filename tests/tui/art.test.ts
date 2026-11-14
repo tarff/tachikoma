@@ -1,6 +1,6 @@
 import stringWidth from "string-width";
 import { describe, expect, it } from "vitest";
-import { ASCII, asciiRows, PIXEL_COLORS, PIXELS, pixelRows } from "../../src/tui/art.js";
+import { ASCII, asciiRows, LIGHT_PIXEL_COLORS, PIXEL_COLORS, PIXELS, pixelRows } from "../../src/tui/art.js";
 
 // TUI design pass, Task 5: the start-up box's two drawings, the pixel art (plan, appendix "The pixel art") and the user's
 // ASCII drawing, moved from tachikoma.txt (choice E).
@@ -34,6 +34,34 @@ describe("pixel art", () => {
     expect(cell(13, 5)).toEqual({ char: "▀", span: { start: 5, end: 6, color: "#4278de" } });
     // Pixel rows 0 and 1, column 0: both empty.
     expect(cell(0, 0)).toEqual({ char: " ", span: undefined });
+  });
+
+  // TUI design pass, Task 14: the light look's colours. WCAG 2.1's contrast ratio (relative luminance), against white:
+  // the dark table's light (2.11), white (1.14) and grey (1.77) are under WCAG 1.4.11's 3:1 for graphics, so each is
+  // darkened, its channels scaled together, to the first shade at 3:1 or more; the rest are kept.
+  const luminance = (hex: string) => {
+    const [r, g, b] = [1, 3, 5].map((i) => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+  };
+  const onWhite = (hex: string) => 1.05 / (luminance(hex) + 0.05);
+  it("has a light table with every colour at 3:1 or more on white, changing only those under it", () => {
+    for (const [letter, dark] of Object.entries(PIXEL_COLORS)) {
+      const light = LIGHT_PIXEL_COLORS[letter]!;
+      expect(onWhite(light)).toBeGreaterThanOrEqual(3);
+      if (onWhite(dark) >= 3) expect(light).toBe(dark);
+    }
+    expect(Object.keys(LIGHT_PIXEL_COLORS).sort()).toEqual(Object.keys(PIXEL_COLORS).sort());
+    expect({ L: LIGHT_PIXEL_COLORS.L, W: LIGHT_PIXEL_COLORS.W, G: LIGHT_PIXEL_COLORS.G }).toEqual({ L: "#7596cc", W: "#92959a", G: "#91959d" });
+  });
+
+  it("draws the light table's colours in the light look, the dark table's otherwise", () => {
+    // Pixel rows 0 and 1, column 26: empty over light.
+    expect(pixelRows(true)[0]!.styles?.find((s) => s.start === 26)).toEqual({ start: 26, end: 27, color: LIGHT_PIXEL_COLORS.L });
+    expect(pixelRows(false)).toEqual(pixelRows());
+    expect(pixelRows(true).map((r) => r.text)).toEqual(pixelRows().map((r) => r.text));
   });
 });
 

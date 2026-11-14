@@ -105,7 +105,7 @@ export function startBox(info: StartInfo, width: number, look: Look): Line[] {
   const title = `Tachikoma ${visible(info.version)}`;
   const titled = stringWidth(title) + 6; // "╭─ ", the title, " ─╮"
 
-  const drawings = [...(look.full ? [pixelRows()] : []), asciiRows(), []];
+  const drawings = [...(look.full ? [pixelRows(look.light)] : []), asciiRows(), []];
   const columnsOf = (art: Line[]) => Math.max(0, ...art.map((l) => stringWidth(l.text)));
   const outside = (art: Line[]) => BORDERS + PAD + (art.length ? columnsOf(art) + GAP : 0) + PAD;
   const art = drawings.find((d) => !d.length || outside(d) + list(true) <= width)!;

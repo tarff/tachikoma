@@ -592,6 +592,7 @@ export function App(props: AppProps) {
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
   const d = ui.detail.current;
   const prompt = ui.search.current ? fns.shown() : ui.editor.current;
+  if (ui.editor.current.text) ui.typed.current = true; // typed, pasted or recalled: the hint row's "?" from now (usualHint)
   fns.staleVim(); // while drawing too, for a change no key made (a picture's read ending), safe as `copied` below says
   const highlight = ui.search.current ? undefined : visualSelection(ui.vim.current, prompt);
   // The model list, /resume's list of sessions or /mcp's of the MCP servers, drawn in the prompt's place, or a server's
@@ -668,7 +669,9 @@ export function App(props: AppProps) {
                   ? `-- ${ui.vim.current.mode} --` // every mode, in a turn too, when no other hint takes the row (choice 15)
                   : ui.busy
                     ? null
-                    : "? for shortcuts";
+                    : ui.typed.current
+                      ? "? for shortcuts"
+                      : " "; // until the prompt first holds text, a blank row kept, so its first key moves nothing (Task 14)
   // The line about the last copy, until the next key or click (release 5 design, "Copying"), takes the hint row's place
   // only while one shows, so a copy never moves the conversation; a failed copy shows anyway, adding the row. Ctrl+R's
   // search and the exit warning keep the row (the user's choice, release 5), and so does the detail view's search while

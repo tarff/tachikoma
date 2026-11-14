@@ -50,10 +50,22 @@ export const PIXEL_COLORS: Record<string, Colour> = {
   G: "#bec3cd",
 };
 
+// The light look's (TUI design pass, Task 14; the user's choice): WCAG 2.1's contrast ratio against white, the brightest
+// light background, puts light (2.11:1), white (1.14:1) and grey (1.77:1) under WCAG 1.4.11's 3:1 for graphics, so each
+// is darkened, its channels scaled together, to the lightest shade at 3:1 or more; every other colour is 4.2:1 or more and
+// kept. Starting points, set by eye at the terminal check (choice P4).
+export const LIGHT_PIXEL_COLORS: Record<string, Colour> = {
+  ...PIXEL_COLORS,
+  L: "#7596cc",
+  W: "#92959a",
+  G: "#91959d",
+};
+
 // Two pixel rows to a text row: `▀` in the top pixel's colour on the bottom's, `▄` or `▀` where only one is set, `█` where
 // both are the same, a space where neither is. For full colour only, as Task 6 picks it: without colour a cell where two
-// colours meet loses its bottom half, and in named colours the three blues blur together.
-export function pixelRows(): Line[] {
+// colours meet loses its bottom half, and in named colours the three blues blur together. `light`: the light look's colours.
+export function pixelRows(light = false): Line[] {
+  const colours = light ? LIGHT_PIXEL_COLORS : PIXEL_COLORS;
   const rows: Line[] = [];
   for (let r = 0; r < PIXELS.length; r += 2) {
     const top = PIXELS[r]!;
@@ -61,8 +73,8 @@ export function pixelRows(): Line[] {
     let text = "";
     const styles: Span[] = [];
     for (let c = 0; c < top.length; c++) {
-      const up = PIXEL_COLORS[top[c]!];
-      const down = PIXEL_COLORS[bottom[c]!];
+      const up = colours[top[c]!];
+      const down = colours[bottom[c]!];
       const span = { start: c, end: c + 1 };
       if (up && down && up !== down) styles.push({ ...span, color: up, bg: down });
       else if (up || down) styles.push({ ...span, color: (up ?? down)! });
