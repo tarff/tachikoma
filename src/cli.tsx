@@ -85,7 +85,7 @@ import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
 import { shellOf } from "./safety/split.js";
-import { hooksOf, loadSettings, SETTINGS, shownFile } from "./settings.js";
+import { hooksOf, loadSettings, SETTINGS, type Settings, shownFile } from "./settings.js";
 import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "./tools/commands.js";
 import { delegateTool } from "./tools/delegate.js";
 import { editFileTool } from "./tools/files.js";
@@ -204,22 +204,28 @@ function askAtStart(question: string): Promise<boolean> {
 // A screen drawn alone before the session (`tachi review <name>`'s review, `tachi -r`'s list): in full screen where it can
 // draw, with the keys file's bindings as it reads at this moment (its problems said first, on the normal screen); the
 // mouse stays off, as nothing reads its reports. `draw` is given the bindings and the screen's close. Resolves once Ink
-// has ended and the terminal is back, so the lines printed after it come after.
-async function drawAlone(draw: (bindings: Bindings, close: () => void) => ReactElement): Promise<void> {
+// has ended and the terminal is back, so the lines printed after it come after. Drawn in the look from `settings`, as the
+// App is, so NO_COLOR and the light look reach it too (TUI design pass, Task 13).
+async function drawAlone(settings: Settings, draw: (bindings: Bindings, close: () => void) => ReactElement): Promise<void> {
   const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
   const bindings = keysNow();
   if (fullPossible(process.env, process.stdout.isTTY === true)) screen.setSecond(true);
-  ink = render(draw(bindings, () => ink?.unmount()), { exitOnCtrlC: false });
+  const shown = look(settings, process.env, chalk.level);
+  ink = render(<ThemeContext value={{ look: shown, palette: palette(shown) }}>{draw(bindings, () => ink?.unmount())}</ThemeContext>, { exitOnCtrlC: false });
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   await exited;
 }
 
+// `tachi review` runs before the launch reads the settings, so it reads them here for their theme, quietly: a file that is
+// broken or cannot be read is the default look, and its warnings are not said, so the review says and stops for nothing it
+// did not before (Task 13).
 async function drawReview(copy: ReviewCopy, protection: Protection): Promise<ReviewEnd> {
   let end: ReviewEnd | undefined;
-  await drawAlone((bindings, close) => (
+  const read = loadSettings();
+  await drawAlone("problem" in read ? {} : read.settings, (bindings, close) => (
     <Review
       copy={copy}
       bindings={bindings}
@@ -233,10 +239,10 @@ async function drawReview(copy: ReviewCopy, protection: Protection): Promise<Rev
   return end!;
 }
 
-// The session picked from the list (release 8a plan, choice 12), or none when it was closed.
-async function drawSessions(rows: Row[], name: string | undefined): Promise<string | undefined> {
+// The session picked from the list (release 8a plan, choice 12), or none when it was closed; in the launch's settings' look.
+async function drawSessions(rows: Row[], name: string | undefined, settings: Settings): Promise<string | undefined> {
   let picked: string | undefined;
-  await drawAlone((bindings, close) => (
+  await drawAlone(settings, (bindings, close) => (
     <SessionList
       rows={rows}
       {...(name === undefined ? {} : { name })}
@@ -422,7 +428,7 @@ if (parsed.continue || parsed.resume !== undefined) {
   const c = chooseSession(sessions, { continue: parsed.continue, resume: parsed.resume, print: !interactive, terminal });
   if ("fail" in c) fail(visible(c.fail));
   if (interactive && !terminal) fail(NO_TERMINAL); // before a held session is copied for a window that cannot start
-  chosen = "id" in c ? c.id : await drawSessions(c.list, c.name);
+  chosen = "id" in c ? c.id : await drawSessions(c.list, c.name, loaded.settings);
   if (chosen === undefined) process.exit(0); // the list closed: nothing to open
 }
 // Opened, mended and read before anything starts, the instruction files' question and the sandbox among them, so a
