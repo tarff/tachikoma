@@ -34,7 +34,7 @@ const gray = (t: string) => ({ text: t, color: "muted", oneLine: true });
 const muted = (t: string) => ({ text: t, color: "muted", styles: [{ start: 0, end: 2, color: P.muted }], indent: 2, oneLine: true, block: true });
 const folded = (t: string) => muted(`● ${t}`);
 const answer = (t: string) => ({ text: `● ${t}`, styles: [{ start: 0, end: 2, color: P.accent }], indent: 2, block: true });
-const own = (t: string) => ({ text: t, color: P.text, styles: [{ start: 0, end: 2, color: P.accent }], oneLine: true, block: true });
+const own = (t: string) => ({ text: t, styles: [{ start: 0, end: 2, color: P.accent }], oneLine: true, block: true });
 
 describe("folded tool rows", () => {
   it("says each measured row in Claude Code's words, kinds in its order, the first word capitalised", () => {

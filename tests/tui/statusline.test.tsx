@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { renderToString } from "ink";
 import { render } from "ink-testing-library";
-import { isValidElement, type ReactElement, type ReactNode } from "react";
+import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { describe as describeMessage, lastTurn, screen } from "../../src/tui/describe.js";
 import {
@@ -14,7 +14,7 @@ import {
   type StatusInfo,
   StatusLine,
 } from "../../src/tui/StatusLine.js";
-import { type Look, palette } from "../../src/tui/theme.js";
+import { type Look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
 
 const info: StatusInfo = {
   lead: "anthropic:claude-opus-5-5",
@@ -36,31 +36,42 @@ const info: StatusInfo = {
 const on: Look = { light: false, color: true, full: true };
 const dark = palette(on);
 
+// The line in a theme, the dark full one unless given, as the App's context gives it (Task 13's code review: the status
+// line reads the theme itself).
+const themed = (line: ReactElement, theme: Theme = { look: on, palette: dark }) => <ThemeContext value={theme}>{line}</ThemeContext>;
+
 // Renders once and unmounts, so Ink instances do not pile up; at the test terminal's 100 columns unless given.
 function frame(i: StatusInfo, segments: Segment[], columns = 100) {
-  const app = render(<StatusLine info={i} segments={segments} columns={columns} palette={dark} look={on} />);
+  const app = render(themed(<StatusLine info={i} segments={segments} columns={columns} />));
   const shown = app.lastFrame();
   app.unmount();
   return shown;
 }
 
 // The line as a terminal `columns` wide draws it, where Ink would cut it at that width too.
-const lineAt = (columns: number, i: StatusInfo, segments: Segment[]) =>
-  renderToString(<StatusLine info={i} segments={segments} columns={columns} palette={dark} look={on} />, { columns });
+const lineAt = (columns: number, i: StatusInfo, segments: Segment[]) => renderToString(themed(<StatusLine info={i} segments={segments} columns={columns} />), { columns });
 
-// Every element the line hands Ink, with its props: the test terminal draws no colour codes (see conversation.test.tsx).
-function drawn(node: ReactNode): Record<string, unknown>[] {
-  if (Array.isArray(node)) return node.flatMap(drawn);
-  if (!isValidElement(node)) return [];
-  const props = node.props as { children?: ReactNode };
-  return [props, ...drawn(props.children)];
+// The line with its colours, chalk at level 3 so the palette's hex is drawn as it is, 1000 columns wide so no part is cut
+// (Task 13's code review: drawn, as the line reads the theme from its context).
+const ESC = String.fromCharCode(27);
+function coloured(i: StatusInfo, segments: Segment[], theme?: Theme): string {
+  const level = chalk.level;
+  chalk.level = 3;
+  try {
+    return renderToString(themed(<StatusLine info={i} segments={segments} columns={Infinity} />, theme), { columns: 1000 });
+  } finally {
+    chalk.level = level;
+  }
 }
+// A colour's code as chalk draws it at level 3: a hex one in 24-bit, a name (the mode's and the bar's) in the basic 16.
+const NAMED: Record<string, number> = { red: 31, green: 32, yellow: 33, magenta: 35 };
+const code = (colour: string) =>
+  colour.startsWith("#") ? `${ESC}[38;2;${[1, 3, 5].map((k) => parseInt(colour.slice(k, k + 2), 16)).join(";")}m` : `${ESC}[${NAMED[colour]}m`;
+const colourCodes = (shown: string) =>
+  [...shown.matchAll(new RegExp(`${ESC}\\[([\\d;]*)m`, "g"))].filter((m) => m[1]!.split(";").some((p) => (+p >= 30 && +p <= 49) || (+p >= 90 && +p <= 107)));
 
 // What a part says: its pieces' words, which are written nowhere else.
 const formatSegment = (s: LineSegment, i: StatusInfo) => pieces(s, i, dark, on).map((p) => p.text).join("");
-
-// The line's elements: a Text per part, each holding its separator, its bar and its pieces' Texts.
-type Line = ReactElement<{ children: ReactElement<{ children: ReactNode[] }>[] }>;
 
 describe("StatusLine's pieces", () => {
   // The colours are claude-hud's, by risk where it has no such part (release 5 design, "The status line's colours").
@@ -101,8 +112,9 @@ describe("StatusLine's pieces", () => {
       for (const context of [100_000, 750_000, 900_000]) {
         const i = { ...info, mode, context, contextWindow: 1_000_000, errors: 1, running: 1 };
         for (const s of shown) for (const p of pieces(s, i, none, off)) expect(p.color).toBeUndefined();
-        const bar = drawn(StatusLine({ info: i, segments: ["context"], columns: 100, palette: none, look: off })).find((p) => typeof p.children === "string" && p.children.startsWith("█"));
-        expect(bar).toHaveProperty("color", undefined);
+        const line = coloured(i, shown, { look: off, palette: none });
+        expect(line).toContain("█");
+        expect(colourCodes(line)).toEqual([]);
       }
   });
 
@@ -129,19 +141,28 @@ describe("StatusLine's pieces", () => {
   ])("colour the context part and its bar alike at %d of 1M tokens used", (context, left, color) => {
     const at = { ...info, context, contextWindow: 1_000_000 };
     expect(pieces("context", at, dark, on)).toEqual([{ text: left, color }]);
-    const bar = drawn(StatusLine({ info: at, segments: ["context"], columns: 100, palette: dark, look: on })).find((p) => typeof p.children === "string" && p.children.startsWith("█"));
-    expect(bar?.color).toBe(color);
+    const line = coloured(at, ["context"]);
+    expect(line).toContain(`${code(color)}█`);
+    expect(line).toContain(`${code(color)}${left}`);
   });
 
-  it("are drawn with nothing inverse, the separators grey and the line's first and last spaces plain", () => {
-    const line = StatusLine({ info: { ...info, running: 1 }, segments: SEGMENTS, columns: Infinity, palette: dark, look: on }); // never too long
-    const all = drawn(line);
-    expect(all.filter((p) => p.inverse)).toEqual([]);
-    // Nine parts on the line (every one but `tools`), so eight separators.
-    expect(all.filter((p) => p.children === " | ").map((p) => p.dimColor)).toEqual(Array(8).fill(true));
-    const parts = (line as Line).props.children;
-    expect(parts[0]!.props.children[0]).toBe(" ");
-    expect(parts.at(-1)!.props.children.at(-1)).toBe(" ");
+  it("are drawn with nothing inverse, the separators grey and the line's first space plain", () => {
+    const line = coloured({ ...info, running: 1 }, SEGMENTS); // never too long
+    expect(line).not.toContain(`${ESC}[7m`);
+    // Nine parts on the line (every one but `tools`), so eight separators, each where dim is on: a dim part beside one
+    // shares its run (the time's).
+    const dims: boolean[] = [];
+    let dim = false;
+    for (const part of line.split(new RegExp(`(${ESC}\\[[\\d;]*m)`))) {
+      if (part.startsWith(ESC)) {
+        const codes = part.slice(2, -1).split(";");
+        if (codes.includes("2")) dim = true;
+        if (codes.includes("22") || codes.includes("0")) dim = false;
+      } else dims.push(...Array<boolean>(part.split(" | ").length - 1).fill(dim));
+    }
+    expect(dims).toEqual(Array(8).fill(true));
+    // The first space before any code. The last Ink trims from the end of what it draws, so it is not seen here.
+    expect(line.startsWith(" ")).toBe(true);
   });
 
   it("are each drawn in their own colour, every piece of every part", () => {
@@ -150,11 +171,13 @@ describe("StatusLine's pieces", () => {
       { ...info, running: 1 },
       { ...info, contextWindow: null, errors: 1, mode: "never", branch: null, running: 1 },
     ] satisfies StatusInfo[]) {
-      const parts = (StatusLine({ info: i, segments: shown, columns: Infinity, palette: dark, look: on }) as Line).props.children;
-      shown.forEach((s, n) => {
-        const texts = (parts[n]!.props.children.find(Array.isArray) as ReactElement[]).map((t) => t.props);
-        expect(texts).toEqual(pieces(s, i, dark, on).map((p) => ({ children: p.text, color: p.color, dimColor: p.dim })));
-      });
+      const line = coloured(i, shown);
+      for (const s of shown)
+        for (const p of pieces(s, i, dark, on)) {
+          if (p.color) expect(line).toContain(`${code(p.color)}${p.text}`);
+          // A dim piece in a dim run, which the separator before it may have started.
+          if (p.dim) expect(line).toMatch(new RegExp(`${ESC}\\[2m[^${ESC}]*${p.text}`));
+        }
     }
   });
 });
@@ -325,7 +348,7 @@ describe("StatusLine", () => {
     const level = chalk.level;
     chalk.level = 1; // 1: chalk's basic 16 colours, enough for every colour the line uses
     try {
-      const line = renderToString(<StatusLine info={{ ...info, project }} segments={["project"]} columns={columns} palette={dark} look={on} />, { columns });
+      const line = renderToString(themed(<StatusLine info={{ ...info, project }} segments={["project"]} columns={columns} />), { columns });
       expect(line).toMatch(/\u001b\[/);
       expect(line.replace(/\u001b\[\d+m/g, "")).toBe(shown);
     } finally {

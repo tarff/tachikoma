@@ -4,7 +4,7 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { Row } from "../../src/core/sessions.js";
 import { Bindings, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { ago, SessionList } from "../../src/tui/SessionList.js";
-import { look, palette, ThemeContext } from "../../src/tui/theme.js";
+import { ThemeContext, themeOf } from "../../src/tui/theme.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 const DOWN = "\u001b[B";
@@ -106,21 +106,22 @@ describe("SessionList", () => {
 });
 
 // TUI design pass, Task 13: `tachi -r` draws the list alone (cli.tsx, drawAlone) in the look from the settings and the
-// environment, as the App is drawn. With NO_COLOR set nothing is in a colour, though chalk would draw one (FORCE_COLOR=3,
-// chalk at level 3); with the light theme, the light palette's muted hint. Colour codes only: dim is kept (Task 2).
+// environment, as the App is drawn (theme.ts, themeOf). With NO_COLOR set nothing is in a colour, though chalk would draw
+// one (chalk.level = 3 below: chalk reads FORCE_COLOR once, at import); with the light theme, the light palette's muted
+// hint. Colour codes only: dim is kept (Task 2).
 describe("SessionList's colours", () => {
   function drawn(env: NodeJS.ProcessEnv, theme?: "light") {
     const level = chalk.level;
     chalk.level = 3;
     try {
-      const shown = look(theme ? { theme } : {}, env, 3);
+      const given = themeOf(theme ? { theme } : {}, env, 3);
       const r = render(
-        <ThemeContext value={{ look: shown, palette: palette(shown) }}>
+        <ThemeContext value={given}>
           <SessionList rows={ROWS} now={now} bindings={new Bindings(tableOf(DEFAULTS))} onPick={() => {}} onClose={() => {}} />
         </ThemeContext>,
       );
       onTestFinished(() => r.unmount());
-      return { frame: r.lastFrame()!, muted: palette(shown).muted };
+      return { frame: r.lastFrame()!, muted: given.palette.muted };
     } finally {
       chalk.level = level;
     }
@@ -128,7 +129,6 @@ describe("SessionList's colours", () => {
 
   it("draws no colour with NO_COLOR set", () => {
     vi.stubEnv("NO_COLOR", "1");
-    vi.stubEnv("FORCE_COLOR", "3");
     onTestFinished(() => {
       vi.unstubAllEnvs();
     });

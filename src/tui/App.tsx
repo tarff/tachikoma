@@ -990,8 +990,6 @@ export function App(props: AppProps) {
       <StatusLine
         segments={ui.shownSegments}
         columns={ui.columns}
-        palette={ui.palette}
-        look={ui.look}
         info={{
           lead: ui.session.lead.id,
           context: ui.stats.context,

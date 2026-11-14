@@ -1,7 +1,8 @@
 import { Text } from "ink";
+import { useContext } from "react";
 import stringWidth from "string-width";
 import { type Mode, visible } from "../core/permissions.js";
-import type { Look, Palette } from "./theme.js";
+import { type Colour, type Look, type Palette, ThemeContext } from "./theme.js";
 
 // The status line's parts, and `tools`, the line under it (release 3 design, "On screen"); `tasks`,
 // how many subagents run (release 4 design, "On screen").
@@ -65,7 +66,7 @@ export function costText(lead: string, cost: number, costUnknown: boolean): stri
 // and as the bar's empty cells are drawn below; the labels are the palette's muted (TUI design pass, Task 10).
 export interface Piece {
   text: string;
-  color?: string;
+  color?: Colour; // a colour, never a role (theme.ts)
   dim?: boolean;
 }
 
@@ -125,7 +126,8 @@ function zero(s: LineSegment, i: StatusInfo): boolean {
 // order (the user's "Put back what fits", 2026-11-14); a last part still too long alone is cut at the end (Ink measures
 // it in columns). On the terminal's own background, its parts split by a grey ` | ` (release 5 design, "The status
 // line's colours").
-export function StatusLine({ info, segments, columns, palette, look }: { info: StatusInfo; segments: Segment[]; columns: number; palette: Palette; look: Look }) {
+export function StatusLine({ info, segments, columns }: { info: StatusInfo; segments: Segment[]; columns: number }) {
+  const { look, palette } = useContext(ThemeContext);
   const listed = segments.filter((s): s is LineSegment => s !== "tools" && !zero(s, info));
   const on = listed.map(() => true);
   // A part's columns: its bar's cells and the space after them, then its words; the line's, a space at each end and

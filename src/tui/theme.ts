@@ -1,3 +1,4 @@
+import type { ForegroundColorName } from "chalk";
 import { createContext } from "react";
 import type { Settings } from "../settings.js";
 
@@ -10,17 +11,20 @@ export interface Look {
   full: boolean;
 }
 
-// Each one a colour Ink's `color` and `backgroundColor` take; undefined is the terminal's own.
+// A colour Ink's `color` and `backgroundColor` take: a hex colour or one of chalk's names. Never a role (Role, below),
+// which the types keep out of a palette's value, a span's and a status line piece's (Task 13's code review).
+export type Colour = `#${string}` | ForegroundColorName;
+
+// Each one a colour; undefined is the terminal's own. The text has none: it is the terminal's own foreground.
 export interface Palette {
-  accent: string | undefined;
-  text: string | undefined;
-  muted: string | undefined;
-  success: string | undefined;
-  error: string | undefined;
-  warning: string | undefined;
-  band: string | undefined;
-  addTint: string | undefined;
-  delTint: string | undefined;
+  accent: Colour | undefined;
+  muted: Colour | undefined;
+  success: Colour | undefined;
+  error: Colour | undefined;
+  warning: Colour | undefined;
+  band: Colour | undefined;
+  addTint: Colour | undefined;
+  delTint: Colour | undefined;
 }
 
 // A colour by its meaning, named as the palette's entry for it: what a line built outside React carries (describe.ts,
@@ -39,12 +43,11 @@ export function look(settings: Settings, env: NodeJS.ProcessEnv, level: number):
   return { light, color, full: color && level === 3 };
 }
 
-// The hex colours for full colour. text is the terminal's own foreground. accent is the pixel art's blue B (plan, appendix
-// "The pixel art"), the design's Tachikoma blue; every other value is a placeholder, none measured, set by eye with the
-// user at Task 14's terminal check (choice P4).
+// The hex colours for full colour. accent is the pixel art's blue B (plan, appendix "The pixel art"), the design's
+// Tachikoma blue; every other value is a placeholder, none measured, set by eye with the user at Task 14's terminal check
+// (choice P4).
 const DARK: Palette = {
   accent: "#4278de",
-  text: undefined,
   muted: "#8a8a8a",
   success: "#5fbf6f",
   error: "#f0605f",
@@ -55,7 +58,6 @@ const DARK: Palette = {
 };
 const LIGHT: Palette = {
   accent: "#4278de",
-  text: undefined,
   muted: "#6b6b6b",
   success: "#1f8a3c",
   error: "#c62828",
@@ -71,7 +73,6 @@ export function palette(shown: Look): Palette {
   if (shown.full) return shown.light ? LIGHT : DARK;
   return {
     accent: shown.color ? "blue" : undefined,
-    text: undefined,
     muted: shown.color ? "gray" : undefined,
     success: shown.color ? "green" : undefined,
     error: shown.color ? "red" : undefined,
@@ -86,6 +87,13 @@ export function palette(shown: Look): Palette {
 export interface Theme {
   look: Look;
   palette: Palette;
+}
+
+// The theme cli.tsx draws the App and the screens drawn alone in: the look from the settings, the environment and chalk's
+// level, with its palette (Task 13's code review).
+export function themeOf(settings: Settings, env: NodeJS.ProcessEnv, level: number): Theme {
+  const shown = look(settings, env, level);
+  return { look: shown, palette: palette(shown) };
 }
 
 // The App's theme, set in cli.tsx; tests that give none get the dark full one.

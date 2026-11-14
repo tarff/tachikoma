@@ -104,7 +104,7 @@ import { SessionList } from "./tui/SessionList.js";
 import { startBox } from "./tui/startup.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
-import { look, palette, ThemeContext } from "./tui/theme.js";
+import { ThemeContext, themeOf } from "./tui/theme.js";
 import { textWidth } from "./tui/view.js";
 
 const HELP = `tachi: a coding agent for your terminal
@@ -212,8 +212,7 @@ async function drawAlone(settings: Settings, draw: (bindings: Bindings, close: (
   restoreOnExit(screen, () => ink?.unmount());
   const bindings = keysNow();
   if (fullPossible(process.env, process.stdout.isTTY === true)) screen.setSecond(true);
-  const shown = look(settings, process.env, chalk.level);
-  ink = render(<ThemeContext value={{ look: shown, palette: palette(shown) }}>{draw(bindings, () => ink?.unmount())}</ThemeContext>, { exitOnCtrlC: false });
+  ink = render(<ThemeContext value={themeOf(settings, process.env, chalk.level)}>{draw(bindings, () => ink?.unmount())}</ThemeContext>, { exitOnCtrlC: false });
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   await exited;
@@ -887,8 +886,7 @@ if (parsed.print !== undefined) {
   };
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();
   // The look from the launch's settings (TUI design pass, Task 1), the colour depth as Ink's own check gives it.
-  const shown = look(loaded.settings, process.env, chalk.level);
-  const colours = palette(shown);
+  const { look: shown, palette: colours } = themeOf(loaded.settings, process.env, chalk.level);
   // Before the first frame, which shows it, in the start-up box and the App. In the box a read that fails (Docker
   // unreachable) is no branch, so it cannot end the launch; the tools say what failed when used (release 7 plan, Task 14's
   // review).

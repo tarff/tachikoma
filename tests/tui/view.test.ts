@@ -234,7 +234,7 @@ describe("styled lines", () => {
     let reads = 0;
     let start = 0;
     const styles = text.split("\n").map((l) => {
-      const s = { start, end: Math.min(start + l.length + 1, text.length), color: "red" };
+      const s = { start, end: Math.min(start + l.length + 1, text.length), color: "red" as const };
       start = s.end;
       return new Proxy(s, { get: (t, k) => (reads++, t[k as keyof typeof t]) });
     });

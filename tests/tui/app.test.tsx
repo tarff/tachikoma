@@ -12866,14 +12866,14 @@ describe("App's MCP", () => {
 });
 
 // TUI design pass, Task 13 (audit 12): with NO_COLOR set, the look cli.tsx makes (theme.ts, look) has no colour, so nothing
-// is drawn in a colour though chalk would draw one (FORCE_COLOR=3, chalk at level 3): not the conversation's lines, and
-// not the status line's mode or context bar, whose own colours are kept only with colour. Dim is a style, not a colour,
-// and is kept without colour on purpose (Task 2), so only colour codes are looked for: a foreground or a background,
-// basic, bright, 256 or 24-bit, or their resets. The file's afterEach puts NO_COLOR and FORCE_COLOR back.
+// is drawn in a colour though chalk would draw one (chalk at level 3, from inColour(3): chalk reads FORCE_COLOR once, at
+// import, so a stub of it would do nothing): not the conversation's lines, and not the status line's mode or context bar,
+// whose own colours are kept only with colour. Dim is a style, not a colour, and is kept without colour on purpose (Task
+// 2), so only colour codes are looked for: a foreground or a background, basic, bright, 256 or 24-bit, or their resets.
+// The file's afterEach puts NO_COLOR back.
 describe("App with NO_COLOR", () => {
   beforeEach(() => {
     vi.stubEnv("NO_COLOR", "1");
-    vi.stubEnv("FORCE_COLOR", "3");
   });
   const theme = (): Theme => {
     const shown = look({}, process.env, chalk.level);
@@ -12888,9 +12888,16 @@ describe("App with NO_COLOR", () => {
     await inColour(3, async () => {
       expect(theme().look.color).toBe(false);
       for (const [full, coloured] of [[false, false], [true, false], [false, true]] as const) {
-        const turns = [callTool("c1", "read_file", { path: "./missing.txt" }), reply("looked")];
-        const { app, bus } = await mount(turns, { full, branches: ["main", "main", "main"], ...(coloured ? {} : { theme: theme() }) });
+        const turns = [callTool("c1", "read_file", { path: "./missing.txt" }), callTool("c2", "edit_file", { path: "a.txt", old_text: "one", new_text: "uno" }), reply("looked")];
+        const { app, bus, ctx } = await mount(turns, { full, branches: ["main", "main", "main"], ...(coloured ? {} : { theme: theme() }) });
+        writeFileSync(path.join(ctx.root, "a.txt"), "one\n");
         await type(app, "read it");
+        // The edit's question in ask mode: the permission box, its border, the preview and the question (Task 13's code
+        // review).
+        await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow edit"));
+        if (coloured) expect(colourCodes(app)).not.toEqual([]);
+        else expect(colourCodes(app)).toEqual([]);
+        app.stdin.write("y");
         await until(app, "looked");
         bus.emit("error", { kind: "fallback", attempted: "x", message: "moved on", lead: "fake:a" });
         bus.emit("error", { kind: "provider", attempted: "x", message: "went wrong", lead: "fake:a" });

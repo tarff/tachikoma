@@ -10,7 +10,7 @@ import { Printed } from "../../src/tui/Conversation.js";
 import type { Message } from "../../src/core/types.js";
 import { callRow, describe as describeMessage, gapped, type Line, notice, resultRow } from "../../src/tui/describe.js";
 import { taskRows } from "../../src/tui/TaskPanel.js";
-import { type Look, palette, ThemeContext } from "../../src/tui/theme.js";
+import { type Colour, type Look, palette, ThemeContext } from "../../src/tui/theme.js";
 import { Rows } from "../../src/tui/view.js";
 import { todoRows } from "../../src/tui/TodoList.js";
 import { toolParts } from "../../src/tui/ToolLine.js";
@@ -274,7 +274,7 @@ describe("Printed", () => {
   // painting the background, so a tab under a background on a line's first row is printed as the spaces to its stop, as
   // full screen draws it; a tab after the first row's end, or with no background, or without colour, stays a tab.
   const TINT = "48;2;67;33;36"; // the dark look's delete tint, #432124 (theme.ts)
-  const tinted = (text: string, color?: string): Line => {
+  const tinted = (text: string, color?: Colour): Line => {
     let start = 0;
     const styles = text.split("\n").map((l) => {
       const s = { start, end: Math.min(start + l.length + 1, text.length), bg: "#432124", ...(color ? { color } : {}) };
@@ -339,7 +339,7 @@ describe("Printed", () => {
       let reads = 0;
       let start = 0;
       const styles = text.split("\n").map((l, k) => {
-        const s = { start, end: Math.min(start + l.length + 1, text.length), color: k % 2 ? "green" : "red" };
+        const s = { start, end: Math.min(start + l.length + 1, text.length), color: k % 2 ? ("green" as const) : ("red" as const) };
         start = s.end;
         return new Proxy(s, { get: (t, key) => (reads++, t[key as keyof typeof t]) });
       });
@@ -374,7 +374,7 @@ describe("describe's blocks and markers", () => {
   // went, and is no block.
   it("starts a call row with `● ` in the accent colour, its name and detail in the text colour, a block; its result row no block", () => {
     const call = { type: "tool_call" as const, id: "c", name: "read_file", input: { path: "a.txt" } };
-    expect(callRow(call, P)).toEqual({ text: "● read_file a.txt", color: P.text, styles: [accent], oneLine: true, block: true });
+    expect(callRow(call, P)).toEqual({ text: "● read_file a.txt", styles: [accent], oneLine: true, block: true });
     expect(resultRow({ type: "tool_result", callId: "c", output: "x", isError: false })).toEqual({ text: "  ⎿ ok", color: "muted", oneLine: true });
     const asked: Message = { role: "assistant", parts: [call] };
     expect(describeMessage(asked, P)).toEqual([callRow(call, P)]);

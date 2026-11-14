@@ -1,7 +1,9 @@
 import { render } from "ink-testing-library";
 import { createElement, useContext } from "react";
 import { describe, expect, it } from "vitest";
-import { look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
+import type { Span } from "../../src/tui/describe.js";
+import type { Piece } from "../../src/tui/StatusLine.js";
+import { type Colour, look, palette, type Theme, ThemeContext, themeOf } from "../../src/tui/theme.js";
 
 // TUI design pass, Task 1: the look from the theme setting, COLORFGBG, NO_COLOR and chalk's colour level, and the palette
 // from the look.
@@ -36,6 +38,30 @@ describe("look", () => {
   });
 });
 
+describe("themeOf", () => {
+  // Task 13's code review: the look and its palette, as cli.tsx draws the App and the screens drawn alone in.
+  it("is the look from the settings, the environment and the level, with its palette", () => {
+    const shown = look({ theme: "light" }, { NO_COLOR: "" }, 3);
+    expect(themeOf({ theme: "light" }, { NO_COLOR: "" }, 3)).toEqual({ look: shown, palette: palette(shown) });
+    expect(themeOf({}, { NO_COLOR: "1" }, 3)).toEqual({ look: { light: false, color: false, full: false }, palette: palette({ light: false, color: false, full: false }) });
+  });
+});
+
+// Task 13's code review: a role (theme.ts, Role) is not a colour, so tsc refuses one in a span, a status line piece or a
+// palette; the checks are the @ts-expect-error lines, which fail tsc if the error goes.
+describe("Colour", () => {
+  it("takes hex colours and chalk's names, never a role", () => {
+    const ok: Colour[] = ["#4278de", "gray", "redBright"];
+    // @ts-expect-error a role in a span
+    const span: Span = { start: 0, end: 1, color: "muted" };
+    // @ts-expect-error a role in a status line piece
+    const piece: Piece = { text: "x", color: "muted" };
+    // @ts-expect-error a role as a colour
+    const role: Colour = "error";
+    expect([ok, span, piece, role]).toHaveLength(4);
+  });
+});
+
 describe("ThemeContext", () => {
   it("gives the dark full look and its palette when none is given", () => {
     const dark = { light: false, color: true, full: true };
@@ -50,7 +76,7 @@ describe("ThemeContext", () => {
 });
 
 describe("palette", () => {
-  const KEYS = ["accent", "text", "muted", "success", "error", "warning", "band", "addTint", "delTint"];
+  const KEYS = ["accent", "muted", "success", "error", "warning", "band", "addTint", "delTint"];
 
   it("is hex colours in full colour, the band and tints among them, light and dark apart", () => {
     const dark = palette({ light: false, color: true, full: true });
@@ -69,7 +95,6 @@ describe("palette", () => {
     for (const lit of [false, true]) {
       expect(palette({ light: lit, color: true, full: false })).toEqual({
         accent: "blue",
-        text: undefined,
         muted: "gray",
         success: "green",
         error: "red",

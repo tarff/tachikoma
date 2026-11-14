@@ -1,4 +1,5 @@
 import type { Line, Span } from "./describe.js";
+import type { Colour } from "./theme.js";
 
 // The start-up box's two drawings (TUI design pass, Task 5): the pixel art for full colour, and the user's ASCII drawing
 // where it does not fit or colour is short (Task 6).
@@ -38,7 +39,7 @@ export const PIXELS: string[] = [
 ];
 
 // Each letter's colour, from the same appendix: blue, shade, light, white, pupil, dark, red, grey.
-export const PIXEL_COLORS: Record<string, string> = {
+export const PIXEL_COLORS: Record<string, Colour> = {
   B: "#4278de",
   S: "#284ea0",
   L: "#8cb4f5",

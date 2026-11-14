@@ -4,7 +4,7 @@ import type { Sandbox } from "../clilib.js";
 import { visible } from "../core/permissions.js";
 import { asciiRows, pixelRows } from "./art.js";
 import type { Line, Span } from "./describe.js";
-import { type Look, palette } from "./theme.js";
+import { type Colour, type Look, palette } from "./theme.js";
 import { cut } from "./view.js";
 
 // The start-up box (TUI design pass, Task 6; design, "2. Start-up box"): the drawing beside what loaded, in a rounded
@@ -122,7 +122,7 @@ export function startBox(info: StartInfo, width: number, look: Look): Line[] {
   const dashes = boxWidth - 5 - stringWidth(shownTitle); // the dashes left after "╭─ ", the title and " ", before "╮"
 
   // A row built from parts, each muted or coloured as given; a part with no colour has no span.
-  const row = (parts: { text: string; color?: string | undefined; styles?: Span[] }[]): Line => {
+  const row = (parts: { text: string; color?: Colour | undefined; styles?: Span[] }[]): Line => {
     let text = "";
     const styles: Span[] = [];
     for (const p of parts) {

@@ -10,14 +10,14 @@ import { isMcp, outputFrom, tachikomaName } from "../hooks/tools.js";
 import { shownPath } from "../tools/search.js";
 import type { Fold, OpenRun } from "./fold.js";
 import { marker } from "./pictures.js";
-import type { Palette, Role } from "./theme.js";
+import type { Colour, Palette, Role } from "./theme.js";
 
 // A run of style over text[start, end), drawn over the line's own colour; a later span over an earlier one (TUI design
 // pass, Task 2).
 export interface Span {
   start: number;
   end: number;
-  color?: string;
+  color?: Colour; // a colour, never a role (theme.ts)
   bg?: string;
   bold?: boolean;
   italic?: boolean;
@@ -115,7 +115,7 @@ export function shownName(name: string, names: McpNames = safeNames): string {
 
 // A line's `● `, its first two characters, in a colour of the palette (TUI design pass, Task 3): the `● ` that an indented
 // line's later rows line up after (choice P3).
-const dot = (color: string | undefined): Span => ({ start: 0, end: 2, color });
+const dot = (color: Colour | undefined): Span => ({ start: 0, end: 2, color });
 
 // A notice (Task 3; audit 7): a grey `● ` before its text, which keeps its own colour and spans; a block, its later rows
 // lined up after the dot, as a reply's are (Task 3's code review).

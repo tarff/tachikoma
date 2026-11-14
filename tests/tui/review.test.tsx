@@ -26,7 +26,7 @@ import { changes } from "../../src/sandbox/changes.js";
 import type { Manifest } from "../../src/sandbox/snapshot.js";
 import { Bindings, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { diffOf, Review, type ReviewEnd } from "../../src/tui/Review.js";
-import { look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
+import { type Theme, ThemeContext, themeOf } from "../../src/tui/theme.js";
 import { removeTree, ZERO } from "../helpers.js";
 
 const sha = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
@@ -686,8 +686,9 @@ describe("Review's keys", SLOW, () => {
 });
 
 // TUI design pass, Task 13: `tachi review` draws the review alone (cli.tsx, drawAlone) in the look from the settings and
-// the environment, as the App is drawn. With NO_COLOR set nothing is in a colour, though chalk would draw one (FORCE_COLOR=3,
-// chalk at level 3); with the light theme, the light palette's colours. Colour codes only: dim is kept (Task 2).
+// the environment, as the App is drawn. With NO_COLOR set nothing is in a colour, though chalk would draw one (chalk.level
+// = 3 below: chalk reads FORCE_COLOR once, at import); with the light theme, the light palette's colours. Colour codes
+// only: dim is kept (Task 2).
 describe("Review's colours", SLOW, () => {
   const codes = (frame: string) =>
     [...frame.matchAll(new RegExp(`${ESC}\\[([\\d;]*)m`, "g"))].filter((m) => m[1]!.split(";").some((p) => (+p >= 30 && +p <= 49) || (+p >= 90 && +p <= 107)));
@@ -713,20 +714,18 @@ describe("Review's colours", SLOW, () => {
 
   it("draws no colour with NO_COLOR set", async () => {
     vi.stubEnv("NO_COLOR", "1");
-    vi.stubEnv("FORCE_COLOR", "3");
     onTestFinished(() => {
       vi.unstubAllEnvs();
     });
-    const shown = look({}, process.env, 3);
-    const { list, diff } = await drawn({ look: shown, palette: palette(shown) });
+    const { list, diff } = await drawn(themeOf({}, process.env, 3));
     expect(codes(list)).toEqual([]);
     expect(codes(diff)).toEqual([]);
   });
 
   it("draws in the light palette with the light theme", async () => {
-    const shown = look({ theme: "light" }, {}, 3);
-    const light = palette(shown);
-    const { list, diff } = await drawn({ look: shown, palette: light });
+    const theme = themeOf({ theme: "light" }, {}, 3);
+    const light = theme.palette;
+    const { list, diff } = await drawn(theme);
     expect(list).toContain(`${fg(light.muted!)}1 change in paths git ignores`);
     for (const [colour, text] of [[light.muted, "changed a.txt"], [light.error, "-two"], [light.success, "+TWO"]] as const) expect(diff).toContain(`${fg(colour!)}${text}`);
   });
