@@ -277,7 +277,8 @@ function runLine(r: Run): Line {
 }
 
 // One input of a call as Ctrl+O shows it (TUI design pass, Task 12; audit 10; the user's layout, 2026-11-15): `name:
-// value`, two in; a string with line breaks under its `name:` four in, a CRLF one's \r going with its break as in prose;
+// value`, two in; a string with line breaks under its `name:` four in, an empty line with no indent so a copy has no
+// trailing spaces (Task 12's spec review), a CRLF one's \r going with its break as in prose;
 // any other value its JSON on one line. Each is escaped, as JSON.stringify did before. A key of anything but letters,
 // digits, _, $, . and - is quoted as JSON, so an empty one, or one with a colon, a line break or leading spaces, cannot
 // pass for another key or a value's line.
@@ -286,7 +287,7 @@ function inputLines([key, value]: [string, unknown]): string[] {
   const name = visible(BARE_KEY.test(key) ? key : JSON.stringify(key));
   if (typeof value !== "string") return [`  ${name}: ${visible(String(JSON.stringify(value)))}`];
   if (!value.includes("\n")) return [`  ${name}: ${visible(value, { tabs: true })}`];
-  return [`  ${name}:`, ...value.split(/\r?\n/).map((l) => `    ${visible(l, { tabs: true })}`)];
+  return [`  ${name}:`, ...value.split(/\r?\n/).map((l) => (l ? `    ${visible(l, { tabs: true })}` : ""))];
 }
 
 // A shell result (shellText, tools/shell.ts) without its empty stderr or stdout section (Task 12): the status alone when
@@ -310,7 +311,7 @@ export function callLines(messages: Message[], names?: McpNames): Line[] {
   return parts.flatMap((c) => {
     if (c.type !== "tool_call") return [];
     const name = shownName(c.name, names);
-    // Every provider gives an object (openai.ts, parseArgs); anything else keeps its JSON after the name, as before.
+    // Every provider gives an object (openai.ts, parseArgs); anything else is its JSON on one line after the name.
     const { input } = c;
     const fields = typeof input === "object" && input !== null && !Array.isArray(input);
     const head = fields ? [`● ${name}`, ...Object.entries(input).flatMap(inputLines)] : [`● ${name} ${visible(String(JSON.stringify(input)))}`];

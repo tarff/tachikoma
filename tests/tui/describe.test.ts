@@ -290,8 +290,9 @@ describe("callLines", () => {
   });
 
   // A CRLF value's \r goes with its line break, as screen() takes it in prose; a lone \r is no line break, and is escaped.
-  it("puts a multi-line string's lines under its name, a CRLF one's without the \\r, and keeps an ending line break", () => {
-    expect(record("x", { content: "a\r\nb\r\n" }, "ok")).toBe("● x\n  content:\n    a\n    b\n    \n  ⎿ ok");
+  it("puts a multi-line string's lines under its name, a CRLF one's without the \\r, an empty line with no indent", () => {
+    expect(record("x", { content: "a\r\nb\r\n" }, "ok")).toBe("● x\n  content:\n    a\n    b\n\n  ⎿ ok"); // its ending line break kept
+    expect(record("x", { content: "a\n\nb" }, "ok")).toBe("● x\n  content:\n    a\n\n    b\n  ⎿ ok");
     expect(record("x", { content: "a\rb" }, "ok")).toBe("● x\n  content: a␍b\n  ⎿ ok");
     expect(record("x", { content: "\ta\n\tb" }, "ok")).toBe("● x\n  content:\n    \ta\n    \tb\n  ⎿ ok"); // tabs kept, as in prose
   });
@@ -318,7 +319,7 @@ describe("callLines", () => {
   });
 
   // No provider gives one (openai.ts, parseArgs wraps it), but a record must still show it.
-  it("keeps an input that is not an object as JSON after the name, as before", () => {
+  it("gives an input that is not an object as its JSON on one line after the name", () => {
     expect(record("x", ["a"], "ok")).toBe('● x ["a"]\n  ⎿ ok');
     expect(record("x", undefined, "ok")).toBe("● x undefined\n  ⎿ ok");
   });
