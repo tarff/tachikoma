@@ -865,10 +865,10 @@ export function App(props: AppProps) {
         // A server's form's field (release 8c plan, Task 12), in the lists' rows, over any of them that is open.
         ui.full ? (
           <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
-            <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={pickerRows + 1} full />
+            <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={pickerRows + 1} columns={ui.columns} full />
           </Box>
         ) : (
-          <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={ui.height - 3} full={false} />
+          <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={ui.height - 3} columns={ui.columns} full={false} />
         )
       ) : ui.picker ? (
         ui.full ? (
@@ -973,7 +973,7 @@ export function App(props: AppProps) {
             selected={highlight}
             rules={f.rules}
           />
-          {menu && <Menu entries={menu.entries} chosen={fns.chosenIn(prompt, menu)} rows={menuRows} top={ui.menuTop} />}
+          {menu && <Menu entries={menu.entries} chosen={fns.chosenIn(prompt, menu)} rows={menuRows} columns={ui.columns} top={ui.menuTop} />}
           <TaskPanel rows={panel} />
         </>
       )}

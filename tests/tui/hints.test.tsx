@@ -73,7 +73,7 @@ describe("a form's pick's hint", () => {
     start: [],
   });
   const drawn = (field: FormField, bindings: Bindings) =>
-    renderToString(<Field asked={{ id: 1, field, done: () => {} }} bindings={bindings} keys={keys()} rows={6} full={false} />);
+    renderToString(<Field asked={{ id: 1, field, done: () => {} }} bindings={bindings} keys={keys()} rows={6} columns={100} full={false} />);
 
   it("says move, mark, answer and decline", () => {
     expect(last(drawn(pick(true), DEFAULT))).toBe("↑↓ move · Space mark · Enter answer · Esc decline");

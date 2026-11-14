@@ -32,12 +32,14 @@ export function Field({
   bindings,
   keys,
   rows,
+  columns,
   full,
 }: {
   asked: Asked;
   bindings: Bindings; // the table of keys, for the names the hint gives Select's keys
   keys: { current: ((k: PickerKey) => void) | null };
   rows: number; // the rows it may draw, as the App's frame gives them
+  columns: number; // the width the pick's menu is drawn at (Menu.tsx)
   full: boolean;
 }) {
   const { field, given } = asked;
@@ -117,7 +119,7 @@ export function Field({
         {visible(typed)}
         {!pick && <Text inverse> </Text>}
       </Text>
-      {pick && <Menu entries={pick.options.map((o) => ({ label: o.label, fill: o.value }))} chosen={s.at} rows={Math.max(1, rows - noteRows - 2)} />}
+      {pick && <Menu entries={pick.options.map((o) => ({ label: o.label, fill: o.value }))} chosen={s.at} rows={Math.max(1, rows - noteRows - 2)} columns={columns} />}
       {pick && (
         <Text color="gray" wrap="truncate-end">
           {hint}
