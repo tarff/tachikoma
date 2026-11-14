@@ -681,3 +681,24 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   heading); Hangul fillers (U+3164 and kin) count as letters, so a key of them stays bare; the
   layout cannot tell the string `"60000"` from the number. For Task 14: README.md:692 says /export
   writes calls "as Ctrl+O shows it".
+- **Task 13** (568406a, fixes bd70e25 and 5ded7dd): every colour from the palette. A line's or a
+  row's colour is a role (`Role` in theme.ts: accent, muted, success, error, warning), looked up
+  in the palette wherever it is drawn; a real colour is a `Colour` (a hex or one of chalk's
+  names), so tsc refuses a role where a colour belongs. `app/output.ts` tells a live edit's
+  problem by the `"error"` role. The user chose (2026-11-15): "Accent (blue)" (the magenta
+  notices, the fallback `↪`, "lead is now", the `/login` and `/model` progress and the history's
+  notes, are the accent); "Muted, branch accent" (the status line's `git:(` and `)` muted, the
+  branch accent; the folder is the warning colour). Outside the plan's Files, as their lines
+  reach the screen (coordinator's go-ahead): cli.tsx's start-up lines and src/sandbox/diff.ts's
+  review diff (`@@` accent, `-` error, `+` success); `tachi review` and `tachi -r`, drawn alone
+  before the session, are drawn in a ThemeContext from `themeOf(settings, env, level)`, as the
+  App is; `tachi review` reads the settings itself, quietly (a broken file is the default look).
+  From the review: `Palette.text` removed (always undefined, its one reader gone); the status
+  line reads ThemeContext itself. The plan's `FORCE_COLOR=3` does nothing in a test (chalk reads
+  it once, at import); the level comes from `inColour(3)` / `chalk.level = 3`. Dim is a style
+  and is kept without colour, as Task 2 keeps it. Known limits: the cli.tsx wiring itself is not
+  under test; a settings file with one bad entry draws `tachi review` dark even with `"theme":
+  "light"` (a session would refuse that file). For Task 14: cyan is now the accent blue (the
+  review's `@@`, the branch); at chalk levels 1-2 the accent is ANSI `blue`, hard to read on many
+  dark palettes (the classic Windows console), where those lines were magenta or cyan; the mode
+  colours and context bar stay named colours in the light look (look at them at the check).
