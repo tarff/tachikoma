@@ -72,7 +72,7 @@ export const queue = (ui: UI, fns: Fns) => {
       else {
         // As perform runs /screen: what goes wrong is said, and the queue goes on after.
         void fns.switchScreen(true)
-          .catch((err) => fns.say({ text: errorText(err), color: "red" }))
+          .catch((err) => fns.say({ text: errorText(err), color: "error" }))
           .then(fns.next);
         return;
       }
@@ -120,7 +120,7 @@ export const queue = (ui: UI, fns: Fns) => {
       if (alone("/mcp")) return mcpOpen();
       // Not to full screen where it can't draw: classic, as at the start (clilib.ts, screenMode).
       if (alone("/screen") && !ui.fullNow.current && !ui.fullPossible)
-        return fns.say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "gray" });
+        return fns.say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "muted" });
       if (alone("/screen")) return await fns.switchScreen();
       if (alone("/settings")) return await fns.openFile(SETTINGS, {});
       if (alone("/keybindings")) return await fns.openFile(KEYBINDINGS, { bindings: [] });
@@ -129,7 +129,7 @@ export const queue = (ui: UI, fns: Fns) => {
         const [word = "", ...rest] = words.map((w) => w.toLowerCase());
         const on = word ? word === "on" : ui.vim.current === null;
         if (!rest.length && ["", "on", "off"].includes(word)) return fns.setVim(on);
-        return fns.say({ text: "Usage: /vim, /vim on, /vim off", color: "red" });
+        return fns.say({ text: "Usage: /vim, /vim on, /vim off", color: "error" });
       }
       // In full screen a subagent's or command's record opens in the detail view (release 5 plan, Task 12; background
       // commands plan, Task 9); the list, stopping and mistakes print.
@@ -170,9 +170,9 @@ export const queue = (ui: UI, fns: Fns) => {
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
-      if (!account && !listing && /^\/[a-z]+$/i.test(text)) return fns.say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
+      if (!account && !listing && /^\/[a-z]+$/i.test(text)) return fns.say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "error" });
       if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings", "/clear", "/resume", "/hooks", "/mcp"].includes(command))
-        return fns.say({ text: `${command} takes nothing after it.`, color: "red" });
+        return fns.say({ text: `${command} takes nothing after it.`, color: "error" });
       ui.abort.current = new AbortController();
       const turn = !account && !listing;
       if (turn) ui.command.current = false;
@@ -199,10 +199,10 @@ export const queue = (ui: UI, fns: Fns) => {
       if (turn && !answers) ui.tasks.clearFinished();
       try {
         // Signing in waits on the browser; Ctrl-C stops it, as it stops a turn.
-        if (account) await ui.login(account, words, (line) => fns.say({ text: line, color: "magenta" }), ui.abort.current.signal, "/");
+        if (account) await ui.login(account, words, (line) => fns.say({ text: line, color: "accent" }), ui.abort.current.signal, "/");
         else if (listing) {
           const { signal } = ui.abort.current; // this command's own, read before the wait
-          const groups = await ui.listModels(signal, (line) => fns.say({ text: line, color: "magenta" }));
+          const groups = await ui.listModels(signal, (line) => fns.say({ text: line, color: "accent" }));
           if (!signal.aborted) {
             ui.listOpen.current = true;
             // A list read while the detail view is printed out, sent before `[` or from the queue, waits for it to come back
@@ -231,7 +231,7 @@ export const queue = (ui: UI, fns: Fns) => {
           };
           const ended = await ui.session.send(read.parts, signal, ui.mcp ? got : undefined);
           if (ended && "unsupplied" in ended) {
-            if (refused) fns.say({ text: refused.line, color: "red" });
+            if (refused) fns.say({ text: refused.line, color: "error" });
             fns.giveBack(read.draft, before, refused?.said ?? false);
           }
           // A prompt a UserPromptSubmit hook blocked or stopped was not sent (approved by the user, 2026-11-09).
@@ -243,10 +243,10 @@ export const queue = (ui: UI, fns: Fns) => {
         ui.working.current = false;
         // The model may have switched branches. Through the Workspace, so it lands just after the turn ends (release 7
         // plan, Task 14).
-        void ui.workspace.branch().then(ui.setBranch, (err) => fns.say({ text: errorText(err), color: "red" }));
+        void ui.workspace.branch().then(ui.setBranch, (err) => fns.say({ text: errorText(err), color: "error" }));
       }
     } catch (err) {
-      fns.say({ text: errorText(err), color: "red" });
+      fns.say({ text: errorText(err), color: "error" });
     } finally {
       ui.command.current = false; // a command that said nothing leaves no mark for what comes after
     }
@@ -390,7 +390,7 @@ export const queue = (ui: UI, fns: Fns) => {
   // "Background subagents"; background commands plan, choice 18). A command stopped here is told to the model at its next
   // turn (tasks.ts, stop).
   const tasksCommand = (words: string[]): Line[] => {
-    const none = (id: string): Line => ({ text: `No task ${id}. /tasks lists them.`, color: "red" });
+    const none = (id: string): Line => ({ text: `No task ${id}. /tasks lists them.`, color: "error" });
     const [verb, id, ...rest] = words;
     if (verb === undefined) {
       const all = ui.tasks.all;
@@ -418,7 +418,7 @@ export const queue = (ui: UI, fns: Fns) => {
       if (!pending && !ui.tasks.stop(id)) return [gray(`${id} is not running.`)];
       return [gray(t.kind === "command" && t.state === "running" ? `Stopping ${id}.` : `Stopped ${id}.`)];
     }
-    if (id !== undefined) return [{ text: "Usage: /tasks, /tasks <number>, /tasks stop [<number>]", color: "red" }];
+    if (id !== undefined) return [{ text: "Usage: /tasks, /tasks <number>, /tasks stop [<number>]", color: "error" }];
     const t = ui.tasks.get(verb);
     return t ? fns.recordOf(t) : [none(verb)];
   };
@@ -476,7 +476,7 @@ export const queue = (ui: UI, fns: Fns) => {
         servers.reset(name);
         fns.say(gray(`Your answer for ${shown} was reset; Tachikoma asks again at the next launch.`));
       } catch (err) {
-        fns.say({ text: `Your answer for ${shown} could not be reset (${visible(errorText(err), { tabs: true })}); the next launch still uses it.`, color: "red" });
+        fns.say({ text: `Your answer for ${shown} could not be reset (${visible(errorText(err), { tabs: true })}); the next launch still uses it.`, color: "error" });
       }
     }
     closeMcp();
@@ -504,8 +504,8 @@ export const queue = (ui: UI, fns: Fns) => {
       }
     } catch (err) {
       const why = visible(errorText(err), { tabs: true });
-      if (action === "Sign out") fns.say({ text: `Sign-out of ${shown} failed: ${why}`, color: "red" });
-      else if (!signal.aborted) fns.say({ text: `Sign-in to ${shown} failed: ${why}`, color: "red" });
+      if (action === "Sign out") fns.say({ text: `Sign-out of ${shown} failed: ${why}`, color: "error" });
+      else if (!signal.aborted) fns.say({ text: `Sign-in to ${shown} failed: ${why}`, color: "error" });
     } finally {
       ui.setBusy(false);
       ui.working.current = false;
@@ -543,7 +543,7 @@ export const queue = (ui: UI, fns: Fns) => {
     // The pick comes after any edit of the file's lead made while the list was open, so it wins, as a /lead typed
     // then would.
     ui.waiting.current.lead = undefined;
-    void asCommand(() => leadTo(spec).catch((err) => fns.say({ text: errorText(err), color: "red" }))).finally(fns.next);
+    void asCommand(() => leadTo(spec).catch((err) => fns.say({ text: errorText(err), color: "error" }))).finally(fns.next);
   };
   // A list's pick says its output as a command does, one block from its first line said (TUI design pass, Task 3's code
   // review; output.ts, say), the mark gone once it ends, as perform's is.
@@ -582,7 +582,7 @@ export const queue = (ui: UI, fns: Fns) => {
     const { got: problem, signal } = await between((signal) => ui.session.makeRoom(provider, signal));
     if (signal.aborted) return;
     if (problem === undefined) return ui.session.setLead(provider);
-    fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "red" });
+    fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "error" });
   };
   // /compact [words]: the whole conversation shortened now, the words its summary's focus (release 8a plan, Task 13). It
   // works as leadTo does: what is typed waits in the queue, and Ctrl-C stops it. A failure's red line comes from the
@@ -591,7 +591,7 @@ export const queue = (ui: UI, fns: Fns) => {
   const compact = async (focus: string) => {
     if (!ui.session.messages.length) return fns.say(gray(SHORTEN_WORDS.nothing));
     const { got: problem } = await between((signal) => ui.session.compact(focus, signal));
-    if (problem === CANCELLED) fns.say({ text: `✗ ${cannot(CANCELLED)}`, color: "red" });
+    if (problem === CANCELLED) fns.say({ text: `✗ ${cannot(CANCELLED)}`, color: "error" });
   };
   // /autocompact <tokens> or off (choice 26): digits with an optional k or m, k 1,000 and m 1,000,000 as Claude Code's
   // `/autocompact 500k` (plan, "Numbers in this plan"); this window only, saving nothing, as /vim.
@@ -599,7 +599,7 @@ export const queue = (ui: UI, fns: Fns) => {
     const [word = "", ...more] = words.map((w) => w.toLowerCase());
     const m = /^(\d+)([km]?)$/.exec(word);
     const n = m ? Number(m[1]) * (m[2] === "k" ? 1_000 : m[2] === "m" ? 1_000_000 : 1) : NaN;
-    if (more.length || (word !== "off" && !(Number.isSafeInteger(n) && n >= 1))) return fns.say({ text: SHORTEN_WORDS.usage, color: "red" });
+    if (more.length || (word !== "off" && !(Number.isSafeInteger(n) && n >= 1))) return fns.say({ text: SHORTEN_WORDS.usage, color: "error" });
     ui.session.autoCompact = word === "off" ? null : n;
     fns.say(gray(word === "off" ? SHORTEN_WORDS.off : SHORTEN_WORDS.passes(n)));
   };
@@ -683,7 +683,7 @@ export const queue = (ui: UI, fns: Fns) => {
   // they wait in the queue, as every command does. Null when none runs.
   const stillRunning = (command: string): Line | null => {
     const ids = ui.tasks.all.filter((t) => t.state === "running" || t.state === "waiting").map((t) => t.id).join(", ");
-    return ids ? { text: `${command} waits until no subagent or command is running: ${ids} still running. /tasks stop stops them.`, color: "red" } : null;
+    return ids ? { text: `${command} waits until no subagent or command is running: ${ids} still running. /tasks stop stops them.`, color: "error" } : null;
   };
   // The window takes another session (release 8a plan, choice 15): the last one's shown calls, to-do list, answers and
   // tool line go, and the gauge's context, 0 until the next request. The tasks' waiting text is dropped: an answer
@@ -784,13 +784,13 @@ export const queue = (ui: UI, fns: Fns) => {
       });
       // Its red line a block of its own, as a command's output is (TUI design pass, Task 3's code review); a conversation
       // opened brings its own blocks.
-      if ("problem" in next) fns.say({ text: next.problem, color: "red", block: true });
+      if ("problem" in next) fns.say({ text: next.problem, color: "error", block: true });
       else {
-        const lines = [...next.lines, ...(gone ? [{ text: gone }] : [])].map((l) => ({ ...l, color: "gray" as const }));
+        const lines = [...next.lines, ...(gone ? [{ text: gone }] : [])].map((l) => ({ ...l, color: "muted" as const }));
         await switchTo(next, lines, { end: "resume", start: "resume", ...(made ? { lead: made } : {}) });
       }
     } catch (err) {
-      fns.say({ text: errorText(err), color: "red", block: true });
+      fns.say({ text: errorText(err), color: "error", block: true });
     } finally {
       if (hold) ui.working.current = false;
     }
@@ -807,19 +807,19 @@ export const queue = (ui: UI, fns: Fns) => {
   const branch = async (name: string) => {
     const first = ui.session.prompts[0]?.split(/\r?\n/)[0];
     if (!first) return fns.say(gray(SESSION_WORDS.nothingToBranch));
-    if (!ui.session.transcript || ui.session.transcript.failed !== null) return fns.say({ text: SESSION_WORDS.unsaved("/branch"), color: "red" });
+    if (!ui.session.transcript || ui.session.transcript.failed !== null) return fns.say({ text: SESSION_WORDS.unsaved("/branch"), color: "error" });
     const original = ui.session.id;
     const named = name || first;
     const next = ui.saved.branch(original, ui.session.lead.id, named);
-    if ("problem" in next) return fns.say({ text: next.problem, color: "red" });
+    if ("problem" in next) return fns.say({ text: next.problem, color: "error" });
     await switchTo(next, [gray(`Branched: this window is now ${named}; the original is kept as ${original}.`)], { end: "other", start: "fork" });
   };
   // /rename <name> names this session in its transcript, as the lists then show it (design, "Names, branches and export").
   const rename = (name: string) => {
-    if (!name) return fns.say({ text: "Usage: /rename <name>", color: "red" });
+    if (!name) return fns.say({ text: "Usage: /rename <name>", color: "error" });
     const t = ui.session.transcript;
     t?.write({ t: "name", name });
-    fns.say(!t || t.failed !== null ? { text: SESSION_WORDS.unsaved("/rename"), color: "red" } : gray(`Session named ${name}.`));
+    fns.say(!t || t.failed !== null ? { text: SESSION_WORDS.unsaved("/rename"), color: "error" } : gray(`Session named ${name}.`));
   };
   // /export [file]: the conversation as text (core/exportText.ts), a reply saved without its lead headed by the one leading
   // now. To a file, from the project folder, made with `wx` so one already there is never written over (release 8a plan,
@@ -834,7 +834,7 @@ export const queue = (ui: UI, fns: Fns) => {
     // A name in matching quotes, as a dropped path comes, is taken out of them: on Windows only ", as an apostrophe is
     // part of a name there (clipboard.ts, unquoted).
     const to = path.resolve(ui.root, unquoted(file, process.platform === "win32"));
-    const there = () => fns.say({ text: `${to} already exists; nothing was written.`, color: "red" });
+    const there = () => fns.say({ text: `${to} already exists; nothing was written.`, color: "error" });
     try {
       // A link at the name counts as a file there: on Windows `wx` follows one, a junction to a missing folder making
       // that folder (Task 8's quality review). Links in the folders above are a known limit. Not sync, so a share that
@@ -850,7 +850,7 @@ export const queue = (ui: UI, fns: Fns) => {
       if (e.code === "EEXIST") return there();
       // Node's code and words, without the path they end with, as the line names the file already.
       const why = e.syscall && e.path ? e.message.replace(`, ${e.syscall} '${e.path}'`, "") : errorText(err);
-      return fns.say({ text: EXPORT_WORDS.unwritten(to, why), color: "red" });
+      return fns.say({ text: EXPORT_WORDS.unwritten(to, why), color: "error" });
     }
     fns.say(gray(`Exported to ${to}.`));
   };

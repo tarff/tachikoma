@@ -1,15 +1,17 @@
 import { Text } from "ink";
-import { useRef } from "react";
+import { useContext, useRef } from "react";
 import stringWidth from "string-width";
 import { visible } from "../core/permissions.js";
 import { scroll } from "./layout.js";
 import type { Entry } from "./menus.js";
+import { ThemeContext } from "./theme.js";
 
 // An open `/` or `@` menu, under the prompt, in `rows` rows: past that it scrolls with the chosen
 // entry, as the prompt does with the cursor, the first and last rows counting the entries cut off.
 // `top` is the window's first entry: the App passes its own, to map a click to an entry (release 5
 // design, "Clicking"). `columns` is the width its rows are drawn at, where Ink cuts them.
 export function Menu({ entries, chosen, rows, columns, top: given }: { entries: Entry[]; chosen: number; rows: number; columns: number; top?: { current: number } }) {
+  const { palette } = useContext(ThemeContext);
   const shown = Math.min(entries.length, Math.max(1, rows));
   const own = useRef(0);
   const top = given ?? own;
@@ -36,7 +38,7 @@ export function Menu({ entries, chosen, rows, columns, top: given }: { entries: 
             {i === 0 && w.above > 0 ? `↑ ${w.above}` : `↓ ${w.below}`} more
           </Text>
         ) : (
-          <Text key={i} wrap="truncate-end" color={e.error ? "red" : undefined}>
+          <Text key={i} wrap="truncate-end" color={e.error ? palette.error : undefined}>
             {"  "}
             <Text inverse={w.top + i === chosen && !e.error}>{visible(e.label)}</Text>
             {e.note && <Text dimColor>{`${" ".repeat(Math.max(0, wide - width(e)) + 2)}${e.note}`}</Text>}

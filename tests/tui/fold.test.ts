@@ -28,10 +28,10 @@ const P = palette({ light: false, color: true, full: true });
 const opts = (asked: string[] = [], shell: "bash" | "powershell" = "bash") => ({ asked: new Set(asked), shell, names: mcpNames(servers), palette: P, root: process.cwd() });
 const words = (calls: ToolCall[], shell: "bash" | "powershell" = "bash") =>
   rowText(calls.map((c) => ({ call: c, kinds: kindOf(c, new Set(), false, shell) })), opts().names);
-const gray = (t: string) => ({ text: t, color: "gray", oneLine: true });
+const gray = (t: string) => ({ text: t, color: "muted", oneLine: true });
 // Task 3's marks: a folded row and the live row's top start with a grey `● `, a reply and a call row with an accent one
 // (choice P2), each a block; a reply's later rows are indented (choice P3).
-const muted = (t: string) => ({ text: t, color: "gray", styles: [{ start: 0, end: 2, color: P.muted }], indent: 2, oneLine: true, block: true });
+const muted = (t: string) => ({ text: t, color: "muted", styles: [{ start: 0, end: 2, color: P.muted }], indent: 2, oneLine: true, block: true });
 const folded = (t: string) => muted(`● ${t}`);
 const answer = (t: string) => ({ text: `● ${t}`, styles: [{ start: 0, end: 2, color: P.accent }], indent: 2, block: true });
 const own = (t: string) => ({ text: t, color: P.text, styles: [{ start: 0, end: 2, color: P.accent }], oneLine: true, block: true });
@@ -236,7 +236,7 @@ describe("the open run", () => {
     expect(run.end().map(({ fold, ...l }) => l)).toEqual([
       folded("Read 1 file"),
       own("● read_file gone.txt"),
-      { text: "  ⎿ ENOENT: no such file", color: "red", oneLine: true },
+      { text: "  ⎿ ENOENT: no such file", color: "error", oneLine: true },
     ]);
     // One said already: where the run after it ends.
     lines(reply(read("r3"), read("r4", "late.txt")), P, undefined, run);
@@ -244,7 +244,7 @@ describe("the open run", () => {
     expect(lines(results(ok("r3"), failed("r4", "late")), P, undefined, run)).toEqual([]);
     expect(run.end()).toEqual([
       own("● read_file late.txt"),
-      { text: "  ⎿ late", color: "red", oneLine: true },
+      { text: "  ⎿ late", color: "error", oneLine: true },
     ]);
   });
 

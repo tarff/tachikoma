@@ -14,7 +14,7 @@ import {
   type StatusInfo,
   StatusLine,
 } from "../../src/tui/StatusLine.js";
-import { palette } from "../../src/tui/theme.js";
+import { type Look, palette } from "../../src/tui/theme.js";
 
 const info: StatusInfo = {
   lead: "anthropic:claude-opus-5-5",
@@ -32,12 +32,13 @@ const info: StatusInfo = {
   running: 0,
 };
 
-// The dark full look's colours, as the App's tests get them (theme.ts).
-const dark = palette({ light: false, color: true, full: true });
+// The dark full look and its colours, as the App's tests get them (theme.ts).
+const on: Look = { light: false, color: true, full: true };
+const dark = palette(on);
 
 // Renders once and unmounts, so Ink instances do not pile up; at the test terminal's 100 columns unless given.
 function frame(i: StatusInfo, segments: Segment[], columns = 100) {
-  const app = render(<StatusLine info={i} segments={segments} columns={columns} palette={dark} />);
+  const app = render(<StatusLine info={i} segments={segments} columns={columns} palette={dark} look={on} />);
   const shown = app.lastFrame();
   app.unmount();
   return shown;
@@ -45,7 +46,7 @@ function frame(i: StatusInfo, segments: Segment[], columns = 100) {
 
 // The line as a terminal `columns` wide draws it, where Ink would cut it at that width too.
 const lineAt = (columns: number, i: StatusInfo, segments: Segment[]) =>
-  renderToString(<StatusLine info={i} segments={segments} columns={columns} palette={dark} />, { columns });
+  renderToString(<StatusLine info={i} segments={segments} columns={columns} palette={dark} look={on} />, { columns });
 
 // Every element the line hands Ink, with its props: the test terminal draws no colour codes (see conversation.test.tsx).
 function drawn(node: ReactNode): Record<string, unknown>[] {
@@ -56,7 +57,7 @@ function drawn(node: ReactNode): Record<string, unknown>[] {
 }
 
 // What a part says: its pieces' words, which are written nowhere else.
-const formatSegment = (s: LineSegment, i: StatusInfo) => pieces(s, i, dark).map((p) => p.text).join("");
+const formatSegment = (s: LineSegment, i: StatusInfo) => pieces(s, i, dark, on).map((p) => p.text).join("");
 
 // The line's elements: a Text per part, each holding its separator, its bar and its pieces' Texts.
 type Line = ReactElement<{ children: ReactElement<{ children: ReactNode[] }>[] }>;
@@ -65,33 +66,48 @@ describe("StatusLine's pieces", () => {
   // The colours are claude-hud's, by risk where it has no such part (release 5 design, "The status line's colours").
   // The labels muted and the model in the accent colour (TUI design pass, Task 10).
   it("colour each part as the design's table says", () => {
-    expect(pieces("lead", info, dark)).toEqual([{ text: "lead", color: dark.muted }, { text: " " }, { text: "anthropic:claude-opus-5-5", color: dark.accent }]);
-    expect(pieces("context", { ...info, contextWindow: null }, dark)).toEqual([{ text: "ctx", color: dark.muted }, { text: " 500.0k" }]);
-    expect(pieces("tokens", info, dark)).toEqual([{ text: "12.3k " }, { text: "in", color: dark.muted }, { text: " / 678 " }, { text: "out", color: dark.muted }]);
-    expect(pieces("cost", info, dark)).toEqual([{ text: "$0.42", color: "green" }]);
-    expect(pieces("cost", { ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0 }, dark)).toEqual([{ text: "ChatGPT plan", color: "green" }]);
+    expect(pieces("lead", info, dark, on)).toEqual([{ text: "lead", color: dark.muted }, { text: " " }, { text: "anthropic:claude-opus-5-5", color: dark.accent }]);
+    expect(pieces("context", { ...info, contextWindow: null }, dark, on)).toEqual([{ text: "ctx", color: dark.muted }, { text: " 500.0k" }]);
+    expect(pieces("tokens", info, dark, on)).toEqual([{ text: "12.3k " }, { text: "in", color: dark.muted }, { text: " / 678 " }, { text: "out", color: dark.muted }]);
+    expect(pieces("cost", info, dark, on)).toEqual([{ text: "$0.42", color: dark.success }]);
+    expect(pieces("cost", { ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0 }, dark, on)).toEqual([{ text: "ChatGPT plan", color: dark.success }]);
     for (const [mode, color] of [
       ["ask", "green"],
       ["project", "yellow"],
       ["auto", "magenta"],
       ["never", "red"],
     ] as const)
-      expect(pieces("mode", { ...info, mode }, dark)).toEqual([{ text: "perm", color: dark.muted }, { text: " " }, { text: mode, color }]);
-    expect(pieces("errors", { ...info, errors: 1 }, dark)).toEqual([{ text: "1 error", color: "red" }]);
-    expect(pieces("project", info, dark)).toEqual([
-      { text: "Agent Harness", color: "yellow" },
+      expect(pieces("mode", { ...info, mode }, dark, on)).toEqual([{ text: "perm", color: dark.muted }, { text: " " }, { text: mode, color }]);
+    expect(pieces("errors", { ...info, errors: 1 }, dark, on)).toEqual([{ text: "1 error", color: dark.error }]);
+    expect(pieces("project", info, dark, on)).toEqual([
+      { text: "Agent Harness", color: dark.warning },
       { text: " " },
-      { text: "git:(", color: "magenta" },
-      { text: "main", color: "cyan" },
-      { text: ")", color: "magenta" },
+      { text: "git:(", color: dark.muted },
+      { text: "main", color: dark.accent },
+      { text: ")", color: dark.muted },
     ]);
-    expect(pieces("project", { ...info, branch: null }, dark)).toEqual([{ text: "Agent Harness", color: "yellow" }]);
-    expect(pieces("time", info, dark)).toEqual([{ text: "⏱ 14m", dim: true }]);
-    expect(pieces("tasks", { ...info, running: 2 }, dark)).toEqual([{ text: "2 running", color: "yellow" }]);
+    expect(pieces("project", { ...info, branch: null }, dark, on)).toEqual([{ text: "Agent Harness", color: dark.warning }]);
+    expect(pieces("time", info, dark, on)).toEqual([{ text: "⏱ 14m", dim: true }]);
+    expect(pieces("tasks", { ...info, running: 2 }, dark, on)).toEqual([{ text: "2 running", color: dark.warning }]);
+  });
+
+  // TUI design pass, Task 13: without colour the mode's and the context's own colours are left out too, as chalk does not
+  // read NO_COLOR, and every other piece has the palette's, none.
+  it("colour no part without colour", () => {
+    const off: Look = { light: false, color: false, full: false };
+    const none = palette(off);
+    const shown = SEGMENTS.filter((s): s is LineSegment => s !== "tools");
+    for (const mode of ["ask", "project", "auto", "never"] as const)
+      for (const context of [100_000, 750_000, 900_000]) {
+        const i = { ...info, mode, context, contextWindow: 1_000_000, errors: 1, running: 1 };
+        for (const s of shown) for (const p of pieces(s, i, none, off)) expect(p.color).toBeUndefined();
+        const bar = drawn(StatusLine({ info: i, segments: ["context"], columns: 100, palette: none, look: off })).find((p) => typeof p.children === "string" && p.children.startsWith("█"));
+        expect(bar).toHaveProperty("color", undefined);
+      }
   });
 
   it("escape the folder and the branch each, as the whole part was", () => {
-    expect(pieces("project", { ...info, project: "a\u001b[2Jb", branch: "x\u0007" }, dark).map((p) => p.text)).toEqual([
+    expect(pieces("project", { ...info, project: "a\u001b[2Jb", branch: "x\u0007" }, dark, on).map((p) => p.text)).toEqual([
       "a\\u001b[2Jb",
       " ",
       "git:(",
@@ -102,7 +118,7 @@ describe("StatusLine's pieces", () => {
 
   // Found at the final review: a lead's id can come from the command line or the model list.
   it("escape the lead's id", () => {
-    expect(pieces("lead", { ...info, lead: "a\u001b[2Jb" }, dark).map((p) => p.text)).toEqual(["lead", " ", "a\\u001b[2Jb"]);
+    expect(pieces("lead", { ...info, lead: "a\u001b[2Jb" }, dark, on).map((p) => p.text)).toEqual(["lead", " ", "a\\u001b[2Jb"]);
   });
 
   // contextBar's thresholds: yellow from 70% used, red from 85% (claude-hud's getContextColor).
@@ -112,13 +128,13 @@ describe("StatusLine's pieces", () => {
     [850_000, "15% left", "red"],
   ])("colour the context part and its bar alike at %d of 1M tokens used", (context, left, color) => {
     const at = { ...info, context, contextWindow: 1_000_000 };
-    expect(pieces("context", at, dark)).toEqual([{ text: left, color }]);
-    const bar = drawn(StatusLine({ info: at, segments: ["context"], columns: 100, palette: dark })).find((p) => typeof p.children === "string" && p.children.startsWith("█"));
+    expect(pieces("context", at, dark, on)).toEqual([{ text: left, color }]);
+    const bar = drawn(StatusLine({ info: at, segments: ["context"], columns: 100, palette: dark, look: on })).find((p) => typeof p.children === "string" && p.children.startsWith("█"));
     expect(bar?.color).toBe(color);
   });
 
   it("are drawn with nothing inverse, the separators grey and the line's first and last spaces plain", () => {
-    const line = StatusLine({ info: { ...info, running: 1 }, segments: SEGMENTS, columns: Infinity, palette: dark }); // never too long
+    const line = StatusLine({ info: { ...info, running: 1 }, segments: SEGMENTS, columns: Infinity, palette: dark, look: on }); // never too long
     const all = drawn(line);
     expect(all.filter((p) => p.inverse)).toEqual([]);
     // Nine parts on the line (every one but `tools`), so eight separators.
@@ -134,10 +150,10 @@ describe("StatusLine's pieces", () => {
       { ...info, running: 1 },
       { ...info, contextWindow: null, errors: 1, mode: "never", branch: null, running: 1 },
     ] satisfies StatusInfo[]) {
-      const parts = (StatusLine({ info: i, segments: shown, columns: Infinity, palette: dark }) as Line).props.children;
+      const parts = (StatusLine({ info: i, segments: shown, columns: Infinity, palette: dark, look: on }) as Line).props.children;
       shown.forEach((s, n) => {
         const texts = (parts[n]!.props.children.find(Array.isArray) as ReactElement[]).map((t) => t.props);
-        expect(texts).toEqual(pieces(s, i, dark).map((p) => ({ children: p.text, color: p.color, dimColor: p.dim })));
+        expect(texts).toEqual(pieces(s, i, dark, on).map((p) => ({ children: p.text, color: p.color, dimColor: p.dim })));
       });
     }
   });
@@ -309,7 +325,7 @@ describe("StatusLine", () => {
     const level = chalk.level;
     chalk.level = 1; // 1: chalk's basic 16 colours, enough for every colour the line uses
     try {
-      const line = renderToString(<StatusLine info={{ ...info, project }} segments={["project"]} columns={columns} palette={dark} />, { columns });
+      const line = renderToString(<StatusLine info={{ ...info, project }} segments={["project"]} columns={columns} palette={dark} look={on} />, { columns });
       expect(line).toMatch(/\u001b\[/);
       expect(line.replace(/\u001b\[\d+m/g, "")).toBe(shown);
     } finally {
@@ -343,7 +359,7 @@ describe("describe", () => {
 
   it("shows tool calls and failed results on one line each", () => {
     const lines = describeMessage({ role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] }, P);
-    expect(lines.map(screen)).toEqual([{ text: "  ⎿ exit code: 1", color: "red", oneLine: true }]);
+    expect(lines.map(screen)).toEqual([{ text: "  ⎿ exit code: 1", color: "error", oneLine: true }]);
   });
 
   it("shows a call's main detail: the path for the file tools, the command's first line for shell", () => {
@@ -362,8 +378,8 @@ describe("describe", () => {
     const result = (callId: string) => ({ type: "tool_result", callId, output: `The user declined: run: ${callId}`, isError: true }) as const;
     const answered = new Map([["c1", null], ["c2", "You declined this."]]);
     expect(describeMessage({ role: "user", parts: [result("c1"), result("c2"), result("c3")] }, P, answered)).toEqual([
-      { text: "  ⎿ You declined this.", color: "gray", oneLine: true },
-      { text: "  ⎿ The user declined: run: c3", color: "red", oneLine: true },
+      { text: "  ⎿ You declined this.", color: "muted", oneLine: true },
+      { text: "  ⎿ The user declined: run: c3", color: "error", oneLine: true },
     ]);
   });
 
@@ -399,7 +415,7 @@ describe("describe", () => {
 
 describe("lastTurn", () => {
   it("says there is none before any turn", () => {
-    expect(lastTurn([])).toEqual([{ text: "No turn yet, so no tool calls to show.", color: "gray" }]);
+    expect(lastTurn([])).toEqual([{ text: "No turn yet, so no tool calls to show.", color: "muted" }]);
   });
 
   it("shows the latest turn's tool calls only, each with its full input and result, grey", () => {
@@ -413,9 +429,9 @@ describe("lastTurn", () => {
       { role: "assistant", parts: [{ type: "tool_call", id: "c2", name: "shell", input: { command: "npm test" } }] },
     ]);
     expect(lines).toEqual([
-      { text: "Last turn: 2 tool calls", color: "gray" },
-      { text: "● read_file\n  path: a\n  ⎿ line 1\nline 2", color: "gray" }, // name: value lines (TUI design pass, Task 12)
-      { text: "● shell\n  command: npm test\n  ⎿ (not finished)", color: "gray" }, // the turn is still running
+      { text: "Last turn: 2 tool calls", color: "muted" },
+      { text: "● read_file\n  path: a\n  ⎿ line 1\nline 2", color: "muted" }, // name: value lines (TUI design pass, Task 12)
+      { text: "● shell\n  command: npm test\n  ⎿ (not finished)", color: "muted" }, // the turn is still running
     ]);
   });
 
@@ -426,8 +442,8 @@ describe("lastTurn", () => {
       { role: "user", parts: [{ type: "tool_result", callId: "c0", output: "ok", isError: false }, { type: "text", text: "t2 finished", from: "tasks" }] },
       { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "shell", input: {} }] },
     ]);
-    expect(lines[0]).toEqual({ text: "Last turn: 2 tool calls", color: "gray" });
-    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "t3 finished", from: "tasks" }] }])[0]).toEqual({ text: "Last turn: 0 tool calls", color: "gray" });
+    expect(lines[0]).toEqual({ text: "Last turn: 2 tool calls", color: "muted" });
+    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "t3 finished", from: "tasks" }] }])[0]).toEqual({ text: "Last turn: 0 tool calls", color: "muted" });
   });
 
   it("is cleaned of escape codes when shown, like every scrollback line", () => {

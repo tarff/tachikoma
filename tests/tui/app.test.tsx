@@ -7,6 +7,7 @@ import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { type Instance, render as renderInk } from "ink";
 import { render } from "ink-testing-library";
+import type { ReactElement } from "react";
 import chalk from "chalk";
 import { Completions } from "openai/resources/chat/completions";
 import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
@@ -61,7 +62,7 @@ import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { startBox } from "../../src/tui/startup.js";
-import { palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
+import { look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
 import { textWidth, wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, standInRun, tempContext, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
@@ -315,7 +316,7 @@ async function mount(
       {...(mcp ? { mcp } : {})}
     />
   );
-  const app = render(opts.theme ? <ThemeContext value={opts.theme}>{tree}</ThemeContext> : tree);
+  const app = render(themed(tree, opts.theme));
   mounted.push(app);
   mcp?.servers.startAll(); // once the App listens, as cli.tsx starts them
   // ink-testing-library's terminal has no height; 24 rows is Ink's own default size (getWindowSize).
@@ -347,6 +348,15 @@ const OSC52_SHOWN = "\\u001b]52;c;Y3VybA==\\u0007";
 // The palette the App draws in when no theme is given, the dark full one (theme.ts, ThemeContext), for the lines a test
 // makes as cli.tsx makes a resumed conversation's (TUI design pass, Task 3).
 const DARK = palette({ light: false, color: true, full: true });
+// The look with colour below full colour, Ink's named colours (Task 13).
+const NAMED: Theme = { look: { light: false, color: true, full: false }, palette: palette({ light: false, color: true, full: false }) };
+// The App in the theme given; unless given, with chalk at level 1 or 2, the look cli.tsx makes there, the named colours
+// (theme.ts, look), whose basic codes a test that turns colour on at level 1 looks for; otherwise the dark full one, the
+// context's own (TUI design pass, Task 13).
+function themed(tree: ReactElement, given?: Theme): ReactElement {
+  const theme = given ?? (chalk.level === 1 || chalk.level === 2 ? NAMED : undefined);
+  return theme ? <ThemeContext value={theme}>{tree}</ThemeContext> : tree;
+}
 // The prompt's line above it and below it, the terminal's width: ink-testing-library's 100 columns (TUI design pass, Task 4).
 const RULE = "─".repeat(100);
 // The question's box's rows without colour, `columns` wide: its top, a row of text inside it, and its foot (TUI design
@@ -408,7 +418,7 @@ describe("App", () => {
   });
 
   it("shows the start line, grey, first", async () => {
-    const { app } = await mount([], { intro: [{ text: "Instructions left out: ~/x.md (not allowed)", color: "gray" }] });
+    const { app } = await mount([], { intro: [{ text: "Instructions left out: ~/x.md (not allowed)", color: "muted" }] });
     expect(app.lastFrame()).toMatch(/^Instructions left out: ~\/x\.md \(not allowed\)\n/);
   });
 
@@ -422,7 +432,7 @@ describe("App", () => {
       { role: "assistant", parts: [{ type: "text", text: "They say hello." }] },
     ];
     const folded = { asked: new Set<string>(), shell: "powershell" as const, names: mcpNames(), palette: DARK, root: tmpdir() };
-    const { app } = await mount([], { intro: [...conversationLines(history, folded), { text: "Resumed: read the notes.", color: "gray" }] });
+    const { app } = await mount([], { intro: [...conversationLines(history, folded), { text: "Resumed: read the notes.", color: "muted" }] });
     const frame = app.lastFrame()!;
     expect(frame).toMatch(/^\n› read the notes\n\n\n● Read 1 file\n\n● They say hello\.\nResumed: read the notes\.\n/);
   });
@@ -2679,7 +2689,7 @@ describe("App's folded tool rows", () => {
       await until(app, "They match.");
       // Your message's last band row, then the gap (Task 3's code review).
       expect(from(app, full, "› compare").slice(0, 6)).toEqual(["› compare", "", "", "● Searched for 1 pattern, read 2 files", "", "● They match."]);
-      expect(app.lastFrame()).toContain("\u001b[90mSearched for 1 pattern, read 2 files");
+      expect(app.lastFrame()).toContain("\u001b[90m● Searched for 1 pattern, read 2 files"); // its dot muted too, one run (Task 13)
       expect(app.lastFrame()).not.toContain("● read_file");
     });
   });
@@ -3276,8 +3286,8 @@ describe("App's diffs in colour", () => {
       const { app } = await mount([callTool("c1", "write_file", { path: "a.md", content: "- one\n+ two\n" }), reply("written")]);
       await type(app, "write it");
       await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow write"));
-      expect(raw(app, "- one")).toBeTruthy();
-      for (const code of [...ADD, ...DEL]) expect(app.lastFrame()).not.toContain(code);
+      // Its rows only, as the status line's cost takes the success colour (TUI design pass, Task 13).
+      for (const row of [raw(app, "- one"), raw(app, "+ two")]) for (const code of [...ADD, ...DEL]) expect(row).not.toContain(code);
     });
   });
 
@@ -3952,7 +3962,7 @@ const SHOWN_RULE = RULE.slice(0, 99); // the prompt's lines as shown() cuts them
 
 describe("App in full screen", () => {
   it("draws the conversation at the top and the status line at the bottom, in a frame a row shorter than the terminal", async () => {
-    const { app } = await mount([reply("hello there")], { full: true, intro: [{ text: "Instructions left out: ~/x.md (not allowed)", color: "gray" }] });
+    const { app } = await mount([reply("hello there")], { full: true, intro: [{ text: "Instructions left out: ~/x.md (not allowed)", color: "muted" }] });
     await type(app, "hi");
     await until(app, "hello there");
     const rows = shown(app);
@@ -6110,7 +6120,7 @@ async function onTerminal(
   const session = new Session({ lead, tools, system: "t", ctx: { ...ctx, gate }, bus, inbox: () => tasks.take() });
   const screen = new Screen(record, () => {});
   if (!opts.classic) screen.enter();
-  const ink = renderInk(
+  const tree = (
     <App
       session={session}
       tasks={tasks}
@@ -6141,9 +6151,9 @@ async function onTerminal(
       clipboard={(report) => new Clipboard(() => {}, null, report)}
       readPicture={() => new Promise(() => {})} // never answers: no test reads the user's clipboard
       home={opts.home ?? sharedHome}
-    />,
-    { stdout: terminal as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
+    />
   );
+  const ink = renderInk(themed(tree), { stdout: terminal as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true });
   inks.push(ink);
   await tick();
   return {
@@ -8593,7 +8603,7 @@ describe("App's live settings", () => {
         await vi.waitFor(() => expect(plain(app)).toContain(ON), WATCHED);
         expect(plain(app)).toContain(REMOVED);
         expect(app.lastFrame()).toContain(`\u001b[31m${CHECK} your rule "make deploy" removed;`);
-        expect(app.lastFrame()).toContain(`\u001b[90m${CHECK} "installing software" switched back on;`);
+        expect(app.lastFrame()).toContain(`\u001b[90m● ${CHECK} "installing software" switched back on;`);
         expect(gate.rules).toEqual({ add: ["make deploy"], off: [] });
         expect(kinds("npm install left-pad", gate)).toEqual(["installing software"]);
         expect(kinds("make deploy", gate)).toEqual(["your own rule: make deploy"]);
@@ -9022,7 +9032,7 @@ describe("App's live settings", () => {
       const line = "--network acts only with the sandbox on; it was ignored";
       const live = { loaded: { settings: {}, warnings: [] }, given: { network: "--network" }, networkLine: line };
       const full = await mount([], { full: true, home: freshHome(), live });
-      expect(full.app.lastFrame()).toContain(`\u001b[90m${line}`);
+      expect(full.app.lastFrame()).toContain(`\u001b[90m● ${line}`);
       const classic = await mount([], { home: freshHome(), live });
       expect(classic.app.lastFrame()).not.toContain(line);
       const none = await mount([], { full: true, home: freshHome(), live: { loaded: { settings: {}, warnings: [] }, given: {} } });
@@ -9038,7 +9048,7 @@ describe("App's live settings", () => {
       const live = { loaded: { settings: {}, warnings: [] }, given: {}, gitLine: line };
       const full = await mount([], { full: true, home: freshHome(), live });
       // Ink wraps it at the test terminal's 100 columns.
-      expect(full.app.lastFrame()).toContain("\u001b[90mgit's settings could not be read (stdout maxBuffer length exceeded); only the fixed list of ");
+      expect(full.app.lastFrame()).toContain("\u001b[90m● git's settings could not be read (stdout maxBuffer length exceeded); only the fixed list of ");
       expect(full.app.lastFrame()).toContain("\u001b[90m  protected paths applies"); // a notice's, after its dot (TUI design pass, Task 3)
       const classic = await mount([], { home: freshHome(), live });
       expect(classic.app.lastFrame()).not.toContain("git's settings");
@@ -11333,7 +11343,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       await untilSlow(app, "done");
       const frame = app.lastFrame()!;
       // A bell would act on the terminal, and a line break could pass for a line of the window's own (Task 6's review).
-      expect(frame).toContain("\u001b[90mPreToolUse hook: look\\u0007⏎now");
+      expect(frame).toContain("\u001b[90m● PreToolUse hook: look\\u0007⏎now");
       expect(frame).toContain("\u001b[31m✗ PreToolUse hook failed: ");
       expect(squashed(frame)).toContain(squashed(`✗ PreToolUse hook failed: ${broken.command} exited with code 1: broken`));
     });
@@ -11525,7 +11535,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
       onTestFinished(() => removeTree(home));
       const { app } = await mount([], { full: true, home, live: { loaded: { settings: {}, warnings: [] }, given: {}, bashLine: line } });
-      expect(app.lastFrame()).toContain("\u001b[90mGit Bash was not found");
+      expect(app.lastFrame()).toContain("\u001b[90m● Git Bash was not found");
       expect(squashed(app.lastFrame()!)).toContain(squashed(line));
     });
   });
@@ -11577,7 +11587,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { mode: "never", hooks: [h.hook("PreToolUse")] });
       await type(app, "go");
       await untilSlow(app, "done");
-      expect(app.lastFrame()).toContain("\u001b[90mNot allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).");
+      expect(app.lastFrame()).toContain("\u001b[90m● Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).");
     });
   });
 
@@ -11828,7 +11838,7 @@ describe("App's MCP", () => {
       bus.emit("error", { kind: "mcp", attempted: "MCP server tv", message, lead: "fake:a" });
       await until(app, "failed to start");
       const frame = app.lastFrame()!;
-      expect(frame).toContain("\u001b[90mMCP server tv is ready: 3 tools.\\u0007");
+      expect(frame).toContain("\u001b[90m● MCP server tv is ready: 3 tools.\\u0007");
       expect(frame).toContain("\u001b[31m✗ MCP server tv failed to start: it exited with code 3: bad\\u001b[2J");
     });
   });
@@ -12852,5 +12862,68 @@ describe("App's MCP", () => {
     await soon(() => expect(plain(app)).toContain(`Could not read @fake:note://a: Not connected. ${BACK}`));
     expect(app.lastFrame()).toContain("› read @fake:note://a now");
     expect(lead.seen).toEqual([]);
+  });
+});
+
+// TUI design pass, Task 13 (audit 12): with NO_COLOR set, the look cli.tsx makes (theme.ts, look) has no colour, so nothing
+// is drawn in a colour though chalk would draw one (FORCE_COLOR=3, chalk at level 3): not the conversation's lines, and
+// not the status line's mode or context bar, whose own colours are kept only with colour. Dim is a style, not a colour,
+// and is kept without colour on purpose (Task 2), so only colour codes are looked for: a foreground or a background,
+// basic, bright, 256 or 24-bit, or their resets. The file's afterEach puts NO_COLOR and FORCE_COLOR back.
+describe("App with NO_COLOR", () => {
+  beforeEach(() => {
+    vi.stubEnv("NO_COLOR", "1");
+    vi.stubEnv("FORCE_COLOR", "3");
+  });
+  const theme = (): Theme => {
+    const shown = look({}, process.env, chalk.level);
+    return { look: shown, palette: palette(shown) };
+  };
+  const colourCodes = (app: ReturnType<typeof render>) =>
+    [...app.lastFrame()!.matchAll(/\u001b\[([\d;]*)m/g)].filter((m) => m[1]!.split(";").some((p) => (+p >= 30 && +p <= 49) || (+p >= 90 && +p <= 107))).map((m) => m[0]);
+  // A lead whose window is `window` tokens: its one reply's 15 (helpers.ts, usage) fill the bar's share of it.
+  const windowed = (window: number) => Object.assign(new FakeProvider("a", [reply("there")]), { contextWindow: async () => window });
+
+  it("draws the conversation, its notices and failures, and the status line without a colour", async () => {
+    await inColour(3, async () => {
+      expect(theme().look.color).toBe(false);
+      for (const [full, coloured] of [[false, false], [true, false], [false, true]] as const) {
+        const turns = [callTool("c1", "read_file", { path: "./missing.txt" }), reply("looked")];
+        const { app, bus } = await mount(turns, { full, branches: ["main", "main", "main"], ...(coloured ? {} : { theme: theme() }) });
+        await type(app, "read it");
+        await until(app, "looked");
+        bus.emit("error", { kind: "fallback", attempted: "x", message: "moved on", lead: "fake:a" });
+        bus.emit("error", { kind: "provider", attempted: "x", message: "went wrong", lead: "fake:a" });
+        await type(app, "/nope");
+        await until(app, "Unknown command: /nope");
+        expect(stripVTControlCharacters(app.lastFrame()!)).toMatch(/\$0\.00\+ \| perm ask \| \d errors \| proj git:\(main\)/);
+        // The same screen with colour draws it, so the check would see it.
+        if (coloured) expect(colourCodes(app)).not.toEqual([]);
+        else expect(colourCodes(app)).toEqual([]);
+      }
+    });
+  });
+
+  it("draws each mode without its colour", async () => {
+    await inColour(3, async () => {
+      for (const mode of ["ask", "project", "auto", "never"] as const) {
+        const { app } = await mount([], { mode, theme: theme() });
+        await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes(`perm ${mode}`));
+        expect(colourCodes(app)).toEqual([]);
+      }
+    });
+  });
+
+  // 15 of 100 used is green, of 20 yellow (75%) and of 16 red (94%) (StatusLine.tsx, contextBar).
+  it("draws the context bar at each level by its cells alone", async () => {
+    await inColour(3, async () => {
+      for (const [window, bar] of [[100, "██░░░░░░░░ 85% left"], [20, "████████░░ 25% left"], [16, "█████████░ 6% left"]] as const) {
+        const { app } = await mount([], { lead: windowed(window), theme: theme() });
+        await type(app, "hi");
+        await until(app, "there");
+        await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes(bar));
+        expect(colourCodes(app)).toEqual([]);
+      }
+    });
   });
 });

@@ -100,7 +100,7 @@ describe("the start-up box", () => {
     for (const l of lines) expect(l.oneLine).toBe(true);
     expect(lines[0]!.block).toBe(true);
     expect(lines.slice(1).some((l) => l.block)).toBe(false);
-    expect(lines.at(-1)).toEqual({ text: HINT, color: MUTED, oneLine: true });
+    expect(lines.at(-1)).toEqual({ text: HINT, color: "muted", oneLine: true });
   });
 
   // The user's choice, 2026-11-13 ("Grey border+labels"): the border and the labels muted, the values the terminal's own.
@@ -130,7 +130,7 @@ describe("the start-up box", () => {
 
   it("draws no colour at all without colour", () => {
     for (const l of startBox(INFO, 120, NONE)) {
-      expect(l.color).toBeUndefined();
+      expect(l.color && palette(NONE)[l.color]).toBeUndefined(); // looked up where drawn (Task 13)
       for (const s of l.styles ?? []) expect(s.color === undefined && s.bg === undefined).toBe(true);
     }
   });

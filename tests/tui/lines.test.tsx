@@ -68,7 +68,7 @@ describe("toolParts", () => {
       call("shell", undefined, "npm test"),
     ];
     expect(shown(calls)).toEqual(["◐ shell npm test", "✓ read_file ×3", "✓ edit_file ×1", "✗ shell ×1", "⊘ write_file ×1"]);
-    expect(toolParts(calls).map((p) => [p.color, p.whole])).toEqual([["yellow", false], ["green", false], ["green", false], ["red", true], ["gray", true]]);
+    expect(toolParts(calls).map((p) => [p.color, p.whole])).toEqual([["warning", false], ["success", false], ["success", false], ["error", true], ["muted", true]]);
   });
 
   // Release 8c plan, choice 68 (Task 18, the user's answer, 2026-11-12): an MCP call by its server and tool as the server
@@ -93,8 +93,8 @@ describe("todoRows", () => {
 
   it("marks each item: to do, doing in yellow, done in grey", () => {
     expect(todoRows(list("done", "in_progress", "pending"), 5)).toEqual([
-      { mark: "☑", text: "item 0", color: "gray" },
-      { mark: "◐", text: "item 1", color: "yellow" },
+      { mark: "☑", text: "item 0", color: "muted" },
+      { mark: "◐", text: "item 1", color: "warning" },
       { mark: "☐", text: "item 2" },
     ]);
   });
@@ -142,7 +142,7 @@ describe("taskRows", () => {
 
   it("shows a running subagent's number and description, then under it its model, time, tokens, cost and latest tool call", () => {
     expect(shown([task({})])).toEqual(["◐ t2 find the login code", "  ⎿ claude-haiku-5-5 · 12s · ↓ 1.2k tokens · $0.01 · read_file src/auth/oauth.ts"]);
-    expect(taskRows([task({})], 2, now)[0]!.color).toBe("yellow");
+    expect(taskRows([task({})], 2, now)[0]!.color).toBe("warning");
   });
 
   // Choice D (TUI design pass, Task 10): the status line's `+`, the user's "Same everywhere".
@@ -156,7 +156,7 @@ describe("taskRows", () => {
       10,
       now,
     );
-    expect(rows.filter((_, i) => i % 2 === 0).map((r) => [r.mark, r.color])).toEqual([["◐", "gray"], ["✓", "green"], ["✗", "red"], ["⊘", "gray"]]);
+    expect(rows.filter((_, i) => i % 2 === 0).map((r) => [r.mark, r.color])).toEqual([["◐", "muted"], ["✓", "success"], ["✗", "error"], ["⊘", "muted"]]);
     expect(rows[1]!.text).toBe("⎿ claude-haiku-5-5 · waiting");
     expect(rows[3]!.text).toBe("⎿ claude-haiku-5-5 · 10s · ↓ 1.2k tokens · $0.01");
   });
@@ -225,7 +225,7 @@ describe("Printed", () => {
   };
 
   it("prints a line without styles as before: its text in its colour", () => {
-    expect(print({ text: "the quick\nbrown fox", color: "red" }, 10)).toEqual(["the quick", "brown fox"]);
+    expect(print({ text: "the quick\nbrown fox", color: "error" }, 10)).toEqual(["the quick", "brown fox"]);
   });
 
   // Task 2's review: an empty line is one row, as Task 3's gaps and a message's band lines need.
@@ -375,7 +375,7 @@ describe("describe's blocks and markers", () => {
   it("starts a call row with `● ` in the accent colour, its name and detail in the text colour, a block; its result row no block", () => {
     const call = { type: "tool_call" as const, id: "c", name: "read_file", input: { path: "a.txt" } };
     expect(callRow(call, P)).toEqual({ text: "● read_file a.txt", color: P.text, styles: [accent], oneLine: true, block: true });
-    expect(resultRow({ type: "tool_result", callId: "c", output: "x", isError: false })).toEqual({ text: "  ⎿ ok", color: "gray", oneLine: true });
+    expect(resultRow({ type: "tool_result", callId: "c", output: "x", isError: false })).toEqual({ text: "  ⎿ ok", color: "muted", oneLine: true });
     const asked: Message = { role: "assistant", parts: [call] };
     expect(describeMessage(asked, P)).toEqual([callRow(call, P)]);
   });
@@ -394,9 +394,9 @@ describe("describe's blocks and markers", () => {
   // Task 3's code review: a notice's later rows line up after its `● `, as a reply's do, and its own spans move with its
   // text, after the dot's.
   it("indents a notice's later rows under its text, and keeps its own spans after the dot's", () => {
-    const shown = notice({ text: "ab", color: "gray", styles: [{ start: 0, end: 1, bold: true }] }, P);
-    expect(shown).toEqual({ text: "● ab", color: "gray", styles: [{ start: 0, end: 2, color: P.muted }, { start: 2, end: 3, bold: true }], indent: 2, block: true });
-    const long = notice({ text: Array.from({ length: 12 }, () => "word").join(" "), color: "gray" }, P);
+    const shown = notice({ text: "ab", color: "muted", styles: [{ start: 0, end: 1, bold: true }] }, P);
+    expect(shown).toEqual({ text: "● ab", color: "muted", styles: [{ start: 0, end: 2, color: P.muted }, { start: 2, end: 3, bold: true }], indent: 2, block: true });
+    const long = notice({ text: Array.from({ length: 12 }, () => "word").join(" "), color: "muted" }, P);
     const rows = new Rows(30);
     rows.add([long]);
     const full = Array.from({ length: rows.total }, (_, i) => rows.row(i).text.trimEnd());

@@ -1,10 +1,8 @@
 import chalk from "chalk";
-import { Text } from "ink";
 import { render } from "ink-testing-library";
-import { isValidElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { Conversation } from "../../src/tui/Conversation.js";
-import { type Look, palette, ThemeContext } from "../../src/tui/theme.js";
+import { type Look, palette, type Role, ThemeContext } from "../../src/tui/theme.js";
 import { type Pos, Rows } from "../../src/tui/view.js";
 
 const mounted: ReturnType<typeof render>[] = [];
@@ -13,19 +11,10 @@ afterEach(() => {
 });
 
 // Rows at 9 columns, so with the bar's column a row is 10 wide.
-function kept(n: number, color?: string) {
+function kept(n: number, color?: Role) {
   const rows = new Rows(9);
   rows.add(Array.from({ length: n }, (_, i) => ({ text: `line ${i}`, ...(color ? { color } : {}) })));
   return rows;
-}
-
-// The Text elements the component hands Ink, with their colours: the test terminal draws no colour codes.
-function texts(node: ReactNode): { color?: string; text: string }[] {
-  if (Array.isArray(node)) return node.flatMap(texts);
-  if (!isValidElement(node)) return [];
-  const { children, color } = node.props as { children?: ReactNode; color?: string };
-  if (node.type === Text) return [{ ...(color === undefined ? {} : { color }), text: String(children) }];
-  return texts(children);
 }
 
 function draw(props: Parameters<typeof Conversation>[0]) {
@@ -51,16 +40,27 @@ describe("Conversation", () => {
     expect(held.map((r) => r.slice(0, 9).trimEnd())).toEqual(["line 8", "line 9", "", ""]);
   });
 
+  // Each row's role looked up in the palette, here the dark full one a test gets (theme.ts, ThemeContext), drawn with chalk
+  // at level 3 so its hex is drawn as it is (TUI design pass, Task 13).
   it("draws each row in its line's colour", () => {
-    const rows = new Rows(9);
-    rows.add([{ text: "red one", color: "red" }, { text: "plain" }]);
-    expect(texts(Conversation({ rows, first: 0, height: 2, unseen: 0, following: true }))).toEqual([
-      { color: "red", text: "red one" },
-      { text: "plain" },
-    ]);
-    // A row, the bar beside it, the count of new lines, the bar beside that.
-    const colors = texts(Conversation({ rows: kept(20), first: 0, height: 2, unseen: 3, following: false })).map((t) => t.color);
-    expect(colors).toEqual([undefined, "gray", "gray", "gray"]);
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      const P = palette({ light: false, color: true, full: true });
+      const fg = (hex: string) => `\u001b[38;2;${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(";")}m`;
+      const rows = new Rows(9);
+      rows.add([{ text: "red one", color: "error" }, { text: "plain" }]);
+      const shown = draw({ rows, first: 0, height: 2, unseen: 0, following: true });
+      expect(shown[0]).toContain(`${fg(P.error!)}red one`);
+      expect(shown[1]).toBe("plain");
+      // A row in no colour, the bar beside it muted; the count of new lines muted, and the bar beside it in the same run.
+      const held = draw({ rows: kept(20), first: 0, height: 2, unseen: 3, following: false });
+      expect(held[0]).not.toContain(`${fg(P.muted!)}line`);
+      expect(held[0]).toContain(`${fg(P.muted!)}┃`);
+      expect(held[1]).toContain(`${fg(P.muted!)}↓ 3 new …│`);
+    } finally {
+      chalk.level = level;
+    }
   });
 
   it("draws the scroll bar in the last column only when the lines are longer than the view", () => {

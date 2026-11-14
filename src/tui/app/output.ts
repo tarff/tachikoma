@@ -36,7 +36,7 @@ export const output = (ui: UI, fns: Fns) => {
   // A live edit's lines go to the conversation as notices (TUI design pass, Task 3), and to the hint row as they are; a
   // red one, a problem with the edit, is an error, a block without the grey dot (Task 3's review).
   const note = (...add: Line[]) => {
-    fns.say(...add.map((l) => (l.color === "red" ? { ...l, block: true as const } : notice(l, ui.palette))));
+    fns.say(...add.map((l) => (l.color === "error" ? { ...l, block: true as const } : notice(l, ui.palette))));
     ui.notes.current = [...(ui.newEdit.current ? [] : ui.notes.current), ...add.map(escaped)];
     ui.newEdit.current = false;
   };

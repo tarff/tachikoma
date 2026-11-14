@@ -205,7 +205,7 @@ export function App(props: AppProps) {
     promptKeys(ui, fns),
   );
   // Its warning a notice, as the start-up's are (TUI design pass, Task 3's review).
-  ui.history.current ??= new History(ui.historyFile, (line) => fns.say(noticeLine({ text: line, color: "magenta" }, ui.palette)));
+  ui.history.current ??= new History(ui.historyFile, (line) => fns.say(noticeLine({ text: line, color: "accent" }, ui.palette)));
 
   useEffect(() => {
     ui.bindAsk((text, detail, owner, plain, warnings, note, oneRow) => {
@@ -240,8 +240,8 @@ export function App(props: AppProps) {
         const styles = detail ? previewStyles(text, detail, ui.palette) : [];
         const follows = call !== undefined && ui.toolLine.current === call; // its call's row the last said
         latest.current.say(
-          { text: `┌ ${asSaid} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray", block: true },
-          { text: detail || "(empty)", color: "gray", ...(styles.length ? { styles } : {}) },
+          { text: `┌ ${asSaid} (${lines} line${lines === 1 ? "" : "s"})`, color: "muted", block: true },
+          { text: detail || "(empty)", color: "muted", ...(styles.length ? { styles } : {}) },
         );
         // The answer goes under the call while the preview straight after its row is the last said, as under its row
         // alone (Task 8).
@@ -290,12 +290,12 @@ export function App(props: AppProps) {
             // result row is left out under its tool line, as this line says it, and is otherwise the answer alone, so the
             // results keep their places in call order (choice 67); the model is still told its full message. A plain
             // question keeps its own record.
-            if (q.plain) latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
+            if (q.plain) latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "muted" });
             else {
               const said = [how, ...q.warnings].join(" ");
               const under = q.call !== undefined && ui.toolLine.current === q.call;
               if (!ok && q.call !== undefined) ui.answered.current.set(q.call, under ? null : how);
-              latest.current.say({ text: under ? `  ⎿ ${said}` : `${q.short ?? `${who}${asSaid}`}: ${said}`, color: q.warnings.length ? "red" : "gray" });
+              latest.current.say({ text: under ? `  ⎿ ${said}` : `${q.short ?? `${who}${asSaid}`}: ${said}`, color: q.warnings.length ? "error" : "muted" });
             }
             resolve(ok);
             ui.rerender((n) => n + 1);
@@ -338,15 +338,15 @@ export function App(props: AppProps) {
       if (e.kind !== "tool") latest.current.endRun();
       const say = (l: Line) => latest.current.say({ ...l, block: true });
       if (e.kind === "tool") ui.rerender((n) => n + 1);
-      else if (e.kind === "fallback") say({ text: `↪ ${e.message}`, color: "magenta" });
+      else if (e.kind === "fallback") say({ text: `↪ ${e.message}`, color: "accent" });
       // Its line names what failed, so it goes without a label (release 8a plan, Task 5; user, 2026-11-06), as a
       // shortening's does (Task 12), and a hook's (release 8b plan, choice 22), whose line is escaped whole, as its grey
       // lines are (onHookNote).
       // An MCP failure's line names its server too (release 8c plan, choice 26), and is escaped whole, as it carries what
       // the server or the system said.
-      else if (e.kind === "hook" || e.kind === "mcp") say({ text: `✗ ${visible(e.message, { tabs: true })}`, color: "red" });
-      else if (e.kind === "saving" || e.kind === "shortening") say({ text: `✗ ${e.message}`, color: "red" });
-      else say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
+      else if (e.kind === "hook" || e.kind === "mcp") say({ text: `✗ ${visible(e.message, { tabs: true })}`, color: "error" });
+      else if (e.kind === "saving" || e.kind === "shortening") say({ text: `✗ ${e.message}`, color: "error" });
+      else say({ text: `✗ ${e.kind}: ${e.message}`, color: "error" });
     };
     // A notice said from the bus: a block, a grey `● ` before it (Task 3; audit 7).
     const sayNotice = (l: Line) => latest.current.say(noticeLine(l, ui.palette));
@@ -357,7 +357,7 @@ export function App(props: AppProps) {
     const onLead = (id: string) => {
       latest.current.endRun();
       if (ui.leadFromFile.current) latest.current.note(gray(`lead is now ${id}${FROM}`));
-      else sayNotice({ text: `lead is now ${id}`, color: "magenta" });
+      else sayNotice({ text: `lead is now ${id}`, color: "accent" });
       latest.current.lookUpWindow();
     };
     const onToolStart = ({ id, name, input }: Events["tool-start"][0]) => {
@@ -379,7 +379,7 @@ export function App(props: AppProps) {
         if (!t.background || t.state === "running" || t.state === "waiting" || ui.announced.current.has(t.id)) continue;
         ui.announced.current.add(t.id);
         latest.current.endRun();
-        sayNotice({ text: `${t.id} ${t.state === "done" ? "finished" : t.state}`, color: "gray" });
+        sayNotice({ text: `${t.id} ${t.state === "done" ? "finished" : t.state}`, color: "muted" });
       }
       ui.rerender((n) => n + 1);
       latest.current.next();
@@ -467,7 +467,7 @@ export function App(props: AppProps) {
     const said = ui.live ? [ui.live.networkLine, ui.live.bashLine, ui.live.gitLine].filter((l) => l !== undefined) : [];
     const warnings = ui.fullNow.current && ui.live ? [...ui.live.loaded.warnings, ...said] : [];
     // Each a notice, the red one a block without the grey dot, as a live edit's problem is (TUI design pass, Task 3's review).
-    const launchLines: Line[] = [...warnings.map((w) => noticeLine(gray(w), ui.palette)), ...(off ? [{ text: off, color: "red", block: true as const }] : [])];
+    const launchLines: Line[] = [...warnings.map((w) => noticeLine(gray(w), ui.palette)), ...(off ? [{ text: off, color: "error" as const, block: true as const }] : [])];
     fns.say(...launchLines, ...ui.intro);
     // A watch that cannot start leaves the session as the launch set it, and says so.
     let unwatch: (() => void) | undefined;
@@ -587,7 +587,7 @@ export function App(props: AppProps) {
   }
   // Only copy mode's leaving has a line of its own; any other leaves the screen as it is while SessionEnd's hooks run, its
   // keys off (queue.ts, leave).
-  if (ui.leaving.current && ui.copy) return <Text color="gray">{ui.leavingLine.current ?? STOPPING}</Text>;
+  if (ui.leaving.current && ui.copy) return <Text color={ui.palette.muted}>{ui.leavingLine.current ?? STOPPING}</Text>;
 
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
   const d = ui.detail.current;
@@ -763,10 +763,10 @@ export function App(props: AppProps) {
       // does its grey line, auto mode's pause, above any red lines, which the gate never sends with it today (Task 10).
       // One block, from its heading, the empty line before it not in its range (TUI design pass, Task 3).
       fns.say(
-        { text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray", block: true },
-        ...(ui.question.note === undefined ? [] : [{ text: ui.question.note, color: "gray", ...(ui.question.oneRow ? { oneLine: true } : {}) }]),
-        ...ui.question.warnings.map((text): Line => ({ text, color: "red" })),
-        { text: ui.question.text, color: "gray" },
+        { text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "muted", block: true },
+        ...(ui.question.note === undefined ? [] : [{ text: ui.question.note, color: "muted" as const, ...(ui.question.oneRow ? { oneLine: true } : {}) }]),
+        ...ui.question.warnings.map((text): Line => ({ text, color: "error" })),
+        { text: ui.question.text, color: "muted" },
       );
       ui.question.detail = [ui.kept.lines[from]!.text ? from : from + 1, ui.kept.lines.length - 1]; // past the gap: the heading is never empty
     }
@@ -804,7 +804,7 @@ export function App(props: AppProps) {
     question: ui.question !== null,
   };
   // A pick from /resume's list, called without await, so nothing may escape, as the model list's pick (queue.ts, pick).
-  const pickSession = (id: string) => void fns.pickSession(id).catch((err) => fns.say({ text: errorText(err), color: "red" }));
+  const pickSession = (id: string) => void fns.pickSession(id).catch((err) => fns.say({ text: errorText(err), color: "error" }));
   // Where vim takes Esc first (vimFirst) the line names it twice; a key chat:cancel has with Ctrl or Alt never goes to
   // vim (choice 31).
   const stop = ui.keyOf("chat:cancel", "Chat", "escape");
@@ -917,17 +917,17 @@ export function App(props: AppProps) {
           {ui.full ? (
             <>
               {f.noted && (
-                <Text color="gray" wrap="truncate-end">
+                <Text color={ui.palette.muted} wrap="truncate-end">
                   {ui.question.note}
                 </Text>
               )}
               {f.warned.map((r, i) => (
-                <Text key={`w${i}`} color="red" wrap="truncate-end">
+                <Text key={`w${i}`} color={ui.palette.error} wrap="truncate-end">
                   {r}
                 </Text>
               ))}
               {f.asked.map((r, i) => (
-                <Text key={i} color="yellow" wrap="truncate-end">
+                <Text key={i} color={ui.palette.warning} wrap="truncate-end">
                   {r}
                 </Text>
               ))}
@@ -935,16 +935,16 @@ export function App(props: AppProps) {
           ) : (
             <>
               {ui.question.note !== undefined && (
-                <Text color="gray" wrap={ui.question.oneRow ? "truncate-end" : "wrap"}>
+                <Text color={ui.palette.muted} wrap={ui.question.oneRow ? "truncate-end" : "wrap"}>
                   {ui.question.note}
                 </Text>
               )}
               {ui.question.warnings.map((w, i) => (
-                <Text key={i} color="red">
+                <Text key={i} color={ui.palette.error}>
                   {w}
                 </Text>
               ))}
-              <Text color="yellow">{allow(ui.question.text, ui.question.plain)}</Text>
+              <Text color={ui.palette.warning}>{allow(ui.question.text, ui.question.plain)}</Text>
             </>
           )}
         </Box>
@@ -953,14 +953,14 @@ export function App(props: AppProps) {
       ) : (
         <>
           {liveRow.map((l, i) => (
-            <Text key={`r${i}`} color={l.color} wrap="truncate-end">
+            <Text key={`r${i}`} color={l.color && ui.palette[l.color]} wrap="truncate-end">
               {l.text || " " /* an empty Text takes no row */}
             </Text>
           ))}
           {workingLine}
           <TodoList rows={todoShown} />
           {queued.map((row, i) => (
-            <Text key={i} color="gray" wrap="truncate-end">
+            <Text key={i} color={ui.palette.muted} wrap="truncate-end">
               {row}
             </Text>
           ))}
@@ -981,7 +981,7 @@ export function App(props: AppProps) {
         // A live edit's line keeps its own colour, and a long one gives up its middle, not its count (choice 35).
         <Text
           dimColor={!noticeShown}
-          color={noticeShown ? notice.color : undefined}
+          color={noticeShown && notice.color ? ui.palette[notice.color] : undefined}
           wrap={noticeShown ? "truncate-middle" : "truncate-end"}
         >
           {hint}
@@ -991,6 +991,7 @@ export function App(props: AppProps) {
         segments={ui.shownSegments}
         columns={ui.columns}
         palette={ui.palette}
+        look={ui.look}
         info={{
           lead: ui.session.lead.id,
           context: ui.stats.context,

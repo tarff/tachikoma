@@ -323,9 +323,9 @@ describe("Review's diff", SLOW, () => {
     const c = (await changes(w.manifest, w.work)).changes[0]!;
     expect(await diffOf(c, w.folder, 4)).toEqual([{ text: "too large to show: 4 bytes before, 8 after" }]);
     expect(await diffOf(c, w.folder, 8)).toEqual([
-      { text: "@@ -1 +1,2 @@", color: "cyan" },
+      { text: "@@ -1 +1,2 @@", color: "accent" },
       { text: " one" },
-      { text: "+two", color: "green" },
+      { text: "+two", color: "success" },
     ]);
   });
 });

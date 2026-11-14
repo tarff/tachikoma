@@ -27,7 +27,7 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     if (c === "mode") {
       ui.perm.current = ui.cycle[(ui.cycle.indexOf(ui.perm.current) + 1) % ui.cycle.length]!;
       ui.onMode(ui.perm.current);
-      return fns.show({ text: `mode is now ${ui.perm.current}`, color: "gray" });
+      return fns.show({ text: `mode is now ${ui.perm.current}`, color: "muted" });
     }
     // Alt+P is `/model` typed then: during a turn it waits in the queue, and like Enter it goes to the bottom.
     if (c === "models") return fns.command("/model");
@@ -41,7 +41,7 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     if (c === "todos") return void (ui.todos.current.hidden = !ui.todos.current.hidden);
     // A message starting with `?` needs a space typed first.
     if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text)
-      return fns.show(...keyList(ui.table, contextsOf("prompt", ui.fullNow.current), fns.vimFirst(), ui.launchKeys.current).map((text) => ({ text, color: "gray" })));
+      return fns.show(...keyList(ui.table, contextsOf("prompt", ui.fullNow.current), fns.vimFirst(), ui.launchKeys.current).map((text) => ({ text, color: "muted" as const })));
     if (c === "up" && !e.text && ui.queue.current.length) return fns.restore();
     if (c === "up" || c === "down") {
       const to = vertical(e.text, promptWidth(ui.columns), e.cursor, c === "up" ? -1 : 1, ui.goal.current);

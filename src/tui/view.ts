@@ -16,7 +16,7 @@ export interface Row {
   start: number;
   end: number;
   text: string;
-  color?: string;
+  color?: Line["color"];
   styles?: Span[];
   band?: true;
   indent?: number;
@@ -26,7 +26,7 @@ type Wrapped = { start: number; end: number; text: string };
 // it is its Line's first, whose first `indent` characters stand in the indent of its first row (Task 2).
 export interface KeptLine {
   text: string;
-  color?: string;
+  color?: Line["color"];
   oneLine?: boolean;
   fold?: Line["fold"];
   styles?: Span[];

@@ -3,9 +3,9 @@ import { fileDiff, lineDiff } from "../../src/sandbox/diff.js";
 import type { Line } from "../../src/tui/describe.js";
 import { ZERO } from "../helpers.js";
 
-const head = (text: string): Line => ({ text, color: "cyan" });
-const del = (text: string): Line => ({ text: `-${text}`, color: "red" });
-const add = (text: string): Line => ({ text: `+${text}`, color: "green" });
+const head = (text: string): Line => ({ text, color: "accent" });
+const del = (text: string): Line => ({ text: `-${text}`, color: "error" });
+const add = (text: string): Line => ({ text: `+${text}`, color: "success" });
 const same = (text: string): Line => ({ text: ` ${text}` });
 const NO_NEWLINE: Line = { text: "\\ No newline at end of file" };
 // Lines "1" to "n", each ending in a new line, with `swap`'s lines replaced.
@@ -169,7 +169,7 @@ describe("fileDiff", () => {
     const [b, a] = side === "before" ? [n, 9] : [9, n];
     const rows = fileDiff(before, after);
     if (tooLarge) expect(rows).toEqual([{ text: `too large to show: ${b} lines before, ${a} after` }]);
-    else expect(rows[0]?.color).toBe("cyan");
+    else expect(rows[0]?.color).toBe("accent");
   });
 
   it("counts a last line with no new line, so the limit holds however a file ends", () => {

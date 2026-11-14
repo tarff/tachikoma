@@ -35,6 +35,7 @@ export function Conversation({
   found?: readonly Found[];
   bottom?: string;
 }) {
+  const { palette } = useContext(ThemeContext);
   const thumb = bar(rows.total, height, first);
   const note = !following && unseen > 0 ? `↓ ${unseen} new line${unseen === 1 ? "" : "s"}${bottom === undefined ? "" : ` · ${bottom}`}` : null;
   const marks = found.map((m): [Pos, Pos] => [
@@ -43,10 +44,10 @@ export function Conversation({
   ]);
   if (selection) marks.push(selection);
   return Array.from({ length: height }, (_, i) => {
-    const row = note && i === height - 1 ? { text: note, color: "gray" } : first + i < rows.total ? rows.row(first + i) : null;
+    const row = note && i === height - 1 ? { text: note, color: "muted" as const } : first + i < rows.total ? rows.row(first + i) : null;
     const parts = row && "line" in row ? marked(rows, row, marks) : null;
     const shown = row && (
-      <Text color={row.color} wrap="truncate-end">
+      <Text color={row.color && palette[row.color]} wrap="truncate-end">
         {parts ?? row.text}
       </Text>
     );
@@ -59,7 +60,7 @@ export function Conversation({
             {shown}
           </Box>
         )}
-        {thumb && <Text color="gray">{i >= thumb.start && i < thumb.start + thumb.size ? "┃" : "│"}</Text>}
+        {thumb && <Text color={palette.muted}>{i >= thumb.start && i < thumb.start + thumb.size ? "┃" : "│"}</Text>}
       </Box>
     );
   });
@@ -168,7 +169,7 @@ function Band({ width, children }: { width: number; children: ReactNode }) {
 // screen; a band line on the band colour the screen's width. A line with none of these prints as it did before, but an
 // empty one is a space, as an empty Text takes no row and a gap or a band line must take one (Task 2's review).
 export function Printed({ line, columns }: { line: Line; columns: number }) {
-  const { look } = useContext(ThemeContext);
+  const { look, palette } = useContext(ThemeContext);
   const l = line.text ? line : { ...line, text: " " };
   const n = l.oneLine ? 0 : (l.indent ?? 0);
   // Each character of text[from, to), laid out in a box `width` columns wide when given (the screen's, or the indented
@@ -201,7 +202,7 @@ export function Printed({ line, columns }: { line: Line; columns: number }) {
     return out;
   };
   const text = (from: number, to: number, width?: number) => (
-    <Text color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
+    <Text color={l.color && palette[l.color]} wrap={l.oneLine ? "truncate-end" : "wrap"}>
       {l.styles ? runs(chars(from, to, width), l.styles) : l.text.slice(from, to)}
     </Text>
   );

@@ -24,7 +24,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
   // design's table, or, given by a flag or variable at launch, stays as given. Removing an entry is a change to what
   // applies without it, the default, as resolve gives it with no flag nor variable.
   const onSettings = (read: Loaded) => {
-    if ("problem" in read) return fns.note({ text: `${read.problem}; the last good settings still apply`, color: "red" });
+    if ("problem" in read) return fns.note({ text: `${read.problem}; the last good settings still apply`, color: "error" });
     for (const w of read.warnings) if (!ui.warned.current.includes(w)) fns.note(gray(w));
     ui.warned.current = read.warnings;
     // /hooks's left-out rows follow the file, an edit of a left-out hook alone among them (release 8b plan, Task 12).
@@ -46,7 +46,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
   // each problem in an entry is said once, while it stays, as a settings warning is (choice 21).
   const onKeys = (read: KeysLoaded) => {
     if ("problem" in read) {
-      return fns.note({ text: `${read.problem}; ${ui.keysRead.current ? "the last good keys still apply" : "the default keys apply"}`, color: "red" });
+      return fns.note({ text: `${read.problem}; ${ui.keysRead.current ? "the last good keys still apply" : "the default keys apply"}`, color: "error" });
     }
     ui.keysRead.current = true;
     // After the launch, a question reads the launch's keys, whole (lookUp), so a shell command that rewrites the file
@@ -71,7 +71,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       try {
         return fns.make(spec);
       } catch (err) {
-        fns.note({ text: `${SETTINGS}: "${key}": ${errorText(err)}`, color: "red" });
+        fns.note({ text: `${SETTINGS}: "${key}": ${errorText(err)}`, color: "error" });
         return null;
       }
     };
@@ -132,7 +132,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       const [before, after] = [was.dangerousCommands ?? NO_RULES, s.dangerousCommands ?? NO_RULES];
       const check = `${SETTINGS}: dangerous-command check:`;
       const loosened = (what: string) =>
-        fns.note({ text: `${check} ${what}; in auto and never, those commands will run without the check. Takes effect at the next launch.`, color: "red" });
+        fns.note({ text: `${check} ${what}; in auto and never, those commands will run without the check. Takes effect at the next launch.`, color: "error" });
       for (const kind of after.off) if (!before.off.includes(kind)) loosened(`"${kind}" switched off`);
       for (const rule of before.add) if (!after.add.includes(rule)) loosened(`your rule "${rule}" removed`);
       const r = ui.rules.current;
@@ -184,7 +184,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     try {
       provider = fns.make(spec);
     } catch (err) {
-      return fns.note({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "red" });
+      return fns.note({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "error" });
     }
     ui.leadFromFile.current = true; // read by onLead while setLead runs: the bus calls its handlers at once
     ui.session.setLead(provider);

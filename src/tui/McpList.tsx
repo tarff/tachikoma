@@ -1,5 +1,5 @@
 import { Text, usePaste } from "ink";
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { visible } from "../core/permissions.js";
 import type { State } from "../mcp/server.js";
 import type { Servers } from "../mcp/servers.js";
@@ -8,6 +8,7 @@ import { SESSION_WORDS } from "./app/constants.js";
 import type { Bindings } from "./bindings.js";
 import { both, named } from "./keys.js";
 import type { PickerKey } from "./ModelPicker.js";
+import { ThemeContext } from "./theme.js";
 
 // `/mcp` (release 8c plan, Task 10; design, "What the user sees"; choice 27): the servers, a row each, in the prompt's
 // place; Enter shows the chosen server's actions, only those that apply, under its row; Esc goes back, then closes. Up and
@@ -64,6 +65,7 @@ export function McpList({
   keys: { current: ((k: PickerKey) => void) | null };
   maxRows: number; // the rows for the heading and the list, as SessionList's: the App's frame adds one for the hint
 }) {
+  const { palette } = useContext(ThemeContext);
   // Each key reads and changes `state` at once, as in SessionList: several keys can arrive before the screen is drawn
   // again. `server`: the one whose actions are shown.
   const state = useRef<{ at: number; first: number; server: string | null; action: number; done: boolean }>({ at: 0, first: 0, server: null, action: 0, done: false });
@@ -138,7 +140,7 @@ export function McpList({
           {row}
         </Text>
       ))}
-      <Text color="gray" wrap="truncate-end">
+      <Text color={palette.muted} wrap="truncate-end">
         {o ? hint("run", "back") : hint("open", SESSION_WORDS.closes)}
       </Text>
     </>

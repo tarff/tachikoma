@@ -23,6 +23,11 @@ export interface Palette {
   delTint: string | undefined;
 }
 
+// A colour by its meaning, named as the palette's entry for it: what a line built outside React carries (describe.ts,
+// Line), looked up in the palette where the line is drawn, so a line holds no colour of its own and NO_COLOR and the light
+// look reach it (TUI design pass, Task 13; audit 12).
+export type Role = "accent" | "muted" | "success" | "error" | "warning";
+
 // `level` is chalk's (0 to 3), the check Ink itself uses. NO_COLOR set to anything non-empty is no colour (no-color.org),
 // which Tachikoma checks itself, as chalk's check does not. In auto, COLORFGBG ("foreground;background", which some
 // terminals set) with a background of 7 or 15 is light; unset, empty or not those numbers is dark, as on Windows Terminal.

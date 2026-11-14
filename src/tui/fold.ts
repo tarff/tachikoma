@@ -179,7 +179,7 @@ export const openRows = (fold: Fold, { names, palette, root }: Pick<FoldOptions,
 
 // The folded row's own line, which a closed fold goes back to: a block, a grey `● ` before its words (TUI design pass,
 // Task 3; audit 7).
-export const foldRow = (fold: Fold, palette: Palette): Line => notice({ text: fold.text, color: "gray", oneLine: true, fold }, palette);
+export const foldRow = (fold: Fold, palette: Palette): Line => notice({ text: fold.text, color: "muted", oneLine: true, fold }, palette);
 
 // The run not yet said, and the calls of the runs said, by id, for their results, which come after. The window holds one
 // (state.ts); a resumed conversation's lines are made with one of their own (conversationLines). Each method gives the
@@ -347,7 +347,7 @@ export class OpenRun {
   // grey `● ` before its words, as the folded row said in its place is (TUI design pass, Task 3; audit 7).
   live(now: number): Line[] {
     if (!this.#run.length || this.#live === null) return [];
-    const gray = (text: string): Line => ({ text, color: "gray", oneLine: true });
+    const gray = (text: string): Line => ({ text, color: "muted", oneLine: true });
     return [notice(gray(this.#live.top(now)), this.options.palette), gray(this.#live.under(now))];
   }
 

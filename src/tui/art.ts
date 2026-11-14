@@ -1,5 +1,4 @@
 import type { Line, Span } from "./describe.js";
-import type { Palette } from "./theme.js";
 
 // The start-up box's two drawings (TUI design pass, Task 5): the pixel art for full colour, and the user's ASCII drawing
 // where it does not fit or colour is short (Task 6).
@@ -89,7 +88,7 @@ export const ASCII: string[] = [
   "             (O)",
 ];
 
-// The drawing's rows in the palette's accent.
-export function asciiRows(palette: Palette): Line[] {
-  return ASCII.map((text) => ({ text, color: palette.accent, oneLine: true }));
+// The drawing's rows in the palette's accent, looked up where they are drawn (TUI design pass, Task 13).
+export function asciiRows(): Line[] {
+  return ASCII.map((text) => ({ text, color: "accent", oneLine: true }));
 }

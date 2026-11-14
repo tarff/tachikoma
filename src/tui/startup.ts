@@ -105,7 +105,7 @@ export function startBox(info: StartInfo, width: number, look: Look): Line[] {
   const title = `Tachikoma ${visible(info.version)}`;
   const titled = stringWidth(title) + 6; // "╭─ ", the title, " ─╮"
 
-  const drawings = [...(look.full ? [pixelRows()] : []), asciiRows(colours), []];
+  const drawings = [...(look.full ? [pixelRows()] : []), asciiRows(), []];
   const columnsOf = (art: Line[]) => Math.max(0, ...art.map((l) => stringWidth(l.text)));
   const outside = (art: Line[]) => BORDERS + PAD + (art.length ? columnsOf(art) + GAP : 0) + PAD;
   const art = drawings.find((d) => !d.length || outside(d) + list(true) <= width)!;
@@ -144,7 +144,7 @@ export function startBox(info: StartInfo, width: number, look: Look): Line[] {
     const parts: Parameters<typeof row>[0] = [{ text: "│", color: muted }, { text: " ".repeat(PAD) }];
     if (art.length) {
       const a = art[r];
-      parts.push({ text: padTo(a?.text ?? "", drawn), color: a?.color, ...(a?.styles ? { styles: a.styles } : {}) }, { text: " ".repeat(GAP) });
+      parts.push({ text: padTo(a?.text ?? "", drawn), color: a?.color && colours[a.color], ...(a?.styles ? { styles: a.styles } : {}) }, { text: " ".repeat(GAP) });
     }
     const item = items[r];
     if (item && room >= 1) {
@@ -155,6 +155,6 @@ export function startBox(info: StartInfo, width: number, look: Look): Line[] {
     lines.push(row(parts));
   }
   lines.push(row([{ text: `╰${"─".repeat(boxWidth - 2)}╯`, color: muted }]));
-  lines.push({ text: HINT, ...(muted === undefined ? {} : { color: muted }), oneLine: true });
+  lines.push({ text: HINT, color: "muted", oneLine: true });
   return lines;
 }

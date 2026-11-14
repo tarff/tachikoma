@@ -21,7 +21,7 @@ describe("describe", () => {
         { type: "text", text: "PostToolUse hook:\nmore", from: "hooks" },
       ],
     };
-    expect(lines(results, P)).toEqual([{ text: "  ⎿ ok", color: "gray", oneLine: true }]);
+    expect(lines(results, P)).toEqual([{ text: "  ⎿ ok", color: "muted", oneLine: true }]);
   });
 
   // Release 8c plan, choice 34: a tool's pictures are the server's, so they are drawn under the results, never as a prompt.
@@ -36,8 +36,8 @@ describe("describe", () => {
       ],
     };
     expect(lines(results, P)).toEqual([
-      { text: "  ⎿ ok", color: "gray", oneLine: true },
-      { text: "  ⎿ [Image #4] [Image #5]", color: "gray", oneLine: true },
+      { text: "  ⎿ ok", color: "muted", oneLine: true },
+      { text: "  ⎿ [Image #4] [Image #5]", color: "muted", oneLine: true },
     ]);
   });
 
@@ -56,7 +56,7 @@ describe("describe", () => {
       { text: "", band: true, block: true },
       { text: "› /fake:greet Ann", band: true, indent: 2 },
       { text: "", band: true },
-      { text: "  ⎿ [Image #2]", color: "gray", oneLine: true },
+      { text: "  ⎿ [Image #2]", color: "muted", oneLine: true },
     ]);
   });
 });
@@ -95,7 +95,7 @@ describe("previewStyles", () => {
   // still meet, so the tint has no gap.
   it("draws no \\r in a CRLF edit's preview, the spans meeting at each line", () => {
     const detail = "- a\r\n- b\n+ c\r\n+ d";
-    const shown = screen({ text: detail, color: "gray", styles: previewStyles("edit a.txt", detail, FULL) });
+    const shown = screen({ text: detail, color: "muted", styles: previewStyles("edit a.txt", detail, FULL) });
     expect(shown.text).toBe("- a\n- b\n+ c\n+ d");
     expect(shown.styles).toEqual([
       { start: 0, end: 4, ...del },
@@ -119,7 +119,7 @@ describe("lastTurn", () => {
       { role: "user", parts: [feedback, { type: "text", text: "t1 finished", from: "tasks" }] },
       { role: "assistant", parts: [{ type: "text", text: "tests pass" }] },
     ]);
-    expect(turn[0]).toEqual({ text: "Last turn: 1 tool call", color: "gray" });
+    expect(turn[0]).toEqual({ text: "Last turn: 1 tool call", color: "muted" });
   });
 
   // Release 8b plan, choice 24 ("Lines this plan adds", Ctrl+O): each hook run after the calls, one line each, what it
@@ -140,10 +140,10 @@ describe("lastTurn", () => {
     ];
     const turn = lastTurn([{ role: "user", parts: [{ type: "text", text: "go" }] }, { role: "assistant", parts: [{ type: "text", text: "done" }] }], runs);
     expect(turn).toEqual([
-      { text: "Last turn: 0 tool calls", color: "gray" },
-      { text: "◆ Stop hook slow.sh · out of time · 600004 ms", color: "gray" },
-      { text: "◆ Stop hook gone.sh · could not start · 1 ms", color: "gray" },
-      { text: "◆ Stop hook again\\u0007.sh · exit 2 · 12 ms\n  ⎿ run the tests", color: "gray" },
+      { text: "Last turn: 0 tool calls", color: "muted" },
+      { text: "◆ Stop hook slow.sh · out of time · 600004 ms", color: "muted" },
+      { text: "◆ Stop hook gone.sh · could not start · 1 ms", color: "muted" },
+      { text: "◆ Stop hook again\\u0007.sh · exit 2 · 12 ms\n  ⎿ run the tests", color: "muted" },
     ]);
   });
 
@@ -192,8 +192,8 @@ describe("lastTurn", () => {
     const hook: Hook = { event: "SessionStart", matcher: { all: true }, command: "start.sh", async: false, where: '"SessionStart"' };
     const runs: Run[] = [{ event: "SessionStart", hook, ran: { code: 0, stdout: "", stderr: "", ms: 12 }, outcome: { kind: "ok" }, match: "startup" }];
     expect(lastTurn([], runs)).toEqual([
-      { text: "No turn yet, so no tool calls to show.", color: "gray" },
-      { text: "◆ SessionStart hook start.sh · exit 0 · 12 ms", color: "gray" },
+      { text: "No turn yet, so no tool calls to show.", color: "muted" },
+      { text: "◆ SessionStart hook start.sh · exit 0 · 12 ms", color: "muted" },
     ]);
   });
 
@@ -247,8 +247,8 @@ describe("lastTurn", () => {
     ];
     const names = (full: string) => (full === "mcp__my_tv__foo_bar" ? { server: "my.tv", tool: "foo.bar" } : { server: "?", tool: "?" });
     const record = "● my.tv foo.bar\n  x: 1\n  ⎿ set"; // its input as name: value lines (Task 12)
-    expect(lastTurn(messages, [], names)).toEqual([{ text: "Last turn: 1 tool call", color: "gray" }, { text: record, color: "gray" }]);
-    expect(callLines(messages, names)).toEqual([{ text: record, color: "gray" }]);
+    expect(lastTurn(messages, [], names)).toEqual([{ text: "Last turn: 1 tool call", color: "muted" }, { text: record, color: "muted" }]);
+    expect(callLines(messages, names)).toEqual([{ text: record, color: "muted" }]);
     expect(callLines(messages)[0]!.text).toBe("● my_tv foo_bar\n  x: 1\n  ⎿ set"); // without the window's names
     expect(exportText(messages, "fake:a")).toContain('● mcp__my_tv__foo_bar {\n  "x": 1\n}\n  ⎿ set');
   });
@@ -275,9 +275,9 @@ describe("callLines", () => {
       { role: "user", parts: [{ type: "tool_result", callId: "l", output: "(no tasks)", isError: false }] },
     ] satisfies Message[];
     expect(callLines(messages)).toEqual([
-      { text: "● shell\n  command: npm test\n  timeout: 60000\n  ⎿ exit code: 0\n--- stdout ---\n12 passed", color: "gray" },
-      { text: "● write_file\n  path: src/a.ts\n  content:\n    export const a = 1;\n    export const b = 2;\n  ⎿ ok", color: "gray" },
-      { text: "● list_tasks\n  ⎿ (no tasks)", color: "gray" },
+      { text: "● shell\n  command: npm test\n  timeout: 60000\n  ⎿ exit code: 0\n--- stdout ---\n12 passed", color: "muted" },
+      { text: "● write_file\n  path: src/a.ts\n  content:\n    export const a = 1;\n    export const b = 2;\n  ⎿ ok", color: "muted" },
+      { text: "● list_tasks\n  ⎿ (no tasks)", color: "muted" },
     ]);
     const exported = exportText(messages, "fake:a");
     expect(exported).toContain(`● shell {\n  "command": "npm test",\n  "timeout": 60000\n}\n  ⎿ ${shellResult("", "12 passed")}`);

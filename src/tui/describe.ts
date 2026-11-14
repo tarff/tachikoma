@@ -10,7 +10,7 @@ import { isMcp, outputFrom, tachikomaName } from "../hooks/tools.js";
 import { shownPath } from "../tools/search.js";
 import type { Fold, OpenRun } from "./fold.js";
 import { marker } from "./pictures.js";
-import type { Palette } from "./theme.js";
+import type { Palette, Role } from "./theme.js";
 
 // A run of style over text[start, end), drawn over the line's own colour; a later span over an earlier one (TUI design
 // pass, Task 2).
@@ -27,7 +27,7 @@ export interface Span {
 
 export interface Line {
   text: string;
-  color?: string;
+  color?: Role; // looked up in the palette where the line is drawn (TUI design pass, Task 13)
   oneLine?: boolean; // shown on one line, cut to the screen's width (App.tsx)
   fold?: Fold; // a folded tool row, or a row of one opened, which a click opens or closes (release 8c plan, Task 15)
   // TUI design pass, Task 2: the spans' styles; the whole row on the band colour; later rows (wrapped, or after a line
@@ -167,14 +167,13 @@ export const target = (name: string, input: unknown, root?: string): string | nu
 // `root`, an edit's or a write's row names its file as its preview's heading does (target; Task 8).
 export const callRow = (p: ToolCall, palette: Palette, names?: McpNames, root?: string): Line => ({
   text: `● ${shownName(p.name, names)} ${target(p.name, p.input, root) ?? JSON.stringify(p.input)}`,
-  color: palette.text,
   styles: [dot(palette.accent)],
   oneLine: true,
   block: true,
 });
 export const resultRow = (p: ToolResult): Line => ({
   text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`,
-  color: p.isError ? "red" : "gray",
+  color: p.isError ? "error" : "muted",
   oneLine: true,
 });
 
@@ -200,7 +199,7 @@ export function describe(m: Message, palette: Palette, answered?: ReadonlyMap<st
     // their markers on one grey row, as a result's.
     if (p.type === "image" && p.from === "server") {
       if (served) served.text += ` ${marker(p.id)}`;
-      else lines.push((served = { text: `  ⎿ ${marker(p.id)}`, color: "gray", oneLine: true }));
+      else lines.push((served = { text: `  ⎿ ${marker(p.id)}`, color: "muted", oneLine: true }));
       continue;
     }
     // A picture is its marker in its place, in the line's colour (release 6 plan, choice 22). Two next to each other
@@ -220,7 +219,7 @@ export function describe(m: Message, palette: Palette, answered?: ReadonlyMap<st
       const short = answered?.get(p.callId);
       if (folded) lines.push(...folded);
       else if (short === undefined) lines.push(resultRow(p));
-      else if (short !== null) lines.push({ text: `  ⎿ ${short}`, color: "gray", oneLine: true });
+      else if (short !== null) lines.push({ text: `  ⎿ ${short}`, color: "muted", oneLine: true });
     } else {
       const _: never = p; // a new kind of part must be given its own line here
     }
@@ -238,9 +237,9 @@ export function describe(m: Message, palette: Palette, answered?: ReadonlyMap<st
 export function lastTurn(messages: Message[], runs: readonly Run[] = [], names?: McpNames): Line[] {
   const feedback = (m: Message) => m.parts[0]?.type === "text" && m.parts[0].from === "hooks" && m.parts[0].text.startsWith(`${FEEDBACK}\n`);
   const start = messages.findLastIndex((m) => m.role === "user" && !m.parts.some((p) => p.type === "tool_result") && !feedback(m));
-  if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "gray" }, ...runs.map(runLine)];
+  if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "muted" }, ...runs.map(runLine)];
   const calls = callLines(messages.slice(start), names);
-  return [{ text: `Last turn: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`, color: "gray" }, ...calls, ...runs.map(runLine)];
+  return [{ text: `Last turn: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`, color: "muted" }, ...calls, ...runs.map(runLine)];
 }
 
 // The events a run of which names its tool on Ctrl+O, as each fires for one call.
@@ -273,7 +272,7 @@ function runLine(r: Run): Line {
       : []),
   ];
   const head = [`◆ ${r.event} hook ${visible(hookName(r.hook))}${forTool}`, end, `${ran.ms} ms`].join(" · ");
-  return { text: [head, ...under.map((u) => `  ⎿ ${u}`)].join("\n"), color: "gray" };
+  return { text: [head, ...under.map((u) => `  ⎿ ${u}`)].join("\n"), color: "muted" };
 }
 
 // One input of a call as Ctrl+O shows it (TUI design pass, Task 12; audit 10; the user's layout, 2026-11-15): `name:
@@ -321,6 +320,6 @@ export function callLines(messages: Message[], names?: McpNames): Line[] {
     const head = fields ? [`● ${name}`, ...Object.entries(input).flatMap(inputLines)] : [`● ${name} ${visible(String(JSON.stringify(input)))}`];
     const result = results.get(c.id);
     const shown = result === undefined ? "(not finished)" : c.name === "shell" ? shellShown(result) : result;
-    return [{ text: [...head, `  ⎿ ${shown}`].join("\n"), color: "gray" }];
+    return [{ text: [...head, `  ⎿ ${shown}`].join("\n"), color: "muted" }];
   });
 }

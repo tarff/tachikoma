@@ -80,11 +80,11 @@ function mixed(n: number): Line[] {
 describe("Rows", () => {
   it("splits each line at its line breaks into lines of their own, the same colour", () => {
     const rows = new Rows(10);
-    rows.add([{ text: "a\nb", color: "red" }, { text: "c" }]);
-    const kept: KeptLine[] = [{ text: "a", color: "red" }, { text: "b", color: "red" }, { text: "c" }];
+    rows.add([{ text: "a\nb", color: "error" }, { text: "c" }]);
+    const kept: KeptLine[] = [{ text: "a", color: "error" }, { text: "b", color: "error" }, { text: "c" }];
     expect(rows.lines).toEqual(kept);
     expect(rows.total).toBe(3);
-    expect(rows.row(1)).toEqual({ line: 1, start: 0, end: 1, text: "b", color: "red" });
+    expect(rows.row(1)).toEqual({ line: 1, start: 0, end: 1, text: "b", color: "error" });
   });
 
   it("draws each row's text when asked: a tab as spaces, a one-line entry cut", () => {
@@ -99,7 +99,7 @@ describe("Rows", () => {
   it("replaces lines in place, the rows after them moving, each split and wrapped as added", () => {
     const rows = new Rows(10);
     rows.add([{ text: "a" }, { text: "Read 2 files", oneLine: true }, { text: "b c d e f g h" }]);
-    rows.replace(1, 1, [{ text: "● one\n● two" }, { text: "  ⎿ ok", color: "gray" }]);
+    rows.replace(1, 1, [{ text: "● one\n● two" }, { text: "  ⎿ ok", color: "muted" }]);
     expect(rows.lines.map((l) => l.text)).toEqual(["a", "● one", "● two", "  ⎿ ok", "b c d e f g h"]);
     expect(rows.total).toBe(6); // the last line's two rows
     expect(rows.row(5)).toEqual({ line: 4, start: 10, end: 13, text: "g h" });

@@ -1,7 +1,7 @@
 import { Text } from "ink";
 import stringWidth from "string-width";
 import { type Mode, visible } from "../core/permissions.js";
-import type { Palette } from "./theme.js";
+import type { Look, Palette } from "./theme.js";
 
 // The status line's parts, and `tools`, the line under it (release 3 design, "On screen"); `tasks`,
 // how many subagents run (release 4 design, "On screen").
@@ -70,12 +70,15 @@ export interface Piece {
 }
 
 // The mode by risk, as claude-hud has no such part (release 5 design, "The status line's colours"). Auto takes magenta,
-// which no other mode uses, so it stands apart (release 7 plan, Task 7).
+// which no other mode uses, so it stands apart (release 7 plan, Task 7). These and the context bar's keep their own colours,
+// as they mean risk and fullness, but only with colour (look.color): chalk does not read NO_COLOR, so a name handed to
+// Ink would still be drawn (TUI design pass, Task 13).
 const MODE_COLOR: Record<Mode, Piece["color"]> = { ask: "green", project: "yellow", auto: "magenta", never: "red" };
 
 // The one place each part's words and colours are written (release 5 design, "The status line's colours"); the labels
-// muted and the model in the accent colour from the palette (TUI design pass, Task 10).
-export function pieces(s: LineSegment, i: StatusInfo, p: Palette): Piece[] {
+// muted and the model in the accent colour from the palette (TUI design pass, Task 10), and every other colour from it but
+// the mode's and the context's (Task 13).
+export function pieces(s: LineSegment, i: StatusInfo, p: Palette, look: Look): Piece[] {
   switch (s) {
     case "lead":
       // Escaped as the folder and branch are below: the id comes from the command line or a provider's model list.
@@ -85,26 +88,26 @@ export function pieces(s: LineSegment, i: StatusInfo, p: Palette): Piece[] {
       // the part is (the user's choice, 2026-10-27); the tokens in use when the window is not known.
       if (!i.contextWindow) return [{ text: "ctx", color: p.muted }, { text: ` ${k(i.context)}` }];
       const u = used(i);
-      return [{ text: `${Math.max(0, 100 - u)}% left`, color: contextBar(u).color }];
+      return [{ text: `${Math.max(0, 100 - u)}% left`, color: look.color ? contextBar(u).color : undefined }];
     }
     case "tokens":
       return [{ text: `${k(i.input)} ` }, { text: "in", color: p.muted }, { text: ` / ${k(i.output)} ` }, { text: "out", color: p.muted }];
     case "cost":
-      return [{ text: costText(i.lead, i.cost, i.costUnknown), color: "green" }];
+      return [{ text: costText(i.lead, i.cost, i.costUnknown), color: p.success }];
     case "mode":
-      return [{ text: "perm", color: p.muted }, { text: " " }, { text: i.mode, color: MODE_COLOR[i.mode] }];
+      return [{ text: "perm", color: p.muted }, { text: " " }, { text: i.mode, color: look.color ? MODE_COLOR[i.mode] : undefined }];
     case "errors": // shown only once there is one (zero, below)
-      return [{ text: `${i.errors} error${i.errors === 1 ? "" : "s"}`, color: "red" }];
+      return [{ text: `${i.errors} error${i.errors === 1 ? "" : "s"}`, color: p.error }];
     case "project": {
       // Folder and branch names come from the disk, so they are escaped like everything else on screen.
-      const folder: Piece = { text: visible(i.project), color: "yellow" };
+      const folder: Piece = { text: visible(i.project), color: p.warning };
       if (i.branch === null) return [folder];
-      return [folder, { text: " " }, { text: "git:(", color: "magenta" }, { text: visible(i.branch), color: "cyan" }, { text: ")", color: "magenta" }];
+      return [folder, { text: " " }, { text: "git:(", color: p.muted }, { text: visible(i.branch), color: p.accent }, { text: ")", color: p.muted }];
     }
     case "time":
       return [{ text: `⏱ ${duration(i.elapsed)}`, dim: true }];
     case "tasks":
-      return [{ text: `${i.running} running`, color: "yellow" }];
+      return [{ text: `${i.running} running`, color: p.warning }];
   }
 }
 
@@ -122,12 +125,12 @@ function zero(s: LineSegment, i: StatusInfo): boolean {
 // order (the user's "Put back what fits", 2026-11-14); a last part still too long alone is cut at the end (Ink measures
 // it in columns). On the terminal's own background, its parts split by a grey ` | ` (release 5 design, "The status
 // line's colours").
-export function StatusLine({ info, segments, columns, palette }: { info: StatusInfo; segments: Segment[]; columns: number; palette: Palette }) {
+export function StatusLine({ info, segments, columns, palette, look }: { info: StatusInfo; segments: Segment[]; columns: number; palette: Palette; look: Look }) {
   const listed = segments.filter((s): s is LineSegment => s !== "tools" && !zero(s, info));
   const on = listed.map(() => true);
   // A part's columns: its bar's cells and the space after them, then its words; the line's, a space at each end and
   // ` | ` between parts.
-  const width = (s: LineSegment) => (s === "context" && info.contextWindow ? BAR_CELLS + 1 : 0) + stringWidth(pieces(s, info, palette).map((p) => p.text).join(""));
+  const width = (s: LineSegment) => (s === "context" && info.contextWindow ? BAR_CELLS + 1 : 0) + stringWidth(pieces(s, info, palette, look).map((p) => p.text).join(""));
   const lineWidth = () => {
     const parts = listed.filter((_, n) => on[n]);
     return 2 + parts.reduce((sum, s) => sum + width(s), 0) + 3 * (parts.length - 1);
@@ -154,11 +157,11 @@ export function StatusLine({ info, segments, columns, palette }: { info: StatusI
             {n === 0 ? " " : <Text dimColor> | </Text>}
             {bar && (
               <>
-                <Text color={bar.color}>{"█".repeat(bar.filled)}</Text>
+                <Text color={look.color ? bar.color : undefined}>{"█".repeat(bar.filled)}</Text>
                 <Text dimColor>{"░".repeat(BAR_CELLS - bar.filled)}</Text>{" "}
               </>
             )}
-            {pieces(s, info, palette).map((p, j) => (
+            {pieces(s, info, palette, look).map((p, j) => (
               <Text key={j} color={p.color} dimColor={p.dim}>
                 {p.text}
               </Text>
