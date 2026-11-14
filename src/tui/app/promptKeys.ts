@@ -63,8 +63,9 @@ export const promptKeys = (ui: UI, fns: Fns) => {
   };
 
   // A key bound to command:<name>, and Alt+P's /model, run the command as if typed then, the prompt's text left as it
-  // is: during a turn it waits in the queue (choice 21).
+  // is: during a turn it waits in the queue (choice 21). As typed, it brings the hint row's "?" (TUI design pass, Task 14).
   const command = (text: string) => {
+    ui.typed.current = true;
     if (ui.working.current) return void ui.queue.current.push({ text, spans: [] });
     ui.view.current = FOLLOWING;
     void fns.submit({ text, spans: [] });

@@ -73,6 +73,7 @@ export interface AppProps {
   branch: string | null; // the git branch at the start, read before the first frame; read again after each turn
   historyFile: string; // this project's past prompts
   intro: Line[]; // shown first: the instruction files read
+  restored?: boolean; // the window opens on a conversation brought back (-c, -r): the hint row's "?" from the start
   errorFile: string;
   segments: Segment[];
   makeProvider: (spec: string) => Provider;
@@ -592,7 +593,7 @@ export function App(props: AppProps) {
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
   const d = ui.detail.current;
   const prompt = ui.search.current ? fns.shown() : ui.editor.current;
-  if (ui.editor.current.text) ui.typed.current = true; // typed, pasted or recalled: the hint row's "?" from now (usualHint)
+  if (prompt.text) ui.typed.current = true; // typed, pasted, recalled or a search's match: the hint row's "?" from now (usualHint)
   fns.staleVim(); // while drawing too, for a change no key made (a picture's read ending), safe as `copied` below says
   const highlight = ui.search.current ? undefined : visualSelection(ui.vim.current, prompt);
   // The model list, /resume's list of sessions or /mcp's of the MCP servers, drawn in the prompt's place, or a server's

@@ -939,6 +939,7 @@ if (parsed.print !== undefined) {
           ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours, root: workspace.root }),
           ...said.map((l) => ({ ...l, color: "muted" as const })),
         ]}
+        restored={opened.conversation.messages.length > 0} // -c, -r, and their --fork-session copies, with messages
         pictures={pictures}
         errorFile={errorFile}
         segments={segments}

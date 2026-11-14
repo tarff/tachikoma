@@ -155,6 +155,7 @@ async function mount(
     newLead?: Provider; // what /lead and the picker make
     rows?: number; // the terminal's height
     intro?: AppProps["intro"]; // the start line
+    restored?: boolean; // the window opens on a restored conversation, as -c and -r open one
     worker?: Provider; // the subagents' model
     mode?: Mode; // the mode the session starts in
     full?: boolean; // full screen; classic when not given
@@ -280,6 +281,7 @@ async function mount(
       branch={opts.branches?.shift() ?? null}
       historyFile={historyFile}
       intro={opts.intro ?? []}
+      restored={opts.restored}
       errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
       segments={opts.segments ?? SEGMENTS}
       makeProvider={(spec) => {
@@ -435,6 +437,15 @@ describe("App", () => {
     const { app } = await mount([], { intro: [...conversationLines(history, folded), { text: "Resumed: read the notes.", color: "muted" }] });
     const frame = app.lastFrame()!;
     expect(frame).toMatch(/^\n› read the notes\n\n\n● Read 1 file\n\n● They say hello\.\nResumed: read the notes\.\n/);
+  });
+
+  // TUI design pass, Task 14 (the user's choice, 2026-11-15: "Show the hint after -r/-c"): a window opened on a restored
+  // conversation shows the hint row's "?" from the start, as the start-up box may be far above; an empty one waits.
+  it("shows the shortcuts hint from the start in a window opened on a restored conversation", async () => {
+    const restored = await mount([], { intro: [{ text: "● They say hello." }], restored: true });
+    expect(restored.app.lastFrame()).toContain("? for shortcuts");
+    const fresh = await mount([], { intro: [{ text: "● They say hello." }] });
+    expect(fresh.app.lastFrame()).not.toContain("? for shortcuts");
   });
 
   it("sends what the user types and shows the reply", async () => {
@@ -1548,6 +1559,15 @@ describe("App's history", () => {
     await press(app, "\u0015", "\u0012", "hi", "\r"); // Ctrl+U empties the prompt first
     await until(app, "ok");
     expect(sent(session)).toEqual({ type: "text", text: "say hi" });
+  });
+
+  // Task 14's code review: a match sent from the search at launch goes in and out of the editor in one key, so the
+  // hint row goes by the prompt as drawn, the match among it.
+  it("shows the shortcuts hint after a turn sent from Ctrl+R's search at launch", async () => {
+    const { app } = await mount([reply("ok")], { past: ["say hi"] });
+    await press(app, "\u0012", "hi", "\r");
+    await until(app, "ok");
+    expect(app.lastFrame()).toContain("? for shortcuts");
   });
 
   it("gives back what was typed when the search is cancelled with Ctrl-C, or with Backspace on an empty search", async () => {
@@ -6984,6 +7004,15 @@ describe("App's keys from the table of actions", () => {
     new Bindings(tableOf({ ...DEFAULTS, [context]: { ...DEFAULTS[context], ...keys } }));
   const todo: TodoItem[] = [{ text: "write the fix", status: "pending" }];
   const CTRL_X = "\u0018";
+
+  // Task 14's code review: a key bound to a command runs it as if typed, so the hint row's "?" shows after it.
+  it("shows the shortcuts hint after a key bound to a command, pressed at launch", async () => {
+    const { app } = await mount([], { bindings: table("Chat", { "ctrl+y": "command:tasks" }) });
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+    await press(app, "\u0019"); // Ctrl+Y
+    await until(app, "No subagents or commands yet.");
+    expect(app.lastFrame()).toContain("? for shortcuts");
+  });
 
   it("takes Ctrl+E from the editor's end-of-line when the table binds it to chat:externalEditor", async () => {
     const editor = standInEditor();

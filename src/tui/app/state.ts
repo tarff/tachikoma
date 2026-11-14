@@ -44,6 +44,7 @@ export function useAppState({
   branch: firstBranch,
   historyFile,
   intro,
+  restored,
   errorFile,
   segments,
   makeProvider,
@@ -301,8 +302,9 @@ export function useAppState({
   const notes = useRef<Line[]>([]);
   const newEdit = useRef(true);
   // Whether the prompt has held text yet, for the hint row's "? for shortcuts", which the start-up box's line says until
-  // then (TUI design pass, Task 14; App.tsx, usualHint).
-  const typed = useRef(false);
+  // then (TUI design pass, Task 14; App.tsx, usualHint). A restored conversation's window starts with it, as the box may
+  // be far above (the user's choice, 2026-11-15: "Show the hint after -r/-c").
+  const typed = useRef(restored === true);
   const history = useRef<History | null>(null);
   const running = tasks.running > 0;
   // What is happening now (phase.ts), from the refs only, the model list and the question as last drawn among them
