@@ -277,24 +277,29 @@ function runLine(r: Run): Line {
 }
 
 // One input of a call as Ctrl+O shows it (TUI design pass, Task 12; audit 10; the user's layout, 2026-11-15): `name:
-// value`, two in; a string with line breaks under its `name:` four in, an empty line with no indent so a copy has no
-// trailing spaces (Task 12's spec review), a CRLF one's \r going with its break as in prose;
-// any other value its JSON on one line. Each is escaped, as JSON.stringify did before. A key of anything but letters,
-// digits, _, $, . and - is quoted as JSON, so an empty one, or one with a colon, a line break or leading spaces, cannot
-// pass for another key or a value's line.
-const BARE_KEY = /^[\p{L}\p{N}_$.-]+$/u;
+// value`, two in; an empty string `""` (the user's choice, 2026-11-15, "Show \"\""); a string with line breaks
+// under its `name:` four in, an empty line with no indent so a copy has no trailing spaces (Task 12's spec review), a
+// CRLF one's \r going with its break as in prose; any other value its JSON on one line. Each is escaped, as
+// JSON.stringify did before. A key of anything but letters, digits, _, $, . and -, with combining marks after the first
+// (Task 12's code review), is quoted as JSON, so an empty one, or one with a colon, a line break or leading spaces,
+// cannot pass for another key or a value's line.
+const BARE_KEY = /^[\p{L}\p{N}_$.-][\p{L}\p{M}\p{N}_$.-]*$/u;
 function inputLines([key, value]: [string, unknown]): string[] {
   const name = visible(BARE_KEY.test(key) ? key : JSON.stringify(key));
-  if (typeof value !== "string") return [`  ${name}: ${visible(String(JSON.stringify(value)))}`];
+  if (typeof value !== "string" || value === "") return [`  ${name}: ${visible(String(JSON.stringify(value)))}`];
   if (!value.includes("\n")) return [`  ${name}: ${visible(value, { tabs: true })}`];
   return [`  ${name}:`, ...value.split(/\r?\n/).map((l) => (l ? `    ${visible(l, { tabs: true })}` : ""))];
 }
 
 // A shell result (shellText, tools/shell.ts) without its empty stderr or stdout section (Task 12): the status alone when
 // both are. The stderr marker follows the one-line status; the stdout marker is the real one only when it comes once,
-// as either stream's text can hold it, so a result with it twice, or of another shape, is shown as it is.
+// as either stream's text can hold it, so a result with it twice, or of another shape, is shown as it is. So is one the
+// session cut (session.ts, truncate), whose cut can take the real stdout marker away and leave one the stderr held
+// (Task 12's code review): its stdout, holding the cut's note, is never empty, so the only section the cleanup could
+// leave out is the stderr, which might not be empty at all.
 const STDOUT = "\n--- stdout ---\n";
 function shellShown(result: string): string {
+  if (/\n\[cut: \d+ more characters\]$/.test(result)) return result;
   const m = /^((?:exit code: |killed by ).*)\n--- stderr ---\n([^]*)$/.exec(result);
   const at = m ? m[2]!.indexOf(STDOUT) : -1;
   if (!m || at === -1 || m[2]!.indexOf(STDOUT, at + 1) !== -1) return result;

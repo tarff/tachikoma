@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { exportText } from "../../src/core/exportText.js";
+import { truncate } from "../../src/core/session.js";
 import type { Message } from "../../src/core/types.js";
+import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import type { Event, Hook } from "../../src/hooks/config.js";
 import type { Run } from "../../src/hooks/hooks.js";
 import type { Ran } from "../../src/hooks/run.js";
@@ -282,10 +284,12 @@ describe("callLines", () => {
     expect(exported).toContain('● list_tasks {}\n  ⎿ (no tasks)');
   });
 
-  it("gives a string on its line, numbers, booleans, null, arrays and objects as JSON on one line", () => {
-    const input = { s: "a b", e: "", n: 1.5, t: true, f: false, z: null, list: [1, "two"], obj: { a: { b: "c\nd" } } };
+  // An empty string is `""`, which would otherwise be nothing after the colon (the user's choice, 2026-11-15, "Show
+  // \"\""); a string of spaces stays bare, as every other string.
+  it("gives a string on its line, an empty one as \"\", numbers, booleans, null, arrays and objects as JSON on one line", () => {
+    const input = { s: "a b", e: "", sp: " ", n: 1.5, t: true, f: false, z: null, list: [1, "two"], obj: { a: { b: "c\nd" } } };
     expect(record("x", input, "ok")).toBe(
-      '● x\n  s: a b\n  e: \n  n: 1.5\n  t: true\n  f: false\n  z: null\n  list: [1,"two"]\n  obj: {"a":{"b":"c\\nd"}}\n  ⎿ ok',
+      '● x\n  s: a b\n  e: ""\n  sp:  \n  n: 1.5\n  t: true\n  f: false\n  z: null\n  list: [1,"two"]\n  obj: {"a":{"b":"c\\nd"}}\n  ⎿ ok',
     );
   });
 
@@ -306,11 +310,15 @@ describe("callLines", () => {
 
   // A key a model or an MCP server could make odd is quoted as JSON, so each line reads one way: an empty key, one with a
   // colon, a line break, a quote, spaces or a control character, which could pass for another key or a value's line.
-  it("quotes a key that is empty or holds anything but letters, digits, _, $, . and -", () => {
+  it("quotes a key that is empty or holds anything but letters, marks after the first, digits, _, $, . and -", () => {
     expect(record("x", { file_path: 1, $ref: 2, "a.b-c": 3, 名前: 4 }, "ok")).toBe("● x\n  file_path: 1\n  $ref: 2\n  a.b-c: 3\n  名前: 4\n  ⎿ ok");
-    const odd = { "": 1, "a: b": 2, "a\nb": 3, '"q"': 4, "  pad": 5, "e\u001b": 6, "r\u202e": 7 };
+    // Combining marks after the first character leave a key bare, so a decomposed cafe and Hindi read as typed (Task 12's
+    // code review); a key starting with one is quoted.
+    const marked = { "caf\u00e9": 1, "cafe\u0301": 2, "\u0928\u093e\u092e": 3 }; // cafe precomposed, decomposed, Hindi
+    expect(record("x", marked, "ok")).toBe("● x\n  caf\u00e9: 1\n  cafe\u0301: 2\n  \u0928\u093e\u092e: 3\n  ⎿ ok");
+    const odd = { "": 1, "a: b": 2, "a\nb": 3, '"q"': 4, "  pad": 5, "e\u001b": 6, "r\u202e": 7, "\u0301a": 8 };
     expect(record("x", odd, "ok")).toBe(
-      '● x\n  "": 1\n  "a: b": 2\n  "a\\nb": 3\n  "\\"q\\"": 4\n  "  pad": 5\n  "e\\u001b": 6\n  "r\\u202e": 7\n  ⎿ ok',
+      '● x\n  "": 1\n  "a: b": 2\n  "a\\nb": 3\n  "\\"q\\"": 4\n  "  pad": 5\n  "e\\u001b": 6\n  "r\\u202e": 7\n  "\u0301a": 8\n  ⎿ ok',
     );
   });
 
@@ -330,9 +338,18 @@ describe("callLines", () => {
     expect(record("shell", {}, shellResult("", "", "exit code: 1"), true)).toBe("● shell\n  ⎿ exit code: 1");
     expect(record("shell", {}, shellResult("", "", "killed by SIGTERM"), true)).toBe("● shell\n  ⎿ killed by SIGTERM");
     expect(record("shell", {}, shellResult("warn", "out"))).toBe(`● shell\n  ⎿ ${shellResult("warn", "out")}`);
-    // A result the session cut keeps its cut note in its stdout.
-    const cut = `${shellResult("", "out")}\n[cut: 5 more characters]`;
-    expect(record("shell", {}, cut)).toBe("● shell\n  ⎿ exit code: 0\n--- stdout ---\nout\n[cut: 5 more characters]");
+  });
+
+  // Task 12's code review: the session's cut (session.ts, truncate) can take the real stdout marker away, leaving one that
+  // the stderr held, so the empty-looking stderr's header would go and the stderr read as stdout. A cut result is shown
+  // as it is, as before Task 12.
+  it("shows a shell result the session cut unchanged", () => {
+    const fake = `\n--- stdout ---\n${"e".repeat(MAX_TOOL_OUTPUT)}`; // a stderr starting with the marker, long enough to be cut
+    const cut = truncate(shellResult(fake, "out"));
+    expect(cut.split("\n--- stdout ---\n")).toHaveLength(2); // the stderr's marker only
+    expect(record("shell", {}, cut, true)).toBe(`● shell\n  ⎿ ${cut}`);
+    const plain = truncate(shellResult("", "o".repeat(MAX_TOOL_OUTPUT))); // a long stdout, cut, with its empty stderr
+    expect(record("shell", {}, plain)).toBe(`● shell\n  ⎿ ${plain}`);
   });
 
   // Which marker is the real one cannot be told when the stdout marker comes twice, so nothing is left out: either
@@ -343,6 +360,7 @@ describe("callLines", () => {
       shellResult(`${marker}x`, ""), // stderr starting with the marker, which would read as an empty stderr
       shellResult("", `a${marker}b`), // stdout holding the marker after an empty stderr
       shellResult("e\n--- stdout ---", "--- stdout ---\nb"), // the marker made across the real one
+      shellResult("\n--- stdout ---", "b"), // the stderr's marker overlapping the real one, which starts at its last line break
       "exit code: 0\n--- stderr ---\nno stdout marker, as a cut in stderr leaves it",
       "Moved to the background as t3 by the user.",
       `before\n${shellResult("", "out")}`, // not a status line first
