@@ -650,3 +650,16 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   all zero draws nothing but keeps its row (user: "Known limit"; so before with `--status
   tasks`); a part's width steps (`<1m` to `1m`, `999` to `1.0k`) can bring a dropped part back
   once; `⏱` counts one column, as Ink counts it.
+- **Task 11** (0efd407, fixes f850392 and da400ee): key hints and the menu's notes. The hints
+  read as "Lines this plan adds" says; `SESSION_WORDS.closes` (app/constants.ts) is now `"close"`.
+  The user chose (2026-11-15): "Plain verbs" for the two the plan did not list (`tachi -r`'s own
+  list `Esc quit`; one MCP server's view `Enter run · Esc back`); the review's finished screen
+  (`any other key closes`) left as it is ("Leave it"). The menu's notes start two spaces after the
+  longest label shown, measured with `string-width`; the "↑/↓ N more" rows do not count. The user
+  chose, from the reviews: "No room left" and "Count the …" (a label sets the column only when its
+  note still shows one character before Ink's `…`: 2 + label + 2 + 1 < columns); "Leave it out" (a
+  row with no note, an MCP prompt with no description, does not count). Such a row keeps its note
+  two spaces after its own label, so it is ragged. Builder's call: Menu takes a `columns` prop
+  (App.tsx passes `ui.columns`, Field passes it on; outside the plan's Files), as
+  `renderToString` gives the hook no width; the reviewer checked it is the width the rows are cut
+  at in both modes. For Task 14: README.md:668-669 quotes the old `/resume` hint.
