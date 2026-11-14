@@ -663,3 +663,21 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   (App.tsx passes `ui.columns`, Field passes it on; outside the plan's Files), as
   `renderToString` gives the hook no width; the reviewer checked it is the width the rows are cut
   at in both modes. For Task 14: README.md:668-669 quotes the old `/resume` hint.
+- **Task 12** (afbd208, fixes b5416ac, 5c3be24 and 29c0a1b): Ctrl+O's `name: value`. `callLines`
+  (describe.ts) no longer uses `callText`, whose unused `name` was removed; `/export` is unchanged.
+  The user chose (2026-11-15): "As shown" (each input two spaces in under `● <name>`; a string
+  with line breaks as `name:` then its lines four in, empty lines not indented; other values as
+  one-line JSON; no input, the name line alone; the result under `⎿` as before); "No gap, as
+  today" (no blank line between calls); "Keep the quotes" (a key that is not letters, marks after
+  the first, digits, `_`, `$`, `.` and `-` is JSON-quoted, so it cannot pass for another key or a
+  value's line); "Show \"\"" (an empty string shows `""`). A `shell` result drops an empty
+  `--- stderr ---` or `--- stdout ---` section; only the first marker after a one-line `exit code:`
+  or `killed by` status counts, and a result holding the stdout marker twice is shown unchanged, so
+  no output is ever dropped. Keys and values go through `visible()`. Builder's calls: a CRLF
+  value's `\r` goes with its line break, a lone `\r` shows as `␍`; non-object input is its JSON on
+  one line. Known limits: a shortened result whose stderr starts with a blank line and the stdout
+  marker, long enough that the cut removes the real marker, shows that stderr as stdout, no text
+  lost (user: "Hide it, rare case a limit", so long output with no errors still loses its empty
+  heading); Hangul fillers (U+3164 and kin) count as letters, so a key of them stays bare; the
+  layout cannot tell the string `"60000"` from the number. For Task 14: README.md:692 says /export
+  writes calls "as Ctrl+O shows it".
