@@ -340,16 +340,23 @@ describe("callLines", () => {
     expect(record("shell", {}, shellResult("warn", "out"))).toBe(`● shell\n  ⎿ ${shellResult("warn", "out")}`);
   });
 
-  // Task 12's code review: the session's cut (session.ts, truncate) can take the real stdout marker away, leaving one that
-  // the stderr held, so the empty-looking stderr's header would go and the stderr read as stdout. A cut result is shown
-  // as it is, as before Task 12.
-  it("shows a shell result the session cut unchanged", () => {
-    const fake = `\n--- stdout ---\n${"e".repeat(MAX_TOOL_OUTPUT)}`; // a stderr starting with the marker, long enough to be cut
+  // A result the session cut (session.ts, truncate) is cleaned as any other, its cut note in its stdout: the common
+  // long output with no errors loses its empty stderr heading (the user's choice, 2026-11-15, "Hide it, rare case a
+  // limit").
+  it("leaves a cut shell result's empty stderr out", () => {
+    const plain = truncate(shellResult("", "o".repeat(MAX_TOOL_OUTPUT)));
+    expect(record("shell", {}, plain)).toBe(`● shell\n  ⎿ ${plain.replace("--- stderr ---\n\n", "")}`);
+    expect(plain).toMatch(/\n\[cut: \d+ more characters\]$/);
+  });
+
+  // The known limit (Task 12's code review; the user's choice, 2026-11-15): a stderr starting with the stdout marker,
+  // long enough that the cut takes the real marker away, reads as empty, so its heading goes and its text shows as
+  // stdout. No text is lost.
+  it("shows, as its known limit, a cut stderr that starts with the stdout marker as stdout", () => {
+    const fake = `\n--- stdout ---\n${"e".repeat(MAX_TOOL_OUTPUT)}`;
     const cut = truncate(shellResult(fake, "out"));
     expect(cut.split("\n--- stdout ---\n")).toHaveLength(2); // the stderr's marker only
-    expect(record("shell", {}, cut, true)).toBe(`● shell\n  ⎿ ${cut}`);
-    const plain = truncate(shellResult("", "o".repeat(MAX_TOOL_OUTPUT))); // a long stdout, cut, with its empty stderr
-    expect(record("shell", {}, plain)).toBe(`● shell\n  ⎿ ${plain}`);
+    expect(record("shell", {}, cut, true)).toBe(`● shell\n  ⎿ ${cut.replace("--- stderr ---\n\n", "")}`);
   });
 
   // Which marker is the real one cannot be told when the stdout marker comes twice, so nothing is left out: either

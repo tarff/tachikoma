@@ -293,13 +293,12 @@ function inputLines([key, value]: [string, unknown]): string[] {
 
 // A shell result (shellText, tools/shell.ts) without its empty stderr or stdout section (Task 12): the status alone when
 // both are. The stderr marker follows the one-line status; the stdout marker is the real one only when it comes once,
-// as either stream's text can hold it, so a result with it twice, or of another shape, is shown as it is. So is one the
-// session cut (session.ts, truncate), whose cut can take the real stdout marker away and leave one the stderr held
-// (Task 12's code review): its stdout, holding the cut's note, is never empty, so the only section the cleanup could
-// leave out is the stderr, which might not be empty at all.
+// as either stream's text can hold it, so a result with it twice, or of another shape, is shown as it is. A known limit
+// (Task 12's code review; the user's choice, 2026-11-15, "Hide it, rare case a limit"): the session's cut (session.ts,
+// truncate) can take the real stdout marker away from a stderr that starts with one, which then reads as empty, so its
+// heading goes and its text shows as stdout; no text is lost.
 const STDOUT = "\n--- stdout ---\n";
 function shellShown(result: string): string {
-  if (/\n\[cut: \d+ more characters\]$/.test(result)) return result;
   const m = /^((?:exit code: |killed by ).*)\n--- stderr ---\n([^]*)$/.exec(result);
   const at = m ? m[2]!.indexOf(STDOUT) : -1;
   if (!m || at === -1 || m[2]!.indexOf(STDOUT, at + 1) !== -1) return result;
