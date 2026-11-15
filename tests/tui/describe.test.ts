@@ -75,6 +75,8 @@ describe("withoutTrailingRows", () => {
     expect(withoutTrailingRows(plain)).toBe(plain);
     const one = { text: "  ⎿ ok\n", oneLine: true as const };
     expect(withoutTrailingRows(one)).toBe(one);
+    const file = { text: "a\n\n", asIs: true as const }; // a write's preview, its empty lines the file's (3c04960's review)
+    expect(withoutTrailingRows(file)).toBe(file);
   });
 });
 

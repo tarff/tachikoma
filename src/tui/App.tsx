@@ -242,7 +242,8 @@ export function App(props: AppProps) {
         const follows = call !== undefined && ui.toolLine.current === call; // its call's row the last said
         latest.current.say(
           { text: `┌ ${asSaid} (${lines} line${lines === 1 ? "" : "s"})`, color: "muted", block: true },
-          { text: detail || "(empty)", color: "muted", ...(styles.length ? { styles } : {}) },
+          // The rows the heading counts: the file's last line's break left out, its empty lines kept (3c04960's review).
+          { text: detail ? detail.replace(/\r?\n$/, "") : "(empty)", color: "muted", asIs: true, ...(styles.length ? { styles } : {}) },
         );
         // The answer goes under the call while the preview straight after its row is the last said, as under its row
         // alone (Task 8).

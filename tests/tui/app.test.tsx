@@ -2494,6 +2494,22 @@ describe("App's answers", () => {
     expect(at).toBeGreaterThanOrEqual(0);
     return r.slice(at);
   };
+  // 3c04960's review: a write's preview shows the rows its heading counts, the file's own empty lines among them; only
+  // the one line break ending the file's last line goes, as the heading counts it.
+  it.each([
+    { file: "a and two empty lines", content: "a\n\n\n", heading: "(3 lines)", shown: ["a", "", ""], full: false },
+    { file: "two empty lines", content: "\n\n", heading: "(2 lines)", shown: ["", ""], full: false },
+    { file: "a and two empty lines", content: "a\n\n\n", heading: "(3 lines)", shown: ["a", "", ""], full: true },
+    { file: "two empty lines", content: "\n\n", heading: "(2 lines)", shown: ["", ""], full: true },
+  ])("previews a write of $file as the rows its heading counts (full screen: $full)", async ({ content, heading, shown, full }) => {
+    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content }), reply("written")], { full });
+    await type(app, "write it");
+    await until(app, "Allow write");
+    await press(app, "y");
+    await until(app, "written");
+    expect(from(app, full, "┌ write a.txt").slice(0, shown.length + 2)).toEqual([`┌ write a.txt ${heading}`, ...shown, "  ⎿ You allowed this."]);
+  });
+
   // The user's own example, from the auto-mode terminal check after Part 2, where the folder deleted was the project's,
   // so the check finds it whole: here the test's own project folder, which nothing runs against.
   it.each([true, false])("says a declined dangerous command once, its danger kept, red, under its tool line (full screen: %s)", async (full) => {

@@ -37,6 +37,7 @@ export interface Line {
   band?: true;
   indent?: number;
   block?: true;
+  asIs?: true; // its ending line breaks kept, its rows a file's own (withoutTrailingRows; 3c04960's review)
 }
 
 const firstLine = (s: string) => s.split(/\r?\n/)[0] ?? "";
@@ -147,10 +148,11 @@ export function gapped(lines: readonly Line[], before: { text: string; band?: tr
 // The line without the empty rows its text's last line breaks would draw under it ("\n", "\n\n", "\r\n"), so a block
 // after it has the one gap gapped() gives, not two (PR 20's review): a reply's, a notice's or an error's text ending so.
 // A one-line line shows its breaks escaped, a row of text, so it is kept as it is. trimEnd, so a long run of blanks
-// costs no backtracking; the spaces it takes off the last row before them showed nothing.
+// costs no backtracking; the spaces it takes off the last row before them showed nothing. A line marked `asIs`, a write's
+// preview, whose empty lines are the file's, is kept too.
 export function withoutTrailingRows(l: Line): Line {
   const text = l.text.trimEnd();
-  if (l.oneLine || !l.text.slice(text.length).includes("\n")) return l;
+  if (l.oneLine || l.asIs || !l.text.slice(text.length).includes("\n")) return l;
   const end = (n: number) => Math.min(n, text.length);
   return { ...l, text, ...(l.styles ? { styles: l.styles.map((s) => ({ ...s, start: end(s.start), end: end(s.end) })) } : {}) };
 }
