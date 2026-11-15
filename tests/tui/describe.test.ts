@@ -6,7 +6,7 @@ import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import type { Event, Hook } from "../../src/hooks/config.js";
 import type { Run } from "../../src/hooks/hooks.js";
 import type { Ran } from "../../src/hooks/run.js";
-import { callLines, lastTurn, describe as lines, previewStyles, screen } from "../../src/tui/describe.js";
+import { callLines, lastTurn, describe as lines, previewStyles, screen, withoutTrailingRows } from "../../src/tui/describe.js";
 import { palette } from "../../src/tui/theme.js";
 
 describe("describe", () => {
@@ -62,6 +62,22 @@ describe("describe", () => {
 });
 
 // TUI design pass, Task 7 (audit 2): an edit's preview in colour, a write's never; the text unchanged.
+// PR 20's review: a line's text ending in line breaks draws no empty rows of its own, so a block after it has one gap.
+describe("withoutTrailingRows", () => {
+  it("takes off the line breaks a text ends in, and the blanks among them, keeping its spans inside it", () => {
+    for (const end of ["\n", "\n\n", "\r\n", "  \n \t\n"]) expect(withoutTrailingRows({ text: `● hi${end}`, indent: 2 })).toEqual({ text: "● hi", indent: 2 });
+    const styled = withoutTrailingRows({ text: "● hi\n", styles: [{ start: 0, end: 5, color: "#4278de" }] });
+    expect(styled).toEqual({ text: "● hi", styles: [{ start: 0, end: 4, color: "#4278de" }] });
+  });
+
+  it("leaves a text that ends in no line break, and a one-line line, whose breaks show escaped, as they are", () => {
+    const plain = { text: "● hi  " };
+    expect(withoutTrailingRows(plain)).toBe(plain);
+    const one = { text: "  ⎿ ok\n", oneLine: true as const };
+    expect(withoutTrailingRows(one)).toBe(one);
+  });
+});
+
 describe("previewStyles", () => {
   const FULL = palette({ light: false, color: true, full: true });
   const NAMED = palette({ light: false, color: true, full: false });

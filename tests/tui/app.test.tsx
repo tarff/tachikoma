@@ -3769,6 +3769,24 @@ describe("App's menus", () => {
 
 describe("App's keys for the modes, the model list and the last turn", () => {
   // The whole PR's review (the user's choice: "Give them a gap"): a line a key says starts a block, an empty line above.
+  // PR 20's review: a reply ending in line breaks leaves no empty rows of its own, so the block after it has the one gap.
+  it.each([
+    { ending: "\\n", text: "hello\n", full: false },
+    { ending: "\\n\\n", text: "hello\n\n", full: false },
+    { ending: "\\r\\n", text: "hello\r\n", full: false },
+    { ending: "\\n", text: "hello\n", full: true },
+    { ending: "\\n\\n", text: "hello\n\n", full: true },
+  ])("puts one empty line between a reply ending in $ending and the block after it (full: $full)", async ({ text, full }) => {
+    const { app } = await mount([reply(text)], { full });
+    await type(app, "hi");
+    await until(app, "● hello");
+    await press(app, "\u001b[Z");
+    await until(app, "mode is now project");
+    const rows = app.lastFrame()!.split("\n").map((r) => r.trimEnd());
+    const at = rows.indexOf("● hello");
+    expect(rows.slice(at, at + 3)).toEqual(["● hello", "", "mode is now project"]);
+  });
+
   it("puts an empty line above the key list on ? and above Shift+Tab's line", async () => {
     const { app } = await mount([reply("ok")]);
     await type(app, "hi");

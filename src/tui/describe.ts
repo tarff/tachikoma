@@ -144,6 +144,17 @@ export function gapped(lines: readonly Line[], before: { text: string; band?: tr
   return out;
 }
 
+// The line without the empty rows its text's last line breaks would draw under it ("\n", "\n\n", "\r\n"), so a block
+// after it has the one gap gapped() gives, not two (PR 20's review): a reply's, a notice's or an error's text ending so.
+// A one-line line shows its breaks escaped, a row of text, so it is kept as it is. trimEnd, so a long run of blanks
+// costs no backtracking; the spaces it takes off the last row before them showed nothing.
+export function withoutTrailingRows(l: Line): Line {
+  const text = l.text.trimEnd();
+  if (l.oneLine || !l.text.slice(text.length).includes("\n")) return l;
+  const end = (n: number) => Math.min(n, text.length);
+  return { ...l, text, ...(l.styles ? { styles: l.styles.map((s) => ({ ...s, start: end(s.start), end: end(s.end) })) } : {}) };
+}
+
 // The lines as one block, its first line marking it, so say() puts an empty line above them: what a key says, and the
 // resume lines (the whole PR's review, the user's choice: "Give them a gap").
 export const asBlock = (lines: readonly Line[]): Line[] => lines.map((l, i) => (i === 0 ? { ...l, block: true as const } : l));

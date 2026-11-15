@@ -1,5 +1,5 @@
 import type { Fns } from "../App.js";
-import { gapped, type Line, notice, screen as escaped } from "../describe.js";
+import { gapped, type Line, notice, screen as escaped, withoutTrailingRows } from "../describe.js";
 import { arrived, FOLLOWING } from "../view.js";
 import type { UI } from "./state.js";
 
@@ -11,7 +11,8 @@ export const output = (ui: UI, fns: Fns) => {
   // block of its own, as a reply arriving during /screen's switch, leaves that to the next.
   const say = (...add: Line[]) => {
     ui.toolLine.current = null; // a tool line's own message sets it again after (App.tsx, onMessage; release 7 plan, choice 66)
-    const marked = add.map((l) => {
+    // Each without the empty rows its text's ending line breaks would draw, so the gap below is the only one (PR 20's review).
+    const marked = add.map(withoutTrailingRows).map((l) => {
       if (!ui.command.current || l.block) return l;
       ui.command.current = false;
       return { ...l, block: true as const };
