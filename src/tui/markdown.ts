@@ -60,8 +60,9 @@ function inline(tokens: readonly Token[], palette: Palette, oneLine: boolean, ru
       over({ underline: true }, () => inline(link.tokens, palette, oneLine, run));
       // An autolink's text is its address as written, though marked adds "mailto:" or "http://" to its href. Another
       // address goes after the text in brackets, both muted (the user's choice, 2026-11-16: "In brackets").
-      if (!link.autolink && run.text.slice(start) !== escape(link.href)) {
-        add(" ");
+      // No space where the link drew no text, and no brackets with no address (Task 15's code review).
+      if (!link.autolink && link.href !== "" && run.text.slice(start) !== escape(link.href)) {
+        if (run.text.length > start) add(" ");
         over({ color: palette.muted }, () => add(`(${link.href})`));
       }
     } else add(t.raw); // raw HTML, a picture, a task's box and anything else, as written
@@ -74,18 +75,32 @@ const runOf = (tokens: readonly Token[], palette: Palette, oneLine = false): Run
   return run;
 };
 
-// A run as one line for each of its line breaks, each with the part of each span over it.
+// A run as one line for each of its line breaks, each with the part of each span over it. Each span goes only to the rows
+// it reaches, the first found by a binary search, and in the spans' order, so a later still draws over an earlier: time
+// that grows with the rows and spans, not their product (Task 15's code review).
 function rows(run: Run): Line[] {
-  let from = 0;
-  return run.text.split("\n").map((text) => {
-    const to = from + text.length;
-    const styles = run.styles.flatMap((s) => {
-      const { start, end, ...style } = s;
-      return styled(Math.max(start, from) - from, Math.min(end, to) - from, style);
-    });
-    from = to + 1; // 1: the line break
-    return { text, ...(styles.length ? { styles } : {}) };
-  });
+  const texts = run.text.split("\n");
+  const starts: number[] = [];
+  let at = 0;
+  for (const t of texts) {
+    starts.push(at);
+    at += t.length + 1; // 1: the line break
+  }
+  const pieces: Span[][] = texts.map(() => []);
+  for (const { start, end, ...style } of run.styles) {
+    let lo = 0; // the last row starting at or before the span
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid]! <= start) lo = mid;
+      else hi = mid - 1;
+    }
+    for (let r = lo; r < texts.length && starts[r]! < end; r++) {
+      const from = starts[r]!;
+      pieces[r]!.push(...styled(Math.max(start, from) - from, Math.min(end, from + texts[r]!.length) - from, style));
+    }
+  }
+  return texts.map((text, r) => ({ text, ...withStyles(pieces[r]!) }));
 }
 
 // A source's text as written, a line for each of its lines: what is not drawn otherwise.
@@ -103,7 +118,7 @@ function led(l: Line, lead: string, color?: Colour): Line {
   return {
     ...l,
     text: shown + l.text,
-    ...(styles.length ? { styles } : {}),
+    ...withStyles(styles),
     ...(l.oneLine || l.text === "" ? {} : { indent: shown.length + (l.indent ?? 0) }),
   };
 }
@@ -201,6 +216,13 @@ function blocks(tokens: readonly Token[], width: number, palette: Palette, inIte
 }
 
 // The lines `text` is drawn as, in `palette`'s colours, laid out for `width` columns.
+// Text nested too deep for marked's lexer, which recurses into each level, or for blocks(), which walks the same tree,
+// overflows the stack ("*" or "- " or ">" thousands deep): it is drawn as its raw text, its line breaks read as marked
+// reads them (Task 15's code review).
 export function markdownLines(text: string, width: number, palette: Palette): Line[] {
-  return blocks(marked.lexer(text), width, palette);
+  try {
+    return blocks(marked.lexer(text), width, palette);
+  } catch {
+    return rawLines(text.replace(/\r\n?/g, "\n"));
+  }
 }

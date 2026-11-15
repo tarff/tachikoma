@@ -126,6 +126,13 @@ describe("markdownLines, each piece", () => {
     ]);
   });
 
+  // Task 15's code review: no space before the address where the link drew no text, no brackets with no address.
+  it("draws a link with no text as its address alone, and one with no address as its text", () => {
+    expect(markdownLines("see [](http://x.y)", 80, P)).toEqual([{ text: "see (http://x.y)", styles: [{ start: 4, end: 16, color: MUTED }] }]);
+    expect(texts(markdownLines("[](u)", 80, P))).toEqual(["(u)"]);
+    expect(markdownLines("[x](<>)", 80, P)).toEqual([{ text: "x", styles: [{ start: 0, end: 1, underline: true }] }]);
+  });
+
   it("draws a link whose text is its address once", () => {
     const once = [{ text: "https://x.y", styles: [{ start: 0, end: 11, underline: true }] }];
     expect(markdownLines("[https://x.y](https://x.y)", 80, P)).toEqual(once);
@@ -275,6 +282,68 @@ describe("markdownLines, mixed", () => {
   it("gives nothing for empty text", () => {
     expect(markdownLines("", 80, P)).toEqual([]);
     expect(markdownLines("\n\n", 80, P)).toEqual([]);
+  });
+
+  // Task 15's code review: each style's piece on each row it reaches, in the spans' own order, so a later draws over an
+  // earlier on every row.
+  it("splits a styled paragraph's spans over its rows, in their order", () => {
+    expect(markdownLines("**x *y\nz* w**\n`c` d", 80, P)).toEqual([
+      { text: "x y", styles: [{ start: 0, end: 3, bold: true }, { start: 2, end: 3, italic: true }] },
+      { text: "z w", styles: [{ start: 0, end: 3, bold: true }, { start: 0, end: 1, italic: true }] },
+      { text: "c d", styles: [{ start: 0, end: 1, color: ACCENT }] },
+    ]);
+  });
+
+  // Task 15's code review: marked's lexer recurses into each level, so input nested thousands deep overflows the stack;
+  // it is drawn as its raw text instead.
+  it("draws input nested too deep for the lexer as its raw text", () => {
+    for (const deep of ["*".repeat(3000) + "x" + "*".repeat(3000), "- ".repeat(2000) + "x", "> - ".repeat(2000) + "x", ">".repeat(3000) + " x"]) {
+      expect(markdownLines(deep, 80, P)).toEqual([{ text: deep.trimEnd() }]);
+    }
+    expect(markdownLines(`${">".repeat(3000)} x\r\n\ty`, 80, P)).toEqual([{ text: `${">".repeat(3000)} x` }, { text: "\ty" }]);
+  });
+});
+
+// Task 15's code review: what the reviewer found right, pinned.
+describe("markdownLines, edges", () => {
+  it("reads CRLF line breaks as line breaks", () => {
+    expect(texts(markdownLines("a\r\nb\r\n\r\n- c\r\n\r\n```\r\nk\r\n```", 80, P))).toEqual(["a", "b", "", "  • c", "", "k"]);
+  });
+
+  it("draws a code block with no closing fence to the end of the text", () => {
+    expect(markdownLines("```\ncode\n# not a heading", 80, P)).toEqual([
+      { text: "code", band: true },
+      { text: "# not a heading", band: true },
+    ]);
+  });
+
+  it("pads a table's short rows and drops a row's extra cells", () => {
+    expect(texts(markdownLines("| a | b |\n|---|---|\n| 1 |\n| 1 | 2 | 3 |", 80, P))).toEqual([
+      "╭───┬───╮",
+      "│ a │ b │",
+      "├───┼───┤",
+      "│ 1 │   │",
+      "│ 1 │ 2 │",
+      "╰───┴───╯",
+    ]);
+  });
+
+  it("draws an escaped pipe in a cell as a pipe", () => {
+    expect(texts(markdownLines("| a \\| b | c |\n|---|---|\n| 1 | 2 |", 80, P))).toEqual([
+      "╭───────┬───╮",
+      "│ a | b │ c │",
+      "├───────┼───┤",
+      "│ 1     │ 2 │",
+      "╰───────┴───╯",
+    ]);
+  });
+
+  it("draws an empty list item as its bullet alone, no space after it", () => {
+    expect(markdownLines("- a\n-\n- c", 80, P)).toEqual([
+      { text: "  • a", indent: 4 },
+      { text: "  •" },
+      { text: "  • c", indent: 4 },
+    ]);
   });
 });
 
