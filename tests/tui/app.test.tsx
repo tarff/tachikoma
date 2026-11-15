@@ -4157,7 +4157,7 @@ describe("App in full screen", () => {
       const info = { version: "0.1.0", lead: "fake:a", folder: "~/proj", branch: "main", mode: "ask", sandbox: "off" as const, files: ["CLAUDE.md"], servers: 0, hooks: 0 };
       const box = startBox(info, textWidth(120, true), { light: false, color: true, full: true });
       expect(box[1]!.text.length).toBeGreaterThan(50); // the pixel art's row, wider than the narrow screen
-      // 26 rows: 20 of conversation, the box's 17 and its hint, then the lines after it.
+      // 26 rows: 20 of conversation, the box's 14 and its hint, then the lines after it.
       const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: [...box, ...said(40)] });
       const rows = (columns: number) => stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => r.slice(0, columns - 1).trimEnd());
       await resize(app, 120);

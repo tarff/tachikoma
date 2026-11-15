@@ -29,7 +29,7 @@ const HINT = "  ? for shortcuts · / for commands";
 // The box's widths, from the picture's spacing (the user's choices, 2026-11-13: "Gap 2, right pad 2"): a border and 2
 // columns each side, 2 between the drawing and the list, the labels in a column as wide as "folder" and 2. INFO's longest
 // row is "lead    anthropic:claude-opus-5-5", 33 columns.
-const PIXEL_BOX = 1 + 2 + 48 + 2 + 33 + 2 + 1; // 89
+const PIXEL_BOX = 1 + 2 + 40 + 2 + 33 + 2 + 1; // 81
 const ASCII_BOX = 1 + 2 + 21 + 2 + 33 + 2 + 1; // 62
 const LIST_BOX = 1 + 2 + 33 + 2 + 1; // 39
 
@@ -43,12 +43,12 @@ describe("the start-up box", () => {
   it("draws the pixel art, the list and the borders at 120 columns in full colour, as wide as they need", () => {
     const lines = startBox(INFO, 120, FULL);
     expect(drawing(lines)).toBe("pixels");
-    expect(box(lines)).toHaveLength(15 + 2); // the art's 15 rows and the borders
+    expect(box(lines)).toHaveLength(12 + 2); // the art's 12 rows and the borders
     for (const l of box(lines)) expect(stringWidth(l.text)).toBe(PIXEL_BOX);
     expect(lines[0]!.text).toBe(`╭─ Tachikoma 0.1.0 ${"─".repeat(PIXEL_BOX - 20)}╮`);
     expect(lines.at(-2)!.text).toBe(`╰${"─".repeat(PIXEL_BOX - 2)}╯`);
     expect(lines[1]!.text).toBe(`│  ${pixelRows()[0]!.text}  lead    anthropic:claude-opus-5-5  │`);
-    expect(list(lines, 1 + 2 + 48 + 2)).toEqual([
+    expect(list(lines, 1 + 2 + 40 + 2)).toEqual([
       "lead    anthropic:claude-opus-5-5",
       "folder  ~/proj  git:(main)",
       "mode    ask · sandbox off",
@@ -162,7 +162,7 @@ describe("the start-up box", () => {
     expect(list(lines, 1 + 2 + 21 + 2)).toContain("read    NOTES0.md, NOTES1.md, NOTES2.md and 7 more");
     const pixels = startBox({ ...INFO, files }, 120, FULL);
     expect(drawing(pixels)).toBe("pixels");
-    expect(list(pixels, 1 + 2 + 48 + 2)).toContain("read    NOTES0.md, NOTES1.md, NOTES2.md, NOTES3.md and 6 more"); // 120 - 56 - 8 = 56 columns
+    expect(list(pixels, 1 + 2 + 40 + 2)).toContain("read    NOTES0.md, NOTES1.md, NOTES2.md, NOTES3.md, NOTES4.md and 5 more"); // 120 - 48 - 8 = 64 columns
   });
 
   // Task 6's code review: the read row's shortest is its whole list where that is shorter than one name and "and 1 more".
@@ -231,9 +231,9 @@ describe("the start-up box", () => {
       expect(stringWidth(l.text)).toBe(120);
       expect(l.text.at(-1)).toMatch(/[│╮╯]/);
     }
-    // The value's room: 120 less 56 for the borders, padding, art and gap, less the labels' 8: 56 columns, which seven
-    // "deep"s, "…", the name and the branch fill to 55.
-    expect(list(lines, 1 + 2 + 48 + 2)[1]).toBe(`folder  ~${"/deep".repeat(7)}/…/proj  git:(main)`);
+    // The value's room: 120 less 48 for the borders, padding, art and gap, less the labels' 8: 64 columns, which eight
+    // "deep"s, "…", the name and the branch fill to 60.
+    expect(list(lines, 1 + 2 + 40 + 2)[1]).toBe(`folder  ~${"/deep".repeat(8)}/…/proj  git:(main)`);
     expect(list(startBox({ ...INFO, folder }, 50, FULL), 3)[1]).toBe(`folder  ~${"/deep".repeat(3)}/…/proj  git:(main)`); // room 36
   });
 

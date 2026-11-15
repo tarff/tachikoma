@@ -6,8 +6,8 @@ import { ASCII, asciiRows, LIGHT_PIXEL_COLORS, PIXEL_COLORS, PIXELS, pixelRows }
 // ASCII drawing, moved from tachikoma.txt (choice E).
 describe("pixel art", () => {
   it("has rows all the same width, and a colour for every letter in them", () => {
-    expect(PIXELS).toHaveLength(30); // even, so pixelRows always has a bottom row
-    for (const row of PIXELS) expect(row).toHaveLength(48);
+    expect(PIXELS).toHaveLength(24); // even, so pixelRows always has a bottom row
+    for (const row of PIXELS) expect(row).toHaveLength(40);
     for (const letter of new Set(PIXELS.join(""))) if (letter !== ".") expect(PIXEL_COLORS[letter]).toMatch(/^#[0-9a-f]{6}$/);
   });
 
@@ -15,23 +15,23 @@ describe("pixel art", () => {
     const rows = pixelRows();
     expect(rows).toHaveLength(Math.ceil(PIXELS.length / 2));
     for (const row of rows) {
-      expect(stringWidth(row.text)).toBe(48);
+      expect(stringWidth(row.text)).toBe(40);
       expect(row.oneLine).toBe(true);
     }
   });
 
-  // Cells checked against the appendix's grid by hand: text row r is pixel rows 2r (top) and 2r + 1 (bottom).
+  // Cells checked against the 40×24 grid by hand: text row r is pixel rows 2r (top) and 2r + 1 (bottom).
   it("draws each cell with the half block its two pixels call for", () => {
     const rows = pixelRows();
     const cell = (r: number, c: number) => ({ char: rows[r]!.text[c], span: rows[r]!.styles?.find((s) => s.start === c) });
-    // Pixel rows 2 and 3, column 30: blue over red.
-    expect(cell(1, 30)).toEqual({ char: "▀", span: { start: 30, end: 31, color: "#4278de", bg: "#dc3c32" } });
-    // Pixel rows 2 and 3, column 16: shade over shade.
-    expect(cell(1, 16)).toEqual({ char: "█", span: { start: 16, end: 17, color: "#284ea0" } });
-    // Pixel rows 0 and 1, column 26: empty over light.
-    expect(cell(0, 26)).toEqual({ char: "▄", span: { start: 26, end: 27, color: "#8cb4f5" } });
-    // Pixel rows 26 and 27, column 5: blue over empty.
-    expect(cell(13, 5)).toEqual({ char: "▀", span: { start: 5, end: 6, color: "#4278de" } });
+    // Pixel rows 2 and 3, column 25: blue over red.
+    expect(cell(1, 25)).toEqual({ char: "▀", span: { start: 25, end: 26, color: "#4278de", bg: "#dc3c32" } });
+    // Pixel rows 2 and 3, column 14: shade over shade.
+    expect(cell(1, 14)).toEqual({ char: "█", span: { start: 14, end: 15, color: "#284ea0" } });
+    // Pixel rows 0 and 1, column 21: empty over light.
+    expect(cell(0, 21)).toEqual({ char: "▄", span: { start: 21, end: 22, color: "#8cb4f5" } });
+    // Pixel rows 20 and 21, column 1: dark over empty.
+    expect(cell(10, 1)).toEqual({ char: "▀", span: { start: 1, end: 2, color: "#373c4b" } });
     // Pixel rows 0 and 1, column 0: both empty.
     expect(cell(0, 0)).toEqual({ char: " ", span: undefined });
   });
@@ -58,8 +58,8 @@ describe("pixel art", () => {
   });
 
   it("draws the light table's colours in the light look, the dark table's otherwise", () => {
-    // Pixel rows 0 and 1, column 26: empty over light.
-    expect(pixelRows(true)[0]!.styles?.find((s) => s.start === 26)).toEqual({ start: 26, end: 27, color: LIGHT_PIXEL_COLORS.L });
+    // Pixel rows 0 and 1, column 21: empty over light.
+    expect(pixelRows(true)[0]!.styles?.find((s) => s.start === 21)).toEqual({ start: 21, end: 22, color: LIGHT_PIXEL_COLORS.L });
     expect(pixelRows(false)).toEqual(pixelRows());
     expect(pixelRows(true).map((r) => r.text)).toEqual(pixelRows().map((r) => r.text));
   });
