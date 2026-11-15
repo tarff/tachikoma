@@ -737,3 +737,11 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   Step 8 of the check covered the review's 16-colour point: the user found the plain ANSI blue
   readable on their dark terminal. Known limits: in classic mode a resize can leave rows behind
   (user: "Skip, known limit").
+- **The user's review of PR #20** (3c04960 and 73be6ae, merged as c819209): one point, a reply
+  ending in a line break got two empty lines under it, the break's own row and the next block's
+  gap. Lines are now said without their trailing empty rows (`withoutTrailingRows` in
+  describe.ts, used by `say()` in output.ts), so replies, notices, red lines and classic Ctrl+O's
+  printed calls take one gap. From the re-review: a write's preview keeps the file's own empty
+  lines (its line is marked `asIs`; one final line break comes off, as the heading counts), so it
+  shows the rows its heading counts. Coordinator's call: classic Ctrl+O and `/tasks t3` print a
+  result without its trailing blank lines (full screen's detail view still shows them).
