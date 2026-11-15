@@ -723,3 +723,17 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   user's terminal is dark), so its colours are the starting values. Known limits: keys piped in
   one read (Ctrl+R, its text and Enter) send the match undrawn, and the hint stays blank until
   the next key; in the light look the art's white and grey are nearly the same grey.
+- **The PR's review** (002716b and d1f6d4f; README.md with it): Tasks 1-14 reviewed as a whole. The
+  user chose (2026-11-16): "Give them a gap" (`asBlock` in describe.ts marks a line as starting a
+  block, so it gets the empty line above it: the Shift+Tab mode lines, the `?` key list in both
+  prompt modes, `Resumed:` after -c/-r (marked in cli.tsx at launch), the Alt+V and Ctrl+G lines,
+  the refusal's red line, and Ctrl+O at a question in full screen, marked in promptKeys.ts so
+  `/tasks t3` gets one gap, not two); "Same gap" (after /resume, marked in queue.ts where the
+  session is picked; `/branch`'s line already had its gap, now tested exactly); "Keep it attached"
+  (`Your words are back in the prompt box.` stays under its reason, no gap); for the README,
+  "Approve all five" (the review's wording R1-R4 and R6) and "Name it" (the banner names 8c-2).
+  Also from the review: the intro's, theme.ts's and art.ts's comments (the dark values as at the
+  2026-11-16 check, the light ones unchecked starting values), a test's name, `Span.bg?: Colour`.
+  Step 8 of the check covered the review's 16-colour point: the user found the plain ANSI blue
+  readable on their dark terminal. Known limits: in classic mode a resize can leave rows behind
+  (user: "Skip, known limit").
