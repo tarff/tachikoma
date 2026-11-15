@@ -51,12 +51,12 @@ describe("markdownLines, each piece", () => {
     );
   });
 
-  it("draws a bulleted list two columns in, `-` before each item, later rows under the item's text", () => {
+  it("draws a bulleted list two columns in, `•` before each item, later rows under the item's text", () => {
     expect(markdownLines("- one\n- two", 80, P)).toEqual([
-      { text: "  - one", indent: 4 },
-      { text: "  - two", indent: 4 },
+      { text: "  • one", indent: 4 },
+      { text: "  • two", indent: 4 },
     ]);
-    expect(texts(markdownLines("* star\n* again", 80, P))).toEqual(["  - star", "  - again"]);
+    expect(texts(markdownLines("* star\n* again", 80, P))).toEqual(["  • star", "  • again"]);
   });
 
   it("draws a numbered list by its own numbers, from its start", () => {
@@ -68,31 +68,38 @@ describe("markdownLines, each piece", () => {
 
   it("puts a nested list under its item's text, further in at each level", () => {
     expect(markdownLines("- a\n  - b\n    - c\n- d", 80, P)).toEqual([
-      { text: "  - a", indent: 4 },
-      { text: "    - b", indent: 6 },
-      { text: "      - c", indent: 8 },
-      { text: "  - d", indent: 4 },
+      { text: "  • a", indent: 4 },
+      { text: "    ◦ b", indent: 6 },
+      { text: "      • c", indent: 8 },
+      { text: "  • d", indent: 4 },
     ]);
     expect(markdownLines("1. a\n   - b", 80, P)).toEqual([
       { text: "  1. a", indent: 5 },
-      { text: "     - b", indent: 7 },
+      { text: "     • b", indent: 7 },
     ]);
+  });
+
+  it("alternates `•` and `◦` by the bulleted lists above, a numbered list keeping its numbers between them", () => {
+    // The user's choice (2026-11-16): "• then ◦ when nested"; the depth counts bulleted lists only.
+    expect(texts(markdownLines("- a\n  1. n\n     - b\n       - c", 80, P))).toEqual(["  • a", "    1. n", "       ◦ b", "         • c"]);
+    expect(texts(markdownLines("1. n\n   - a\n     - b", 80, P))).toEqual(["  1. n", "     • a", "       ◦ b"]);
+    expect(texts(markdownLines("- a\n\n  > - q", 80, P))).toEqual(["  • a", "", "    │   ◦ q"]);
   });
 
   it("keeps an item's later lines and paragraphs under its text, and an empty line where the source has one", () => {
     expect(markdownLines("- a\n  more\n\n  second\n- b", 80, P)).toEqual([
-      { text: "  - a", indent: 4 },
+      { text: "  • a", indent: 4 },
       { text: "    more", indent: 4 },
       { text: "" },
       { text: "    second", indent: 4 },
-      { text: "  - b", indent: 4 },
+      { text: "  • b", indent: 4 },
     ]);
-    expect(texts(markdownLines("- a\n\n- b", 80, P))).toEqual(["  - a", "", "  - b"]);
+    expect(texts(markdownLines("- a\n\n- b", 80, P))).toEqual(["  • a", "", "  • b"]);
   });
 
   it("draws a task item's box as written", () => {
-    expect(texts(markdownLines("- [ ] to do\n- [x] done", 80, P))).toEqual(["  - [ ] to do", "  - [x] done"]);
-    expect(texts(markdownLines("- [ ] a\n\n- [x] b", 80, P))).toEqual(["  - [ ] a", "", "  - [x] b"]);
+    expect(texts(markdownLines("- [ ] to do\n- [x] done", 80, P))).toEqual(["  • [ ] to do", "  • [x] done"]);
+    expect(texts(markdownLines("- [ ] a\n\n- [x] b", 80, P))).toEqual(["  • [ ] a", "", "  • [x] b"]);
   });
 
   it("draws a block quote behind a muted `│ `, a bare `│` on its empty lines", () => {
@@ -102,7 +109,7 @@ describe("markdownLines, each piece", () => {
       { text: "│", styles: [{ start: 0, end: 1, color: MUTED }] },
       { text: "│ there", styles: [bar], indent: 2 },
     ]);
-    expect(texts(markdownLines("> > deep\n> - li", 80, P))).toEqual(["│ │ deep", "│   - li"]);
+    expect(texts(markdownLines("> > deep\n> - li", 80, P))).toEqual(["│ │ deep", "│   • li"]);
     expect(markdownLines("> **b**", 80, P)[0]!.styles).toEqual([bar, { start: 2, end: 3, bold: true }]);
   });
 
@@ -148,7 +155,7 @@ describe("markdownLines, each piece", () => {
 
   it("draws a code block in a list under the item's text", () => {
     expect(markdownLines("- item\n\n  ```\n  code\n  ```", 80, P)).toEqual([
-      { text: "  - item", indent: 4 },
+      { text: "  • item", indent: 4 },
       { text: "" },
       { text: "    code", band: true, indent: 4 },
     ]);

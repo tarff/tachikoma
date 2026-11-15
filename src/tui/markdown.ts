@@ -9,10 +9,11 @@ import type { Colour, Palette } from "./theme.js";
 // for the width text really has"); only a table and a rule use it, as the screen wraps the rest. Each line is one row of
 // the source, a list's or a quote's lead in its text and its `indent`, so a wrapped row starts under the text.
 
-// A list sits two columns in from the text around it, a list in an item under the item's text; `-` before each bulleted
-// item, the markdown's own mark, as neither the plan nor the design names one.
+// A list sits two columns in from the text around it, a list in an item under the item's text. A bulleted item's mark
+// alternates by the bulleted lists above it, `•` then `◦` (the user's choice, 2026-11-16: "• then ◦ when nested"); a
+// numbered list between them keeps its numbers and does not count.
 const LIST_IN = "  ";
-const BULLET = "-";
+const BULLETS = ["•", "◦"];
 const BAR = "│ ";
 
 // Text with its spans, as built from a run of inline pieces; split into lines at its line breaks.
@@ -108,16 +109,17 @@ function led(l: Line, lead: string, color?: Colour): Line {
 // Whether the source has a blank line after an item: its raw text ends in two line breaks or more.
 const blankAfter = (item: Tokens.ListItem) => (item.raw.slice(item.raw.trimEnd().length).match(/\n/g)?.length ?? 0) >= 2;
 
-function list(l: Tokens.List, width: number, palette: Palette, inItem: boolean): Line[] {
+function list(l: Tokens.List, width: number, palette: Palette, inItem: boolean, bullets: number): Line[] {
   const pad = inItem ? "" : LIST_IN;
   const first = l.start === "" ? 1 : l.start;
+  const within = l.ordered ? bullets : bullets + 1; // the bulleted lists its items' own lists are under
   return l.items.flatMap((item, i) => {
-    const mark = `${pad}${l.ordered ? `${first + i}.` : BULLET} `;
+    const mark = `${pad}${l.ordered ? `${first + i}.` : BULLETS[bullets % BULLETS.length]} `;
     // A tight task item's box comes as a piece of its own before its text: drawn on the text's line, as written.
     const [head, next, ...rest] = item.tokens;
     const tokens: Token[] =
       head?.type === "checkbox" && next?.type === "text" ? [{ type: "text", raw: "", text: "", tokens: [head, ...((next as Tokens.Text).tokens ?? [next])] }, ...rest] : item.tokens;
-    const inner = blocks(tokens, width - mark.length, palette, true);
+    const inner = blocks(tokens, width - mark.length, palette, true, within);
     const lines = (inner.length ? inner : [{ text: "" }]).map((line, k) => led(line, k === 0 ? mark : " ".repeat(mark.length)));
     return blankAfter(item) && i < l.items.length - 1 ? [...lines, { text: "" }] : lines;
   });
@@ -162,8 +164,8 @@ function table(t: Tokens.Table, width: number, palette: Palette): Line[] | null 
 
 // Block pieces as lines, laid out for `width`. A blank line in the source (marked's `space`) is one empty line; pieces
 // with none between them touch, as written. `inItem`: the pieces are a list item's own, so a list among them is under the
-// item's text and not two columns further in.
-function blocks(tokens: readonly Token[], width: number, palette: Palette, inItem = false): Line[] {
+// item's text and not two columns further in. `bullets`: how many bulleted lists the pieces are under, a quote's included.
+function blocks(tokens: readonly Token[], width: number, palette: Palette, inItem = false, bullets = 0): Line[] {
   const out: Line[] = [];
   for (const t of tokens) {
     if (t.type === "space") out.push({ text: "" });
@@ -181,8 +183,8 @@ function blocks(tokens: readonly Token[], width: number, palette: Palette, inIte
       const text = "─".repeat(Math.max(1, width));
       out.push({ text, ...withStyles(styled(0, text.length, { color: palette.muted })), oneLine: true });
     } else if (t.type === "blockquote") {
-      out.push(...blocks((t as Tokens.Blockquote).tokens, width - BAR.length, palette).map((l) => led(l, BAR, palette.muted)));
-    } else if (t.type === "list") out.push(...list(t as Tokens.List, width, palette, inItem));
+      out.push(...blocks((t as Tokens.Blockquote).tokens, width - BAR.length, palette, false, bullets).map((l) => led(l, BAR, palette.muted)));
+    } else if (t.type === "list") out.push(...list(t as Tokens.List, width, palette, inItem, bullets));
     else if (t.type === "table") out.push(...(table(t as Tokens.Table, width, palette) ?? rawLines(t.raw)));
     else out.push(...rawLines(t.raw)); // raw HTML, a link's definition and anything else, as written
   }
