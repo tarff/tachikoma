@@ -52,17 +52,19 @@ function inline(tokens: readonly Token[], palette: Palette, oneLine: boolean, ru
     else if (t.type === "strong") over({ bold: true }, () => inline(k.tokens ?? [], palette, oneLine, run));
     else if (t.type === "em") over({ italic: true }, () => inline(k.tokens ?? [], palette, oneLine, run));
     else if (t.type === "codespan") over({ color: palette.accent }, () => add(k.text ?? ""));
+    else if (t.type === "del") over({ strike: true }, () => inline(k.tokens ?? [], palette, oneLine, run)); // "Struck through"
     else if (t.type === "br") add("\n");
     else if (t.type === "link") {
       const link = t as Tokens.Link;
       const start = run.text.length;
       over({ underline: true }, () => inline(link.tokens, palette, oneLine, run));
-      // An autolink's text is its address as written, though marked adds "mailto:" or "http://" to its href.
+      // An autolink's text is its address as written, though marked adds "mailto:" or "http://" to its href. Another
+      // address goes after the text in brackets, both muted (the user's choice, 2026-11-16: "In brackets").
       if (!link.autolink && run.text.slice(start) !== escape(link.href)) {
         add(" ");
-        over({ color: palette.muted }, () => add(link.href));
+        over({ color: palette.muted }, () => add(`(${link.href})`));
       }
-    } else add(t.raw); // raw HTML, a picture, a strikethrough, a task's box and anything else, as written
+    } else add(t.raw); // raw HTML, a picture, a task's box and anything else, as written
   }
 }
 
@@ -168,8 +170,12 @@ function table(t: Tokens.Table, width: number, palette: Palette): Line[] | null 
 function blocks(tokens: readonly Token[], width: number, palette: Palette, inItem = false, bullets = 0): Line[] {
   const out: Line[] = [];
   for (const t of tokens) {
-    if (t.type === "space") out.push({ text: "" });
-    else if (t.type === "paragraph" || t.type === "text") {
+    // A link's definition draws nothing (the user's choice, 2026-11-16: "Hide them"), so the blank lines either side of it
+    // are one empty line, as a single blank line is.
+    if (t.type === "def") continue;
+    if (t.type === "space") {
+      if (out.at(-1)?.text !== "" || out.at(-1)?.band) out.push({ text: "" });
+    } else if (t.type === "paragraph" || t.type === "text") {
       const k = t as Tokens.Paragraph | Tokens.Text;
       out.push(...rows(runOf(k.tokens ?? [{ type: "text", raw: k.raw, text: k.text }], palette)));
     } else if (t.type === "heading") {
@@ -186,7 +192,7 @@ function blocks(tokens: readonly Token[], width: number, palette: Palette, inIte
       out.push(...blocks((t as Tokens.Blockquote).tokens, width - BAR.length, palette, false, bullets).map((l) => led(l, BAR, palette.muted)));
     } else if (t.type === "list") out.push(...list(t as Tokens.List, width, palette, inItem, bullets));
     else if (t.type === "table") out.push(...(table(t as Tokens.Table, width, palette) ?? rawLines(t.raw)));
-    else out.push(...rawLines(t.raw)); // raw HTML, a link's definition and anything else, as written
+    else out.push(...rawLines(t.raw)); // raw HTML and anything else, as written
   }
   // No empty line at either end: the gap before and after a block is the conversation's (describe.ts, gapped).
   while (out[0]?.text === "" && !out[0].band) out.shift();

@@ -23,6 +23,7 @@ export interface Span {
   italic?: boolean;
   dim?: boolean;
   underline?: boolean;
+  strike?: boolean; // struck through: markdown's ~~x~~ (Task 15; the user's choice, 2026-11-16, "Struck through")
 }
 
 export interface Line {

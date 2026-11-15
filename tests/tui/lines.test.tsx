@@ -260,6 +260,16 @@ describe("Printed", () => {
       expect(within(shown[0]!, "1", "22")).toBe("there");
     }));
 
+  // The user's choice (2026-11-16, "Struck through"): a strikethrough is a style, printed as bold is, kept without colour.
+  it("prints a struck span on each row it wraps to, without colour too", () =>
+    coloured(() => {
+      const line: Line = { text: "● the quick brown", indent: 2, styles: [{ start: 6, end: 17, strike: true }] };
+      const shown = print(line, 12, { light: false, color: false, full: false });
+      // Ink keeps the struck space it breaks the row at, at the first row's end.
+      expect(shown.map(plain)).toEqual(["● the quick ", "  brown"]);
+      expect(shown.map((r) => within(r, "9", "29"))).toEqual(["quick ", "brown"]);
+    }));
+
   it("drops the spans' colours and the band without colour, and keeps bold (the theme's look)", () =>
     coloured(() => {
       const line: Line = { text: "ab", band: true, styles: [{ start: 0, end: 1, color: "red", bg: "blue", bold: true }] };

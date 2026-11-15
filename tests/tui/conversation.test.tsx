@@ -136,6 +136,19 @@ describe("Conversation's styled rows", () => {
       expect(shown.map((r) => within(r, "1", "22"))).toEqual(["quick", " brown", "f"]);
     }));
 
+  // The user's choice (2026-11-16, "Struck through"): a strikethrough is a style, drawn as bold is, and kept without colour.
+  it("draws a struck span across a wrap point and on a cut row, without colour too", () =>
+    coloured(() => {
+      const rows = new Rows(9);
+      rows.add([
+        { text: "the quick brown", styles: [{ start: 4, end: 15, strike: true }] },
+        { text: "a struck row cut", oneLine: true, styles: [{ start: 2, end: 16, strike: true }] },
+      ]);
+      const shown = drawIn({ light: false, color: false, full: false }, { rows, first: 0, height: 3, unseen: 0, following: true });
+      expect(shown.map(plain)).toEqual(["the quick", " brown", "a struck…"]);
+      expect(shown.map((r) => within(r, "9", "29"))).toEqual(["quick", " brown", "struck…"]);
+    }));
+
   it("fills a band row to its width with the band colour, its indent's spaces too", () =>
     coloured(() => {
       const rows = new Rows(9);

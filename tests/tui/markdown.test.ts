@@ -113,13 +113,14 @@ describe("markdownLines, each piece", () => {
     expect(markdownLines("> **b**", 80, P)[0]!.styles).toEqual([bar, { start: 2, end: 3, bold: true }]);
   });
 
-  it("draws a link's text underlined and its address after it, muted", () => {
+  // The user's choice (2026-11-16): "In brackets".
+  it("draws a link's text underlined and its address after it in brackets, muted", () => {
     expect(markdownLines("see [docs](https://x.y/z)", 80, P)).toEqual([
       {
-        text: "see docs https://x.y/z",
+        text: "see docs (https://x.y/z)",
         styles: [
           { start: 4, end: 8, underline: true },
-          { start: 9, end: 22, color: MUTED },
+          { start: 9, end: 24, color: MUTED },
         ],
       },
     ]);
@@ -171,9 +172,28 @@ describe("markdownLines, each piece", () => {
     expect(markdownLines("a <b>x</b> c", 80, P)).toEqual([{ text: "a <b>x</b> c" }]);
   });
 
+  // The user's choice (2026-11-16): "Struck through".
+  it("draws a strikethrough struck through, its marks not drawn", () => {
+    expect(markdownLines("a ~~gone~~ b", 80, P)).toEqual([{ text: "a gone b", styles: [{ start: 2, end: 6, strike: true }] }]);
+  });
+
+  // The user's choice (2026-11-16): "Hide them".
+  it("draws a reference link as any link, its definition not at all, no empty line left in its place", () => {
+    expect(markdownLines("[r][1]\n\n[1]: https://r.s", 80, P)).toEqual([
+      {
+        text: "r (https://r.s)",
+        styles: [
+          { start: 0, end: 1, underline: true },
+          { start: 2, end: 15, color: MUTED },
+        ],
+      },
+    ]);
+    expect(texts(markdownLines("a\n\n[1]: https://r.s\n\nb [x][1]", 80, P))).toEqual(["a", "", "b x (https://r.s)"]);
+    expect(texts(markdownLines("- a\n\n  [1]: https://r.s\n\n  b", 80, P))).toEqual(["  • a", "", "    b"]);
+  });
+
   it("draws anything else the lexer gives as its raw text", () => {
-    expect(markdownLines("~~gone~~ ![alt](p.png)", 80, P)).toEqual([{ text: "~~gone~~ ![alt](p.png)" }]);
-    expect(texts(markdownLines("[r][1]\n\n[1]: https://r.s", 80, P))).toEqual(["r https://r.s", "", "[1]: https://r.s"]);
+    expect(markdownLines("![alt](p.png)", 80, P)).toEqual([{ text: "![alt](p.png)" }]);
     expect(markdownLines("a\\*b", 80, P)).toEqual([{ text: "a*b" }]); // an escape is its character
   });
 });
@@ -218,11 +238,11 @@ describe("markdownLines, tables", () => {
 
   it("measures cells by the columns they take, wide characters and links' addresses included", () => {
     expect(texts(markdownLines("| 日本 | [l](u) |\n|---|---|\n| x | y |", 80, P))).toEqual([
-      "╭──────┬─────╮",
-      "│ 日本 │ l u │",
-      "├──────┼─────┤",
-      "│ x    │ y   │",
-      "╰──────┴─────╯",
+      "╭──────┬───────╮",
+      "│ 日本 │ l (u) │",
+      "├──────┼───────┤",
+      "│ x    │ y     │",
+      "╰──────┴───────╯",
     ]);
   });
 });
@@ -271,9 +291,9 @@ describe("markdownLines, what it shows", () => {
     expect(lines[0]!.text).toBe("╭─────────┬─────╮");
   });
 
-  it("draws with no colour: the same text, bold, italic and underline kept, no colour anywhere", () => {
+  it("draws with no colour: the same text, bold, italic, underline and strikethrough kept, no colour anywhere", () => {
     const none = palette(NONE);
-    const md = "# H\n\n**b** *i* `c` [l](u)\n\n> q\n\n---\n\n```\nk\n```\n\n| a |\n|---|\n| 1 |";
+    const md = "# H\n\n**b** *i* `c` [l](u) ~~s~~\n\n> q\n\n---\n\n```\nk\n```\n\n| a |\n|---|\n| 1 |";
     const lines = markdownLines(md, 20, none);
     expect(texts(lines)).toEqual(texts(markdownLines(md, 20, P)));
     for (const l of lines) for (const s of l.styles ?? []) expect(s.color === undefined && s.bg === undefined).toBe(true);
@@ -282,6 +302,7 @@ describe("markdownLines, what it shows", () => {
       { start: 0, end: 1, bold: true },
       { start: 2, end: 3, italic: true },
       { start: 6, end: 7, underline: true },
+      { start: 12, end: 13, strike: true },
     ]);
     expect(lines.find((l) => l.text === "k")!.band).toBe(true); // the band is drawn as plain rows without colour (theme.ts)
   });

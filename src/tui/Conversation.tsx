@@ -88,7 +88,7 @@ function marked(rows: Rows, r: Row, marks: [Pos, Pos][]): ReactNode[] | null {
 }
 
 type Style = Omit<Span, "start" | "end">;
-const STYLE = ["color", "bg", "bold", "italic", "dim", "underline"] as const;
+const STYLE = ["color", "bg", "bold", "italic", "dim", "underline", "strike"] as const;
 
 // Characters in runs of one style and one reverse colouring: a run with neither as its text, a reversed one as a Text in
 // reverse, a styled one as a Run. A character's style is the spans' over it, a later span's fields over an earlier one's,
@@ -134,7 +134,8 @@ function runs(chars: Iterable<{ offset: number; text: string; inverse: boolean; 
 }
 
 // A styled run, over its line's colour. Without colour (theme.ts, Look) its colour and background are dropped, and bold,
-// italic, dim and underline kept (Task 2). `inverse`: the selection's or a search match's reverse, over the style.
+// italic, dim, underline and strikethrough kept (Task 2; Task 15). `inverse`: the selection's or a search match's reverse,
+// over the style.
 function Run({ style, inverse, children }: { style: Style; inverse: boolean; children: string }) {
   const { look } = useContext(ThemeContext);
   return (
@@ -145,6 +146,7 @@ function Run({ style, inverse, children }: { style: Style; inverse: boolean; chi
       italic={style.italic}
       dimColor={style.dim}
       underline={style.underline}
+      strikethrough={style.strike}
       inverse={inverse}
     >
       {children}
