@@ -745,3 +745,25 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   lines (its line is marked `asIs`; one final line break comes off, as the heading counts), so it
   shows the rows its heading counts. Coordinator's call: classic Ctrl+O and `/tasks t3` print a
   result without its trailing blank lines (full screen's detail view still shows them).
+- **Task 15** (24389b6, 221388a and 2d5cb11, fixes cfba593 and 06b3afa): `marked` 18.1.2 (choice
+  P6: the newest at least two weeks old on 2026-11-16; 18.1.3 was 13 days old; the user chose it)
+  and `markdownLines` (src/tui/markdown.ts). The user chose (2026-11-16): "• then ◦ when nested"
+  (bullets alternate by depth among bulleted lists; a numbered list keeps its numbers and adds no
+  level); tables "As built" (rounded muted `╭┬╮├┼┤╰┴╯─│`, a space each side of a cell, a line
+  under the header when there are body rows, the header not bold, columns aligned as the markdown
+  says); "In brackets" (`text (address)`, the brackets and address muted, when they differ; an
+  empty address shows the text alone); "Hide them" (reference definitions draw nothing); "Struck
+  through" (`~~x~~` drawn struck, the marks dropped: `Span.strike` in describe.ts and Ink's
+  `strikethrough` in Conversation.tsx, outside the task's Files, kept without colour as bold is);
+  "Keep all three" (each source line its own row; a run of blank lines one empty line; the known
+  limits below). Builder's calls: a list two columns in, a nested one under its item's text;
+  rules `width` wide; a hard line break drawn as a break; code blocks `band`; strikethrough's
+  neighbours (task boxes, images) raw. From the review: text too deep for marked's lexer (it
+  recurses per level and overflows the stack at a few thousand `*`, `- ` or `>`) is drawn as its
+  raw text, blank lines as the markdown path draws them; `rows()` hands each span only to the rows
+  it covers (a 2,000-line styled paragraph took 1.4 s, now about 50 ms, the reviewer's timing).
+  The user asked for every URL on screen to be clickable too (OSC 8): investigated, not built; it
+  waits on the user's check of Ctrl+click under full screen's mouse capture (scratchpad
+  `link-test.mjs`) and becomes its own task. Known limits: a wrapped quote line shows `│` on its
+  first row only; list numbers are not padded (`9.` and `10.`); named HTML entities show raw
+  (`&amp;`), numbered ones decoded, as marked gives them.
