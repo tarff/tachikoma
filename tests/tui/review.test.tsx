@@ -15,8 +15,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import chalk from "chalk";
 import { render } from "ink-testing-library";
-import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
+import { describe, expect, it, onTestFinished, type TestContext, vi } from "vitest";
 import type { Protection } from "../../src/core/permissions.js";
 import { onPath } from "../../src/exec/env.js";
 import { readKeybindings } from "../../src/keybindings.js";
@@ -25,6 +26,7 @@ import { changes } from "../../src/sandbox/changes.js";
 import type { Manifest } from "../../src/sandbox/snapshot.js";
 import { Bindings, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { diffOf, Review, type ReviewEnd } from "../../src/tui/Review.js";
+import { type Theme, ThemeContext, themeOf } from "../../src/tui/theme.js";
 import { removeTree, ZERO } from "../helpers.js";
 
 const sha = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
@@ -125,11 +127,11 @@ function needGit(t: TestContext, w: World) {
 }
 
 // The review of the world's copy, drawn in `height` rows, and how it ended once it has.
-type Opts = { height?: number; bindings?: Bindings; step?: ApplyOptions["step"]; remove?: (folder: string) => Promise<void>; protection?: Protection };
+type Opts = { height?: number; bindings?: Bindings; step?: ApplyOptions["step"]; remove?: (folder: string) => Promise<void>; protection?: Protection; theme?: Theme };
 function open(w: World, opts: Opts = {}) {
   w.save();
   const ended: ReviewEnd[] = [];
-  const app = render(
+  const review = (
     <Review
       copy={{ session: "s1", folder: w.folder, manifest: w.manifest }}
       bindings={opts.bindings ?? new Bindings(tableOf(DEFAULTS))}
@@ -138,8 +140,9 @@ function open(w: World, opts: Opts = {}) {
       options={{ env: w.env, ...(opts.step ? { step: opts.step } : {}) }}
       {...(opts.remove ? { remove: opts.remove } : {})}
       protection={opts.protection ?? { hooks: [], files: [] }}
-    />,
+    />
   );
+  const app = render(opts.theme ? <ThemeContext value={opts.theme}>{review}</ThemeContext> : review);
   onTestFinished(() => app.unmount());
   return { app, ended };
 }
@@ -323,9 +326,9 @@ describe("Review's diff", SLOW, () => {
     const c = (await changes(w.manifest, w.work)).changes[0]!;
     expect(await diffOf(c, w.folder, 4)).toEqual([{ text: "too large to show: 4 bytes before, 8 after" }]);
     expect(await diffOf(c, w.folder, 8)).toEqual([
-      { text: "@@ -1 +1,2 @@", color: "cyan" },
+      { text: "@@ -1 +1,2 @@", color: "accent" },
       { text: " one" },
-      { text: "+two", color: "green" },
+      { text: "+two", color: "success" },
     ]);
   });
 });
@@ -679,5 +682,51 @@ describe("Review's keys", SLOW, () => {
     await until(app, "Up/j scroll · any other key closes");
     expect(w.read("a.txt")).toBe("a2\n");
     expect(w.read("b.txt")).toBe("b\n");
+  });
+});
+
+// TUI design pass, Task 13: `tachi review` draws the review alone (cli.tsx, drawAlone) in the look from the settings and
+// the environment, as the App is drawn. With NO_COLOR set nothing is in a colour, though chalk would draw one (chalk.level
+// = 3 below: chalk reads FORCE_COLOR once, at import); with the light theme, the light palette's colours. Colour codes
+// only: dim is kept (Task 2).
+describe("Review's colours", SLOW, () => {
+  const codes = (frame: string) =>
+    [...frame.matchAll(new RegExp(`${ESC}\\[([\\d;]*)m`, "g"))].filter((m) => m[1]!.split(";").some((p) => (+p >= 30 && +p <= 49) || (+p >= 90 && +p <= 107)));
+  const fg = (hex: string) => `${ESC}[38;2;${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(";")}m`;
+  // The list, with git-ignored changes' grey note, and a diff, its heading grey, its `@@` accent, `-` error and `+` success.
+  async function drawn(theme: Theme) {
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      const w = world({ "a.txt": "one\ntwo\n", ".gitignore": "build/\n", "build/out.js": "x\n" });
+      w.box("a.txt", "one\nTWO\n");
+      w.box("build/out.js", "rebuilt\n");
+      const { app } = open(w, { theme });
+      await untilSaid(app, "1 change in paths git ignores");
+      const list = app.lastFrame()!;
+      await press(app, "\r");
+      await until(app, "+TWO");
+      return { list, diff: app.lastFrame()! };
+    } finally {
+      chalk.level = level;
+    }
+  }
+
+  it("draws no colour with NO_COLOR set", async () => {
+    vi.stubEnv("NO_COLOR", "1");
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
+    const { list, diff } = await drawn(themeOf({}, process.env, 3));
+    expect(codes(list)).toEqual([]);
+    expect(codes(diff)).toEqual([]);
+  });
+
+  it("draws in the light palette with the light theme", async () => {
+    const theme = themeOf({ theme: "light" }, {}, 3);
+    const light = theme.palette;
+    const { list, diff } = await drawn(theme);
+    expect(list).toContain(`${fg(light.muted!)}1 change in paths git ignores`);
+    for (const [colour, text] of [[light.muted, "changed a.txt"], [light.error, "-two"], [light.success, "+TWO"]] as const) expect(diff).toContain(`${fg(colour!)}${text}`);
   });
 });

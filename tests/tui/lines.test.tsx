@@ -1,9 +1,17 @@
-import { describe, expect, it } from "vitest";
+import chalk from "chalk";
+import { Static } from "ink";
+import { render } from "ink-testing-library";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ToolOutcome } from "../../src/core/bus.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import type { CommandTask, Task } from "../../src/core/tasks.js";
 import { names } from "../../src/tui/app/constants.js";
+import { Printed } from "../../src/tui/Conversation.js";
+import type { Message } from "../../src/core/types.js";
+import { callRow, describe as describeMessage, gapped, type Line, notice, resultRow } from "../../src/tui/describe.js";
 import { taskRows } from "../../src/tui/TaskPanel.js";
+import { type Colour, type Look, palette, ThemeContext } from "../../src/tui/theme.js";
+import { Rows } from "../../src/tui/view.js";
 import { todoRows } from "../../src/tui/TodoList.js";
 import { toolParts } from "../../src/tui/ToolLine.js";
 import { workingText } from "../../src/tui/WorkingLine.js";
@@ -24,7 +32,7 @@ describe("workingText", () => {
       "⠹ Working · 1s · ↓ 0 tokens · ChatGPT plan · Esc to stop",
     );
     expect(workingText("Working", 1_000, { ...spend, lead: "ollama:x", costUnknown: true }, "Esc")).toBe(
-      "⠹ Working · 1s · ↓ 0 tokens · $0.00 + ? · Esc to stop",
+      "⠹ Working · 1s · ↓ 0 tokens · $0.00+ · Esc to stop", // choice D (TUI design pass, Task 10)
     );
   });
 
@@ -60,7 +68,7 @@ describe("toolParts", () => {
       call("shell", undefined, "npm test"),
     ];
     expect(shown(calls)).toEqual(["◐ shell npm test", "✓ read_file ×3", "✓ edit_file ×1", "✗ shell ×1", "⊘ write_file ×1"]);
-    expect(toolParts(calls).map((p) => [p.color, p.whole])).toEqual([["yellow", false], ["green", false], ["green", false], ["red", true], ["gray", true]]);
+    expect(toolParts(calls).map((p) => [p.color, p.whole])).toEqual([["warning", false], ["success", false], ["success", false], ["error", true], ["muted", true]]);
   });
 
   // Release 8c plan, choice 68 (Task 18, the user's answer, 2026-11-12): an MCP call by its server and tool as the server
@@ -85,8 +93,8 @@ describe("todoRows", () => {
 
   it("marks each item: to do, doing in yellow, done in grey", () => {
     expect(todoRows(list("done", "in_progress", "pending"), 5)).toEqual([
-      { mark: "☑", text: "item 0", color: "gray" },
-      { mark: "◐", text: "item 1", color: "yellow" },
+      { mark: "☑", text: "item 0", color: "muted" },
+      { mark: "◐", text: "item 1", color: "warning" },
       { mark: "☐", text: "item 2" },
     ]);
   });
@@ -134,7 +142,12 @@ describe("taskRows", () => {
 
   it("shows a running subagent's number and description, then under it its model, time, tokens, cost and latest tool call", () => {
     expect(shown([task({})])).toEqual(["◐ t2 find the login code", "  ⎿ claude-haiku-5-5 · 12s · ↓ 1.2k tokens · $0.01 · read_file src/auth/oauth.ts"]);
-    expect(taskRows([task({})], 2, now)[0]!.color).toBe("yellow");
+    expect(taskRows([task({})], 2, now)[0]!.color).toBe("warning");
+  });
+
+  // Choice D (TUI design pass, Task 10): the status line's `+`, the user's "Same everywhere".
+  it("marks a cost with calls of no known price with a `+`, as the status line does", () => {
+    expect(shown([task({ cost: 0.42, costUnknown: true })])[1]).toBe("  ⎿ claude-haiku-5-5 · 12s · ↓ 1.2k tokens · $0.42+ · read_file src/auth/oauth.ts");
   });
 
   it("says when one waits for a place, and marks finished ones as the tool line does, without a tool", () => {
@@ -143,7 +156,7 @@ describe("taskRows", () => {
       10,
       now,
     );
-    expect(rows.filter((_, i) => i % 2 === 0).map((r) => [r.mark, r.color])).toEqual([["◐", "gray"], ["✓", "green"], ["✗", "red"], ["⊘", "gray"]]);
+    expect(rows.filter((_, i) => i % 2 === 0).map((r) => [r.mark, r.color])).toEqual([["◐", "muted"], ["✓", "success"], ["✗", "error"], ["⊘", "muted"]]);
     expect(rows[1]!.text).toBe("⎿ claude-haiku-5-5 · waiting");
     expect(rows[3]!.text).toBe("⎿ claude-haiku-5-5 · 10s · ↓ 1.2k tokens · $0.01");
   });
@@ -183,6 +196,212 @@ describe("taskRows", () => {
   it("counts a command in the +N more of a panel too short for every row", () => {
     const tasks = [task({ id: "t1" }), command({ id: "t2" }), command({ id: "t3" })];
     expect(shown(tasks, 4)).toEqual(["◐ t1 find the login code", expect.stringContaining("⎿ claude-haiku-5-5"), "  +2 more"]);
+  });
+});
+
+// TUI design pass, Task 2: a styled line as classic mode prints it. chalk at level 3 (24-bit colour) for the tests that
+// look at colours, so the band's hex is drawn as it is.
+describe("Printed", () => {
+  const mounted: ReturnType<typeof render>[] = [];
+  afterEach(() => {
+    for (const app of mounted.splice(0)) app.unmount();
+  });
+  const plain = (s: string) => s.replace(/\u001b\[[\d;]*m/g, "");
+  const within = (row: string, open: string, close: string) =>
+    [...row.matchAll(new RegExp(`\\u001b\\[${open}m(.*?)\\u001b\\[${close}m`, "g"))].map((m) => plain(m[1]!)).join("");
+  const print = (line: Line, columns: number, look?: Look) => {
+    const app = render(look ? <ThemeContext value={{ look, palette: palette(look) }}><Printed line={line} columns={columns} /></ThemeContext> : <Printed line={line} columns={columns} />);
+    mounted.push(app);
+    return app.lastFrame()!.split("\n");
+  };
+  const coloured = <T,>(run: () => T): T => {
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      return run();
+    } finally {
+      chalk.level = level;
+    }
+  };
+
+  it("prints a line without styles as before: its text in its colour", () => {
+    expect(print({ text: "the quick\nbrown fox", color: "error" }, 10)).toEqual(["the quick", "brown fox"]);
+  });
+
+  // Task 2's review: an empty line is one row, as Task 3's gaps and a message's band lines need.
+  it("prints an empty line as one row, a band one padded with the band colour", () =>
+    coloured(() => {
+      const items = [{ id: 1, text: "a" }, { id: 2, text: "" }, { id: 3, text: "b" }];
+      const app = render(<Static items={items}>{(l) => <Printed key={l.id} line={l} columns={6} />}</Static>);
+      mounted.push(app);
+      expect(app.lastFrame()!.split("\n").map(plain).slice(0, 3)).toEqual(["a", "", "b"]);
+      const band = print({ text: "", band: true }, 6);
+      expect(band.map(plain)).toEqual(["      "]);
+      expect(band[0]!.startsWith("\u001b[48;2;42;42;42m")).toBe(true);
+    }));
+
+  // Choice P3: the lead in a box of its own, the rest in a box beside it that wraps, so the rows are the full screen's.
+  it("prints an indented line in a row box, wrapping as full screen does at 50 and 100 columns", () => {
+    const reply = `● ${Array.from({ length: 30 }, () => "word").join(" ")}`;
+    for (const columns of [50, 100]) {
+      const rows = new Rows(columns);
+      rows.add([{ text: reply, indent: 2 }]);
+      const full = Array.from({ length: rows.total }, (_, i) => rows.row(i).text.trimEnd());
+      expect(print({ text: reply, indent: 2 }, columns)).toEqual(full);
+    }
+    expect(print({ text: "› one\nabc defgh ij", indent: 2 }, 10)).toEqual(["› one", "  abc", "  defgh ij"]);
+  });
+
+  it("pads a band line to the width with the band colour, and draws its spans", () =>
+    coloured(() => {
+      const shown = print({ text: "hi there", band: true, styles: [{ start: 3, end: 8, bold: true }] }, 12);
+      expect(shown.map(plain)).toEqual(["hi there    "]);
+      expect(shown[0]!.startsWith("\u001b[48;2;42;42;42m")).toBe(true); // the dark look's band, #2a2a2a (theme.ts)
+      expect(within(shown[0]!, "1", "22")).toBe("there");
+    }));
+
+  it("drops the spans' colours and the band without colour, and keeps bold (the theme's look)", () =>
+    coloured(() => {
+      const line: Line = { text: "ab", band: true, styles: [{ start: 0, end: 1, color: "red", bg: "blue", bold: true }] };
+      expect(within(print(line, 6)[0]!, "31", "39")).toBe("a");
+      const none = print(line, 6, { light: false, color: false, full: false })[0]!;
+      expect(none).not.toMatch(/\u001b\[(3|4)\d/);
+      expect(within(none, "1", "22")).toBe("a");
+      expect(plain(none)).toBe("ab");
+    }));
+
+  // Task 7's review, the user's choice (2026-11-13, "Expand first-row tabs"): the terminal skips a raw tab's cells without
+  // painting the background, so a tab under a background on a line's first row is printed as the spaces to its stop, as
+  // full screen draws it; a tab after the first row's end, or with no background, or without colour, stays a tab.
+  const TINT = "48;2;67;33;36"; // the dark look's delete tint, #432124 (theme.ts)
+  const tinted = (text: string, color?: Colour): Line => {
+    let start = 0;
+    const styles = text.split("\n").map((l) => {
+      const s = { start, end: Math.min(start + l.length + 1, text.length), bg: "#432124" as const, ...(color ? { color } : {}) };
+      start = s.end;
+      return s;
+    });
+    return { text, styles };
+  };
+  const fullRows = (line: Line, columns: number) => {
+    const rows = new Rows(columns);
+    rows.add([line]);
+    return Array.from({ length: rows.total }, (_, i) => rows.row(i).text);
+  };
+
+  // A line with no lead is laid out at the terminal's width, ink-testing-library's 100 columns, as the App's are at its
+  // own (`columns`, Ink's useWindowSize).
+  it("prints a tab under a background on a line's first row as the spaces to its stop, as full screen draws it", () =>
+    coloured(() => {
+      const line = tinted("- \tone\n- \t\ttwo");
+      const shown = print(line, 100);
+      expect(shown.map(plain)).toEqual(["-       one", "-               two"]);
+      expect(shown.map(plain)).toEqual(fullRows(line, 100));
+      expect(shown.map((r) => within(r, TINT, "49"))).toEqual(["-       one", "-               two"]); // tinted, spaces too
+      expect(shown.join("")).not.toContain("\t");
+      // An indented line's text counts its columns from the box after its lead (choice P3), as full screen does.
+      const indented = { ...tinted("● \tone"), indent: 2 };
+      expect(print(indented, 30).map(plain)).toEqual(fullRows(indented, 30).map((r) => r.trimEnd()));
+      expect(print(indented, 30).map(plain)).toEqual(["●         one"]);
+    }));
+
+  // A tab after the first row is left to Ink: a Text that wraps goes through wrap-ansi, which turns every tab into the
+  // spaces to a stop counted from its line's start, not its row's (wrap-ansi 10.0.2, expandTabs), inside the run's
+  // background. So it is painted, at its own stop: "end" then 3 spaces (to column 104 of the line), where full screen draws
+  // 5 (to column 8 of the row).
+  it("leaves a tab after a line's first row to Ink, and one without a background or without colour as a tab", () =>
+    coloured(() => {
+      const long = `- \t${"word ".repeat(18)}end\tx`; // at 100 columns "end" goes to the second row, the tab after it
+      const first = `-       ${"word ".repeat(18)}`;
+      expect(fullRows(tinted(long), 100)).toEqual([first, "end     x"]);
+      const shown = print(tinted(long), 100);
+      expect(shown.map((r) => within(r, TINT, "49"))).toEqual([first, "end   x"]);
+      expect(print({ text: "- \tone", styles: [{ start: 0, end: 6, color: "red" }] }, 100).join("")).toContain("\t");
+      expect(print(tinted("- \tone"), 100, { light: false, color: false, full: false }).join("")).toContain("\t");
+    }));
+
+  // Task 7's re-check: the spans are stepped through by their starts, but laid in their own order, a later over an earlier,
+  // so the red span given second lies over the green one inside it.
+  it("lays a later span over an earlier one that starts after it", () =>
+    coloured(() => {
+      const row = print({ text: "abcdefghij", styles: [{ start: 2, end: 5, color: "green" }, { start: 0, end: 10, color: "red" }] }, 100)[0]!;
+      expect(within(row, "31", "39")).toBe("abcdefghij");
+      expect(row).not.toContain("\u001b[32m");
+    }));
+
+  // Task 7's review: an edit's preview has a span for each of its lines, so a long one has thousands. A character's style
+  // is found by stepping through the spans, not by looking at every span for every character: the spans' fields read
+  // grow with the text, where the quadratic way read 2 or more for each span at each character (about 2,000,000 here).
+  it("finds each character's spans by stepping through them, not by reading every span for each", () =>
+    coloured(() => {
+      const n = 300;
+      const text = Array.from({ length: n }, (_, k) => `- line ${k}`).join("\n");
+      let reads = 0;
+      let start = 0;
+      const styles = text.split("\n").map((l, k) => {
+        const s = { start, end: Math.min(start + l.length + 1, text.length), color: k % 2 ? ("green" as const) : ("red" as const) };
+        start = s.end;
+        return new Proxy(s, { get: (t, key) => (reads++, t[key as keyof typeof t]) });
+      });
+      const shown = print({ text, styles }, 100);
+      expect(shown.map(plain)).toEqual(text.split("\n"));
+      expect(within(shown[0]!, "31", "39")).toBe("- line 0");
+      expect(within(shown[299]!, "32", "39")).toBe("- line 299");
+      expect(reads).toBeLessThan(20 * (text.length + n));
+    }));
+});
+
+// TUI design pass, Task 3: the blocks and markers describe gives a message's lines, in the dark full look's colours.
+describe("describe's blocks and markers", () => {
+  const P = palette({ light: false, color: true, full: true });
+  const accent = { start: 0, end: 2, color: P.accent };
+
+  it("gives your message as three band lines, `› ` and its text in the middle, a block from the first, later lines indented", () => {
+    const typed: Message = { role: "user", parts: [{ type: "text", text: "one\ntwo" }] };
+    expect(describeMessage(typed, P)).toEqual([
+      { text: "", band: true, block: true },
+      { text: "› one\ntwo", band: true, indent: 2 },
+      { text: "", band: true },
+    ]);
+  });
+
+  it("starts a reply with `● ` in the accent colour, indented under its first word, a block", () => {
+    const answer: Message = { role: "assistant", parts: [{ type: "text", text: "Done.\nAll of it." }] };
+    expect(describeMessage(answer, P)).toEqual([{ text: "● Done.\nAll of it.", styles: [accent], indent: 2, block: true }]);
+  });
+
+  // Choice P2: the dot is the accent colour on every call row, as a printed row cannot change; its result row says how it
+  // went, and is no block.
+  it("starts a call row with `● ` in the accent colour, its name and detail in the text colour, a block; its result row no block", () => {
+    const call = { type: "tool_call" as const, id: "c", name: "read_file", input: { path: "a.txt" } };
+    expect(callRow(call, P)).toEqual({ text: "● read_file a.txt", styles: [accent], oneLine: true, block: true });
+    expect(resultRow({ type: "tool_result", callId: "c", output: "x", isError: false })).toEqual({ text: "  ⎿ ok", color: "muted", oneLine: true });
+    const asked: Message = { role: "assistant", parts: [call] };
+    expect(describeMessage(asked, P)).toEqual([callRow(call, P)]);
+  });
+
+  // As say() and an opened folded row space lines: a gap before each block, none first, none after an empty line.
+  it("puts one empty line before each block, none before the first line and none after an empty one", () => {
+    const block = (text: string): Line => ({ text, block: true });
+    const texts = (ls: Line[]) => ls.map((l) => l.text);
+    expect(texts(gapped([block("a"), { text: "  ⎿ ok" }, block("b")], null))).toEqual(["a", "  ⎿ ok", "", "b"]);
+    expect(texts(gapped([block("a")], { text: "before" }))).toEqual(["", "a"]);
+    expect(texts(gapped([block("a"), { text: "" }, block("b")], { text: "" }))).toEqual(["a", "", "b"]);
+    // An empty band line is part of your message, not a gap (Task 3's code review).
+    expect(texts(gapped([block("a")], { text: "", band: true }))).toEqual(["", "a"]);
+  });
+
+  // Task 3's code review: a notice's later rows line up after its `● `, as a reply's do, and its own spans move with its
+  // text, after the dot's.
+  it("indents a notice's later rows under its text, and keeps its own spans after the dot's", () => {
+    const shown = notice({ text: "ab", color: "muted", styles: [{ start: 0, end: 1, bold: true }] }, P);
+    expect(shown).toEqual({ text: "● ab", color: "muted", styles: [{ start: 0, end: 2, color: P.muted }, { start: 2, end: 3, bold: true }], indent: 2, block: true });
+    const long = notice({ text: Array.from({ length: 12 }, () => "word").join(" "), color: "muted" }, P);
+    const rows = new Rows(30);
+    rows.add([long]);
+    const full = Array.from({ length: rows.total }, (_, i) => rows.row(i).text.trimEnd());
+    expect(full.length).toBeGreaterThan(1);
+    expect(full.slice(1).every((r) => r.startsWith("  word"))).toBe(true);
   });
 });
 

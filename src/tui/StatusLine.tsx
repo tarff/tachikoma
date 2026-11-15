@@ -1,5 +1,8 @@
 import { Text } from "ink";
+import { useContext } from "react";
+import stringWidth from "string-width";
 import { type Mode, visible } from "../core/permissions.js";
+import { type Colour, type Look, type Palette, ThemeContext } from "./theme.js";
 
 // The status line's parts, and `tools`, the line under it (release 3 design, "On screen"); `tasks`,
 // how many subagents run (release 4 design, "On screen").
@@ -49,68 +52,104 @@ export function duration(ms: number): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
-// The cost so far; the working line shows a turn's the same way.
+// The cost so far; the working line shows a turn's the same way. A `+` after it: some calls had no known price, so the
+// real cost is higher (TUI design pass, choice D).
 export function costText(lead: string, cost: number, costUnknown: boolean): string {
-  const dollars = `$${cost.toFixed(2)}${costUnknown ? " + ?" : ""}`;
+  const dollars = `$${cost.toFixed(2)}${costUnknown ? "+" : ""}`;
   // A plan has no per-token price; OpenAI's guidelines ask apps to show that the plan is in use.
   if (!lead.startsWith("chatgpt:")) return dollars;
   if (cost) return `ChatGPT plan + ${dollars}`;
-  return costUnknown ? "ChatGPT plan + ?" : "ChatGPT plan";
+  return costUnknown ? "ChatGPT plan+" : "ChatGPT plan";
 }
 
 // A run of a part's text in one colour. Grey is `dim`, as claude-hud draws it (`dim` in its src/render/colors.ts, 0.0.4)
-// and as the bar's empty cells are drawn below.
+// and as the bar's empty cells are drawn below; the labels are the palette's muted (TUI design pass, Task 10).
 export interface Piece {
   text: string;
-  color?: "cyan" | "green" | "yellow" | "red" | "magenta";
+  color?: Colour; // a colour, never a role (theme.ts)
   dim?: boolean;
 }
 
 // The mode by risk, as claude-hud has no such part (release 5 design, "The status line's colours"). Auto takes magenta,
-// which no other mode uses, so it stands apart (release 7 plan, Task 7).
+// which no other mode uses, so it stands apart (release 7 plan, Task 7). These and the context bar's keep their own colours,
+// as they mean risk and fullness, but only with colour (look.color): chalk does not read NO_COLOR, so a name handed to
+// Ink would still be drawn (TUI design pass, Task 13).
 const MODE_COLOR: Record<Mode, Piece["color"]> = { ask: "green", project: "yellow", auto: "magenta", never: "red" };
 
-// The one place each part's words and colours are written (release 5 design, "The status line's colours").
-export function pieces(s: LineSegment, i: StatusInfo): Piece[] {
+// The one place each part's words and colours are written (release 5 design, "The status line's colours"); the labels
+// muted and the model in the accent colour from the palette (TUI design pass, Task 10), and every other colour from it but
+// the mode's and the context's (Task 13).
+export function pieces(s: LineSegment, i: StatusInfo, p: Palette, look: Look): Piece[] {
   switch (s) {
     case "lead":
       // Escaped as the folder and branch are below: the id comes from the command line or a provider's model list.
-      return [{ text: "lead", dim: true }, { text: " " }, { text: visible(i.lead), color: "cyan" }];
+      return [{ text: "lead", color: p.muted }, { text: " " }, { text: visible(i.lead), color: p.accent }];
     case "context": {
       // How much is left, as Codex shows it (main design, "Status line"), in the bar's colour, the bar saying what
       // the part is (the user's choice, 2026-10-27); the tokens in use when the window is not known.
-      if (!i.contextWindow) return [{ text: "ctx", dim: true }, { text: ` ${k(i.context)}` }];
+      if (!i.contextWindow) return [{ text: "ctx", color: p.muted }, { text: ` ${k(i.context)}` }];
       const u = used(i);
-      return [{ text: `${Math.max(0, 100 - u)}% left`, color: contextBar(u).color }];
+      return [{ text: `${Math.max(0, 100 - u)}% left`, color: look.color ? contextBar(u).color : undefined }];
     }
     case "tokens":
-      return [{ text: `${k(i.input)} ` }, { text: "in", dim: true }, { text: ` / ${k(i.output)} ` }, { text: "out", dim: true }];
+      return [{ text: `${k(i.input)} ` }, { text: "in", color: p.muted }, { text: ` / ${k(i.output)} ` }, { text: "out", color: p.muted }];
     case "cost":
-      return [{ text: costText(i.lead, i.cost, i.costUnknown), color: "green" }];
+      return [{ text: costText(i.lead, i.cost, i.costUnknown), color: p.success }];
     case "mode":
-      return [{ text: "perm", dim: true }, { text: " " }, { text: i.mode, color: MODE_COLOR[i.mode] }];
-    case "errors": {
-      const text = `${i.errors} error${i.errors === 1 ? "" : "s"}`;
-      return [i.errors > 0 ? { text, color: "red" } : { text, dim: true }];
-    }
+      return [{ text: "perm", color: p.muted }, { text: " " }, { text: i.mode, color: look.color ? MODE_COLOR[i.mode] : undefined }];
+    case "errors": // shown only once there is one (zero, below)
+      return [{ text: `${i.errors} error${i.errors === 1 ? "" : "s"}`, color: p.error }];
     case "project": {
       // Folder and branch names come from the disk, so they are escaped like everything else on screen.
-      const folder: Piece = { text: visible(i.project), color: "yellow" };
+      const folder: Piece = { text: visible(i.project), color: p.warning };
       if (i.branch === null) return [folder];
-      return [folder, { text: " " }, { text: "git:(", color: "magenta" }, { text: visible(i.branch), color: "cyan" }, { text: ")", color: "magenta" }];
+      return [folder, { text: " " }, { text: "git:(", color: p.muted }, { text: visible(i.branch), color: p.accent }, { text: ")", color: p.muted }];
     }
     case "time":
       return [{ text: `⏱ ${duration(i.elapsed)}`, dim: true }];
     case "tasks":
-      return [{ text: `${i.running} running`, color: "yellow" }];
+      return [{ text: `${i.running} running`, color: p.warning }];
   }
 }
 
-// One line, cut at the end to the terminal's width (Ink measures it in columns) instead of wrapping.
-// On the terminal's own background, its parts split by a grey ` | ` (release 5 design, "The status line's colours").
-export function StatusLine({ info, segments }: { info: StatusInfo; segments: Segment[] }) {
-  // `tasks` shows only while a subagent runs.
-  const shown = segments.filter((s): s is LineSegment => s !== "tools" && (s !== "tasks" || info.running > 0));
+// A part with nothing to say yet (TUI design pass, Task 10): no errors, no tokens either way, a cost of 0 that is known.
+// The ChatGPT plan's cost part still says the plan is in use (costText). `tasks` shows only while a subagent runs.
+function zero(s: LineSegment, i: StatusInfo): boolean {
+  if (s === "tasks") return i.running === 0;
+  if (s === "errors") return i.errors === 0;
+  if (s === "tokens") return i.input === 0 && i.output === 0;
+  return s === "cost" && i.cost === 0 && !i.costUnknown && !i.lead.startsWith("chatgpt:");
+}
+
+// One line, `columns` wide at most, instead of wrapping: too long, parts drop from the end of the list one at a time,
+// `lead` and `mode` last (TUI design pass, Task 10), and then each dropped part that fits again is put back, in the list's
+// order (the user's "Put back what fits", 2026-11-14); a last part still too long alone is cut at the end (Ink measures
+// it in columns). On the terminal's own background, its parts split by a grey ` | ` (release 5 design, "The status
+// line's colours").
+export function StatusLine({ info, segments, columns }: { info: StatusInfo; segments: Segment[]; columns: number }) {
+  const { look, palette } = useContext(ThemeContext);
+  const listed = segments.filter((s): s is LineSegment => s !== "tools" && !zero(s, info));
+  const on = listed.map(() => true);
+  // A part's columns: its bar's cells and the space after them, then its words; the line's, a space at each end and
+  // ` | ` between parts.
+  const width = (s: LineSegment) => (s === "context" && info.contextWindow ? BAR_CELLS + 1 : 0) + stringWidth(pieces(s, info, palette, look).map((p) => p.text).join(""));
+  const lineWidth = () => {
+    const parts = listed.filter((_, n) => on[n]);
+    return 2 + parts.reduce((sum, s) => sum + width(s), 0) + 3 * (parts.length - 1);
+  };
+  const keptLongest = (s: LineSegment) => s === "lead" || s === "mode"; // dropped only once no other part is left
+  while (on.filter(Boolean).length > 1 && lineWidth() > columns) {
+    const n = on.findLastIndex((o, m) => o && !keptLongest(listed[m]!));
+    on[n === -1 ? on.lastIndexOf(true) : n] = false;
+  }
+  // None put back while `lead` or `mode` is out, so they still go last.
+  if (listed.every((s, n) => on[n] || !keptLongest(s)))
+    for (let n = 0; n < listed.length; n++) {
+      if (on[n]) continue;
+      on[n] = true;
+      if (lineWidth() > columns) on[n] = false;
+    }
+  const shown = listed.filter((_, n) => on[n]);
   return (
     <Text wrap="truncate-end">
       {shown.map((s, n) => {
@@ -120,11 +159,11 @@ export function StatusLine({ info, segments }: { info: StatusInfo; segments: Seg
             {n === 0 ? " " : <Text dimColor> | </Text>}
             {bar && (
               <>
-                <Text color={bar.color}>{"█".repeat(bar.filled)}</Text>
+                <Text color={look.color ? bar.color : undefined}>{"█".repeat(bar.filled)}</Text>
                 <Text dimColor>{"░".repeat(BAR_CELLS - bar.filled)}</Text>{" "}
               </>
             )}
-            {pieces(s, info).map((p, j) => (
+            {pieces(s, info, palette, look).map((p, j) => (
               <Text key={j} color={p.color} dimColor={p.dim}>
                 {p.text}
               </Text>

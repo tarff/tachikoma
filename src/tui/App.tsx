@@ -18,6 +18,7 @@ import type { UserRules } from "../safety/rules.js";
 import type { Shell } from "../safety/split.js";
 import { SETTINGS, type Settings, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
+import { noted } from "../tools/files.js";
 import type { TodoItem } from "../tools/todo.js";
 import { characters, contextsOf, FROM, gray, isFile, type Question, SHORTEN_WORDS, STOPPING, visualSelection } from "./app/constants.js";
 import { handover } from "./app/handover.js";
@@ -31,8 +32,8 @@ import { queue } from "./app/queue.js";
 import { useAppState } from "./app/state.js";
 import { type Bindings, keyText } from "./bindings.js";
 import { type Clipboard, imagePaths } from "./clipboard.js";
-import { Conversation } from "./Conversation.js";
-import { brief, describe, type Line, screen as escaped } from "./describe.js";
+import { Conversation, Printed } from "./Conversation.js";
+import { describe, fileShown, gapAfter, type Line, notice as noticeLine, previewStyles, screen as escaped, target } from "./describe.js";
 import { DetailView, keyRow, searchFor } from "./DetailView.js";
 import { Field } from "./Field.js";
 import { History } from "./history.js";
@@ -71,7 +72,8 @@ export interface AppProps {
   workspace: Workspace; // the project's files, for the branch (release 7 plan, Task 14)
   branch: string | null; // the git branch at the start, read before the first frame; read again after each turn
   historyFile: string; // this project's past prompts
-  intro: Line[]; // shown first: the instruction files read
+  intro: Line[]; // shown first: the start-up box, the files left out, the sandbox's lines and a restored conversation
+  restored?: boolean; // the window opens on a conversation brought back (-c, -r): the hint row's "?" from the start
   errorFile: string;
   segments: Segment[];
   makeProvider: (spec: string) => Provider;
@@ -203,7 +205,8 @@ export function App(props: AppProps) {
     mouse(ui, fns),
     promptKeys(ui, fns),
   );
-  ui.history.current ??= new History(ui.historyFile, (line) => fns.say({ text: line, color: "magenta" }));
+  // Its warning a notice, as the start-up's are (TUI design pass, Task 3's review).
+  ui.history.current ??= new History(ui.historyFile, (line) => fns.say(noticeLine({ text: line, color: "accent" }, ui.palette)));
 
   useEffect(() => {
     ui.bindAsk((text, detail, owner, plain, warnings, note, oneRow) => {
@@ -218,14 +221,34 @@ export function App(props: AppProps) {
       // A question ends the open run of quiet calls before anything of its own is said, the asked call taken out of it for
       // a row of its own (release 8c plan, choice 65).
       latest.current.endRun(call);
+      // A write's or an edit's file as the conversation names it, in the preview's heading and the answer: relative to the
+      // project when inside it, as the call row names it (TUI design pass, Task 8; audit 3), from the workspace's folder,
+      // the sandbox's /work in the box. The question's own line keeps the full path, as it is what is allowed. A path with
+      // one of files.ts's three notes after it, "(really …)", "(through a link that leads nowhere)" or "(where it really
+      // leads cannot be told)", stays in full (files.ts, noted); so does one holding an escape, which the summary comes
+      // with (permissions.ts, visible), as Windows' path rules would read its backslash as a folder's (Task 8's code review).
+      const verb = /^(?:write|edit) /.exec(text)?.[0];
+      const file = verb === undefined ? "" : text.slice(verb.length);
+      const asSaid = verb === undefined || noted(file) || /\\u[0-9a-f]{4}/.test(file) ? text : `${verb}${fileShown(ui.workspace.root, file)}`;
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
-      // Grey, under a heading, so file text cannot pass for the conversation or the interface.
+      // Grey, under a heading, so file text cannot pass for the conversation or the interface. One block, from its
+      // heading, the empty line before it not in its range (TUI design pass, Task 3). An edit's preview, a diff, in colour
+      // over the grey (Task 7).
       let range: [number, number] | undefined;
       if (detail !== undefined) {
         const lines = detail ? detail.replace(/\r?\n$/, "").split("\n").length : 0; // as read_file counts them
         const from = ui.kept.lines.length;
-        latest.current.say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
-        if (ui.fullNow.current) range = [from, ui.kept.lines.length - 1];
+        const styles = detail ? previewStyles(text, detail, ui.palette) : [];
+        const follows = call !== undefined && ui.toolLine.current === call; // its call's row the last said
+        latest.current.say(
+          { text: `┌ ${asSaid} (${lines} line${lines === 1 ? "" : "s"})`, color: "muted", block: true },
+          // The rows the heading counts: the file's last line's break left out, its empty lines kept (3c04960's review).
+          { text: detail ? detail.replace(/\r?\n$/, "") : "(empty)", color: "muted", asIs: true, ...(styles.length ? { styles } : {}) },
+        );
+        // The answer goes under the call while the preview straight after its row is the last said, as under its row
+        // alone (Task 8).
+        if (follows) ui.toolLine.current = call;
+        if (ui.fullNow.current) range = [ui.kept.lines[from]!.text ? from : from + 1, ui.kept.lines.length - 1]; // past the gap: the heading is never empty
       }
       return new Promise((resolve) => {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
@@ -235,8 +258,9 @@ export function App(props: AppProps) {
         // A subagent's plain question, only an MCP server's visit request (release 8c plan, Task 12's re-check), names the
         // subagent itself, its id first, so it is not named again here; its owner still stops and cancels it.
         const named = owner && !plain;
+        const who = named ? `${visible(owner.name)} to ` : "";
         const q: Question = {
-          text: named ? `${visible(owner.name)} to ${text}` : text,
+          text: `${who}${text}`,
           // A subagent's name is its id, then its description in brackets (tasks.ts); a summary starts with its action:
           // "run: …", "write …", "read …".
           label: `${named ? `${visible(owner.name.split(" ", 1)[0]!)} to ` : ""}${text.split(/[\s:]/, 1)[0]}`,
@@ -261,18 +285,19 @@ export function App(props: AppProps) {
             // list, a chord typed in the list to the list's keys (the code re-checks).
             if (typedAt) latest.current.dropChord();
             if (q.detail && q.following) ui.view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
-            // A permission's answer is one line (release 7 plan, choice 66): under its call's tool line while that is still
-            // the conversation's last line, and otherwise naming what it answers, as a subagent's does, a write's after its
-            // preview and one that waited in the line. Each danger follows it, the whole line red then. A declined call's
+            // A permission's answer is one line (release 7 plan, choice 66): under its call's tool line while that, or the
+            // preview straight after it, is still the conversation's last line (TUI design pass, Task 8), and otherwise
+            // naming what it answers, its file as the preview's heading names it, as a subagent's does and one that waited
+            // in the line. Each danger follows it, the whole line red then. A declined call's
             // result row is left out under its tool line, as this line says it, and is otherwise the answer alone, so the
             // results keep their places in call order (choice 67); the model is still told its full message. A plain
             // question keeps its own record.
-            if (q.plain) latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
+            if (q.plain) latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "muted" });
             else {
               const said = [how, ...q.warnings].join(" ");
               const under = q.call !== undefined && ui.toolLine.current === q.call;
               if (!ok && q.call !== undefined) ui.answered.current.set(q.call, under ? null : how);
-              latest.current.say({ text: under ? `  ⎿ ${said}` : `${q.short ?? q.text}: ${said}`, color: q.warnings.length ? "red" : "gray" });
+              latest.current.say({ text: under ? `  ⎿ ${said}` : `${q.short ?? `${who}${asSaid}`}: ${said}`, color: q.warnings.length ? "error" : "muted" });
             }
             resolve(ok);
             ui.rerender((n) => n + 1);
@@ -301,7 +326,7 @@ export function App(props: AppProps) {
     // before its results came is put again, so each shows under its call (choice 70; Task 21). An answered call's id is
     // let go with its result, as a provider may use an id again.
     const onMessage = (m: Message) => {
-      latest.current.say(...describe(m, ui.answered.current, ui.run));
+      latest.current.say(...describe(m, ui.palette, ui.answered.current, ui.run));
       for (const fold of ui.run.filled()) if (fold.open) latest.current.putFold(fold);
       for (const p of m.parts) if (p.type === "tool_result") ui.answered.current.delete(p.callId);
       const last = m.parts.at(-1);
@@ -310,19 +335,23 @@ export function App(props: AppProps) {
     };
     // Each line said here, outside describe, ends the open run of quiet calls first, so the calls before it are said above
     // it (release 8c plan, Task 15's quality review); a failed call's error event says nothing, its result row coming next.
+    // Each is a block, its `✗` red, or the fallback's `↪` (TUI design pass, Task 3).
     const onError = (e: ErrorEvent) => {
       if (e.kind !== "tool") latest.current.endRun();
+      const say = (l: Line) => latest.current.say({ ...l, block: true });
       if (e.kind === "tool") ui.rerender((n) => n + 1);
-      else if (e.kind === "fallback") latest.current.say({ text: `↪ ${e.message}`, color: "magenta" });
+      else if (e.kind === "fallback") say({ text: `↪ ${e.message}`, color: "accent" });
       // Its line names what failed, so it goes without a label (release 8a plan, Task 5; user, 2026-11-06), as a
       // shortening's does (Task 12), and a hook's (release 8b plan, choice 22), whose line is escaped whole, as its grey
       // lines are (onHookNote).
       // An MCP failure's line names its server too (release 8c plan, choice 26), and is escaped whole, as it carries what
       // the server or the system said.
-      else if (e.kind === "hook" || e.kind === "mcp") latest.current.say({ text: `✗ ${visible(e.message, { tabs: true })}`, color: "red" });
-      else if (e.kind === "saving" || e.kind === "shortening") latest.current.say({ text: `✗ ${e.message}`, color: "red" });
-      else latest.current.say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
+      else if (e.kind === "hook" || e.kind === "mcp") say({ text: `✗ ${visible(e.message, { tabs: true })}`, color: "error" });
+      else if (e.kind === "saving" || e.kind === "shortening") say({ text: `✗ ${e.message}`, color: "error" });
+      else say({ text: `✗ ${e.kind}: ${e.message}`, color: "error" });
     };
+    // A notice said from the bus: a block, a grey `● ` before it (Task 3; audit 7).
+    const sayNotice = (l: Line) => latest.current.say(noticeLine(l, ui.palette));
     const onUsage = () => {
       ui.rerender((n) => n + 1);
       latest.current.lookUpWindow(false);
@@ -330,11 +359,11 @@ export function App(props: AppProps) {
     const onLead = (id: string) => {
       latest.current.endRun();
       if (ui.leadFromFile.current) latest.current.note(gray(`lead is now ${id}${FROM}`));
-      else latest.current.say({ text: `lead is now ${id}`, color: "magenta" });
+      else sayNotice({ text: `lead is now ${id}`, color: "accent" });
       latest.current.lookUpWindow();
     };
     const onToolStart = ({ id, name, input }: Events["tool-start"][0]) => {
-      ui.calls.current.push({ id, name, target: brief(name, input) });
+      ui.calls.current.push({ id, name, target: target(name, input, ui.workspace.root) }); // as its row names it (TUI design pass, Task 8)
       ui.run.start(id, Date.now()); // the open run's live row (release 8c plan, choice 67; Task 17)
       ui.rerender((n) => n + 1);
     };
@@ -352,7 +381,7 @@ export function App(props: AppProps) {
         if (!t.background || t.state === "running" || t.state === "waiting" || ui.announced.current.has(t.id)) continue;
         ui.announced.current.add(t.id);
         latest.current.endRun();
-        latest.current.say({ text: `${t.id} ${t.state === "done" ? "finished" : t.state}`, color: "gray" });
+        sayNotice({ text: `${t.id} ${t.state === "done" ? "finished" : t.state}`, color: "muted" });
       }
       ui.rerender((n) => n + 1);
       latest.current.next();
@@ -363,18 +392,18 @@ export function App(props: AppProps) {
     };
     const onNote = (text: string) => {
       latest.current.endRun();
-      latest.current.say(gray(text));
+      sayNotice(gray(text));
     };
     // A hook's grey line (release 8b plan, choice 23), escaped whole: it carries the hook's own words, raw, and its command,
     // so a line break in them cannot pass for a line of the window's own (Task 6's review).
     const onHookNote = (line: string) => {
       latest.current.endRun();
-      latest.current.say(gray(visible(line, { tabs: true })));
+      sayNotice(gray(visible(line, { tabs: true })));
     };
     // An MCP grey line (release 8c plan, choice 26), escaped whole as a hook's is: it carries a server's names and words.
     const onMcpNote = (line: string) => {
       latest.current.endRun();
-      latest.current.say(gray(visible(line, { tabs: true })));
+      sayNotice(gray(visible(line, { tabs: true })));
     };
     // The waiting line's label while a hook with a statusMessage runs (release 8b design, "What the user sees").
     const onHookStatus = (message: string, running: boolean) => {
@@ -389,7 +418,7 @@ export function App(props: AppProps) {
       ui.summary.current = summary;
       ui.stats.context = 0;
       latest.current.endRun();
-      latest.current.say(gray(SHORTEN_WORDS.shortened));
+      sayNotice(gray(SHORTEN_WORDS.shortened));
     };
     ui.bus.on("message", onMessage);
     ui.bus.on("error", onError);
@@ -439,7 +468,8 @@ export function App(props: AppProps) {
     const off = ui.fullNow.current && ui.live ? checkOffLine(ui.live.loaded.settings.dangerousCommands) : null;
     const said = ui.live ? [ui.live.networkLine, ui.live.bashLine, ui.live.gitLine].filter((l) => l !== undefined) : [];
     const warnings = ui.fullNow.current && ui.live ? [...ui.live.loaded.warnings, ...said] : [];
-    const launchLines: Line[] = [...warnings.map(gray), ...(off ? [{ text: off, color: "red" }] : [])];
+    // Each a notice, the red one a block without the grey dot, as a live edit's problem is (TUI design pass, Task 3's review).
+    const launchLines: Line[] = [...warnings.map((w) => noticeLine(gray(w), ui.palette)), ...(off ? [{ text: off, color: "error" as const, block: true as const }] : [])];
     fns.say(...launchLines, ...ui.intro);
     // A watch that cannot start leaves the session as the launch set it, and says so.
     let unwatch: (() => void) | undefined;
@@ -456,7 +486,7 @@ export function App(props: AppProps) {
           () => void (ui.newEdit.current = true),
         );
     } catch (err) {
-      fns.say(gray(`${SETTINGS} and ${KEYBINDINGS} are not watched this session (${errorText(err)})`));
+      fns.say(noticeLine(gray(`${SETTINGS} and ${KEYBINDINGS} are not watched this session (${errorText(err)})`), ui.palette));
     }
     ui.launched.current = true; // the watcher's first read, done at once inside watchSettings, was the launch's (onKeys)
     ui.history.current!.load();
@@ -559,11 +589,12 @@ export function App(props: AppProps) {
   }
   // Only copy mode's leaving has a line of its own; any other leaves the screen as it is while SessionEnd's hooks run, its
   // keys off (queue.ts, leave).
-  if (ui.leaving.current && ui.copy) return <Text color="gray">{ui.leavingLine.current ?? STOPPING}</Text>;
+  if (ui.leaving.current && ui.copy) return <Text color={ui.palette.muted}>{ui.leavingLine.current ?? STOPPING}</Text>;
 
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
   const d = ui.detail.current;
   const prompt = ui.search.current ? fns.shown() : ui.editor.current;
+  if (prompt.text) ui.typed.current = true; // typed, pasted, recalled or a search's match: the hint row's "?" from now (usualHint)
   fns.staleVim(); // while drawing too, for a change no key made (a picture's read ending), safe as `copied` below says
   const highlight = ui.search.current ? undefined : visualSelection(ui.vim.current, prompt);
   // The model list, /resume's list of sessions or /mcp's of the MCP servers, drawn in the prompt's place, or a server's
@@ -571,8 +602,10 @@ export function App(props: AppProps) {
   const picking = ui.picker !== null || ui.sessions !== null || ui.mcpList || ui.form !== null;
   const menu = picking || ui.question || d ? null : fns.menuFor(prompt);
   // The open run's live row, above the working line where the prompt is drawn (release 8c plan, choice 67; Task 17): it
-  // takes no click, and its seconds grow with the working line's redraws, every SPIN_MS while a turn runs.
-  const liveRow = picking || ui.question || d ? [] : ui.run.live(ui.now).map(escaped);
+  // takes no click, and its seconds grow with the working line's redraws, every SPIN_MS while a turn runs. Its top line
+  // starts a block, so an empty row goes above it as say() would put one (TUI design pass, Task 3).
+  const live = picking || ui.question || d ? [] : ui.run.live(ui.now).map(escaped);
+  const liveRow = live[0]?.block && gapAfter(ui.lastSaid.current) ? [{ text: "" }, ...live] : live;
   if (menu?.kind !== "path") ui.listed.current = null;
 
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the
@@ -638,7 +671,9 @@ export function App(props: AppProps) {
                   ? `-- ${ui.vim.current.mode} --` // every mode, in a turn too, when no other hint takes the row (choice 15)
                   : ui.busy
                     ? null
-                    : "? for shortcuts";
+                    : ui.typed.current
+                      ? "? for shortcuts"
+                      : " "; // until the prompt first holds text, a blank row kept, so its first key moves nothing (Task 14)
   // The line about the last copy, until the next key or click (release 5 design, "Copying"), takes the hint row's place
   // only while one shows, so a copy never moves the conversation; a failed copy shows anyway, adding the row. Ctrl+R's
   // search and the exit warning keep the row (the user's choice, release 5), and so does the detail view's search while
@@ -681,7 +716,7 @@ export function App(props: AppProps) {
     detail: d !== null,
     hint: hintFor(1) !== null, // whether there is a hint does not depend on the rows left (usualHint)
     menu: menu ? menu.entries.length : null,
-    taskRows: (rows) => taskRows(ui.tasks.all, rows, ui.now, ui.run.options.names),
+    taskRows: (rows) => taskRows(ui.tasks.all, rows, ui.now, ui.run.options.names, ui.workspace.root),
     todoRows: (rows) => (!ui.todos.current.hidden && unfinished(ui.todos.current.items) ? todoRows(ui.todos.current.items, rows) : []),
     queued: ui.queue.current.length,
     // The sessions' list: its heading and a row each; /mcp's, its heading and a row for each server, or for each action
@@ -731,13 +766,14 @@ export function App(props: AppProps) {
       const from = ui.kept.lines.length;
       // Its red lines go with it, above its text, so "shown above" shows the dangers too (release 7 plan, Task 8), and so
       // does its grey line, auto mode's pause, above any red lines, which the gate never sends with it today (Task 10).
+      // One block, from its heading, the empty line before it not in its range (TUI design pass, Task 3).
       fns.say(
-        { text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" },
-        ...(ui.question.note === undefined ? [] : [{ text: ui.question.note, color: "gray", ...(ui.question.oneRow ? { oneLine: true } : {}) }]),
-        ...ui.question.warnings.map((text): Line => ({ text, color: "red" })),
-        { text: ui.question.text, color: "gray" },
+        { text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "muted", block: true },
+        ...(ui.question.note === undefined ? [] : [{ text: ui.question.note, color: "muted" as const, ...(ui.question.oneRow ? { oneLine: true } : {}) }]),
+        ...ui.question.warnings.map((text): Line => ({ text, color: "error" })),
+        { text: ui.question.text, color: "muted" },
       );
-      ui.question.detail = [from, ui.kept.lines.length - 1];
+      ui.question.detail = [ui.kept.lines[from]!.text ? from : from + 1, ui.kept.lines.length - 1]; // past the gap: the heading is never empty
     }
     ui.question.short = shortOf(ui.question);
   }
@@ -764,6 +800,7 @@ export function App(props: AppProps) {
     promptFirst,
     promptRows: picking || ui.question || ui.search.current || d ? 0 : promptShown,
     promptWindow: f.promptWindow,
+    rules: f.rules,
     menuRows,
     editor: ui.editor.current,
     chosen: ui.chosen.current,
@@ -772,7 +809,7 @@ export function App(props: AppProps) {
     question: ui.question !== null,
   };
   // A pick from /resume's list, called without await, so nothing may escape, as the model list's pick (queue.ts, pick).
-  const pickSession = (id: string) => void fns.pickSession(id).catch((err) => fns.say({ text: errorText(err), color: "red" }));
+  const pickSession = (id: string) => void fns.pickSession(id).catch((err) => fns.say({ text: errorText(err), color: "error" }));
   // Where vim takes Esc first (vimFirst) the line names it twice; a key chat:cancel has with Ctrl or Alt never goes to
   // vim (choice 31).
   const stop = ui.keyOf("chat:cancel", "Chat", "escape");
@@ -826,21 +863,17 @@ export function App(props: AppProps) {
         />
       ) : (
         <Static items={ui.printUpTo.current === null ? ui.lines : ui.lines.slice(0, ui.printUpTo.current)}>
-          {(l) => (
-            <Text key={l.id} color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
-              {l.text}
-            </Text>
-          )}
+          {(l) => <Printed key={l.id} line={l} columns={ui.columns} />}
         </Static>
       )}
       {ui.form ? (
         // A server's form's field (release 8c plan, Task 12), in the lists' rows, over any of them that is open.
         ui.full ? (
           <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
-            <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={pickerRows + 1} full />
+            <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={pickerRows + 1} columns={ui.columns} full />
           </Box>
         ) : (
-          <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={ui.height - 3} full={false} />
+          <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={ui.height - 3} columns={ui.columns} full={false} />
         )
       ) : ui.picker ? (
         ui.full ? (
@@ -881,53 +914,58 @@ export function App(props: AppProps) {
         )
       ) : ui.question ? (
         // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8); auto mode's pause, a
-        // grey row, goes above any red lines, which the gate never sends with it today (Task 10).
-        ui.full ? (
-          <>
-            {f.noted && (
-              <Text color="gray" wrap="truncate-end">
-                {ui.question.note}
-              </Text>
-            )}
-            {f.warned.map((r, i) => (
-              <Text key={`w${i}`} color="red" wrap="truncate-end">
-                {r}
-              </Text>
-            ))}
-            {f.asked.map((r, i) => (
-              <Text key={i} color="yellow" wrap="truncate-end">
-                {r}
-              </Text>
-            ))}
-          </>
-        ) : (
-          <>
-            {ui.question.note !== undefined && (
-              <Text color="gray" wrap={ui.question.oneRow ? "truncate-end" : "wrap"}>
-                {ui.question.note}
-              </Text>
-            )}
-            {ui.question.warnings.map((w, i) => (
-              <Text key={i} color="red">
-                {w}
-              </Text>
-            ))}
-            <Text color="yellow">{allow(ui.question.text, ui.question.plain)}</Text>
-          </>
-        )
+        // grey row, goes above any red lines, which the gate never sends with it today (Task 10). All in a rounded box,
+        // the border muted (TUI design pass, Task 9): Ink's round border is the start-up box's characters, and with a
+        // space of padding each side leaves the text the terminal's columns less 4, as the frame counts them
+        // (layout.ts, frame).
+        <Box flexDirection="column" borderStyle="round" borderColor={ui.palette.muted} paddingX={1}>
+          {ui.full ? (
+            <>
+              {f.noted && (
+                <Text color={ui.palette.muted} wrap="truncate-end">
+                  {ui.question.note}
+                </Text>
+              )}
+              {f.warned.map((r, i) => (
+                <Text key={`w${i}`} color={ui.palette.error} wrap="truncate-end">
+                  {r}
+                </Text>
+              ))}
+              {f.asked.map((r, i) => (
+                <Text key={i} color={ui.palette.warning} wrap="truncate-end">
+                  {r}
+                </Text>
+              ))}
+            </>
+          ) : (
+            <>
+              {ui.question.note !== undefined && (
+                <Text color={ui.palette.muted} wrap={ui.question.oneRow ? "truncate-end" : "wrap"}>
+                  {ui.question.note}
+                </Text>
+              )}
+              {ui.question.warnings.map((w, i) => (
+                <Text key={i} color={ui.palette.error}>
+                  {w}
+                </Text>
+              ))}
+              <Text color={ui.palette.warning}>{allow(ui.question.text, ui.question.plain)}</Text>
+            </>
+          )}
+        </Box>
       ) : d ? (
         workingLine // the working line stays under the detail view while a turn runs (release 5 plan, choice 12)
       ) : (
         <>
           {liveRow.map((l, i) => (
-            <Text key={`r${i}`} color={l.color} wrap="truncate-end">
-              {l.text}
+            <Text key={`r${i}`} color={l.color && ui.palette[l.color]} wrap="truncate-end">
+              {l.text || " " /* an empty Text takes no row */}
             </Text>
           ))}
           {workingLine}
           <TodoList rows={todoShown} />
           {queued.map((row, i) => (
-            <Text key={i} color="gray" wrap="truncate-end">
+            <Text key={i} color={ui.palette.muted} wrap="truncate-end">
               {row}
             </Text>
           ))}
@@ -938,8 +976,9 @@ export function App(props: AppProps) {
             space={promptSpace}
             top={ui.promptTop}
             selected={highlight}
+            rules={f.rules}
           />
-          {menu && <Menu entries={menu.entries} chosen={fns.chosenIn(prompt, menu)} rows={menuRows} top={ui.menuTop} />}
+          {menu && <Menu entries={menu.entries} chosen={fns.chosenIn(prompt, menu)} rows={menuRows} columns={ui.columns} top={ui.menuTop} />}
           <TaskPanel rows={panel} />
         </>
       )}
@@ -947,7 +986,7 @@ export function App(props: AppProps) {
         // A live edit's line keeps its own colour, and a long one gives up its middle, not its count (choice 35).
         <Text
           dimColor={!noticeShown}
-          color={noticeShown ? notice.color : undefined}
+          color={noticeShown && notice.color ? ui.palette[notice.color] : undefined}
           wrap={noticeShown ? "truncate-middle" : "truncate-end"}
         >
           {hint}
@@ -955,6 +994,7 @@ export function App(props: AppProps) {
       )}
       <StatusLine
         segments={ui.shownSegments}
+        columns={ui.columns}
         info={{
           lead: ui.session.lead.id,
           context: ui.stats.context,

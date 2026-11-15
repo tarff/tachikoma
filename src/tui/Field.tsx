@@ -1,5 +1,5 @@
 import { Text, usePaste } from "ink";
-import { useRef, useState } from "react";
+import { useContext, useRef, useState } from "react";
 import { visible } from "../core/permissions.js";
 import type { Field as FormField } from "../mcp/forms.js";
 import type { Bindings } from "./bindings.js";
@@ -7,6 +7,7 @@ import { segmenter } from "./editor.js";
 import { both, named } from "./keys.js";
 import { Menu } from "./Menu.js";
 import type { PickerKey } from "./ModelPicker.js";
+import { ThemeContext } from "./theme.js";
 
 // One field of a server's form, in the prompt's place (release 8c plan, Task 12; choice 29): the server's description of
 // it grey above it, then its question with what is typed after it, and for a pick the server's labels as a menu under it.
@@ -32,14 +33,17 @@ export function Field({
   bindings,
   keys,
   rows,
+  columns,
   full,
 }: {
   asked: Asked;
   bindings: Bindings; // the table of keys, for the names the hint gives Select's keys
   keys: { current: ((k: PickerKey) => void) | null };
   rows: number; // the rows it may draw, as the App's frame gives them
+  columns: number; // the width the pick's menu is drawn at (Menu.tsx)
   full: boolean;
 }) {
+  const { palette } = useContext(ThemeContext);
   const { field, given } = asked;
   const pick = field.kind === "pick" ? field : null;
   const from = Array.isArray(given) ? given : (pick?.start ?? []);
@@ -101,13 +105,13 @@ export function Field({
   const key = (action: string, usual: string) => named(bindings, action, "Select", [usual])[0];
   const moves = both(key("select:previous", "up"), key("select:next", "down"));
   const [enter, esc] = [key("select:accept", "enter"), key("select:cancel", "escape")];
-  const hint = [moves && `${moves} move`, marks && "Space marks", enter && `${enter} answers`, esc && `${esc} declines the form`]
+  const hint = [moves && `${moves} move`, marks && "Space mark", enter && `${enter} answer`, esc && `${esc} decline`]
     .filter(Boolean)
     .join(" · ");
   return (
     <>
       {field.note !== undefined && (
-        <Text color="gray" wrap="truncate-end">
+        <Text color={palette.muted} wrap="truncate-end">
           {field.note}
         </Text>
       )}
@@ -117,9 +121,9 @@ export function Field({
         {visible(typed)}
         {!pick && <Text inverse> </Text>}
       </Text>
-      {pick && <Menu entries={pick.options.map((o) => ({ label: o.label, fill: o.value }))} chosen={s.at} rows={Math.max(1, rows - noteRows - 2)} />}
+      {pick && <Menu entries={pick.options.map((o) => ({ label: o.label, fill: o.value }))} chosen={s.at} rows={Math.max(1, rows - noteRows - 2)} columns={columns} />}
       {pick && (
-        <Text color="gray" wrap="truncate-end">
+        <Text color={palette.muted} wrap="truncate-end">
           {hint}
         </Text>
       )}

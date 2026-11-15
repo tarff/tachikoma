@@ -5,6 +5,7 @@ import chalk from "chalk";
 import { afterEach, describe, expect, it } from "vitest";
 import { load, empty } from "../../src/tui/editor.js";
 import { Prompt } from "../../src/tui/Prompt.js";
+import { palette, ThemeContext } from "../../src/tui/theme.js";
 
 // A stand-in terminal, which Ink draws to as to a real one, cursor moves included:
 // ink-testing-library's leaves the cursor out.
@@ -98,6 +99,39 @@ describe("Prompt", () => {
     app.rerender(at());
     await tick();
     expect(terminal.out).toContain("\u001b[2A\u001b[10G\u001b[?25h"); // 9 a row: the third of four rows, column 7
+  });
+
+  // TUI design pass, Task 4: a line the terminal's width above the prompt and one below, in the muted colour; `offset`
+  // counts the upper one, as the frame's promptFirst does.
+  it("draws a line above and below it when given them, in the muted colour, the cursor placed under the upper one", async () => {
+    const level = chalk.level;
+    chalk.level = 1; // chalk's basic colours: the named palette's grey
+    try {
+      const named = { look: { light: false, color: true, full: false }, palette: palette({ light: false, color: true, full: false }) };
+      const app = renderFrames(
+        <ThemeContext value={named}>
+          <Prompt editor={load(empty, "ab")} columns={20} offset={1} space={10} rules />
+        </ThemeContext>,
+      );
+      unmounts.push(app.unmount);
+      const line = `\u{1b}[90m${"─".repeat(20)}\u{1b}[39m`;
+      expect(app.lastFrame()!.split("\n")).toEqual([line, "› ab", line]);
+      // With no colour, the lines are drawn plain.
+      const plain = { look: { light: false, color: false, full: false }, palette: palette({ light: false, color: false, full: false }) };
+      app.rerender(
+        <ThemeContext value={plain}>
+          <Prompt editor={load(empty, "ab")} columns={20} offset={1} space={10} rules />
+        </ThemeContext>,
+      );
+      expect(app.lastFrame()!.split("\n")).toEqual(["─".repeat(20), "› ab", "─".repeat(20)]);
+    } finally {
+      chalk.level = level;
+    }
+    const terminal = new Terminal();
+    const ruled = render(<Prompt editor={{ ...load(empty, "abcd\nef"), cursor: 2 }} columns={terminal.columns} offset={1} space={terminal.rows} rules />, { stdout: terminal as never, stdin: new Keyboard() as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true });
+    unmounts.push(ruled.unmount);
+    await tick();
+    expect(terminal.out).toContain("\u001b[3A\u001b[5G\u001b[?25h"); // up from below the four rows to the second, after "› ab"
   });
 
   // The plan's choice 28: vim's VISUAL selection, from App, in reverse colours on each row it covers, as Claude Code

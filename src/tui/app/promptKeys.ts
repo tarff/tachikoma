@@ -1,6 +1,6 @@
 import type { Key } from "ink";
 import type { Fns } from "../App.js";
-import { lastTurn } from "../describe.js";
+import { asBlock, lastTurn } from "../describe.js";
 import { apply, type Editor, load, move, replace } from "../editor.js";
 import { matches } from "../history.js";
 import { type Command, commands, isScroll, keyList } from "../keys.js";
@@ -27,21 +27,23 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     if (c === "mode") {
       ui.perm.current = ui.cycle[(ui.cycle.indexOf(ui.perm.current) + 1) % ui.cycle.length]!;
       ui.onMode(ui.perm.current);
-      return fns.show({ text: `mode is now ${ui.perm.current}`, color: "gray" });
+      return fns.show({ text: `mode is now ${ui.perm.current}`, color: "muted", block: true }); // each press a block
     }
     // Alt+P is `/model` typed then: during a turn it waits in the queue, and like Enter it goes to the bottom.
     if (c === "models") return fns.command("/model");
     // Release 5 plan, Task 12; after a shortening, its summary until the next turn (release 8a plan, Task 13); the turn's
-    // hook runs after its calls (release 8b plan, choice 24).
+    // hook runs after its calls (release 8b plan, choice 24). Printed in classic as one block, an empty line above it, as
+    // /tasks's lines are (TUI design pass, Task 14; output.ts, say), and so in full screen too where a question keeps the
+    // view shut and they are said (handover.tsx, openDetail), which the view itself does not read.
     if (c === "lastTurn") {
       const s = ui.summary.current;
-      const lines = s === null ? lastTurn(ui.session.messages, ui.hooks?.runs, ui.run.options.names) : [gray(SHORTEN_WORDS.summary), gray(s)];
+      const lines = asBlock(s === null ? lastTurn(ui.session.messages, ui.hooks?.runs, ui.run.options.names) : [gray(SHORTEN_WORDS.summary), gray(s)]);
       return ui.fullNow.current ? fns.openDetail(lines) : fns.show(...lines);
     }
     if (c === "todos") return void (ui.todos.current.hidden = !ui.todos.current.hidden);
     // A message starting with `?` needs a space typed first.
     if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text)
-      return fns.show(...keyList(ui.table, contextsOf("prompt", ui.fullNow.current), fns.vimFirst(), ui.launchKeys.current).map((text) => ({ text, color: "gray" })));
+      return fns.show(...asBlock(keyList(ui.table, contextsOf("prompt", ui.fullNow.current), fns.vimFirst(), ui.launchKeys.current).map(gray)));
     if (c === "up" && !e.text && ui.queue.current.length) return fns.restore();
     if (c === "up" || c === "down") {
       const to = vertical(e.text, promptWidth(ui.columns), e.cursor, c === "up" ? -1 : 1, ui.goal.current);
@@ -62,8 +64,9 @@ export const promptKeys = (ui: UI, fns: Fns) => {
   };
 
   // A key bound to command:<name>, and Alt+P's /model, run the command as if typed then, the prompt's text left as it
-  // is: during a turn it waits in the queue (choice 21).
+  // is: during a turn it waits in the queue (choice 21). As typed, it brings the hint row's "?" (TUI design pass, Task 14).
   const command = (text: string) => {
+    ui.typed.current = true;
     if (ui.working.current) return void ui.queue.current.push({ text, spans: [] });
     ui.view.current = FOLLOWING;
     void fns.submit({ text, spans: [] });

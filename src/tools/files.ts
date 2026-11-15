@@ -193,6 +193,13 @@ function linkHops(start: string, allowed: (target: string) => boolean, from = wa
 // that) is not seen (fix 14).
 const rootPlaces = new Map<string, string | Unchecked | null>();
 
+// The three notes `shown` can carry after the path (below): a link that leads nowhere, a real place that cannot be told,
+// and "(really <real place>)", which the sandbox's helper adds too; and whether a path carries one, for the window, which
+// names such a path in full (TUI design pass, Task 8).
+const NOWHERE = " (through a link that leads nowhere)";
+const UNTOLD = " (where it really leads cannot be told)";
+export const noted = (shown: string): boolean => shown.endsWith(NOWHERE) || shown.endsWith(UNTOLD) || / \(really .+\)$/.test(shown);
+
 // `shown` is what the approval prompt names: the path, plus where it really leads when a link, or Windows' own
 // spelling of the real place (a path typed as \\?\C:\... or with a short name), differs from what was typed (review
 // fixes plan, fix 12, the user's choice, "Show the real place"). `real` is that real place, when it can be told, for the
@@ -238,8 +245,8 @@ export function resolveIn(
     if (typeof walked !== "string") throw new Error(leadsThrough(abs, walked.link, walked.target));
   }
   const real = realTarget(abs);
-  if (real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
-  if (real === undefined) return { abs, outside: true, shown: `${abs} (where it really leads cannot be told)` };
+  if (real === null) return { abs, outside: true, shown: `${abs}${NOWHERE}` };
+  if (real === undefined) return { abs, outside: true, shown: `${abs}${UNTOLD}` };
   // The saved login lives there. Refused in every mode, `never` included, and after following links,
   // so a link cannot get round it.
   const data = realTarget(path.resolve(dataDir()));
@@ -254,8 +261,8 @@ export function resolveIn(
   // The project's own place only after those refusals, so one that cannot be told still refuses them (from the outside
   // review of PR #8).
   const base = realTarget(root);
-  if (base === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
-  if (base === undefined) return { abs, outside: true, shown: `${abs} (where it really leads cannot be told)` };
+  if (base === null) return { abs, outside: true, shown: `${abs}${NOWHERE}` };
+  if (base === undefined) return { abs, outside: true, shown: `${abs}${UNTOLD}` };
   const rel = path.relative(base, real);
   // Case ignored on Windows, where A.TXT and a.txt are one file (fix 16, the user's choice, "Hide case-only").
   const typed = path.relative(root, abs);

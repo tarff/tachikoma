@@ -1,14 +1,25 @@
 import type { Fns } from "../App.js";
-import { type Line, screen as escaped } from "../describe.js";
+import { gapped, type Line, notice, screen as escaped, withoutTrailingRows } from "../describe.js";
 import { arrived, FOLLOWING } from "../view.js";
 import type { UI } from "./state.js";
 
 export const output = (ui: UI, fns: Fns) => {
   // In full screen the lines go to the view's rows too, and a view held away from the bottom counts them (release 5
-  // design, "Scrolling"); setting `lines` draws them either way.
+  // design, "Scrolling"); setting `lines` draws them either way. One empty line goes before a block, unless it is the
+  // first line said or the line before it is empty already (TUI design pass, Task 3). A slash command's first line said
+  // starts its output's block (the user's choice at Task 3's review; queue.ts, perform); a line said meanwhile that is a
+  // block of its own, as a reply arriving during /screen's switch, leaves that to the next.
   const say = (...add: Line[]) => {
     ui.toolLine.current = null; // a tool line's own message sets it again after (App.tsx, onMessage; release 7 plan, choice 66)
-    const shown = add.map(escaped);
+    // Each without the empty rows its text's ending line breaks would draw, so the gap below is the only one (PR 20's review).
+    const marked = add.map(withoutTrailingRows).map((l) => {
+      if (!ui.command.current || l.block) return l;
+      ui.command.current = false;
+      return { ...l, block: true as const };
+    });
+    const spaced = gapped(marked, ui.lastSaid.current);
+    if (marked.length) ui.lastSaid.current = marked.at(-1)!;
+    const shown = spaced.map(escaped);
     if (ui.fullNow.current) {
       const before = ui.kept.lines.length;
       ui.kept.add(shown);
@@ -23,8 +34,10 @@ export const output = (ui: UI, fns: Fns) => {
     ui.view.current = FOLLOWING;
     fns.say(...add);
   };
+  // A live edit's lines go to the conversation as notices (TUI design pass, Task 3), and to the hint row as they are; a
+  // red one, a problem with the edit, is an error, a block without the grey dot (Task 3's review).
   const note = (...add: Line[]) => {
-    fns.say(...add);
+    fns.say(...add.map((l) => (l.color === "error" ? { ...l, block: true as const } : notice(l, ui.palette))));
     ui.notes.current = [...(ui.newEdit.current ? [] : ui.notes.current), ...add.map(escaped)];
     ui.newEdit.current = false;
   };

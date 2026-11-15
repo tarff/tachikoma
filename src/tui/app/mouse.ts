@@ -1,5 +1,5 @@
 import type { Fns } from "../App.js";
-import { screen as escaped } from "../describe.js";
+import { screen as escaped, gapped } from "../describe.js";
 import { move } from "../editor.js";
 import { type Fold, foldRow, openRows } from "../fold.js";
 import type { Mouse } from "../input.js";
@@ -177,8 +177,8 @@ export const mouse = (ui: UI, fns: Fns) => {
   const clickAt = (x: number, y: number) => {
     const f = ui.frame.current;
     if (ui.editor.current !== f.editor || ui.chosen.current !== f.chosen) return;
-    const { columns, promptFirst, promptRows, promptWindow, menuRows } = f;
-    const row = y - promptFirst; // a row of the prompt, then of the menu
+    const { columns, promptFirst, promptRows, promptWindow, rules, menuRows } = f;
+    const row = y - promptFirst; // a row of the prompt, then of the menu; a click on the prompt's lines does nothing
     const marked = (i: number, shown: number, w: { above: number; below: number }) => (i === 0 && w.above > 0) || (i === shown - 1 && w.below > 0);
     const e = ui.editor.current;
     if (row >= 0 && row < promptRows) {
@@ -187,7 +187,7 @@ export const mouse = (ui: UI, fns: Fns) => {
       ui.editor.current = move(e, placeOn(places, promptWindow.top + row, x - 2)!);
       ui.goal.current = null;
     } else {
-      const i = row - promptRows;
+      const i = row - promptRows - (rules ? 1 : 0); // the menu is under the lower line (TUI design pass, Task 4)
       if (i < 0 || i >= menuRows) return;
       const menu = fns.menuFor(e); // after the rows are checked: for an `@` path it can list a folder again
       if (!menu) return;
@@ -216,7 +216,10 @@ export const mouse = (ui: UI, fns: Fns) => {
     const to = kept.lines.findLastIndex((l) => l.fold === fold) + 1;
     let from = to - 1;
     while (from > 0 && kept.lines[from - 1]!.fold === fold) from--;
-    const put = (fold.open ? openRows(fold, ui.run.options.names) : [foldRow(fold)]).map(escaped);
+    // Spaced as say() spaces lines, so an opened row's calls look as they did live, the gaps the fold's own, so closing it
+    // takes them away (TUI design pass, Task 3's review).
+    const rows = fold.open ? openRows(fold, ui.run.options) : [foldRow(fold, ui.run.options.palette)];
+    const put = gapped(rows, kept.lines[from - 1] ?? null).map((l) => escaped({ ...l, fold }));
     kept.replace(from, to - from, put);
     const moved = (n: number) => (n >= to ? n + put.length - (to - from) : Math.min(n, from));
     const at = ui.view.current.at;

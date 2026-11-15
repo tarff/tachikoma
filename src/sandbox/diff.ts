@@ -76,10 +76,10 @@ export function lineDiff(before: string, after: string): Line[] {
     const from = rows[start]!;
     const oldCount = hunk.filter((r) => r.mark !== "+").length;
     const newCount = hunk.filter((r) => r.mark !== "-").length;
-    lines.push({ text: `@@ -${range(from.i, oldCount)} +${range(from.j, newCount)} @@`, color: "cyan" });
+    lines.push({ text: `@@ -${range(from.i, oldCount)} +${range(from.j, newCount)} @@`, color: "accent" });
     for (const r of hunk) {
       const [text, open] = r.mark === "+" ? [b.lines[r.j]!, b.open && r.j === b.lines.length - 1] : [a.lines[r.i]!, a.open && r.i === a.lines.length - 1];
-      lines.push(r.mark === " " ? { text: ` ${text}` } : { text: `${r.mark}${text}`, color: r.mark === "-" ? "red" : "green" });
+      lines.push(r.mark === " " ? { text: ` ${text}` } : { text: `${r.mark}${text}`, color: r.mark === "-" ? "error" : "success" });
       if (open) lines.push({ text: "\\ No newline at end of file" }); // git's and GNU diff's own marker
     }
     at = stop;

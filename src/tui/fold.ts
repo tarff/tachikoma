@@ -5,7 +5,8 @@ import { safeName } from "../mcp/config.js";
 import { SEARCH } from "../mcp/search.js";
 import type { Servers } from "../mcp/servers.js";
 import { pipedInto, type Shell, split } from "../safety/split.js";
-import { brief, callRow, describe, type Line, type McpNames, resultRow, safeNames } from "./describe.js";
+import { brief, callRow, describe, type Line, type McpNames, notice, resultRow, safeNames } from "./describe.js";
+import type { Palette } from "./theme.js";
 import { elapsed } from "./WorkingLine.js";
 
 // Folded tool rows, as Claude Code's (release 8c plan, choice 65; Task 15): calls with no text between them that only
@@ -16,11 +17,16 @@ type Counted = "search" | "read" | "list" | "called" | "ran";
 export type Kind = Counted | "hidden" | "own";
 
 // What a run's calls are counted by: the asked calls (Session.asked), the shell the shell tool runs in (split.ts,
-// shellOf), and an MCP call's server and tool as the server gives them, from its full name (choice 68).
+// shellOf), and an MCP call's server and tool as the server gives them, from its full name (choice 68); and the palette
+// its rows' marks are drawn in (TUI design pass, Task 3); the project's folder, the workspace's, which an edit's or a
+// write's row names its file from (describe.ts, target; Task 8), given by every caller so a resumed conversation's rows
+// name them as the live ones did (Task 8's code review).
 export interface FoldOptions {
   asked: ReadonlySet<string>;
   shell: Shell;
   names: McpNames;
+  palette: Palette;
+  root: string;
 }
 
 // An MCP call's server and tool as the last offer gave its full name (release 8c plan, Task 18; choice 68); for a name no
@@ -164,15 +170,16 @@ export interface Fold {
 
 // A folded row opened (full screen, a click): its calls' rows as they look unfolded, an MCP call's by `names` (choice 68),
 // each of them holding the fold, so a click on any closes it again. tool_search has no row.
-export const openRows = (fold: Fold, names: McpNames): Line[] =>
+export const openRows = (fold: Fold, { names, palette, root }: Pick<FoldOptions, "names" | "palette" | "root">): Line[] =>
   fold.calls.flatMap(({ call, kinds }) => {
     if (kinds[0] === "hidden") return [];
     const r = fold.results.get(call.id);
-    return [callRow(call, names), ...(r ? [r] : [])].map((l) => ({ ...l, fold }));
+    return [callRow(call, palette, names, root), ...(r ? [r] : [])].map((l) => ({ ...l, fold }));
   });
 
-// The folded row's own line, which a closed fold goes back to.
-export const foldRow = (fold: Fold): Line => ({ text: fold.text, color: "gray", oneLine: true, fold });
+// The folded row's own line, which a closed fold goes back to: a block, a grey `● ` before its words (TUI design pass,
+// Task 3; audit 7).
+export const foldRow = (fold: Fold, palette: Palette): Line => notice({ text: fold.text, color: "muted", oneLine: true, fold }, palette);
 
 // The run not yet said, and the calls of the runs said, by id, for their results, which come after. The window holds one
 // (state.ts); a resumed conversation's lines are made with one of their own (conversationLines). Each method gives the
@@ -210,7 +217,7 @@ export class OpenRun {
     this.#said.delete(c.id);
     if (this.own(c)) {
       this.#rowed.add(c.id);
-      return [...this.end(), callRow(c, this.options.names)];
+      return [...this.end(), callRow(c, this.options.palette, this.options.names, this.options.root)];
     }
     // A new run starting says the failed rows waiting from a run said before it, as their calls ran first.
     if (!this.#run.length) this.#quiet();
@@ -238,7 +245,7 @@ export class OpenRun {
       this.#run.splice(i, 1);
       this.#results.delete(r.callId);
     }
-    this.#failed.push(callRow(call, this.options.names), resultRow(r));
+    this.#failed.push(callRow(call, this.options.palette, this.options.names, this.options.root), resultRow(r));
     return [];
   }
 
@@ -275,7 +282,7 @@ export class OpenRun {
     }
     const under = this.#rowed.size === 0;
     this.#rowed.add(id);
-    return { lines: [...lines, callRow(call, this.options.names)], under };
+    return { lines: [...lines, callRow(call, this.options.palette, this.options.names, this.options.root)], under };
   }
 
   // The run said, as one row, and emptied, then the rows of its calls that failed meanwhile. A run of only tool_search has
@@ -289,7 +296,7 @@ export class OpenRun {
     for (const c of fold.calls) if (!fold.results.has(c.call.id)) this.#said.set(c.call.id, fold);
     const text = rowText(fold.calls, this.options.names);
     if (text !== null) fold.text = text;
-    return [...(text === null ? [] : [foldRow(fold)]), ...this.#failed.splice(0)];
+    return [...(text === null ? [] : [foldRow(fold, this.options.palette)]), ...this.#failed.splice(0)];
   }
 
   // A run's call starting sets the live row (choice 67): the top line names the work, a search only while searches alone
@@ -306,7 +313,7 @@ export class OpenRun {
       const n = ++this.#searches;
       const under = () => `  ⎿  "${detail}"`;
       if (this.#live === null || this.#searchTop) {
-        this.#live = { top: () => `● Searching for ${n} pattern${s(n)}`, under };
+        this.#live = { top: () => `Searching for ${n} pattern${s(n)}`, under };
         this.#searchTop = true;
       } else this.#live = { ...this.#live, under };
       return;
@@ -320,14 +327,14 @@ export class OpenRun {
         return ms < 1000 ? null : elapsed(ms);
       };
       this.#live = {
-        top: (now) => `● Running ${n} shell command${s(n)}${time(now) === null ? "" : ` · ${time(now)}`}`,
+        top: (now) => `Running ${n} shell command${s(n)}${time(now) === null ? "" : ` · ${time(now)}`}`,
         under: (now) => `  ⎿  $ ${detail}${time(now) === null ? "" : ` (${time(now)})`}`,
       };
     } else if (isMcp(c.name)) {
       // The server and the tool as the server gives them (choice 68).
       const { server, tool } = this.options.names(c.name);
-      this.#live = { top: () => `● Calling ${visible(server)}`, under: () => `  ⎿  ${visible(tool)}` };
-    } else this.#live = { top: () => `● Reading ${detail}`, under: () => `  ⎿  ${detail}` };
+      this.#live = { top: () => `Calling ${visible(server)}`, under: () => `  ⎿  ${visible(tool)}` };
+    } else this.#live = { top: () => `Reading ${detail}`, under: () => `  ⎿  ${detail}` };
   }
 
   // A call ending: a shell call's seconds stop.
@@ -336,10 +343,12 @@ export class OpenRun {
     if (started) started.end = at;
   }
 
-  // The live row's two grey lines, while the run holds a call that set them; none otherwise.
+  // The live row's two grey lines, while the run holds a call that set them; none otherwise. The top one is a block, a
+  // grey `● ` before its words, as the folded row said in its place is (TUI design pass, Task 3; audit 7).
   live(now: number): Line[] {
     if (!this.#run.length || this.#live === null) return [];
-    return [this.#live.top(now), this.#live.under(now)].map((text) => ({ text, color: "gray", oneLine: true }));
+    const gray = (text: string): Line => ({ text, color: "muted", oneLine: true });
+    return [notice(gray(this.#live.top(now)), this.options.palette), gray(this.#live.under(now))];
   }
 
   // The live row gone, as its run ends or a new one starts.
@@ -356,5 +365,5 @@ export class OpenRun {
 // (Task 15).
 export function conversationLines(messages: Message[], opts: FoldOptions): Line[] {
   const run = new OpenRun(opts);
-  return [...messages.flatMap((m) => describe(m, undefined, run)), ...run.end()];
+  return [...messages.flatMap((m) => describe(m, opts.palette, undefined, run)), ...run.end()];
 }

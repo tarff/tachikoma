@@ -1,9 +1,8 @@
 import chalk from "chalk";
-import { Text } from "ink";
 import { render } from "ink-testing-library";
-import { isValidElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { Conversation } from "../../src/tui/Conversation.js";
+import { type Look, palette, type Role, ThemeContext } from "../../src/tui/theme.js";
 import { type Pos, Rows } from "../../src/tui/view.js";
 
 const mounted: ReturnType<typeof render>[] = [];
@@ -12,19 +11,10 @@ afterEach(() => {
 });
 
 // Rows at 9 columns, so with the bar's column a row is 10 wide.
-function kept(n: number, color?: string) {
+function kept(n: number, color?: Role) {
   const rows = new Rows(9);
   rows.add(Array.from({ length: n }, (_, i) => ({ text: `line ${i}`, ...(color ? { color } : {}) })));
   return rows;
-}
-
-// The Text elements the component hands Ink, with their colours: the test terminal draws no colour codes.
-function texts(node: ReactNode): { color?: string; text: string }[] {
-  if (Array.isArray(node)) return node.flatMap(texts);
-  if (!isValidElement(node)) return [];
-  const { children, color } = node.props as { children?: ReactNode; color?: string };
-  if (node.type === Text) return [{ ...(color === undefined ? {} : { color }), text: String(children) }];
-  return texts(children);
 }
 
 function draw(props: Parameters<typeof Conversation>[0]) {
@@ -50,16 +40,27 @@ describe("Conversation", () => {
     expect(held.map((r) => r.slice(0, 9).trimEnd())).toEqual(["line 8", "line 9", "", ""]);
   });
 
+  // Each row's role looked up in the palette, here the dark full one a test gets (theme.ts, ThemeContext), drawn with chalk
+  // at level 3 so its hex is drawn as it is (TUI design pass, Task 13).
   it("draws each row in its line's colour", () => {
-    const rows = new Rows(9);
-    rows.add([{ text: "red one", color: "red" }, { text: "plain" }]);
-    expect(texts(Conversation({ rows, first: 0, height: 2, unseen: 0, following: true }))).toEqual([
-      { color: "red", text: "red one" },
-      { text: "plain" },
-    ]);
-    // A row, the bar beside it, the count of new lines, the bar beside that.
-    const colors = texts(Conversation({ rows: kept(20), first: 0, height: 2, unseen: 3, following: false })).map((t) => t.color);
-    expect(colors).toEqual([undefined, "gray", "gray", "gray"]);
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      const P = palette({ light: false, color: true, full: true });
+      const fg = (hex: string) => `\u001b[38;2;${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(";")}m`;
+      const rows = new Rows(9);
+      rows.add([{ text: "red one", color: "error" }, { text: "plain" }]);
+      const shown = draw({ rows, first: 0, height: 2, unseen: 0, following: true });
+      expect(shown[0]).toContain(`${fg(P.error!)}red one`);
+      expect(shown[1]).toBe("plain");
+      // A row in no colour, the bar beside it muted; the count of new lines muted, and the bar beside it in the same run.
+      const held = draw({ rows: kept(20), first: 0, height: 2, unseen: 3, following: false });
+      expect(held[0]).not.toContain(`${fg(P.muted!)}line`);
+      expect(held[0]).toContain(`${fg(P.muted!)}┃`);
+      expect(held[1]).toContain(`${fg(P.muted!)}↓ 3 new …│`);
+    } finally {
+      chalk.level = level;
+    }
   });
 
   it("draws the scroll bar in the last column only when the lines are longer than the view", () => {
@@ -102,4 +103,91 @@ describe("Conversation", () => {
       chalk.level = level;
     }
   });
+});
+
+// TUI design pass, Task 2: styled lines in full screen. chalk at level 3 (24-bit colour), so the band's hex is drawn as it
+// is; each test turns it on for itself, as the selection's test above does.
+describe("Conversation's styled rows", () => {
+  const plain = (s: string) => s.replace(/\u001b\[[\d;]*m/g, "");
+  const within = (row: string, open: string, close: string) =>
+    [...row.matchAll(new RegExp(`\\u001b\\[${open}m(.*?)\\u001b\\[${close}m`, "g"))].map((m) => plain(m[1]!)).join("");
+  const BAND = "\u001b[48;2;42;42;42m"; // the dark look's band, #2a2a2a (theme.ts)
+  const coloured = <T,>(run: () => T): T => {
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      return run();
+    } finally {
+      chalk.level = level;
+    }
+  };
+  const drawIn = (look: Look | null, props: Parameters<typeof Conversation>[0]) => {
+    const app = render(look ? <ThemeContext value={{ look, palette: palette(look) }}><Conversation {...props} /></ThemeContext> : <Conversation {...props} />);
+    mounted.push(app);
+    return app.lastFrame()!.split("\n");
+  };
+
+  it("draws a span's style on the rows it reaches, across a wrap point and a line break", () =>
+    coloured(() => {
+      const rows = new Rows(9);
+      rows.add([{ text: "the quick brown\nfox", styles: [{ start: 4, end: 17, bold: true }] }]);
+      const shown = drawIn(null, { rows, first: 0, height: 3, unseen: 0, following: true });
+      expect(shown.map(plain)).toEqual(["the quick", " brown", "fox"]);
+      expect(shown.map((r) => within(r, "1", "22"))).toEqual(["quick", " brown", "f"]);
+    }));
+
+  it("fills a band row to its width with the band colour, its indent's spaces too", () =>
+    coloured(() => {
+      const rows = new Rows(9);
+      rows.add([{ text: "hi", band: true }, { text: "› a bcdefgh", band: true, indent: 2 }]);
+      const shown = drawIn(null, { rows, first: 0, height: 3, unseen: 0, following: true });
+      expect(shown.map(plain)).toEqual(["hi       ", "› a      ", "  bcdefgh"]);
+      for (const r of shown) expect(r.startsWith(BAND)).toBe(true);
+    }));
+
+  it("shows a selection over a styled row in reverse on the text only, not the indent or the band's padding", () =>
+    coloured(() => {
+      const rows = new Rows(20);
+      rows.add([{ text: "● one two three four five", indent: 2, band: true, styles: [{ start: 0, end: 1, color: "blue" }] }]);
+      const selection: [Pos, Pos] = [{ line: 0, offset: 0 }, { line: 0, offset: 25 }];
+      const shown = drawIn(null, { rows, first: 0, height: 2, unseen: 0, following: true, selection });
+      expect(shown.map(plain)).toEqual(["● one two three four", "   five             "]);
+      expect(shown.map((r) => within(r, "7", "27"))).toEqual(["● one two three four", " five"]);
+      expect(within(shown[0]!, "34", "39")).toBe("●"); // the span's colour, under the reverse
+    }));
+
+  // Task 2's review: a later span's field left undefined does not clear an earlier span's.
+  it("lays a later span over an earlier one field by field, an undefined field leaving the earlier one's", () =>
+    coloured(() => {
+      const rows = new Rows(9);
+      rows.add([{ text: "ab", styles: [{ start: 0, end: 2, color: "red" }, { start: 0, end: 1, color: undefined, bold: true }] }]);
+      const row = drawIn(null, { rows, first: 0, height: 1, unseen: 0, following: true })[0]!;
+      expect(within(row, "31", "39")).toBe("ab");
+      expect(within(row, "1", "22")).toBe("a");
+    }));
+
+  // Task 7's re-check: the spans are stepped through by their starts (view.ts, keptOf; runs), but laid in their own order,
+  // a later over an earlier, so the red span given second lies over the green one inside it.
+  it("lays a later span over an earlier one that starts after it", () =>
+    coloured(() => {
+      const rows = new Rows(20);
+      rows.add([{ text: "abcdefghij", styles: [{ start: 2, end: 5, color: "green" }, { start: 0, end: 10, color: "red" }] }]);
+      const row = drawIn(null, { rows, first: 0, height: 1, unseen: 0, following: true })[0]!;
+      expect(within(row, "31", "39")).toBe("abcdefghij");
+      expect(row).not.toContain("\u001b[32m");
+    }));
+
+  it("drops a span's colour and background and the band without colour, and keeps bold (the theme's look)", () =>
+    coloured(() => {
+      const rows = new Rows(9);
+      rows.add([{ text: "ab", band: true, styles: [{ start: 0, end: 1, color: "red", bg: "blue", bold: true }] }]);
+      const props = { rows, first: 0, height: 1, unseen: 0, following: true };
+      const full = drawIn(null, props)[0]!;
+      expect(full).toContain(BAND);
+      expect(within(full, "31", "39")).toBe("a");
+      const none = drawIn({ light: false, color: false, full: false }, props)[0]!;
+      expect(none).not.toMatch(/\u001b\[(3|4)\d/); // no colour or background code at all
+      expect(within(none, "1", "22")).toBe("a");
+      expect(plain(none)).toBe("ab");
+    }));
 });

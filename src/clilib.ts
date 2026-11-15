@@ -37,7 +37,7 @@ import { screen } from "./tui/describe.js";
 import { gitBranch } from "./tui/git.js";
 import { Pictures } from "./tui/pictures.js";
 import { leftOut, notRemoved, removing } from "./tui/Review.js";
-import { k, type Segment, SEGMENTS } from "./tui/StatusLine.js";
+import { type Segment, SEGMENTS } from "./tui/StatusLine.js";
 import { writeBestEffort } from "./tui/terminal.js";
 
 // Headless output reaches the terminal too, so model and provider text gets the scrollback's escaping.
@@ -646,16 +646,16 @@ export function boxProtection(root: string, protection: Protection): Protection 
   return { hooks: inBox(protection.hooks), files: inBox(protection.files) };
 }
 
-// The grey line at the start of a session (release 4 design, "Instruction files"): the files read,
-// the user's folder written as ~, their total size, and any left out and why. Paths come from the disk,
-// so they are escaped.
+// A path with the user's folder written as ~, for the instruction files' line and the start-up box's folder (TUI design
+// pass, Task 6).
+export const tilde = (p: string, home: string): string => (p === home || p.startsWith(home + path.sep) ? `~${p.slice(home.length)}` : p);
+
+// The grey line under the start-up box (release 4 design, "Instruction files"; TUI design pass, Task 6): the files left
+// out and why, the user's folder written as ~; the box names the files read. Paths come from the disk, so they are
+// escaped.
 export function instructionsLine(r: Instructions, home: string): string | null {
-  if (!r.read.length && !r.left.length) return null;
-  const short = (p: string) => visible(p === home || p.startsWith(home + path.sep) ? `~${p.slice(home.length)}` : p);
-  const size = r.read.reduce((n, f) => n + f.size, 0);
-  const read = r.read.length ? `${r.read.map((f) => short(f.path)).join(", ")} (${k(size)} bytes)` : "none read";
-  const left = r.left.length ? `; left out: ${r.left.map((l) => `${short(l.path)} (${visible(l.why)})`).join(", ")}` : "";
-  return `Instructions: ${read}${left}`;
+  if (!r.left.length) return null;
+  return `Instructions left out: ${r.left.map((l) => `${visible(tilde(l.path, home))} (${visible(l.why)})`).join(", ")}`;
 }
 
 const files = (n: number) => `${n} file${n === 1 ? "" : "s"}`;

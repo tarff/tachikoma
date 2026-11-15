@@ -6,7 +6,7 @@ import type { Message } from "../../src/core/types.js";
 describe("exportText", () => {
   const png = { type: "image", mediaType: "image/png", data: Buffer.from("png") } as const;
 
-  it("writes a turn with a call, its result and a picture's marker: a heading per message, each call as Ctrl+O shows it", () => {
+  it("writes a turn with a call, its result and a picture's marker: a heading per message, each call's input as JSON", () => {
     const messages: Message[] = [
       { role: "user", parts: [{ type: "text", text: "what is in " }, { ...png, id: 1 }, { ...png, id: 2 }, { type: "text", text: "?" }] },
       { role: "assistant", parts: [{ type: "text", text: "Reading it." }, { type: "tool_call", id: "c1", name: "read_file", input: { path: "a.txt" } }] },

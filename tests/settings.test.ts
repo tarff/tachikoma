@@ -54,6 +54,13 @@ describe("readSettings", () => {
     expect(problem({ autoCompactWindow: "200k" })).toBe('settings.json: "autoCompactWindow" must be a number, without quotes (got "200k")');
   });
 
+  // TUI design pass, Task 1: read as editorMode is, so a wrong value gets the same words.
+  it("reads theme as auto, dark or light", () => {
+    for (const theme of ["auto", "dark", "light"]) expect(read({ theme })).toEqual({ settings: { theme }, warnings: [] });
+    expect(problem({ theme: "blue" })).toBe('settings.json: "theme" must be one of: auto, dark, light (got "blue")');
+    expect(problem({ theme: 5 })).toBe('settings.json: "theme" must be text in quotes (got 5)');
+  });
+
   it("has every entry optional", () => {
     expect(readSettings("{}")).toEqual({ settings: {}, warnings: [] });
   });

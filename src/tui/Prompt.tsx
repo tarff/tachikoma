@@ -1,8 +1,9 @@
 import { Text, useCursor } from "ink";
-import { useRef } from "react";
+import { useContext, useRef } from "react";
 import { visible } from "../core/permissions.js";
 import { type Editor, segmenter } from "./editor.js";
 import { layout, type Place, scroll } from "./layout.js";
+import { ThemeContext } from "./theme.js";
 
 // The columns the prompt's text may use: two go before it ("› " on the first row), and one after a
 // full row is kept for the cursor.
@@ -14,7 +15,8 @@ export const promptWidth = (columns: number) => Math.max(1, columns - 3);
 // the top of what it draws. Taller than `space` rows, it shows the rows around the cursor. `top` is
 // the window's first row, kept from one drawing to the next: the App passes its own, to map a click
 // to a row (release 5 design, "Clicking"). `selected`, from and to as places in the text, is drawn in reverse colours:
-// vim's VISUAL selection (release 6 plan, choice 28).
+// vim's VISUAL selection (release 6 plan, choice 28). With `rules`, a line of `─` across the terminal's width in the muted
+// colour above it and one below; `offset` counts the upper one then (TUI design pass, Task 4).
 export function Prompt({
   editor,
   columns,
@@ -22,6 +24,7 @@ export function Prompt({
   space,
   top: given,
   selected,
+  rules,
 }: {
   editor: Editor;
   columns: number;
@@ -29,7 +32,10 @@ export function Prompt({
   space: number;
   top?: { current: number };
   selected?: [number, number];
+  rules?: boolean;
 }) {
+  const { palette } = useContext(ThemeContext);
+  const rule = rules && <Text color={palette.muted}>{"─".repeat(columns)}</Text>;
   const { rows, places } = layout(editor.text, promptWidth(columns));
   const at = places.get(editor.cursor)!;
   const shown = Math.min(rows.length, Math.max(1, space));
@@ -41,6 +47,7 @@ export function Prompt({
   useCursor().setCursorPosition({ x: 2 + at.col, y: offset + at.row - w.top });
   return (
     <>
+      {rule}
       {rows.slice(w.top, w.top + shown).map((row, i) => (
         <Text key={i}>
           {i ? "  " : "› "}
@@ -55,6 +62,7 @@ export function Prompt({
           )}
         </Text>
       ))}
+      {rule}
     </>
   );
 }

@@ -60,7 +60,7 @@ export const pictureReads = (ui: UI, fns: Fns) => {
     // A message that was only pictures, left empty, sends nothing (session.ts, send).
     const ending = !waits ? "" : ui.reading.current!.text.trim() ? `; ${marker(id)} was sent without it.` : "; nothing was sent.";
     const why = read === "none" ? "No picture on the clipboard" : `Could not read ${from}: ${read.failed}`;
-    fns.say({ text: ending ? why + ending : read === "none" ? `${why}.` : why, color: read === "none" ? "gray" : "red" });
+    fns.say({ text: ending ? why + ending : read === "none" ? `${why}.` : why, color: read === "none" ? "muted" : "error", block: true });
   };
   // A new picture's number, its read running, with settle set to run when the read ends, and the hint row drawn again,
   // as "Reading picture..." shows while any read runs (release 6 design, "Pictures"). Every read starts here: Alt+V's
@@ -81,7 +81,7 @@ export const pictureReads = (ui: UI, fns: Fns) => {
   // Task 15).
   const imagePaste = (e: Editor) => {
     const read = ui.readPicture === undefined ? fromClipboard() : ui.readPicture;
-    if (!read) return fns.say({ text: "No clipboard reader here: install wl-paste or xclip.", color: "red" });
+    if (!read) return fns.say({ text: "No clipboard reader here: install wl-paste or xclip.", color: "error", block: true });
     const id = fns.newPicture();
     ui.editor.current = insertPicture(e, id);
     ui.goal.current = null;

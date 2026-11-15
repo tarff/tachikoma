@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { exportText } from "../../src/core/exportText.js";
+import { truncate } from "../../src/core/session.js";
 import type { Message } from "../../src/core/types.js";
+import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import type { Event, Hook } from "../../src/hooks/config.js";
 import type { Run } from "../../src/hooks/hooks.js";
 import type { Ran } from "../../src/hooks/run.js";
-import { callLines, lastTurn, describe as lines } from "../../src/tui/describe.js";
+import { callLines, lastTurn, describe as lines, previewStyles, screen, withoutTrailingRows } from "../../src/tui/describe.js";
+import { palette } from "../../src/tui/theme.js";
 
 describe("describe", () => {
+  const P = palette({ light: false, color: true, full: true }); // the marks' colours (TUI design pass, Task 3)
+
   // Release 8b design, "What a hook's answer does": the user does not see a hook's text for the model in the conversation.
   it("leaves a hook's text for the model out of the scrollback", () => {
     const results: Message = {
@@ -16,7 +21,7 @@ describe("describe", () => {
         { type: "text", text: "PostToolUse hook:\nmore", from: "hooks" },
       ],
     };
-    expect(lines(results)).toEqual([{ text: "  ⎿ ok", color: "gray", oneLine: true }]);
+    expect(lines(results, P)).toEqual([{ text: "  ⎿ ok", color: "muted", oneLine: true }]);
   });
 
   // Release 8c plan, choice 34: a tool's pictures are the server's, so they are drawn under the results, never as a prompt.
@@ -30,9 +35,9 @@ describe("describe", () => {
         { ...png, id: 5 },
       ],
     };
-    expect(lines(results)).toEqual([
-      { text: "  ⎿ ok", color: "gray", oneLine: true },
-      { text: "  ⎿ [Image #4] [Image #5]", color: "gray", oneLine: true },
+    expect(lines(results, P)).toEqual([
+      { text: "  ⎿ ok", color: "muted", oneLine: true },
+      { text: "  ⎿ [Image #4] [Image #5]", color: "muted", oneLine: true },
     ]);
   });
 
@@ -47,9 +52,74 @@ describe("describe", () => {
         { type: "image", id: 2, mediaType: "image/png", data: Buffer.from("png"), from: "server" },
       ],
     };
-    expect(lines(prompt)).toEqual([
-      { text: "> /fake:greet Ann", color: "cyan" },
-      { text: "  ⎿ [Image #2]", color: "gray", oneLine: true },
+    expect(lines(prompt, P)).toEqual([
+      { text: "", band: true, block: true },
+      { text: "› /fake:greet Ann", band: true, indent: 2 },
+      { text: "", band: true },
+      { text: "  ⎿ [Image #2]", color: "muted", oneLine: true },
+    ]);
+  });
+});
+
+// TUI design pass, Task 7 (audit 2): an edit's preview in colour, a write's never; the text unchanged.
+// PR 20's review: a line's text ending in line breaks draws no empty rows of its own, so a block after it has one gap.
+describe("withoutTrailingRows", () => {
+  it("takes off the line breaks a text ends in, and the blanks among them, keeping its spans inside it", () => {
+    for (const end of ["\n", "\n\n", "\r\n", "  \n \t\n"]) expect(withoutTrailingRows({ text: `● hi${end}`, indent: 2 })).toEqual({ text: "● hi", indent: 2 });
+    const styled = withoutTrailingRows({ text: "● hi\n", styles: [{ start: 0, end: 5, color: "#4278de" }] });
+    expect(styled).toEqual({ text: "● hi", styles: [{ start: 0, end: 4, color: "#4278de" }] });
+  });
+
+  it("leaves a text that ends in no line break, and a one-line line, whose breaks show escaped, as they are", () => {
+    const plain = { text: "● hi  " };
+    expect(withoutTrailingRows(plain)).toBe(plain);
+    const one = { text: "  ⎿ ok\n", oneLine: true as const };
+    expect(withoutTrailingRows(one)).toBe(one);
+    const file = { text: "a\n\n", asIs: true as const }; // a write's preview, its empty lines the file's (3c04960's review)
+    expect(withoutTrailingRows(file)).toBe(file);
+  });
+});
+
+describe("previewStyles", () => {
+  const FULL = palette({ light: false, color: true, full: true });
+  const NAMED = palette({ light: false, color: true, full: false });
+  const NONE = palette({ light: false, color: false, full: false });
+  const add = { color: FULL.success, bg: FULL.addTint };
+  const del = { color: FULL.error, bg: FULL.delTint };
+
+  // edit_file's detail (files.ts): old_text "a\nb", new_text "c". Each span runs to just past its line's line break.
+  it("colours an edit's `-` and `+` lines, each span over its whole line", () => {
+    expect(previewStyles("edit a.txt", "- a\n- b\n+ c", FULL)).toEqual([
+      { start: 0, end: 4, ...del },
+      { start: 4, end: 8, ...del },
+      { start: 8, end: 11, ...add },
+    ]);
+  });
+
+  it("leaves a write's preview without spans, its lines starting with `-` or `+` or not", () => {
+    expect(previewStyles("write a.md", "- one\n+ two\n-three", FULL)).toEqual([]);
+  });
+
+  it("gives no spans without colour, and colours without tints below full colour", () => {
+    expect(previewStyles("edit a.txt", "- a\n+ c", NONE)).toEqual([]);
+    expect(previewStyles("edit a.txt", "- a\n+ c", NAMED)).toEqual([
+      { start: 0, end: 4, color: "red" },
+      { start: 4, end: 7, color: "green" },
+    ]);
+  });
+
+  // Task 2's known limit: a span edge between \r and \n draws the \r. old_text "a\r\nb" and new_text "c\r\nd", as a model
+  // may send a CRLF file's text, keep each \r before its line break; screened, the \r goes with the break and the spans
+  // still meet, so the tint has no gap.
+  it("draws no \\r in a CRLF edit's preview, the spans meeting at each line", () => {
+    const detail = "- a\r\n- b\n+ c\r\n+ d";
+    const shown = screen({ text: detail, color: "muted", styles: previewStyles("edit a.txt", detail, FULL) });
+    expect(shown.text).toBe("- a\n- b\n+ c\n+ d");
+    expect(shown.styles).toEqual([
+      { start: 0, end: 4, ...del },
+      { start: 4, end: 8, ...del },
+      { start: 8, end: 12, ...add },
+      { start: 12, end: 15, ...add },
     ]);
   });
 });
@@ -67,7 +137,7 @@ describe("lastTurn", () => {
       { role: "user", parts: [feedback, { type: "text", text: "t1 finished", from: "tasks" }] },
       { role: "assistant", parts: [{ type: "text", text: "tests pass" }] },
     ]);
-    expect(turn[0]).toEqual({ text: "Last turn: 1 tool call", color: "gray" });
+    expect(turn[0]).toEqual({ text: "Last turn: 1 tool call", color: "muted" });
   });
 
   // Release 8b plan, choice 24 ("Lines this plan adds", Ctrl+O): each hook run after the calls, one line each, what it
@@ -88,10 +158,10 @@ describe("lastTurn", () => {
     ];
     const turn = lastTurn([{ role: "user", parts: [{ type: "text", text: "go" }] }, { role: "assistant", parts: [{ type: "text", text: "done" }] }], runs);
     expect(turn).toEqual([
-      { text: "Last turn: 0 tool calls", color: "gray" },
-      { text: "◆ Stop hook slow.sh · out of time · 600004 ms", color: "gray" },
-      { text: "◆ Stop hook gone.sh · could not start · 1 ms", color: "gray" },
-      { text: "◆ Stop hook again\\u0007.sh · exit 2 · 12 ms\n  ⎿ run the tests", color: "gray" },
+      { text: "Last turn: 0 tool calls", color: "muted" },
+      { text: "◆ Stop hook slow.sh · out of time · 600004 ms", color: "muted" },
+      { text: "◆ Stop hook gone.sh · could not start · 1 ms", color: "muted" },
+      { text: "◆ Stop hook again\\u0007.sh · exit 2 · 12 ms\n  ⎿ run the tests", color: "muted" },
     ]);
   });
 
@@ -140,8 +210,8 @@ describe("lastTurn", () => {
     const hook: Hook = { event: "SessionStart", matcher: { all: true }, command: "start.sh", async: false, where: '"SessionStart"' };
     const runs: Run[] = [{ event: "SessionStart", hook, ran: { code: 0, stdout: "", stderr: "", ms: 12 }, outcome: { kind: "ok" }, match: "startup" }];
     expect(lastTurn([], runs)).toEqual([
-      { text: "No turn yet, so no tool calls to show.", color: "gray" },
-      { text: "◆ SessionStart hook start.sh · exit 0 · 12 ms", color: "gray" },
+      { text: "No turn yet, so no tool calls to show.", color: "muted" },
+      { text: "◆ SessionStart hook start.sh · exit 0 · 12 ms", color: "muted" },
     ]);
   });
 
@@ -194,10 +264,139 @@ describe("lastTurn", () => {
       { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "set", isError: false }] },
     ];
     const names = (full: string) => (full === "mcp__my_tv__foo_bar" ? { server: "my.tv", tool: "foo.bar" } : { server: "?", tool: "?" });
-    const record = '● my.tv foo.bar {\n  "x": 1\n}\n  ⎿ set';
-    expect(lastTurn(messages, [], names)).toEqual([{ text: "Last turn: 1 tool call", color: "gray" }, { text: record, color: "gray" }]);
-    expect(callLines(messages, names)).toEqual([{ text: record, color: "gray" }]);
-    expect(callLines(messages)[0]!.text).toBe('● my_tv foo_bar {\n  "x": 1\n}\n  ⎿ set'); // without the window's names
+    const record = "● my.tv foo.bar\n  x: 1\n  ⎿ set"; // its input as name: value lines (Task 12)
+    expect(lastTurn(messages, [], names)).toEqual([{ text: "Last turn: 1 tool call", color: "muted" }, { text: record, color: "muted" }]);
+    expect(callLines(messages, names)).toEqual([{ text: record, color: "muted" }]);
+    expect(callLines(messages)[0]!.text).toBe("● my_tv foo_bar\n  x: 1\n  ⎿ set"); // without the window's names
     expect(exportText(messages, "fake:a")).toContain('● mcp__my_tv__foo_bar {\n  "x": 1\n}\n  ⎿ set');
+  });
+});
+
+// TUI design pass, Task 12 (audit 10; the user's layout, 2026-11-15, "As shown"): Ctrl+O's and /tasks t3's full record
+// gives a call's input as name: value lines and a shell result without its empty sections; /export keeps the JSON and the
+// result as the model read it.
+describe("callLines", () => {
+  // One call's record, with its result when given.
+  const call = (name: string, input: unknown, output?: string, isError = false): Message[] => [
+    { role: "assistant", parts: [{ type: "tool_call", id: "c", name, input }] },
+    ...(output === undefined ? [] : [{ role: "user", parts: [{ type: "tool_result", callId: "c", output, isError }] } satisfies Message]),
+  ];
+  const record = (name: string, input: unknown, output?: string, isError = false) => callLines(call(name, input, output, isError))[0]!.text;
+  const shellResult = (stderr: string, stdout: string, status = "exit code: 0") => `${status}\n--- stderr ---\n${stderr}\n--- stdout ---\n${stdout}`;
+
+  it("shows the approved layout, grey, one line per call, and /export unchanged", () => {
+    const messages = [
+      ...call("shell", { command: "npm test", timeout: 60000 }, shellResult("", "12 passed")),
+      { role: "assistant", parts: [{ type: "tool_call", id: "w", name: "write_file", input: { path: "src/a.ts", content: "export const a = 1;\nexport const b = 2;" } }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "w", output: "ok", isError: false }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "l", name: "list_tasks", input: {} }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "l", output: "(no tasks)", isError: false }] },
+    ] satisfies Message[];
+    expect(callLines(messages)).toEqual([
+      { text: "● shell\n  command: npm test\n  timeout: 60000\n  ⎿ exit code: 0\n--- stdout ---\n12 passed", color: "muted" },
+      { text: "● write_file\n  path: src/a.ts\n  content:\n    export const a = 1;\n    export const b = 2;\n  ⎿ ok", color: "muted" },
+      { text: "● list_tasks\n  ⎿ (no tasks)", color: "muted" },
+    ]);
+    const exported = exportText(messages, "fake:a");
+    expect(exported).toContain(`● shell {\n  "command": "npm test",\n  "timeout": 60000\n}\n  ⎿ ${shellResult("", "12 passed")}`);
+    expect(exported).toContain('● list_tasks {}\n  ⎿ (no tasks)');
+  });
+
+  // An empty string is `""`, which would otherwise be nothing after the colon (the user's choice, 2026-11-15, "Show
+  // \"\""); a string of spaces stays bare, as every other string.
+  it("gives a string on its line, an empty one as \"\", numbers, booleans, null, arrays and objects as JSON on one line", () => {
+    const input = { s: "a b", e: "", sp: " ", n: 1.5, t: true, f: false, z: null, list: [1, "two"], obj: { a: { b: "c\nd" } } };
+    expect(record("x", input, "ok")).toBe(
+      '● x\n  s: a b\n  e: ""\n  sp:  \n  n: 1.5\n  t: true\n  f: false\n  z: null\n  list: [1,"two"]\n  obj: {"a":{"b":"c\\nd"}}\n  ⎿ ok',
+    );
+  });
+
+  // A CRLF value's \r goes with its line break, as screen() takes it in prose; a lone \r is no line break, and is escaped.
+  it("puts a multi-line string's lines under its name, a CRLF one's without the \\r, an empty line with no indent", () => {
+    expect(record("x", { content: "a\r\nb\r\n" }, "ok")).toBe("● x\n  content:\n    a\n    b\n\n  ⎿ ok"); // its ending line break kept
+    expect(record("x", { content: "a\n\nb" }, "ok")).toBe("● x\n  content:\n    a\n\n    b\n  ⎿ ok");
+    expect(record("x", { content: "a\rb" }, "ok")).toBe("● x\n  content: a␍b\n  ⎿ ok");
+    expect(record("x", { content: "\ta\n\tb" }, "ok")).toBe("● x\n  content:\n    \ta\n    \tb\n  ⎿ ok"); // tabs kept, as in prose
+  });
+
+  // JSON.stringify escaped a value's control characters before; each value is escaped now as every scrollback line is.
+  it("escapes control characters and escape codes in a value, on one line and on many, and screen() keeps it so", () => {
+    const text = record("x", { a: "x\u001b]52;c;eA==\u0007", b: "one\n\u001b[31mred\u202e", c: ["\u202e"] }, "ok");
+    expect(text).toBe("● x\n  a: x\\u001b]52;c;eA==\\u0007\n  b:\n    one\n    \\u001b[31mred\\u202e\n  c: [\"\\u202e\"]\n  ⎿ ok");
+    expect(screen({ text }).text).toBe(text);
+  });
+
+  // A key a model or an MCP server could make odd is quoted as JSON, so each line reads one way: an empty key, one with a
+  // colon, a line break, a quote, spaces or a control character, which could pass for another key or a value's line.
+  it("quotes a key that is empty or holds anything but letters, marks after the first, digits, _, $, . and -", () => {
+    expect(record("x", { file_path: 1, $ref: 2, "a.b-c": 3, 名前: 4 }, "ok")).toBe("● x\n  file_path: 1\n  $ref: 2\n  a.b-c: 3\n  名前: 4\n  ⎿ ok");
+    // Combining marks after the first character leave a key bare, so a decomposed cafe and Hindi read as typed (Task 12's
+    // code review); a key starting with one is quoted.
+    const marked = { "caf\u00e9": 1, "cafe\u0301": 2, "\u0928\u093e\u092e": 3 }; // cafe precomposed, decomposed, Hindi
+    expect(record("x", marked, "ok")).toBe("● x\n  caf\u00e9: 1\n  cafe\u0301: 2\n  \u0928\u093e\u092e: 3\n  ⎿ ok");
+    const odd = { "": 1, "a: b": 2, "a\nb": 3, '"q"': 4, "  pad": 5, "e\u001b": 6, "r\u202e": 7, "\u0301a": 8 };
+    expect(record("x", odd, "ok")).toBe(
+      '● x\n  "": 1\n  "a: b": 2\n  "a\\nb": 3\n  "\\"q\\"": 4\n  "  pad": 5\n  "e\\u001b": 6\n  "r\\u202e": 7\n  "\u0301a": 8\n  ⎿ ok',
+    );
+  });
+
+  it("says a call with no result yet is not finished", () => {
+    expect(record("shell", { command: "npm test" })).toBe("● shell\n  command: npm test\n  ⎿ (not finished)");
+  });
+
+  // No provider gives one (openai.ts, parseArgs wraps it), but a record must still show it.
+  it("gives an input that is not an object as its JSON on one line after the name", () => {
+    expect(record("x", ["a"], "ok")).toBe('● x ["a"]\n  ⎿ ok');
+    expect(record("x", undefined, "ok")).toBe("● x undefined\n  ⎿ ok");
+  });
+
+  it("leaves a shell result's empty stderr or stdout out, both for the status alone, neither when both have text", () => {
+    expect(record("shell", {}, shellResult("", "out\n"))).toBe("● shell\n  ⎿ exit code: 0\n--- stdout ---\nout\n");
+    expect(record("shell", {}, shellResult("bad\n", ""), true)).toBe("● shell\n  ⎿ exit code: 0\n--- stderr ---\nbad\n");
+    expect(record("shell", {}, shellResult("", "", "exit code: 1"), true)).toBe("● shell\n  ⎿ exit code: 1");
+    expect(record("shell", {}, shellResult("", "", "killed by SIGTERM"), true)).toBe("● shell\n  ⎿ killed by SIGTERM");
+    expect(record("shell", {}, shellResult("warn", "out"))).toBe(`● shell\n  ⎿ ${shellResult("warn", "out")}`);
+  });
+
+  // A result the session cut (session.ts, truncate) is cleaned as any other, its cut note in its stdout: the common
+  // long output with no errors loses its empty stderr heading (the user's choice, 2026-11-15, "Hide it, rare case a
+  // limit").
+  it("leaves a cut shell result's empty stderr out", () => {
+    const plain = truncate(shellResult("", "o".repeat(MAX_TOOL_OUTPUT)));
+    expect(record("shell", {}, plain)).toBe(`● shell\n  ⎿ ${plain.replace("--- stderr ---\n\n", "")}`);
+    expect(plain).toMatch(/\n\[cut: \d+ more characters\]$/);
+  });
+
+  // The known limit (Task 12's code review; the user's choice, 2026-11-15): a stderr starting with the stdout marker,
+  // long enough that the cut takes the real marker away, reads as empty, so its heading goes and its text shows as
+  // stdout. No text is lost.
+  it("shows, as its known limit, a cut stderr that starts with the stdout marker as stdout", () => {
+    const fake = `\n--- stdout ---\n${"e".repeat(MAX_TOOL_OUTPUT)}`;
+    const cut = truncate(shellResult(fake, "out"));
+    expect(cut.split("\n--- stdout ---\n")).toHaveLength(2); // the stderr's marker only
+    expect(record("shell", {}, cut, true)).toBe(`● shell\n  ⎿ ${cut.replace("--- stderr ---\n\n", "")}`);
+  });
+
+  // Which marker is the real one cannot be told when the stdout marker comes twice, so nothing is left out: either
+  // stream's text can hold it.
+  it("shows a shell result unchanged when its stderr or stdout holds the stdout marker, or it has another shape", () => {
+    const marker = "\n--- stdout ---\n";
+    for (const result of [
+      shellResult(`${marker}x`, ""), // stderr starting with the marker, which would read as an empty stderr
+      shellResult("", `a${marker}b`), // stdout holding the marker after an empty stderr
+      shellResult("e\n--- stdout ---", "--- stdout ---\nb"), // the marker made across the real one
+      shellResult("\n--- stdout ---", "b"), // the stderr's marker overlapping the real one, which starts at its last line break
+      "exit code: 0\n--- stderr ---\nno stdout marker, as a cut in stderr leaves it",
+      "Moved to the background as t3 by the user.",
+      `before\n${shellResult("", "out")}`, // not a status line first
+    ]) {
+      expect(record("shell", {}, result)).toBe(`● shell\n  ⎿ ${result}`);
+    }
+  });
+
+  it("leaves another tool's result alone though it holds the shell markers", () => {
+    const result = shellResult("", "out");
+    expect(record("read_file", { path: "log.txt" }, result)).toBe(`● read_file\n  path: log.txt\n  ⎿ ${result}`);
+    expect(record("mcp__s__shell", {}, result)).toBe(`● s shell\n  ⎿ ${result}`);
   });
 });

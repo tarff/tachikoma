@@ -57,11 +57,11 @@ export const handover = (ui: UI, fns: Fns) => {
     ui.screen.setSecond(false);
     ui.screen.suspended = true;
     const page = d.rows.lines.map((l, i) => (
-      <Text key={i} color={l.text ? l.color : undefined} wrap={l.oneLine ? "truncate-end" : "wrap"}>
+      <Text key={i} color={l.text && l.color ? ui.palette[l.color] : undefined} wrap={l.oneLine ? "truncate-end" : "wrap"}>
         {l.text || " "}
       </Text>
     ));
-    ui.screen.write(`${renderToString(<>{page}<Text color="gray">Printed. q, Esc or Ctrl-C to go back.</Text></>, { columns: ui.columns })}\n`);
+    ui.screen.write(`${renderToString(<>{page}<Text color={ui.palette.muted}>Printed. q, Esc or Ctrl-C to go back.</Text></>, { columns: ui.columns })}\n`);
     ui.screen.write(PASTE_ON);
     p.resume = resume;
     ui.input!.divert(fns.reader);
@@ -177,7 +177,7 @@ export const handover = (ui: UI, fns: Fns) => {
       handover.done(); // a print-out started during the switch keeps the hold (comeBack, above)
     }
     if (ui.ended.current) return;
-    (file ? fns.note : fns.say)({ text: `screen is now ${toFull ? "full" : "classic"}${file ? FROM : ""}`, color: "gray" });
+    (file ? fns.note : fns.say)({ text: `screen is now ${toFull ? "full" : "classic"}${file ? FROM : ""}`, color: "muted" });
   };
 
   // The editor in the terminal (release 6 design, "The external editor"; plan, Task 12), through the owner, which waits
@@ -228,7 +228,7 @@ export const handover = (ui: UI, fns: Fns) => {
   // The one line for an editor that failed or was not found, naming how to set one (design, "On return").
   const editorFailed = (command: string, failed: string) => {
     const why = failed === NOT_FOUND ? `${command} was not found` : `The editor failed (${failed})`;
-    fns.say({ text: `${why}. Set VISUAL or EDITOR, or "editor" in ${shownFile()}.`, color: "red" });
+    fns.say({ text: `${why}. Set VISUAL or EDITOR, or "editor" in ${shownFile()}.`, color: "error", block: true });
   };
   // Ctrl+G and Ctrl+X Ctrl+E: the prompt as it is when the editor starts goes to it, and what it saved becomes the
   // prompt, the cursor at the end, as one step Ctrl+Z takes back; on failure the prompt stays (design, "On return").

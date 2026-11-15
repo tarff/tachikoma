@@ -1,5 +1,5 @@
 import { useApp, useWindowSize } from "ink";
-import { useRef, useState } from "react";
+import { useContext, useRef, useState } from "react";
 import { type Ask, type Mode, type Protection, visible } from "../../core/permissions.js";
 import type { Row } from "../../core/sessions.js";
 import type { Effort } from "../../providers/anthropic.js";
@@ -24,6 +24,7 @@ import { TerminalOwner } from "../owner.js";
 import { now as nowOf, phaseInputs } from "../phase.js";
 import { type Draft, Pictures } from "../pictures.js";
 import type { ReviewEnd } from "../Review.js";
+import { ThemeContext } from "../theme.js";
 import type { Call } from "../ToolLine.js";
 import { FOLLOWING, type Pos, Rows, type View } from "../view.js";
 import { type Vim, start as vimStart } from "../vim.js";
@@ -43,6 +44,7 @@ export function useAppState({
   branch: firstBranch,
   historyFile,
   intro,
+  restored,
   errorFile,
   segments,
   makeProvider,
@@ -147,7 +149,8 @@ export function useAppState({
   // drawing that started it.
   const fullNow = useRef(full);
   // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row, how many it draws and
-  // which of its rows they are (layout.ts, frame), and the menu's under it, no prompt rows while a question, the model
+  // which of its rows they are (layout.ts, frame), whether its two lines are drawn (TUI design pass, Task 4), and the
+  // menu's under the lower one, no prompt rows while a question, the model
   // list, Ctrl+R's search, whose prompt shows a match, or the detail view takes their place; the prompt as typed and the
   // menu's choice when they were drawn, which keys replace, never change; the detail view drawn, if any; and whether the
   // model list and a question are drawn, which take the keys (phase.ts, PhaseInputs).
@@ -157,6 +160,7 @@ export function useAppState({
     promptFirst: 0,
     promptRows: 0,
     promptWindow: { top: 0, above: 0, below: 0 },
+    rules: false,
     menuRows: 0,
     editor: empty,
     chosen: chosen.current,
@@ -205,8 +209,14 @@ export function useAppState({
   // when its answer is under its tool line (release 7 plan, choices 66 and 67; describe.ts).
   const toolLine = useRef<string | null>(null);
   const answered = useRef(new Map<string, string | null>());
+  // The colours of the conversation's marks, the launch's (theme.ts; TUI design pass, Task 3); the last line said, null
+  // before the first, for the empty line before a block; and whether a slash command runs that has said no line yet, whose
+  // first starts its block (output.ts, say).
+  const { palette } = useContext(ThemeContext);
+  const lastSaid = useRef<Line | null>(null);
+  const command = useRef(false);
   // The lead's quiet calls not yet said, and the runs said, for their results (fold.ts; release 8c plan, Task 15).
-  const [run] = useState(() => new OpenRun({ asked: session.asked, shell: shell ?? shellOf("host"), names: mcpNames(mcp?.servers) }));
+  const [run] = useState(() => new OpenRun({ asked: session.asked, shell: shell ?? shellOf("host"), names: mcpNames(mcp?.servers), palette, root: workspace.root }));
   // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
   const todos = useRef<{ items: TodoItem[]; hidden: boolean }>({ items: [], hidden: false });
   // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a
@@ -291,6 +301,10 @@ export function useAppState({
   // a turn to end, joins them.
   const notes = useRef<Line[]>([]);
   const newEdit = useRef(true);
+  // Whether the prompt has held text yet, for the hint row's "? for shortcuts", which the start-up box's line says until
+  // then (TUI design pass, Task 14; App.tsx, usualHint). A restored conversation's window starts with it, as the box may
+  // be far above (the user's choice, 2026-11-15: "Show the hint after -r/-c").
+  const typed = useRef(restored === true);
   const history = useRef<History | null>(null);
   const running = tasks.running > 0;
   // What is happening now (phase.ts), from the refs only, the model list and the question as last drawn among them
@@ -315,9 +329,9 @@ export function useAppState({
     pictures, reading, reads, doing, calls, summary, todos, perm, cycle, questions, question, contextWindow, setContextWindow,
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
-    leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
+    leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, typed, history, running, phaseRefs,
     happening, late, toolLine, answered, run, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
-    editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm,
+    editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm, palette, lastSaid, command,
   } as const;
 }
 

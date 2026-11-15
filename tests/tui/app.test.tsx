@@ -7,6 +7,7 @@ import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { type Instance, render as renderInk } from "ink";
 import { render } from "ink-testing-library";
+import type { ReactElement } from "react";
 import chalk from "chalk";
 import { Completions } from "openai/resources/chat/completions";
 import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
@@ -54,13 +55,16 @@ import { readSettings, type Settings, settingsDir, shownFile } from "../../src/s
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
+import { asBlock } from "../../src/tui/describe.js";
 import { conversationLines, mcpNames } from "../../src/tui/fold.js";
 import { mcpRow } from "../../src/tui/McpList.js";
 import { Pictures, type Read } from "../../src/tui/pictures.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
-import { wrap } from "../../src/tui/view.js";
+import { startBox } from "../../src/tui/startup.js";
+import { look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
+import { textWidth, wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, standInRun, tempContext, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
 
@@ -152,6 +156,7 @@ async function mount(
     newLead?: Provider; // what /lead and the picker make
     rows?: number; // the terminal's height
     intro?: AppProps["intro"]; // the start line
+    restored?: boolean; // the window opens on a restored conversation, as -c and -r open one
     worker?: Provider; // the subagents' model
     mode?: Mode; // the mode the session starts in
     full?: boolean; // full screen; classic when not given
@@ -179,6 +184,7 @@ async function mount(
     // Real MCP servers made on the mount's bus, as cli.tsx hands them to the session and the App, started once the App
     // listens and stopped at the test's end, with the project's from .mcp.json for live edits (Task 10); none when not given.
     mcp?: (bus: Bus) => { servers: Servers; project?: ServerConfig[] };
+    theme?: Theme; // the look and palette, as cli.tsx gives them; the dark full one when not given (TUI design pass, Task 7)
   } = {},
 ) {
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
@@ -257,7 +263,7 @@ async function mount(
   const copies: string[] = [];
   const write = (s: string) => copies.push(Buffer.from(s.slice(7, -1), "base64").toString("utf8")); // 7: ESC ] 52 ; c ;
   const run = opts.run === undefined ? async () => {} : opts.run;
-  const app = render(
+  const tree = (
     <App
       session={session}
       tasks={tasks}
@@ -276,6 +282,7 @@ async function mount(
       branch={opts.branches?.shift() ?? null}
       historyFile={historyFile}
       intro={opts.intro ?? []}
+      restored={opts.restored}
       errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
       segments={opts.segments ?? SEGMENTS}
       makeProvider={(spec) => {
@@ -310,8 +317,9 @@ async function mount(
       leftLines={opts.leftLines}
       hooks={hooks}
       {...(mcp ? { mcp } : {})}
-    />,
+    />
   );
+  const app = render(themed(tree, opts.theme));
   mounted.push(app);
   mcp?.servers.startAll(); // once the App listens, as cli.tsx starts them
   // ink-testing-library's terminal has no height; 24 rows is Ink's own default size (getWindowSize).
@@ -339,6 +347,43 @@ const hanging = (): Provider => ({
 // or reverse it.
 const OSC52 = "\u001b]52;c;Y3VybA==\u0007";
 const OSC52_SHOWN = "\\u001b]52;c;Y3VybA==\\u0007";
+
+// The palette the App draws in when no theme is given, the dark full one (theme.ts, ThemeContext), for the lines a test
+// makes as cli.tsx makes a resumed conversation's (TUI design pass, Task 3).
+const DARK = palette({ light: false, color: true, full: true });
+// The look with colour below full colour, Ink's named colours (Task 13).
+const NAMED: Theme = { look: { light: false, color: true, full: false }, palette: palette({ light: false, color: true, full: false }) };
+// The App in the theme given; unless given, with chalk at level 1 or 2, the look cli.tsx makes there, the named colours
+// (theme.ts, look), whose basic codes a test that turns colour on at level 1 looks for; otherwise the dark full one, the
+// context's own (TUI design pass, Task 13).
+function themed(tree: ReactElement, given?: Theme): ReactElement {
+  const theme = given ?? (chalk.level === 1 || chalk.level === 2 ? NAMED : undefined);
+  return theme ? <ThemeContext value={theme}>{tree}</ThemeContext> : tree;
+}
+// The prompt's line above it and below it, the terminal's width: ink-testing-library's 100 columns (TUI design pass, Task 4).
+const RULE = "─".repeat(100);
+// The question's box's rows without colour, `columns` wide: its top, a row of text inside it, and its foot (TUI design
+// pass, Task 9).
+const boxTop = (columns = 100) => `╭${"─".repeat(columns - 2)}╮`;
+const boxFoot = (columns = 100) => `╰${"─".repeat(columns - 2)}╯`;
+// boxed pads by characters, not columns, so it is for text of narrow characters only.
+const boxed = (text: string, columns = 100) => `│ ${text.padEnd(columns - 4)} │`;
+
+// The frame with its colours: Ink colours through chalk, which finds no colour in a test's output, so a test that looks
+// for colours turns them on for itself at chalk's `level` and back off after: 1, chalk's basic 16 colours, enough for
+// reverse (\u001b[7m); 3, 24-bit colour, so the palette's hex is drawn as it is (theme.ts). chalk is now a dependency of
+// ours at Ink's own version (TUI design pass, choice P1).
+async function inColour(level: 1 | 3, test: () => Promise<void>) {
+  const before = chalk.level;
+  chalk.level = level;
+  try {
+    await test();
+  } finally {
+    chalk.level = before;
+  }
+}
+// `s` as a pattern matching it exactly.
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 function expectNoRawControls(frame: string | undefined) {
   for (const c of ["\u001b", "\u0007", "\r", "\u202e", "\u009b"]) expect(frame).not.toContain(c);
@@ -375,9 +420,12 @@ describe("App", () => {
     }
   });
 
-  it("shows the start line, grey, first", async () => {
-    const { app } = await mount([], { intro: [{ text: "Instructions: CLAUDE.md (12 bytes)", color: "gray" }] });
-    expect(app.lastFrame()).toMatch(/^Instructions: CLAUDE.md \(12 bytes\)\n/);
+  it("shows the intro's lines first, a muted one in the muted colour", async () => {
+    await inColour(1, async () => {
+      const { app } = await mount([], { intro: [{ text: "Instructions left out: ~/x.md (not allowed)", color: "muted" }] });
+      expect(stripVTControlCharacters(app.lastFrame()!)).toMatch(/^Instructions left out: ~\/x\.md \(not allowed\)\n/);
+      expect(app.lastFrame()).toContain("\u001b[90mInstructions left out"); // gray, the named colours' muted (theme.ts)
+    });
   });
 
   // Release 8a plan, Task 6 (user, 2026-11-06: "Show it"): a resumed conversation is drawn as a live one, above the lines
@@ -389,16 +437,26 @@ describe("App", () => {
       { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "the notes", isError: false }] },
       { role: "assistant", parts: [{ type: "text", text: "They say hello." }] },
     ];
-    const folded = { asked: new Set<string>(), shell: "powershell" as const, names: mcpNames() };
-    const { app } = await mount([], { intro: [...conversationLines(history, folded), { text: "Resumed: read the notes.", color: "gray" }] });
+    const folded = { asked: new Set<string>(), shell: "powershell" as const, names: mcpNames(), palette: DARK, root: tmpdir() };
+    // The resume lines a block, as cli.tsx marks them (the whole PR's review: "Give them a gap").
+    const { app } = await mount([], { intro: [...conversationLines(history, folded), ...asBlock([{ text: "Resumed: read the notes.", color: "muted" }])] });
     const frame = app.lastFrame()!;
-    expect(frame).toMatch(/^> read the notes\nRead 1 file\nThey say hello\.\nResumed: read the notes\.\n/);
+    expect(frame).toMatch(/^\n› read the notes\n\n\n● Read 1 file\n\n● They say hello\.\n\nResumed: read the notes\.\n/);
+  });
+
+  // TUI design pass, Task 14 (the user's choice, 2026-11-15: "Show the hint after -r/-c"): a window opened on a restored
+  // conversation shows the hint row's "?" from the start, as the start-up box may be far above; an empty one waits.
+  it("shows the shortcuts hint from the start in a window opened on a restored conversation", async () => {
+    const restored = await mount([], { intro: [{ text: "● They say hello." }], restored: true });
+    expect(restored.app.lastFrame()).toContain("? for shortcuts");
+    const fresh = await mount([], { intro: [{ text: "● They say hello." }] });
+    expect(fresh.app.lastFrame()).not.toContain("? for shortcuts");
   });
 
   it("sends what the user types and shows the reply", async () => {
     const { app } = await mount([reply("hello there")]);
     await type(app, "hi");
-    expect(app.lastFrame()).toContain("> hi");
+    expect(app.lastFrame()).toContain("\n› hi\n"); // the conversation's row, not the prompt's
     await until(app, "hello there");
     expect(app.lastFrame()).toContain("lead fake:a");
   });
@@ -417,9 +475,10 @@ describe("App", () => {
     const target = path.join(ctx.root, "a.txt");
     await until(app, `Allow write ${target}? [y/n]`);
     app.stdin.write("\u0003");
-    await until(app, `write ${target}: You cancelled this.`);
+    await until(app, "  ⎿ You cancelled this.");
     await gone(app, "Esc to stop");
-    expect(app.lastFrame()).toContain("  ⎿ You cancelled this."); // its result row, short, after the preview (release 7 plan, choice 67)
+    // Under the call after its preview, without a result row of its own (TUI design pass, Task 8; choice 67).
+    expect(app.lastFrame()!.split("You cancelled this.")).toHaveLength(2);
     expect(app.lastFrame()).not.toContain("[y/n]");
     expect(app.lastFrame()).not.toContain("written");
     expect(existsSync(target)).toBe(false);
@@ -445,7 +504,7 @@ describe("App", () => {
     app.stdin.write("y");
     app.stdin.write("n");
     await until(app, "written");
-    expect(app.lastFrame()).toContain(`write ${target}: You allowed this.`);
+    expect(app.lastFrame()).toContain("  ⎿ You allowed this."); // under the call after its preview (TUI design pass, Task 8)
     expect(app.lastFrame()).not.toContain("declined");
   });
 
@@ -860,7 +919,9 @@ describe("App", () => {
     const { app, bus } = await mount([]);
     bus.emit("error", { kind: "fallback", attempted: "x", message: "fake:a declined; fake:b answered instead", lead: "fake:a" });
     await until(app, "↪ fake:a declined; fake:b answered instead");
-    expect(app.lastFrame()).toContain("0 errors");
+    // None counted, so the status line, drawn, leaves its errors out between the mode and the folder (TUI design pass, Task 10).
+    expect(app.lastFrame()).toContain("perm ask | proj");
+    expect(app.lastFrame()).not.toMatch(/\d+ errors?\b/);
   });
 
   it("says how many pictures a request left out to fit its provider", async () => {
@@ -875,7 +936,8 @@ describe("App", () => {
     await type(app, "hi");
     await until(app, "seen");
     expect(app.lastFrame()).toContain("2 pictures were left out of this request to fit Anthropic's 32 MB.");
-    expect(app.lastFrame()).toContain("0 errors");
+    expect(app.lastFrame()).toContain("perm ask | proj"); // the status line, its errors left out as none were counted
+    expect(app.lastFrame()).not.toMatch(/\d+ errors?\b/);
   });
 
   it("summarises the error log with /errors", async () => {
@@ -905,10 +967,10 @@ describe("App", () => {
   });
 
   it("shows what a write will put in the file before asking, under a heading", async () => {
-    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two\n" }), reply("written")]);
+    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two\n" }), reply("written")]);
     await type(app, "make a file");
     await until(app, "Allow write");
-    expect(app.lastFrame()).toContain(`┌ write ${path.join(ctx.root, "a.txt")} (2 lines)\nline one\nline two`);
+    expect(app.lastFrame()).toContain("┌ write a.txt (2 lines)\nline one\nline two"); // the file relative to the project (TUI design pass, Task 8)
   });
 
   it("says so when a write would leave the file empty", async () => {
@@ -954,7 +1016,7 @@ describe("App", () => {
     bus.emit("error", { kind: "provider", attempted: "x", message: `bad${OSC52}`, lead: "fake:a" });
     await until(app, "✗ provider");
     const frame = app.lastFrame();
-    expect(frame).toContain("> a\\u001b[8mb␍c");
+    expect(frame).toContain("› a\\u001b[8mb␍c");
     expect(frame).toContain(`✗ provider: bad${OSC52_SHOWN}`);
     expectNoRawControls(frame);
   });
@@ -962,7 +1024,7 @@ describe("App", () => {
   // Release 7 plan, Task 8: one red line per danger above the yellow question, in full screen and classic mode, with the
   // model's text escaped as the question's is. The gate is asked directly, so nothing runs the command.
   it.each([true, false])("draws a dangerous command's red lines above its question, escaped (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, gate } = await mount([], { full });
       const line = "git push --force origin a\u202eb\u001b[8m; git reset --hard HEAD~3";
       const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
@@ -1004,7 +1066,7 @@ describe("App", () => {
 
   // Release 8a plan, Task 5: the "Saving fails" line in red after ✗, with no label (user, 2026-11-06, "✗ then the line").
   it("shows saving stopped as ✗ and the line alone, in red", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session, bus } = await mount([reply("still here")]);
       const errors: string[] = [];
       bus.on("error", (e) => errors.push(e.message));
@@ -1030,7 +1092,7 @@ describe("App", () => {
   // Release 7 plan, Task 10: after 3 refusals in a row the next action that would go to the judge asks, with auto mode's
   // pause in grey just above it, in full screen and classic; approving it resumes auto mode, so the next goes to the judge.
   it.each([true, false])("says auto mode's pause in grey above its question, and approving resumes it (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const folder = await mkdtemp(path.join(tmpdir(), "tachi-"));
       const writes = ["a", "b", "c", "d", "e"].map((n, i) => callTool(`c${i + 1}`, "write_file", { path: path.join(folder, `${n}.txt`), content: n }).parts).flat();
       const no = reply('{"allow": false, "reason": "No."}');
@@ -1057,7 +1119,7 @@ describe("App", () => {
   // screen takes both, the grey row above.
   const PAUSE = "Auto mode paused after 3 refusals; approving this resumes it.";
   it.each([true, false])("draws a question's grey line with that question, not under one ahead of it in the line (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ask } = await mount([], { full });
       const first = ask("run: git push --force", undefined, undefined, undefined, ["Danger: rewriting or deleting git history: git push --force"]);
       const second = ask("read /made/up/elsewhere/notes.txt", undefined, undefined, undefined, [], PAUSE);
@@ -1076,7 +1138,7 @@ describe("App", () => {
   });
 
   it("puts a moved question's grey line in its block in the conversation, above any red lines, and keeps it above the short line", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = `echo ${"x".repeat(900)}`;
       const { app, ask } = await mount([], { full: true, rows: 12 });
       const asking = ask(`run: ${line}`, undefined, undefined, undefined, ["Danger: a made-up danger"], PAUSE);
@@ -1101,18 +1163,18 @@ describe("App", () => {
     const first = ask('tv: draw {"shape":"line"}', undefined, undefined, undefined, [], LONG_NOTE, true);
     await until(app, "Allow tv: draw");
     let rows = app.lastFrame()!.split("\n");
-    const at = rows.findIndex((r) => r.startsWith("Draws a shape"));
-    expect(rows[at]).toMatch(/^Draws a shape.*…$/);
+    const at = rows.findIndex((r) => r.startsWith("│ Draws a shape")); // inside the question's box (TUI design pass, Task 9)
+    expect(rows[at]).toMatch(/^│ Draws a shape.*… │$/);
     expect(rows[at]!.length).toBeLessThanOrEqual(100); // the test screen's width
-    expect(rows[at + 1]).toMatch(/^Allow tv: draw/);
+    expect(rows[at + 1]).toMatch(/^│ Allow tv: draw/);
     await press(app, "n");
     expect(await first).toBe(false);
     const second = ask('tv: draw {"shape":"line"}', undefined, undefined, undefined, [], LONG_NOTE);
     await until(app, "Allow tv: draw");
     rows = app.lastFrame()!.split("\n");
-    const from = rows.findIndex((r) => r.startsWith("Draws a shape"));
+    const from = rows.findIndex((r) => r.startsWith("│ Draws a shape"));
     expect(rows[from]).not.toContain("…");
-    expect(rows[from + 1]).not.toMatch(/^Allow/); // the rest of the note, on a row of its own
+    expect(rows[from + 1]).not.toMatch(/^│ Allow/); // the rest of the note, on a row of its own
     await press(app, "n");
     expect(await second).toBe(false);
   });
@@ -1131,16 +1193,17 @@ describe("App", () => {
   });
 
   it("fits a question's grey line in a small terminal, with red lines given too, keeping a red row", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const warnings = Array.from({ length: 7 }, (_, i) => `Danger: rewriting or deleting git history: git push --force origin b${i + 1}`);
-      const { app, ask } = await mount([], { full: true, rows: 8 });
+      const { app, ask } = await mount([], { full: true, rows: 10 });
       const asking = ask("run: git push --force origin b1", undefined, undefined, undefined, warnings, PAUSE);
       await until(app, "more dangers");
       const frame = app.lastFrame()!;
-      expect(frame.split("\n").length).toBeLessThanOrEqual(7); // the frame's row short of the terminal's eight
+      expect(frame.split("\n").length).toBeLessThanOrEqual(9); // the frame's row short of the terminal's ten
       expect(frame).toContain(`\u001b[90m${PAUSE}`);
       expect(frame).toContain(`\u001b[31m${warnings[0]}`);
-      expect(frame).toContain("\u001b[31m…and 5 more dangers"); // eight rows: a row short, the conversation, grey, three red, the question, status
+      // Ten rows: a row short, the conversation, the box's top, grey, three red, the question, the box's foot, status.
+      expect(frame).toContain("\u001b[31m…and 5 more dangers");
       expect(frame.indexOf(PAUSE)).toBeLessThan(frame.indexOf(warnings[0]!));
       expect(frame).toContain("\u001b[33mAllow run: git push --force origin b1?");
       await press(app, "n");
@@ -1151,7 +1214,7 @@ describe("App", () => {
   // Release 7 plan, Task 8's code review: a question too long to fit moves into the conversation, its red lines with it,
   // in red, under its heading and above its text, so its short line's "shown above" shows the dangers too.
   it("puts a moved question's red lines in the conversation, above its text", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = `echo ${"x".repeat(900)}; git push --force`;
       const { app, gate } = await mount([], { full: true, rows: 12 });
       const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
@@ -1174,18 +1237,20 @@ describe("App", () => {
   // Release 7 plan, choice 63: in full screen the red lines are a row each, cut at the terminal's width, and those that do
   // not fit are counted in the last red row, so the frame stays inside the terminal. Classic mode draws them whole.
   it("cuts the red lines to a row each in full screen, and counts those that do not fit, keeping the frame inside the terminal", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = [`git push --force origin ${"x".repeat(120)}`, ...Array.from({ length: 6 }, (_, i) => `git push --force origin b${i + 1}`)].join("; ");
-      const { app, gate } = await mount([], { full: true, rows: 10 });
+      const { app, gate } = await mount([], { full: true, rows: 12 });
       const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
         () => "allowed",
         (err: Error) => err.message,
       );
       await until(app, "more dangers");
       const frame = app.lastFrame()!;
-      expect(frame.split("\n").length).toBeLessThanOrEqual(9); // the frame's row short of the terminal's ten
-      expect(frame).toContain(`\u001b[31mDanger: rewriting or deleting git history: git push --force origin ${"x".repeat(32)}…`);
-      // Ten rows: the frame's row short, the conversation's one, the question's four and the status line leave three.
+      expect(frame.split("\n").length).toBeLessThanOrEqual(11); // the frame's row short of the terminal's twelve
+      // Cut at the box's 96 columns inside (TUI design pass, Task 9).
+      expect(frame).toContain(`\u001b[31mDanger: rewriting or deleting git history: git push --force origin ${"x".repeat(28)}…`);
+      // Twelve rows: the frame's row short, the conversation's one, the box's two, the question's four and the status line
+      // leave three.
       expect(frame).toContain("\u001b[31mDanger: rewriting or deleting git history: git push --force origin b1\u001b[39m");
       expect(frame).toContain("\u001b[31m…and 5 more dangers");
       expect(frame).not.toContain("\u001b[31mDanger: rewriting or deleting git history: git push --force origin b2");
@@ -1284,7 +1349,7 @@ describe("App's keys for stopping and exiting", () => {
     await until(app, "Esc to stop");
     await press(app, "\u001b");
     await gone(app, "Esc to stop");
-    expect(app.lastFrame()).toContain("> hi");
+    expect(app.lastFrame()).toContain("\n› hi\n");
   });
 
   // Release 7 plan, Task 10: Esc while the judge is out stops its request, and the action does not run.
@@ -1309,7 +1374,7 @@ describe("App's keys for stopping and exiting", () => {
     await until(app, `Allow write ${target}? [y/n] · Esc to decline`);
     await press(app, "\u001b");
     await until(app, "carried on");
-    expect(app.lastFrame()).toContain(`write ${target}: You declined this.`);
+    expect(app.lastFrame()).toContain("  ⎿ You declined this."); // under the call after its preview (TUI design pass, Task 8)
     expect(existsSync(target)).toBe(false);
   });
 
@@ -1349,6 +1414,7 @@ describe("App's keys for stopping and exiting", () => {
 
   it("forgets a first press after 800 ms, and after any other key", async () => {
     const { app } = await mount([]);
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       // Then one turn of the event loop (setImmediate is not faked), in which the screen is drawn again.
@@ -1375,8 +1441,35 @@ describe("App's keys for stopping and exiting", () => {
     }
   });
 
+  // TUI design pass, Task 14 (the user's choice): at launch the start-up box's line names `?` already, so the hint row
+  // is a blank row until the prompt first holds text, Enter and `?` on the empty prompt typing none; then as before,
+  // an emptied prompt too. Its row stays, so the first key moves nothing, and the exit warning still takes it.
+  it.each([
+    { screen: "classic", full: false },
+    { screen: "full screen", full: true },
+  ])("keeps the hint row blank until the prompt first holds text, in $screen", async ({ full }) => {
+    const { app } = await mount([], { full });
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+    await press(app, "\r");
+    await press(app, "?");
+    await until(app, "Ctrl+O");
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+    await press(app, "\u0003");
+    expect(app.lastFrame()).toContain("Press Ctrl-C again to exit");
+    await press(app, "\u001b"); // another key forgets the first press
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+    const rows = app.lastFrame()!.split("\n").length;
+    await press(app, "a");
+    expect(app.lastFrame()).toContain("? for shortcuts");
+    expect(app.lastFrame()!.split("\n")).toHaveLength(rows);
+    await press(app, "\u0015"); // Ctrl+U empties the prompt
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    expect(app.lastFrame()).toContain("? for shortcuts");
+  });
+
   it("shows the shortcuts hint only while the prompt waits for the user", async () => {
     const { app } = await mount([], { lead: hanging() });
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     expect(app.lastFrame()).toContain("? for shortcuts");
     await type(app, "hi");
     await until(app, "Esc to stop");
@@ -1473,6 +1566,15 @@ describe("App's history", () => {
     expect(sent(session)).toEqual({ type: "text", text: "say hi" });
   });
 
+  // Task 14's code review: a match sent from the search at launch goes in and out of the editor in one key, so the
+  // hint row goes by the prompt as drawn, the match among it.
+  it("shows the shortcuts hint after a turn sent from Ctrl+R's search at launch", async () => {
+    const { app } = await mount([reply("ok")], { past: ["say hi"] });
+    await press(app, "\u0012", "hi", "\r");
+    await until(app, "ok");
+    expect(app.lastFrame()).toContain("? for shortcuts");
+  });
+
   it("gives back what was typed when the search is cancelled with Ctrl-C, or with Backspace on an empty search", async () => {
     const { app } = await mount([], { past: ["say hi"] });
     await press(app, "draft", "\u0012", "zz");
@@ -1521,7 +1623,7 @@ describe("App's queue", () => {
     await type(app, "one");
     await until(app, "Esc to stop");
     await press(app, "two", "\r", "three", "\r", "fo");
-    expect(app.lastFrame()).toMatch(/Esc to stop\ntwo\nthree\n› fo\n↑ to edit queued messages\n/);
+    expect(app.lastFrame()).toMatch(/Esc to stop\ntwo\nthree\n─{100}\n› fo\n─{100}\n↑ to edit queued messages\n/);
     release();
     await until(app, "r2");
     expect(prompts(session)).toEqual(["one", "two\n\nthree"]);
@@ -1535,7 +1637,7 @@ describe("App's queue", () => {
     const { app, session } = await mount([], { lead });
     app.stdin.write("one\rtwo\r");
     await until(app, "Esc to stop");
-    expect(app.lastFrame()).toMatch(/Esc to stop\ntwo\n›/);
+    expect(app.lastFrame()).toMatch(/Esc to stop\ntwo\n─{100}\n›/);
     release();
     await until(app, "r2");
     expect(prompts(session)).toEqual(["one", "two"]);
@@ -1546,7 +1648,7 @@ describe("App's queue", () => {
     const { app, session } = await mount([], { lead, newLead: lead });
     app.stdin.write("/lead fake:b\rone\rtwo\r");
     await tick(); // the command is done, and its turn-end would take the queue on
-    expect(app.lastFrame()).toMatch(/\ntwo\n›/); // still queued: one is running
+    expect(app.lastFrame()).toMatch(/\ntwo\n─{100}\n›/); // still queued: one is running
     release();
     await until(app, "r2");
     expect(prompts(session)).toEqual(["one", "two"]);
@@ -1564,7 +1666,7 @@ describe("App's queue", () => {
     expect(prompts(session)).toEqual(["one", "two", "three"]);
     expect(fake.seen).toHaveLength(2);
     expect(b.seen).toHaveLength(1);
-    expect(app.lastFrame()).toMatch(/r2[\s\S]*lead is now fake:b[\s\S]*> three/);
+    expect(app.lastFrame()).toMatch(/r2[\s\S]*lead is now fake:b[\s\S]*› three/);
   });
 
   it("goes on with the queue after Esc stops a turn, and after a turn that ends in an error", async () => {
@@ -1576,7 +1678,7 @@ describe("App's queue", () => {
     await until(app, "last");
     release();
     expect(prompts(session)).toEqual(["one", "two", "three"]);
-    expect(app.lastFrame()).toMatch(/boom[\s\S]*No subagents or commands yet.[\s\S]*> three/);
+    expect(app.lastFrame()).toMatch(/boom[\s\S]*No subagents or commands yet.[\s\S]*› three/);
   });
 
   it("brings the queue back into the prompt on Ctrl-C, after what is typed, one entry a line, and sends nothing more", async () => {
@@ -1585,7 +1687,7 @@ describe("App's queue", () => {
     await until(app, "Esc to stop");
     await press(app, "two", "\r", "three", "\r", "draft", "\u0003");
     await gone(app, "Esc to stop");
-    expect(app.lastFrame()).toContain("› draft\n  two\n  three\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› draft\n  two\n  three\n${RULE}\n? for shortcuts`);
     await tick();
     expect(prompts(session)).toEqual(["one"]);
   });
@@ -1600,7 +1702,7 @@ describe("App's queue", () => {
     await until(app, `Allow write ${path.join(ctx.root, "a.txt")}?`);
     await press(app, "\u0003");
     await gone(app, "Esc to stop");
-    expect(app.lastFrame()).toContain("› two\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› two\n${RULE}\n? for shortcuts`);
   });
 
   it("exits on a queued /exit, sending nothing after it", async () => {
@@ -1683,6 +1785,7 @@ describe("App's space on screen", () => {
 
   it("drops the hint line when the terminal is too short for it and the cursor's row", async () => {
     const { app } = await mount([], { rows: 3 });
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     expect(app.lastFrame()).toMatch(/^›\n[^\n]*$/);
     Object.assign(app.stdout, { rows: 4 });
     app.stdout.emit("resize");
@@ -1783,10 +1886,10 @@ describe("App's background subagents", () => {
     const { app } = await mount([], { lead, worker, segments: ["tasks"] });
     await type(app, "go");
     await until(app, "started it");
-    expect(app.lastFrame()).toMatch(/›\n◐ t1 find x\n  ⎿ w · \d+s · ↓ 0 tokens · \$0\.00\n\? for shortcuts\n 1 running$/);
+    expect(app.lastFrame()).toMatch(/›\n─{100}\n◐ t1 find x\n  ⎿ w · \d+s · ↓ 0 tokens · \$0\.00\n\? for shortcuts\n 1 running$/);
     worker.answer("found");
     await until(app, "read it");
-    expect(app.lastFrame()).toMatch(/›\n✓ t1 find x\n  ⎿ w · /);
+    expect(app.lastFrame()).toMatch(/›\n─{100}\n✓ t1 find x\n  ⎿ w · /);
     await type(app, "more");
     await until(app, "next");
     expect(app.lastFrame()).not.toContain("✓ t1 find x");
@@ -1803,7 +1906,7 @@ describe("App's background subagents", () => {
     await until(app, "next");
     await type(app, "/tasks");
     await until(app, "Tasks: 1");
-    expect(app.lastFrame()).toMatch(/Tasks: 1\n✓ t1 find x\n  ⎿ w · \d+s · ↓ 5 tokens · \$0\.00 \+ \?\n/);
+    expect(app.lastFrame()).toMatch(/Tasks: 1\n✓ t1 find x\n  ⎿ w · \d+s · ↓ 5 tokens · \$0\.00\+\n/);
   });
 
   it("prints a subagent's tool calls and answer in full with /tasks t1", async () => {
@@ -1813,7 +1916,7 @@ describe("App's background subagents", () => {
     await until(app, "done");
     await type(app, "/tasks t1");
     await until(app, "t1 (find x), done: 1 tool call");
-    expect(app.lastFrame()).toContain('● find_files {\n  "pattern": "*.ts"\n}\n  ⎿ No files match *.ts');
+    expect(app.lastFrame()).toContain("● find_files\n  pattern: *.ts\n  ⎿ No files match *.ts"); // name: value lines (TUI design pass, Task 12)
     expect(app.lastFrame()).toContain("Answer:\nIt is in a.ts");
     await type(app, "/tasks t9");
     await until(app, "No task t9. /tasks lists them.");
@@ -1886,7 +1989,7 @@ describe("App's background commands", () => {
     const { app } = await mount([], { lead, executor, mode: "never" });
     await type(app, "go");
     await until(app, "started");
-    expect(app.lastFrame()).toMatch(/›\n◐ t1 npm run dev\n  ⎿ shell · \d+s\n◐ t2 npm test\n  ⎿ shell · \d+s\n◐ t3 npm run \\u001b\[2Jwatch\n  ⎿ shell · \d+s\n/);
+    expect(app.lastFrame()).toMatch(/›\n─{100}\n◐ t1 npm run dev\n  ⎿ shell · \d+s\n◐ t2 npm test\n  ⎿ shell · \d+s\n◐ t3 npm run \\u001b\[2Jwatch\n  ⎿ shell · \d+s\n/);
     runs[0]!.end(0);
     await until(app, "one");
     expect(app.lastFrame()).toContain("t1 finished");
@@ -1896,7 +1999,7 @@ describe("App's background commands", () => {
     await type(app, "/tasks stop t3");
     await until(app, "t3 stopped");
     expect(app.lastFrame()).toMatch(
-      /›\n✓ t1 npm run dev\n  ⎿ shell · exit code 0 · \d+s\n✗ t2 npm test\n  ⎿ shell · exit code 1 · \d+s\n⊘ t3 npm run \\u001b\[2Jwatch\n  ⎿ shell · \d+s\n/,
+      /›\n─{100}\n✓ t1 npm run dev\n  ⎿ shell · exit code 0 · \d+s\n✗ t2 npm test\n  ⎿ shell · exit code 1 · \d+s\n⊘ t3 npm run \\u001b\[2Jwatch\n  ⎿ shell · \d+s\n/,
     );
   });
 
@@ -2132,7 +2235,7 @@ describe("App's background commands", () => {
   });
 
   it("refuses /clear in red while a command runs, naming it, and takes it once the command is stopped", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { executor } = held();
       const { app } = await mount([start("c1", "npm run dev"), reply("started")], { executor, mode: "never" });
       await type(app, "go");
@@ -2174,7 +2277,7 @@ describe("App's background commands", () => {
     await press(app, CTRL_B);
     await until(app, "moved it");
     expect(lead.seen[1]!.at(-1)!.parts).toEqual([moved]);
-    expect(app.lastFrame()).toMatch(/›\n◐ t1 npm test\n  ⎿ shell · \d+s\n/);
+    expect(app.lastFrame()).toMatch(/›\n─{100}\n◐ t1 npm test\n  ⎿ shell · \d+s\n/);
     expect(tasks.all.map((t) => [t.id, t.state])).toEqual([["t1", "running"]]);
   });
 
@@ -2391,10 +2494,26 @@ describe("App's answers", () => {
     expect(at).toBeGreaterThanOrEqual(0);
     return r.slice(at);
   };
+  // 3c04960's review: a write's preview shows the rows its heading counts, the file's own empty lines among them; only
+  // the one line break ending the file's last line goes, as the heading counts it.
+  it.each([
+    { file: "a and two empty lines", content: "a\n\n\n", heading: "(3 lines)", shown: ["a", "", ""], full: false },
+    { file: "two empty lines", content: "\n\n", heading: "(2 lines)", shown: ["", ""], full: false },
+    { file: "a and two empty lines", content: "a\n\n\n", heading: "(3 lines)", shown: ["a", "", ""], full: true },
+    { file: "two empty lines", content: "\n\n", heading: "(2 lines)", shown: ["", ""], full: true },
+  ])("previews a write of $file as the rows its heading counts (full screen: $full)", async ({ content, heading, shown, full }) => {
+    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content }), reply("written")], { full });
+    await type(app, "write it");
+    await until(app, "Allow write");
+    await press(app, "y");
+    await until(app, "written");
+    expect(from(app, full, "┌ write a.txt").slice(0, shown.length + 2)).toEqual([`┌ write a.txt ${heading}`, ...shown, "  ⎿ You allowed this."]);
+  });
+
   // The user's own example, from the auto-mode terminal check after Part 2, where the folder deleted was the project's,
   // so the check finds it whole: here the test's own project folder, which nothing runs against.
   it.each([true, false])("says a declined dangerous command once, its danger kept, red, under its tool line (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { ran, executor } = noShell();
       const turns: Turn[] = [];
       const lead = new FakeProvider("a", turns);
@@ -2406,9 +2525,11 @@ describe("App's answers", () => {
       await press(app, "n");
       await until(app, "left it");
       const r = from(app, full, "● shell Set-Location");
-      const answer = r.slice(1, r.findIndex((x) => x.startsWith("left it")));
+      const end = r.findIndex((x) => x.startsWith("● left it"));
+      expect(r[end - 1]).toBe(""); // the reply's gap (TUI design pass, Task 3)
+      const answer = r.slice(1, end - 1);
       expect(answer[0]).toMatch(/^ {2}⎿ You declined this\. Danger: deleting whole folders: Remove-Item/);
-      // One line, wrapped: nothing else between the tool line and the reply, and no result row of its own.
+      // One line, wrapped: nothing else between the tool line and the reply's gap, and no result row of its own.
       const red = `Danger: deleting whole folders: Remove-Item -LiteralPath ${ctx.root} -Recurse -Force`;
       expect(answer.join("").replace(/\s+/g, "")).toBe(`⎿ You declined this. ${red}`.replace(/\s+/g, ""));
       expect(app.lastFrame()).toContain("\u001b[31m  ⎿ You declined this.");
@@ -2421,7 +2542,7 @@ describe("App's answers", () => {
   });
 
   it.each([true, false])("says an allowed command without a danger in grey under its tool line, its result after (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { ran, executor } = noShell();
       const { app } = await mount([callTool("c1", "shell", { command: "git status" }), reply("looked")], { full, executor });
       await type(app, "look");
@@ -2436,7 +2557,7 @@ describe("App's answers", () => {
   });
 
   it("says an allowed command's danger, red, under its tool line, its result after", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { ran, executor } = noShell();
       const { app } = await mount([callTool("c1", "shell", { command: "git push --force" }), reply("pushed")], { executor });
       await type(app, "push");
@@ -2470,7 +2591,7 @@ describe("App's answers", () => {
   });
 
   it("names a subagent's question in its answer, as the subagent's tool line is not in the conversation", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ask } = await mount([]);
       const t2 = asker("t2 (tidy up)");
       const red = "Danger: rewriting or deleting git history: git push --force";
@@ -2484,7 +2605,9 @@ describe("App's answers", () => {
     });
   });
 
-  it.each([true, false])("names a write in its answer, as its preview comes between, and keeps a short result row (full screen: %s)", async (full) => {
+  // TUI design pass, Task 8: the preview straight after the call's row, its file named relative to the project, and the
+  // answer under the call, as under its row alone, with no result row of its own.
+  it.each([true, false])("puts a write's answer under its call after its preview, without its result row (full screen: %s)", async (full) => {
     const lead = new FakeProvider("a", [callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("carried on")]);
     const { app, ctx } = await mount([], { lead, full });
     await type(app, "make a file");
@@ -2493,7 +2616,8 @@ describe("App's answers", () => {
     await press(app, "n");
     await until(app, "carried on");
     const r = from(app, full, "● write_file a.txt");
-    expect(r.slice(0, 5)).toEqual(["● write_file a.txt", `┌ write ${target} (1 line)`, "x", `write ${target}: You declined this.`, "  ⎿ You declined this."]);
+    // The preview a block of its own (TUI design pass, Task 3).
+    expect(r.slice(0, 7)).toEqual(["● write_file a.txt", "", "┌ write a.txt (1 line)", "x", "  ⎿ You declined this.", "", "● carried on"]);
     expect(app.lastFrame()).not.toContain("The user declined");
     expect(lead.seen[1]!.at(-1)!.parts[0]).toMatchObject({ output: `The user declined: write ${target}` });
     expect(existsSync(target)).toBe(false);
@@ -2511,9 +2635,10 @@ describe("App's answers", () => {
     await until(app, "Allow run: git log?");
     await press(app, "n");
     await until(app, "done");
-    expect(from(app, false, "● shell git status").slice(0, 6)).toEqual([
+    expect(from(app, false, "● shell git status").slice(0, 7)).toEqual([
       "● shell git status",
       "  ⎿ You allowed this.",
+      "", // each call's row a block (TUI design pass, Task 3)
       "● shell git log",
       "run: git log: You declined this.",
       "  ⎿ ok",
@@ -2533,11 +2658,13 @@ describe("App's answers", () => {
     await until(app, "Allow run: git push --force?");
     await press(app, "n");
     await until(app, "done");
-    expect(from(app, false, "Read 1 file").slice(0, 4)).toEqual([
-      "Read 1 file",
+    expect(from(app, false, "● Read 1 file").slice(0, 6)).toEqual([
+      "● Read 1 file",
+      "",
       "● shell git push --force",
       "  ⎿ You declined this. Danger: rewriting or deleting git history: git push --force",
-      "done",
+      "",
+      "● done",
     ]);
     expect(ran).toEqual([]);
   });
@@ -2547,7 +2674,7 @@ describe("App's answers", () => {
     const lead = new Held();
     const { app, ask } = await mount([], { lead, executor });
     await type(app, "look");
-    await until(app, "> look");
+    await until(app, "\n› look\n");
     const t2 = asker("t2 (x)");
     const first = ask("read /made/up/b.txt", undefined, t2.owner);
     await until(app, "Allow t2 (x) to read /made/up/b.txt?");
@@ -2580,7 +2707,7 @@ describe("App's answers", () => {
     await until(app, "Allow run: git log?");
     await press(app, "y");
     await until(app, "done");
-    expect(from(app, false, "● shell git status").slice(0, 4)).toEqual(["● shell git status", "  ⎿ You declined this.", "● shell git log", "  ⎿ You allowed this."]);
+    expect(from(app, false, "● shell git status").slice(0, 5)).toEqual(["● shell git status", "  ⎿ You declined this.", "", "● shell git log", "  ⎿ You allowed this."]);
     expect(from(app, false, "● shell git log")[2]).toBe("  ⎿ ok");
     expect(ran).toEqual(["git log"]);
   });
@@ -2608,18 +2735,18 @@ describe("App's answers", () => {
 describe("App's folded tool rows", () => {
   const rows = (app: ReturnType<typeof render>, full: boolean) =>
     stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
-  // The rows from the one that is `first` on, up to the first empty one.
+  // The rows from the one that is `first` on, empty ones kept: the gaps between blocks and a message's last band row (TUI
+  // design pass, Task 3), so a gap missing or doubled shows.
   const from = (app: ReturnType<typeof render>, full: boolean, first: string) => {
     const r = rows(app, full);
     const at = r.indexOf(first);
     expect(at).toBeGreaterThanOrEqual(0);
-    const end = r.indexOf("", at);
-    return r.slice(at, end === -1 ? undefined : end);
+    return r.slice(at);
   };
   const both = (...calls: Turn[]): Turn => ({ parts: calls.flatMap((c) => c.parts), usage });
 
   it.each([true, false])("folds quiet calls across replies into one grey row, said before the text that ends the run (full screen: %s)", async (full) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const turns = [
         callTool("c1", "read_file", { path: "a.txt" }),
         both(callTool("c2", "find_files", { pattern: "*.txt" }), callTool("c3", "read_file", { path: "b.txt" })),
@@ -2630,24 +2757,25 @@ describe("App's folded tool rows", () => {
       writeFileSync(path.join(ctx.root, "b.txt"), "a\n");
       await type(app, "compare");
       await until(app, "They match.");
-      expect(from(app, full, "> compare").slice(0, 3)).toEqual(["> compare", "Searched for 1 pattern, read 2 files", "They match."]);
-      expect(app.lastFrame()).toContain("\u001b[90mSearched for 1 pattern, read 2 files");
+      // Your message's last band row, then the gap (Task 3's code review).
+      expect(from(app, full, "› compare").slice(0, 6)).toEqual(["› compare", "", "", "● Searched for 1 pattern, read 2 files", "", "● They match."]);
+      expect(app.lastFrame()).toContain("\u001b[90m● Searched for 1 pattern, read 2 files"); // its dot muted too, one run (Task 13)
       expect(app.lastFrame()).not.toContain("● read_file");
     });
   });
 
   // A call that fails leaves the run open at the time, its row said where the run ends, red, as its first line stays seen.
   it("says a quiet call that fails while its run is open as its own red row, the run's count without it", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const reads = both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "gone.txt" }));
       const { app, ctx } = await mount([reads, reply("One is missing.")]);
       writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
       await type(app, "look");
       await until(app, "One is missing.");
-      const r = from(app, false, "> look");
-      expect(r.slice(0, 3)).toEqual(["> look", "Read 1 file", "● read_file gone.txt"]);
-      expect(r[3]).toMatch(/^ {2}⎿ \S/);
-      expect(r[4]).toBe("One is missing.");
+      const r = from(app, false, "› look");
+      expect(r.slice(0, 6)).toEqual(["› look", "", "", "● Read 1 file", "", "● read_file gone.txt"]);
+      expect(r[6]).toMatch(/^ {2}⎿ \S/);
+      expect(r.slice(7, 9)).toEqual(["", "● One is missing."]);
       expect(app.lastFrame()).toContain("\u001b[31m  ⎿ ");
     });
   });
@@ -2660,10 +2788,11 @@ describe("App's folded tool rows", () => {
     writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
     await type(app, "look");
     await until(app, "Allow run: git status?");
-    expect(from(app, false, "> look").slice(0, 4)).toEqual(["> look", "Read 1 file", "● shell git status", "Allow run: git status? [y/n] · Esc to decline"]);
+    const asked = ["› look", "", "", "● Read 1 file", "", "● shell git status"];
+    expect(from(app, false, "› look").slice(0, 9)).toEqual([...asked, boxTop(), boxed("Allow run: git status? [y/n] · Esc to decline"), boxFoot()]);
     await press(app, "y");
     await until(app, "done");
-    expect(from(app, false, "> look").slice(0, 6)).toEqual(["> look", "Read 1 file", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "done"]);
+    expect(from(app, false, "› look").slice(0, 10)).toEqual([...asked, "  ⎿ You allowed this.", "  ⎿ ok", "", "● done"]);
     expect(ran).toEqual(["git status"]);
   });
 
@@ -2678,7 +2807,7 @@ describe("App's folded tool rows", () => {
     expect(app.lastFrame()).not.toContain("Read 1 file"); // the run is still open
     await press(app, "\u001b");
     await gone(app, "Esc to stop");
-    expect(from(app, false, "> look")[1]).toBe("Read 1 file");
+    expect(from(app, false, "› look").slice(0, 4)).toEqual(["› look", "", "", "● Read 1 file"]);
   });
 
   // The quality review's finding 3: a line the window says of its own (a provider's failure, a hook's or a server's note)
@@ -2689,9 +2818,9 @@ describe("App's folded tool rows", () => {
     writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
     await type(app, "look");
     await until(app, "overloaded");
-    const r = from(app, false, "> look");
-    expect(r[1]).toBe("Read 2 files");
-    expect(r[2]).toContain("overloaded");
+    const r = from(app, false, "› look");
+    expect(r.slice(1, 5)).toEqual(["", "", "● Read 2 files", ""]);
+    expect(r[5]).toContain("overloaded");
     const lead = new Held();
     const held = await mount([], { lead });
     writeFileSync(path.join(held.ctx.root, "a.txt"), "a\n");
@@ -2701,12 +2830,12 @@ describe("App's folded tool rows", () => {
     await waitFor(() => lead.asked.length === 2);
     held.bus.emit("hook-note", "A PostToolUse hook said: noted.");
     await until(held.app, "noted.");
-    expect(from(held.app, false, "> look").slice(1, 3)).toEqual(["Read 1 file", "A PostToolUse hook said: noted."]);
+    expect(from(held.app, false, "› look").slice(1, 6)).toEqual(["", "", "● Read 1 file", "", "● A PostToolUse hook said: noted."]);
     lead.answer(callTool("c2", "read_file", { path: "a.txt" }));
     await waitFor(() => lead.asked.length === 3);
     held.bus.emit("mcp-note", "MCP server sv is ready: 1 tool.");
     await until(held.app, "sv is ready");
-    expect(from(held.app, false, "> look").slice(3, 5)).toEqual(["Read 1 file", "MCP server sv is ready: 1 tool."]);
+    expect(from(held.app, false, "› look").slice(6, 10)).toEqual(["", "● Read 1 file", "", "● MCP server sv is ready: 1 tool."]);
   });
 
   // The re-check's item 2: a provider may use an id again, and the later call is not the asked one, so live it folds as it
@@ -2720,12 +2849,12 @@ describe("App's folded tool rows", () => {
     await until(app, "Allow run: git status?");
     await press(app, "y");
     await until(app, "done");
-    expect(from(app, false, "> look").slice(0, 6)).toEqual(["> look", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "Read 1 file", "done"]);
+    expect(from(app, false, "› look").slice(0, 10)).toEqual(["› look", "", "", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "", "● Read 1 file", "", "● done"]);
     const { file, pictures } = sessionPaths(sessions, session.id);
     const saved = readTranscript(file, pictures);
     if ("problem" in saved) throw new Error(saved.problem);
-    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames() });
-    expect(resumed.map((l) => l.text)).toEqual(["> look", "Read 1 file, ran 1 shell command", "done"]);
+    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: tmpdir() });
+    expect(resumed.map((l) => l.text)).toEqual(["", "› look", "", "● Read 1 file, ran 1 shell command", "● done"]);
   });
 
   // The quality review's finding 7: the click that opens a row starts the press count again, so a quick second click is a
@@ -2737,9 +2866,9 @@ describe("App's folded tool rows", () => {
     writeFileSync(path.join(ctx.root, "b.txt"), "b\n");
     await type(app, "read both");
     await until(app, "Both read.");
-    const row = shown(app).indexOf("Read 2 files");
+    const row = shown(app).indexOf("● Read 2 files");
     await pointer(mouse, ...click(3, row), ...click(3, row));
-    expect(shown(app).slice(row, row + 2)).toEqual(["Read 2 files", "Both read."]);
+    expect(shown(app).slice(row, row + 3)).toEqual(["● Read 2 files", "", "● Both read."]);
     expect(app.lastFrame()).not.toContain("Copied");
   });
 
@@ -2750,16 +2879,21 @@ describe("App's folded tool rows", () => {
     writeFileSync(path.join(ctx.root, "b.txt"), "b\n");
     await type(app, "read both");
     await until(app, "Both read.");
-    const row = shown(app).indexOf("Read 2 files");
+    const row = shown(app).indexOf("● Read 2 files");
     expect(row).toBeGreaterThan(-1);
+    const before = shown(app);
     await pointer(mouse, ...click(3, row));
-    const opened = ["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ ok", "Both read."];
-    expect(shown(app).slice(row, row + 5)).toEqual(opened);
+    // Spaced as say() spaces the calls' rows live: a gap before each call's row but the first, which follows the gap the
+    // folded row had (TUI design pass, Task 3).
+    const opened = ["● read_file a.txt", "  ⎿ ok", "", "● read_file b.txt", "  ⎿ ok", "", "● Both read."];
+    expect(shown(app).slice(row - 1, row + 7)).toEqual(["", ...opened]);
     expect(app.lastFrame()).not.toContain("Copied"); // a click, not a selection
-    await pointer(mouse, ...click(3, row + 2)); // any of its rows closes it
-    expect(shown(app).slice(row, row + 2)).toEqual(["Read 2 files", "Both read."]);
-    await pointer(mouse, ...click(3, row + 1)); // a row of no fold does nothing
-    expect(shown(app).slice(row, row + 2)).toEqual(["Read 2 files", "Both read."]);
+    await pointer(mouse, ...click(3, row + 3)); // any of its rows closes it
+    const closed = ["● Read 2 files", "", "● Both read."];
+    expect(shown(app).slice(row, row + 3)).toEqual(closed);
+    expect(shown(app)).toEqual(before); // nothing of the opened rows left behind
+    await pointer(mouse, ...click(3, row + 2)); // a row of no fold does nothing
+    expect(shown(app).slice(row, row + 3)).toEqual(closed);
   });
 });
 
@@ -2790,7 +2924,7 @@ describe("App's live folded row", () => {
   it.each([true, false])("draws the run's live row as its calls go, then says the finished row once at the text (full screen: %s)", async (full) => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     try {
-      await inColour(async () => {
+      await inColour(1, async () => {
         const lead = new Held();
         const shell = heldShell();
         const { app, ctx } = await mount([], { lead, full, mode: "never", executor: shell.executor });
@@ -2820,9 +2954,9 @@ describe("App's live folded row", () => {
         lead.answer("They match.");
         await until(app, "They match.");
         expect(live(app, full)).toEqual([]);
-        expect(said(app, "Searched for 1 pattern, read 1 file, ran 1 shell command")).toBe(1);
+        expect(said(app, "● Searched for 1 pattern, read 1 file, ran 1 shell command")).toBe(1);
         const r = rows(app, full);
-        expect(r[r.indexOf("They match.") - 1]).toBe("Searched for 1 pattern, read 1 file, ran 1 shell command");
+        expect(r.slice(r.indexOf("● They match.") - 2, r.indexOf("● They match."))).toEqual(["● Searched for 1 pattern, read 1 file, ran 1 shell command", ""]);
       });
     } finally {
       vi.useRealTimers();
@@ -2846,7 +2980,7 @@ describe("App's live folded row", () => {
     await waitFor(() => lead.asked.length === 3);
     lead.answer("done");
     await until(app, "done");
-    expect(said(app, "Searched for 1 pattern")).toBe(1);
+    expect(said(app, "● Searched for 1 pattern")).toBe(1);
     expect(ran).toEqual(["git status"]);
   });
 
@@ -2864,7 +2998,7 @@ describe("App's live folded row", () => {
     else lead.answer({ parts: [], usage });
     await gone(app, "Esc to stop");
     expect(live(app)).toEqual([]);
-    expect(said(app, "Read 1 file")).toBe(1);
+    expect(said(app, "● Read 1 file")).toBe(1);
   });
 
   // tool_search sets neither line, so a run of only tool_search draws nothing.
@@ -2876,7 +3010,7 @@ describe("App's live folded row", () => {
     lead.answer(callTool("t1", "tool_search", { query: "quote" }));
     await waitFor(() => lead.asked.length === 2);
     const r = rows(app, false);
-    expect(r[r.indexOf("> find a tool") + 1]).toEqual(working);
+    expect(r[r.indexOf("› find a tool") + 2]).toEqual(working); // under the band's last row
     expect(app.lastFrame()).not.toContain("⎿  ");
   });
 
@@ -2893,20 +3027,23 @@ describe("App's live folded row", () => {
     await waitFor(() => lead.asked.length === 1);
     lead.answer(both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "b.txt" }), callTool("c3", "shell", { command: "npm test" })));
     await until(app, "● shell npm test");
-    const row = shown(app).indexOf("Read 2 files");
-    expect(shown(app)[row + 1]).toBe("● shell npm test");
+    const row = shown(app).indexOf("● Read 2 files");
+    expect(shown(app).slice(row + 1, row + 3)).toEqual(["", "● shell npm test"]);
     if (open) {
       await pointer(mouse, ...click(3, row));
-      expect(shown(app).slice(row, row + 4)).toEqual(["● read_file a.txt", "● read_file b.txt", "● shell npm test", ""]);
+      // Each call's row a block, spaced as said live (TUI design pass, Task 3).
+      expect(shown(app).slice(row, row + 6)).toEqual(["● read_file a.txt", "", "● read_file b.txt", "", "● shell npm test", ""]);
     }
     shell.end();
     await waitFor(() => lead.asked.length === 2);
     await until(app, "  ⎿ ok");
-    const after = open ? ["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ ok", "● shell npm test", "  ⎿ ok"] : ["Read 2 files", "● shell npm test", "  ⎿ ok"];
+    const after = open
+      ? ["● read_file a.txt", "  ⎿ ok", "", "● read_file b.txt", "  ⎿ ok", "", "● shell npm test", "  ⎿ ok"]
+      : ["● Read 2 files", "", "● shell npm test", "  ⎿ ok"];
     expect(shown(app).slice(row, row + after.length + 1)).toEqual([...after, ""]);
     lead.answer("done");
     await until(app, "done");
-    expect(shown(app).slice(row, row + after.length + 1)).toEqual([...after, "done"]);
+    expect(shown(app).slice(row, row + after.length + 2)).toEqual([...after, "", "● done"]);
   });
 
   // A press held on a folded row below an opened one, which the opened row's results move down before the release, still
@@ -2923,9 +3060,9 @@ describe("App's live folded row", () => {
     await waitFor(() => lead.asked.length === 1);
     lead.answer(both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "shell", { command: "npm test" }), callTool("c3", "read_file", { path: "b.txt" }), callTool("c4", "shell", { command: "npm run build" })));
     await until(app, "● shell npm run build");
-    await pointer(mouse, ...click(3, shown(app).indexOf("Read 1 file")));
+    await pointer(mouse, ...click(3, shown(app).indexOf("● Read 1 file")));
     await until(app, "● read_file a.txt");
-    const b = shown(app).indexOf("Read 1 file");
+    const b = shown(app).indexOf("● Read 1 file");
     await pointer(mouse, at("press", 3, b));
     shell.end();
     await waitFor(() => ran.length === 2);
@@ -2934,7 +3071,7 @@ describe("App's live folded row", () => {
     await until(app, "  ⎿ ok");
     await pointer(mouse, at("release", 3, b));
     await until(app, "● read_file b.txt");
-    expect(shown(app)).not.toContain("Read 1 file");
+    expect(shown(app)).not.toContain("● Read 1 file");
     lead.answer("done");
     await until(app, "done");
   });
@@ -2951,7 +3088,7 @@ describe("App's live folded row", () => {
     await waitFor(() => lead.asked.length === 1);
     lead.answer(both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "b.txt" }), callTool("c3", "shell", { command: "npm test" })));
     await until(app, "● shell npm test");
-    await pointer(mouse, ...click(3, shown(app).indexOf("Read 2 files")));
+    await pointer(mouse, ...click(3, shown(app).indexOf("● Read 2 files")));
     await until(app, "● read_file b.txt");
     const detail = (name: string) => Array.from({ length: 100 }, (_, i) => `${name} ${i}.`).join("\n");
     const first = ask("write a.txt", detail("a"), asker("t2 (a)").owner);
@@ -2974,6 +3111,548 @@ describe("App's live folded row", () => {
   });
 });
 
+// TUI design pass, Task 3: the conversation in blocks, an empty line before each but the first said, and none after an
+// empty line; your message on three band lines, `› ` in the middle; a reply's and a call's `● ` the accent colour, a folded
+// row's and a notice's grey.
+describe("App's blocks and gaps", () => {
+  const rows = (app: ReturnType<typeof render>, full = false) =>
+    stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
+  // The conversation's rows, from the first to `last`.
+  const upTo = (app: ReturnType<typeof render>, last: string, full = false) => {
+    const r = rows(app, full);
+    expect(r).toContain(last);
+    return r.slice(0, r.indexOf(last) + 1);
+  };
+  const both = (...turns: Turn[]): Turn => ({ parts: turns.flatMap((t) => t.parts), usage });
+  // The dark look's band #2a2a2a, muted #8a8a8a and accent #4278de (theme.ts), as 24-bit colour draws them.
+  const BAND = "\u001b[48;2;42;42;42m";
+  const MUTED = "\u001b[38;2;138;138;138m";
+  const ACCENT = "\u001b[38;2;66;120;222m";
+  // Wait until the screen shows `text`, its colours left out: a marker's colour comes between it and the text after it.
+  const showing = (app: ReturnType<typeof render>, text: string) => waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes(text));
+
+  // Two replies, the two texts of one answer; the first line said has no gap. Your message's last band row is part of
+  // your message, so the reply after it has a gap of its own (Task 3's code review); a plain empty line is one already.
+  it("puts an empty line between two replies, none before the first line and none after an empty one", async () => {
+    const turns = [both(reply("First."), reply("Second."))];
+    const { app } = await mount(turns);
+    await type(app, "go");
+    await until(app, "● Second.");
+    expect(upTo(app, "● Second.")).toEqual(["", "› go", "", "", "● First.", "", "● Second."]);
+    const after = await mount([reply("ok")], { intro: [{ text: "start" }, { text: "" }] });
+    await type(after.app, "go");
+    await until(after.app, "● ok");
+    expect(upTo(after.app, "● ok")).toEqual(["start", "", "", "› go", "", "", "● ok"]); // the band's first row: no gap
+  });
+
+  // Task 3's code review: a list's pick says its output as a command does, one block. A model that cannot be made says
+  // why under a gap.
+  it("makes a model list pick's output a block of its own", async () => {
+    const { app } = await mount([reply("Done.")], { models: [{ provider: "fake", models: ["a", "b"] }], leadFails: "no such model" });
+    await type(app, "go");
+    await until(app, "● Done.");
+    await type(app, "/model");
+    await until(app, "fake:b");
+    await tick();
+    await press(app, "\u001b[B", "\r");
+    await until(app, "no such model");
+    expect(upTo(app, "no such model").slice(-3)).toEqual(["● Done.", "", "no such model"]);
+  });
+
+  // The command mark's edges (Task 3's code review): a command that says nothing leaves no mark for the next line; an
+  // error after a command's output started is part of its block, no gap of its own.
+  it("leaves no mark after a command that says nothing, and no gap before an error after a command's first line", async () => {
+    const { app, ask } = await mount([reply("Done.")], { models: [{ provider: "fake", models: ["a"] }] });
+    await type(app, "go");
+    await until(app, "● Done.");
+    await type(app, "/model");
+    await until(app, "Filter:");
+    await tick();
+    await press(app, "\u001b"); // closes the list, saying nothing
+    await gone(app, "Filter:");
+    const answer = ask("run: ls");
+    await until(app, "Allow run: ls?");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    await until(app, "run: ls: You allowed this.");
+    expect(upTo(app, "run: ls: You allowed this.").slice(-2)).toEqual(["● Done.", "run: ls: You allowed this."]);
+    const login: AppProps["login"] = async (_verb, _words, say) => {
+      say("Opening the browser");
+      throw new Error("no browser");
+    };
+    const failing = await mount([reply("Done.")], { login });
+    await type(failing.app, "go");
+    await until(failing.app, "● Done.");
+    await type(failing.app, "/login");
+    await until(failing.app, "no browser");
+    expect(upTo(failing.app, "no browser").slice(-4)).toEqual(["● Done.", "", "Opening the browser", "no browser"]);
+  });
+
+  it("puts an empty line before a call and before the reply after its result, none before the result", async () => {
+    const turns = [both(reply("Writing."), callTool("c1", "write_file", { path: "a.txt", content: "x" })), reply("Done.")];
+    const { app } = await mount(turns, { mode: "never" });
+    await type(app, "go");
+    await until(app, "● Done.");
+    expect(upTo(app, "● Done.")).toEqual(["", "› go", "", "", "● Writing.", "", "● write_file a.txt", "  ⎿ ok", "", "● Done."]);
+  });
+
+  // A turn's replies come between calls, so the run of a quiet read is said too, at the notice (release 8c plan, Task 15's
+  // quality review).
+  it("makes a notice a block of its own between two replies, its `● ` grey, and an error one too", async () => {
+    await inColour(3, async () => {
+      const lead = new Held();
+      const { app, bus, ctx } = await mount([], { lead });
+      writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+      await type(app, "go");
+      await waitFor(() => lead.asked.length === 1);
+      lead.answer(both(reply("First."), callTool("c1", "read_file", { path: "a.txt" })));
+      await waitFor(() => lead.asked.length === 2);
+      bus.emit("hook-note", "A PostToolUse hook said: noted.");
+      await showing(app, "noted.");
+      lead.answer("Second.");
+      await showing(app, "● Second.");
+      const notice = ["● Read 1 file", "", "● A PostToolUse hook said: noted."];
+      expect(upTo(app, "● Second.")).toEqual(["", "› go", "", "", "● First.", "", ...notice, "", "● Second."]);
+      expect(app.lastFrame()).toContain(`${MUTED}● `); // the notice's dot, and the folded row's
+      expect(app.lastFrame()).toContain(`${ACCENT}● `); // a reply's
+      bus.emit("error", { kind: "hook", attempted: "x", message: "A hook failed.", lead: "fake:a" });
+      await showing(app, "✗ A hook failed.");
+      expect(upTo(app, "✗ A hook failed.").slice(-3)).toEqual(["● Second.", "", "✗ A hook failed."]);
+    });
+  });
+
+  // The band's colour reaches the screen's edge on each of the three rows: the frame's width less the scroll bar's
+  // column in full screen, the terminal's in classic.
+  it.each([true, false])("draws your message as three band rows, `› ` before its text (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app } = await mount([reply("ok")], { full });
+      await press(app, "hi", "\u001b[13;2u", "there", "\r"); // Shift+Enter in the kitty keyboard protocol
+      await showing(app, "● ok");
+      const raw = app.lastFrame()!.split("\n");
+      const at = rows(app, full).indexOf("› hi");
+      expect(rows(app, full).slice(at - 1, at + 5)).toEqual(["", "› hi", "  there", "", "", "● ok"]);
+      for (const r of raw.slice(at - 1, at + 3)) {
+        expect(r).toContain(BAND);
+        expect(stripVTControlCharacters(r).slice(0, 99)).toHaveLength(99); // padded to the edge with the band
+      }
+      expect(raw[at + 3]).not.toContain(BAND); // the reply's gap, plain (Task 3's code review)
+      expect(app.lastFrame()).not.toContain("> hi");
+    });
+  });
+
+  // The user's choice at Task 3's review: a slash command's output is one block, a gap before its first line only, with no
+  // dot and its own colours.
+  it("makes a slash command's output one block: a gap before its first line, no dot", async () => {
+    const hooks = { hooks: [], off: false, leftOut: ["one left out"] };
+    const { app } = await mount([reply("Done.")], { hooks });
+    await type(app, "go");
+    await showing(app, "● Done.");
+    await type(app, "/hooks");
+    await showing(app, "  one left out");
+    const listed = [`No hooks in force. They go in "hooks" in ${shownFile()}.`, "Left out:", "  one left out"];
+    expect(upTo(app, "  one left out").slice(-5)).toEqual(["● Done.", "", ...listed]);
+    await type(app, "/tasks");
+    await showing(app, "No subagents or commands yet.");
+    expect(upTo(app, "No subagents or commands yet.").slice(-3)).toEqual(["  one left out", "", "No subagents or commands yet."]);
+  });
+
+  // The user's choice at Task 3's review: the start-up's warnings are notices, a grey `● ` and a block each; the launch's
+  // red line, as a live edit's problem is, a block without the dot.
+  it("makes the start-up's warnings notices, the history's and the launch's", async () => {
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "history.jsonl"); // a folder: unreadable
+    mkdirSync(dir);
+    const classic = await mount([reply("ok")], { historyFile: dir });
+    await showing(classic.app, "The prompt history could not be read or saved");
+    expect(rows(classic.app)[0]).toMatch(/^● The prompt history could not be read or saved/); // the first line said: no gap
+    const line = "--network acts only with the sandbox on; it was ignored";
+    const live = { loaded: { settings: { dangerousCommands: { off: ["git history"], add: [] } }, warnings: ["a launch warning"] }, given: {}, networkLine: line };
+    const full = await mount([], { full: true, home: mkdtempSync(path.join(tmpdir(), "tachi-home-")), live: live as AppProps["live"] });
+    const r = rows(full.app, true);
+    expect(r.slice(0, 4)).toEqual(["● a launch warning", "", `● ${line}`, ""]);
+    expect(r[4]).toMatch(/^The dangerous-command check is off for: git history/); // red: a block, no dot
+  });
+
+  // The live row is drawn, not said, so its gap is drawn with it: after a reply, none after an empty line (classic, where
+  // the live part follows the conversation's last line).
+  it("puts an empty row above the live row's top after a reply, as say() puts one before a block", async () => {
+    const lead = new Held();
+    const { app, ctx } = await mount([], { lead });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    await type(app, "go");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(both(reply("Looking."), callTool("c1", "read_file", { path: "a.txt" })));
+    await waitFor(() => lead.asked.length === 2);
+    await showing(app, "● Reading a.txt");
+    expect(upTo(app, "● Reading a.txt")).toEqual(["", "› go", "", "", "● Looking.", "", "● Reading a.txt"]);
+    lead.answer("Done.");
+    await showing(app, "● Done.");
+    expect(upTo(app, "● Done.").slice(4)).toEqual(["● Looking.", "", "● Read 1 file", "", "● Done."]);
+  });
+
+  it("copies a selection across a gap with an empty line there", async () => {
+    const { app, mouse, copies } = await mount([both(reply("First."), reply("Second."))], { full: true });
+    await type(app, "go");
+    await until(app, "● Second.");
+    const first = shown(app).indexOf("● First.");
+    expect(shown(app)[first + 1]).toBe("");
+    await pointer(mouse, at("press", 0, first), at("drag", 50, first + 2), at("release", 50, first + 2));
+    expect(copies).toEqual(["● First.\n\n● Second."]);
+  });
+
+  // The resumed lines come through describe and foldRow as the live ones did, and say() puts the same gaps between them.
+  it.each([true, false])("draws a resumed conversation as the live one was drawn (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      // The write typed as its full path, which its row names relative, from the root the resume is given too (TUI design
+      // pass, Task 8's code review).
+      const turns: Turn[] = [];
+      const { app, ctx, session, sessions } = await mount([], { lead: new FakeProvider("a", turns), full, mode: "never", save: true });
+      turns.push(both(reply("Looking."), callTool("c1", "read_file", { path: "a.txt" })), both(callTool("c2", "write_file", { path: path.join(ctx.root, "b.txt"), content: "x" })), reply("done"));
+      writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+      await type(app, "go");
+      await showing(app, "● done");
+      const live = app.lastFrame()!.split("\n").slice(0, upTo(app, "● done", full).length);
+      expect(live.map((r) => stripVTControlCharacters(r).trimEnd())).toEqual(["", "› go", "", "", "● Looking.", "", "● Read 1 file", "", "● write_file b.txt", "  ⎿ ok", "", "● done"]);
+      const { file, pictures } = sessionPaths(sessions, session.id);
+      const saved = readTranscript(file, pictures);
+      if ("problem" in saved) throw new Error(saved.problem);
+      const lines = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: ctx.root });
+      const resumed = await mount([], { full, intro: lines });
+      expect(resumed.app.lastFrame()!.split("\n").slice(0, live.length)).toEqual(live);
+    });
+  });
+});
+
+// TUI design pass, Task 7 (audit 2): an edit's preview, its `-` lines in the error colour on the delete tint and its `+`
+// lines in the success colour on the add tint; a write's preview, the file's own text, stays grey.
+describe("App's diffs in colour", () => {
+  // The dark look's success #5fbf6f on #1f3a26 and error #f0605f on #432124 (theme.ts), as 24-bit colour draws them.
+  const ADD = ["\u001b[38;2;95;191;111m", "\u001b[48;2;31;58;38m"];
+  const DEL = ["\u001b[38;2;240;96;95m", "\u001b[48;2;67;33;36m"];
+  // The frame's raw row whose text, colours left out, is `text`.
+  const raw = (app: ReturnType<typeof render>, text: string) => {
+    const r = app.lastFrame()!.split("\n");
+    const at = r.findIndex((x) => stripVTControlCharacters(x).trimEnd().replace(/[│┃]$/, "").trimEnd() === text);
+    expect(at).toBeGreaterThan(-1);
+    return r[at]!;
+  };
+
+  it.each([true, false])("draws an edit's `-` lines red on the delete tint and `+` lines green on the add tint (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "a.txt", old_text: "one\ntwo", new_text: "uno" }), reply("edited")], { full });
+      writeFileSync(path.join(ctx.root, "a.txt"), "one\ntwo\n");
+      await type(app, "edit it");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow edit"));
+      for (const text of ["- one", "- two"]) for (const code of DEL) expect(raw(app, text)).toContain(code);
+      for (const code of ADD) expect(raw(app, "+ uno")).toContain(code);
+      for (const code of ADD) expect(raw(app, "- one")).not.toContain(code);
+      for (const code of DEL) expect(raw(app, "+ uno")).not.toContain(code);
+      const heading = app.lastFrame()!.split("\n").find((r) => stripVTControlCharacters(r).startsWith("┌ edit"))!;
+      for (const code of [...ADD, ...DEL]) expect(heading).not.toContain(code);
+    });
+  });
+
+  it("leaves a write's preview grey, though its lines start with `-` and `+`", async () => {
+    await inColour(3, async () => {
+      const { app } = await mount([callTool("c1", "write_file", { path: "a.md", content: "- one\n+ two\n" }), reply("written")]);
+      await type(app, "write it");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow write"));
+      // Its rows only, as the status line's cost takes the success colour (TUI design pass, Task 13).
+      for (const row of [raw(app, "- one"), raw(app, "+ two")]) for (const code of [...ADD, ...DEL]) expect(row).not.toContain(code);
+    });
+  });
+
+  // Task 2's known limit: a span edge between \r and \n draws the \r. A model may send a CRLF file's text with its \r
+  // (files.ts, edited, finds it as sent); each line's tint is unbroken and no \r is drawn.
+  it.each([true, false])("draws a CRLF edit's diff with no \\r and its tint unbroken (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "a.txt", old_text: "a\r\nb", new_text: "c\r\nd" }), reply("edited")], { full });
+      writeFileSync(path.join(ctx.root, "a.txt"), "a\r\nb\r\n");
+      await type(app, "edit it");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow edit"));
+      expect(stripVTControlCharacters(app.lastFrame()!)).not.toContain("\\r");
+      expect(app.lastFrame()).not.toContain("\r");
+      for (const [text, [fg, bg]] of [["- a", DEL], ["- b", DEL], ["+ c", ADD], ["+ d", ADD]] as const) {
+        const row = raw(app, text);
+        // The line's text is drawn whole inside its colour and tint: no code between its characters.
+        expect(row).toMatch(new RegExp(`(${esc(fg!)}${esc(bg!)}|${esc(bg!)}${esc(fg!)})${esc(text)}\u001b\\[`));
+      }
+    });
+  });
+
+  // Task 7's review, the user's choice (2026-11-13, "Expand first-row tabs"): a tab-indented edit's leading tabs are drawn
+  // as tinted spaces in classic, where the terminal would skip a raw tab's cells unpainted, as full screen draws them.
+  it.each([false, true])("draws a tab-indented edit's leading tabs as tinted spaces (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "a.go", old_text: "\tone", new_text: "\t\tuno" }), reply("edited")], { full });
+      writeFileSync(path.join(ctx.root, "a.go"), "\tone\n");
+      await type(app, "edit it");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow edit"));
+      expect(app.lastFrame()).not.toContain("\t");
+      for (const [text, [fg, bg]] of [["-       one", DEL], ["+               uno", ADD]] as const) {
+        expect(raw(app, text)).toMatch(new RegExp(`(${esc(fg!)}${esc(bg!)}|${esc(bg!)}${esc(fg!)})${esc(text)}\u001b\\[`));
+      }
+    });
+  });
+
+  // The spec review: with colour off (theme.ts, look; NO_COLOR, say), an edit's preview draws no colour of its own, though
+  // chalk would draw one. Only the preview's grey is left, the line's own, which Task 13 takes from the palette.
+  it("draws an edit's preview with no colour of its own when colour is off", async () => {
+    await inColour(3, async () => {
+      const off = { light: false, color: false, full: false };
+      const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "a.txt", old_text: "one", new_text: "uno" }), reply("edited")], {
+        theme: { look: off, palette: palette(off) },
+      });
+      writeFileSync(path.join(ctx.root, "a.txt"), "one\n");
+      await type(app, "edit it");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow edit"));
+      for (const text of ["- one", "+ uno"]) expect(raw(app, text).replace(/\u001b\[(90|39)m/g, "").trimEnd()).toBe(text);
+    });
+  });
+});
+
+// TUI design pass, Task 8 (audit 3): an edit's preview heading and its answer name the file relative to the project, as
+// its call row does; the question line keeps the full path, as it is what is allowed. The answer goes under the call when
+// the preview is the last thing said. A file outside the project keeps its full path everywhere.
+describe("App's one path per edit", () => {
+  // The frame's rows without colour, in full screen without the scroll bar's column; and those from the row `first` on.
+  const rows = (app: ReturnType<typeof render>, full: boolean) =>
+    stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
+  const from = (app: ReturnType<typeof render>, full: boolean, first: string) => {
+    const r = rows(app, full);
+    expect(r).toContain(first);
+    return r.slice(r.indexOf(first));
+  };
+
+  it.each([true, false])("names an allowed edit's file relative to the project, its answer under the call (full screen: %s)", async (full) => {
+    const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "src/save.ts", old_text: "one", new_text: "uno" }), reply("edited")], { full });
+    const file = path.join(ctx.root, "src", "save.ts");
+    mkdirSync(path.dirname(file));
+    writeFileSync(file, "one\n");
+    await type(app, "edit it");
+    await until(app, `Allow edit ${file}?`);
+    await press(app, "y");
+    await until(app, "edited");
+    expect(from(app, full, "● edit_file src/save.ts").slice(0, 9)).toEqual([
+      "● edit_file src/save.ts",
+      "",
+      "┌ edit src/save.ts (2 lines)",
+      "- one",
+      "+ uno",
+      "  ⎿ You allowed this.",
+      "  ⎿ ok",
+      "",
+      "● edited",
+    ]);
+    expect(app.lastFrame()).not.toContain(file);
+    expect(readFileSync(file, "utf8")).toBe("uno\n");
+  });
+
+  it.each([true, false])("keeps an edit of a file outside the project in full everywhere (full screen: %s)", async (full) => {
+    const outside = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    onTestFinished(() => removeTree(outside));
+    const file = path.join(outside, "save.ts");
+    writeFileSync(file, "one\n");
+    const { app } = await mount([callTool("c1", "edit_file", { path: file, old_text: "one", new_text: "uno" }), reply("edited")], { full });
+    await type(app, "edit it");
+    await until(app, `Allow edit ${file}?`);
+    await press(app, "y");
+    await until(app, "edited");
+    expect(from(app, full, `● edit_file ${file}`).slice(0, 7)).toEqual([
+      `● edit_file ${file}`,
+      "",
+      `┌ edit ${file} (2 lines)`,
+      "- one",
+      "+ uno",
+      "  ⎿ You allowed this.",
+      "  ⎿ ok",
+    ]);
+  });
+
+  // A subagent's call row is not in the conversation, so its answer names what it answers: the file as its heading does.
+  it.each([true, false])("names a subagent's edit relative to the project in its heading and answer, a file outside in full (full screen: %s)", async (full) => {
+    const { app, ask, ctx } = await mount([], { full });
+    const inside = path.join(ctx.root, "src", "save.ts");
+    const first = ask(`edit ${inside}`, "- one\n+ uno", asker("t2 (x)").owner);
+    await until(app, `Allow t2 (x) to edit ${inside}?`);
+    await press(app, "y");
+    expect(await first).toBe(true);
+    expect(from(app, full, "┌ edit src/save.ts (2 lines)").slice(0, 4)).toEqual(["┌ edit src/save.ts (2 lines)", "- one", "+ uno", "t2 (x) to edit src/save.ts: You allowed this."]);
+    expect(app.lastFrame()).not.toContain(inside);
+    const outside = path.join(path.dirname(ctx.root), "elsewhere.ts");
+    const second = ask(`edit ${outside}`, "- one\n+ uno", asker("t3 (y)").owner);
+    await until(app, `Allow t3 (y) to edit ${outside}?`);
+    await press(app, "y");
+    expect(await second).toBe(true);
+    expect(from(app, full, `┌ edit ${outside} (2 lines)`).slice(0, 4)).toEqual([`┌ edit ${outside} (2 lines)`, "- one", "+ uno", `t3 (y) to edit ${outside}: You allowed this.`]);
+  });
+
+  // A path with one of files.ts's three notes after it (resolveIn) is named in full, as the question names it. The lines
+  // can wrap at the test screen's 100 columns, so they are compared without their blanks and line breaks.
+  const bare = (s: string) => s.replace(/\s/g, "");
+  const notes = [(root: string) => ` (really ${path.join(root, "b.ts")})`, () => " (through a link that leads nowhere)", () => " (where it really leads cannot be told)"];
+  it.each(notes.flatMap((note, i) => [true, false].map((full) => ({ note, i, full }))))("keeps an edit's path in full under note $i (full screen: $full)", async ({ note, full }) => {
+    const { app, ask, ctx } = await mount([], { full });
+    const summary = `edit ${path.join(ctx.root, "a.ts")}${note(ctx.root)}`;
+    const answer = ask(summary, "- one\n+ uno", asker("t2 (x)").owner);
+    await waitFor(() => bare(app.lastFrame()!.replace(/│/g, "")).includes(bare(`Allow t2 (x) to ${summary}?`))); // │: the box's sides
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    const shown = bare(stripVTControlCharacters(app.lastFrame()!).replace(/│/g, ""));
+    expect(shown).toContain(bare(`┌ ${summary} (2 lines)- one+ uno`));
+    expect(shown).toContain(bare(`t2 (x) to ${summary}: You allowed this.`));
+    expect(app.lastFrame()).not.toContain("edit a.ts");
+  });
+
+  // A file name ending in a bracket that is none of the notes is named relative, as any other.
+  it.each([true, false])("names a file such as `notes (1)` relative to the project (full screen: %s)", async (full) => {
+    const { app, ask, ctx } = await mount([], { full });
+    const file = path.join(ctx.root, "notes (1)");
+    const answer = ask(`edit ${file}`, "- one\n+ uno", asker("t2 (x)").owner);
+    await until(app, `Allow t2 (x) to edit ${file}?`);
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    expect(from(app, full, "┌ edit notes (1) (2 lines)").slice(0, 4)).toEqual(["┌ edit notes (1) (2 lines)", "- one", "+ uno", "t2 (x) to edit notes (1): You allowed this."]);
+  });
+
+  // The user's choice at Task 8's spec review, "Edit/write rows too": an edit's or a write's call row names its file as
+  // the heading does, however the model typed it: `./`, an absolute path in the project, or on Windows backslashes.
+  const forms = ["./src/save.ts", "absolute", ...(process.platform === "win32" ? ["src\\save.ts"] : [])];
+  it.each(forms.flatMap((form) => [true, false].map((full) => ({ form, full }))))("names an edit typed as $form in the same form on its row and heading (full screen: $full)", async ({ form, full }) => {
+    const turns: Turn[] = [];
+    const { app, ctx } = await mount([], { lead: new FakeProvider("a", turns), full });
+    const file = path.join(ctx.root, "src", "save.ts");
+    mkdirSync(path.dirname(file));
+    writeFileSync(file, "one\n");
+    turns.push(callTool("c1", "edit_file", { path: form === "absolute" ? file : form, old_text: "one", new_text: "uno" }), reply("edited"));
+    await type(app, "edit it");
+    await until(app, `Allow edit ${file}?`);
+    await press(app, "y");
+    await until(app, "edited");
+    expect(from(app, full, "● edit_file src/save.ts").slice(0, 7)).toEqual(["● edit_file src/save.ts", "", "┌ edit src/save.ts (2 lines)", "- one", "+ uno", "  ⎿ You allowed this.", "  ⎿ ok"]);
+    expect(app.lastFrame()).not.toContain(file);
+  });
+
+  it.each([true, false])("names a write typed as an absolute path in the project relative on its row and heading (full screen: %s)", async (full) => {
+    const turns: Turn[] = [];
+    const { app, ctx } = await mount([], { lead: new FakeProvider("a", turns), full });
+    const file = path.join(ctx.root, "new.ts");
+    turns.push(callTool("c1", "write_file", { path: file, content: "x" }), reply("written"));
+    await type(app, "write it");
+    await until(app, `Allow write ${file}?`);
+    await press(app, "y");
+    await until(app, "written");
+    expect(from(app, full, "● write_file new.ts").slice(0, 6)).toEqual(["● write_file new.ts", "", "┌ write new.ts (1 line)", "x", "  ⎿ You allowed this.", "  ⎿ ok"]);
+    expect(app.lastFrame()).not.toContain(file);
+  });
+
+  // Only an edit's and a write's rows: a read's row, here one of its own as it failed, names the path as typed.
+  it.each([true, false])("leaves a read's row as the model typed it (full screen: %s)", async (full) => {
+    const { app } = await mount([callTool("c1", "read_file", { path: "./missing.txt" }), reply("looked")], { full });
+    await type(app, "read it");
+    await until(app, "looked");
+    expect(rows(app, full)).toContain("● read_file ./missing.txt");
+  });
+
+  // The user's choice at Task 8's spec review, "Fix it in Task 8": in the sandbox, the question names the box's path under
+  // /work, the workspace's root, while the App's root is the host folder (cli.tsx). A stand-in for the box's workspace,
+  // whose files are one line, and none written.
+  const boxed = () =>
+    Object.assign(new LocalWorkspace(tmpdir()), {
+      root: "/work",
+      resolve: async (p: string) => {
+        const abs = path.posix.resolve("/work", p);
+        return { abs, outside: !abs.startsWith("/work/"), shown: abs };
+      },
+      readText: async () => "one\n",
+      writeText: async () => {},
+      branch: async () => null,
+    });
+  it.each([true, false])("names a sandbox edit under /work relative, and one outside it in full (full screen: %s)", async (full) => {
+    const edit = (p: string) => callTool("c1", "edit_file", { path: p, old_text: "one", new_text: "uno" });
+    const { app } = await mount([edit("src/save.ts"), reply("edited"), edit("/etc/save.ts"), reply("edited again")], { full, workspace: boxed() });
+    await type(app, "edit it");
+    await until(app, "Allow edit /work/src/save.ts?");
+    await press(app, "y");
+    await until(app, "edited");
+    expect(from(app, full, "● edit_file src/save.ts").slice(0, 7)).toEqual(["● edit_file src/save.ts", "", "┌ edit src/save.ts (2 lines)", "- one", "+ uno", "  ⎿ You allowed this.", "  ⎿ ok"]);
+    await type(app, "and that one");
+    await until(app, "Allow edit /etc/save.ts?");
+    await press(app, "y");
+    await until(app, "edited again");
+    expect(from(app, full, "● edit_file /etc/save.ts").slice(0, 7)).toEqual(["● edit_file /etc/save.ts", "", "┌ edit /etc/save.ts (2 lines)", "- one", "+ uno", "  ⎿ You allowed this.", "  ⎿ ok"]);
+  });
+
+  it("names a subagent's sandbox edit under /work relative in its answer", async () => {
+    const { app, ask } = await mount([], { workspace: boxed() });
+    const answer = ask("edit /work/src/save.ts", "- one\n+ uno", asker("t2 (x)").owner);
+    await until(app, "Allow t2 (x) to edit /work/src/save.ts?");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    expect(from(app, false, "┌ edit src/save.ts (2 lines)").slice(0, 4)).toEqual(["┌ edit src/save.ts (2 lines)", "- one", "+ uno", "t2 (x) to edit src/save.ts: You allowed this."]);
+  });
+
+  // Task 8's code review: the project's folder itself is named `.`, never left empty.
+  it.each([true, false])("names the project's own folder `.` on the row, heading and answer (full screen: %s)", async (full) => {
+    const { app, ask, ctx } = await mount([callTool("c1", "write_file", { path: ".", content: "x" }), reply("tried")], { full });
+    await type(app, "write it");
+    await until(app, `Allow write ${ctx.root}?`);
+    await press(app, "y");
+    await until(app, "tried");
+    expect(from(app, full, "● write_file .").slice(0, 5)).toEqual(["● write_file .", "", "┌ write . (1 line)", "x", "  ⎿ You allowed this."]);
+    const answer = ask(`write ${ctx.root}`, "x", asker("t2 (x)").owner);
+    await until(app, `Allow t2 (x) to write ${ctx.root}?`);
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    expect(rows(app, full)).toContain("t2 (x) to write .: You allowed this.");
+  });
+
+  // Task 8's code review: the question's text comes escaped (permissions.ts, visible), and Windows' path rules would read
+  // an escape's backslash as a folder's, so a path holding one is named in full in the heading and answer. The row, made
+  // from the model's own text and escaped after, names it relative.
+  it.each([true, false])("names a path holding an escaped character in full in its heading (full screen: %s)", async (full) => {
+    const name = `evil${String.fromCharCode(0x202e)}txt.exe`;
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: name, content: "x" }), reply("written")], { full });
+    const escaped = path.join(ctx.root, "evil\\u202etxt.exe");
+    await type(app, "write it");
+    await until(app, `Allow write ${escaped}?`);
+    await press(app, "y");
+    await until(app, "written");
+    expect(from(app, full, "● write_file evil\\u202etxt.exe").slice(0, 5)).toEqual(["● write_file evil\\u202etxt.exe", "", `┌ write ${escaped} (1 line)`, "x", "  ⎿ You allowed this."]);
+    expect(app.lastFrame()).not.toContain("evil/u202e");
+  });
+
+  // The user's choice at Task 8's code review, "Both": the running call's tool line names an edit's file as its row does.
+  it.each([true, false])("names a running edit's file on the tool line as its row does (full screen: %s)", async (full) => {
+    const { app, ctx } = await mount([callTool("c1", "edit_file", { path: "./src/save.ts", old_text: "one", new_text: "uno" }), reply("edited")], { full });
+    mkdirSync(path.join(ctx.root, "src"));
+    writeFileSync(path.join(ctx.root, "src", "save.ts"), "one\n");
+    await type(app, "edit it");
+    await until(app, "Allow edit");
+    expect(stripVTControlCharacters(app.lastFrame()!)).toContain("◐ edit_file src/save.ts");
+    expect(app.lastFrame()).not.toContain("./src");
+    await press(app, "y");
+    await until(app, "edited");
+  });
+
+  // "Both": a subagent's latest tool on the panel names an edit's file as a row does.
+  it.each([true, false])("names a subagent's running edit's file on the panel as a row does (full screen: %s)", async (full) => {
+    const worker = new Held("fake:w");
+    const lead = new FakeProvider("a", [callTool("c1", "delegate", { description: "fix it", task: "fix it", background: true }), reply("started it")]);
+    const { app, ctx, tasks } = await mount([], { lead, worker, full, mode: "project" });
+    mkdirSync(path.join(ctx.root, "src"));
+    writeFileSync(path.join(ctx.root, "src", "save.ts"), "one\n");
+    await type(app, "go");
+    await until(app, "started it");
+    await waitFor(() => worker.asked.length === 1);
+    worker.answer(callTool("w1", "edit_file", { path: "./src/save.ts", old_text: "one", new_text: "uno" }));
+    await waitFor(() => worker.asked.length === 2);
+    await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("· edit_file src/save.ts"));
+    expect(app.lastFrame()).not.toContain("./src");
+    worker.answer("fixed");
+    await waitFor(() => tasks.all[0]!.state === "done");
+  });
+});
+
 describe("App's to-do list", () => {
   const items: TodoItem[] = [
     { text: "read the login code", status: "done" },
@@ -2985,7 +3664,7 @@ describe("App's to-do list", () => {
     const { app, bus } = await mount([]);
     bus.emit("todo", items);
     await tick();
-    expect(app.lastFrame()).toContain("☑ read the login code\n◐ find where the token is saved\n☐ write the fix\n›");
+    expect(app.lastFrame()).toContain(`☑ read the login code\n◐ find where the token is saved\n☐ write the fix\n${RULE}\n›`);
     bus.emit("todo", items.map((i) => ({ ...i, status: "done" as const })));
     await tick();
     expect(app.lastFrame()).not.toContain("☑");
@@ -3029,11 +3708,13 @@ describe("App's menus", () => {
   it("lists the commands for / at the start of an empty prompt, narrowing as the command is typed", async () => {
     const { app } = await mount([]);
     await press(app, "/");
-    expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model; alone, pick it from a list\n  /model  Pick the lead model from a list\n");
+    // The whole list fills the rows, so the prompt's lines give way (TUI design pass, Task 4); three entries leave them room.
+    // Each note in one column, after the longest label shown (Task 11).
+    expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model; alone, pick it from a list\n  /model                  Pick the lead model from a list\n");
     expect(app.lastFrame()).toContain("↑↓ choose · Tab fill · Enter run · Esc close");
     await press(app, "e");
     expect(app.lastFrame()).toContain(
-      "› /e\n  /export [file]  Write the conversation to a file as text; alone, copy it\n  /errors  Summarise the error log\n  /exit  Quit\n",
+      `› /e\n${RULE}\n  /export [file]  Write the conversation to a file as text; alone, copy it\n  /errors         Summarise the error log\n  /exit           Quit\n`,
     );
     expect(app.lastFrame()).not.toContain("/model");
   });
@@ -3063,7 +3744,7 @@ describe("App's menus", () => {
     await press(app, "m");
     expect(app.lastFrame()).toContain("/model  Pick the lead model from a list");
     await press(app, "\u007f"); // back at the text Esc closed it at, after a change: open
-    expect(app.lastFrame()).toContain("/model  Pick the lead model from a list");
+    expect(app.lastFrame()).toContain("/model                  Pick the lead model from a list"); // the whole list's column (Task 11)
     await press(app, "\u007f", "/tmp is full", "\r");
     await until(app, "ok");
     expect(sent(session)).toEqual({ type: "text", text: "/tmp is full" });
@@ -3075,9 +3756,9 @@ describe("App's menus", () => {
     await writeFile(path.join(ctx.root, "src", "x.ts"), "secret");
     await writeFile(path.join(ctx.root, "a.txt"), "");
     await press(app, "read @");
-    expect(app.lastFrame()).toContain("› read @\n  src/\n  a.txt\n↑↓ choose · Tab or Enter fill · Esc close");
+    expect(app.lastFrame()).toContain(`› read @\n${RULE}\n  src/\n  a.txt\n↑↓ choose · Tab or Enter fill · Esc close`);
     await press(app, "s", "\t");
-    expect(app.lastFrame()).toContain("› read @src/\n  src/x.ts\n");
+    expect(app.lastFrame()).toContain(`› read @src/\n${RULE}\n  src/x.ts\n`);
     await press(app, "\r");
     expect(app.lastFrame()).toContain("› read @src/x.ts\n");
     await press(app, "\r");
@@ -3088,7 +3769,7 @@ describe("App's menus", () => {
   it("says in the menu why a folder cannot be listed", async () => {
     const { app } = await mount([]);
     await press(app, "@nope/");
-    expect(app.lastFrame()).toMatch(/› @nope\/\n {2}Cannot list nope\/: ENOENT/);
+    expect(app.lastFrame()).toMatch(/› @nope\/\n─{100}\n {2}Cannot list nope\/: ENOENT/);
   });
 
   it("cuts the prompt to the cursor's row while a menu is open, and fits the menu in the rows left", async () => {
@@ -3103,6 +3784,35 @@ describe("App's menus", () => {
 });
 
 describe("App's keys for the modes, the model list and the last turn", () => {
+  // The whole PR's review (the user's choice: "Give them a gap"): a line a key says starts a block, an empty line above.
+  // PR 20's review: a reply ending in line breaks leaves no empty rows of its own, so the block after it has the one gap.
+  it.each([
+    { ending: "\\n", text: "hello\n", full: false },
+    { ending: "\\n\\n", text: "hello\n\n", full: false },
+    { ending: "\\r\\n", text: "hello\r\n", full: false },
+    { ending: "\\n", text: "hello\n", full: true },
+    { ending: "\\n\\n", text: "hello\n\n", full: true },
+  ])("puts one empty line between a reply ending in $ending and the block after it (full: $full)", async ({ text, full }) => {
+    const { app } = await mount([reply(text)], { full });
+    await type(app, "hi");
+    await until(app, "● hello");
+    await press(app, "\u001b[Z");
+    await until(app, "mode is now project");
+    const rows = app.lastFrame()!.split("\n").map((r) => r.trimEnd());
+    const at = rows.indexOf("● hello");
+    expect(rows.slice(at, at + 3)).toEqual(["● hello", "", "mode is now project"]);
+  });
+
+  it("puts an empty line above the key list on ? and above Shift+Tab's line", async () => {
+    const { app } = await mount([reply("ok")]);
+    await type(app, "hi");
+    await until(app, "ok");
+    await press(app, "?");
+    expect(app.lastFrame()).toContain("● ok\n\nKeys:\n");
+    await press(app, "\u001b[Z");
+    expect(app.lastFrame()).toMatch(/[^\n]\n\nmode is now project\n/);
+  });
+
   it("prints the key list, grey, on ? at an empty prompt; with a space first, ? is typed", async () => {
     const { app } = await mount([]);
     await press(app, "?");
@@ -3203,7 +3913,7 @@ describe("App's keys for the modes, the model list and the last turn", () => {
   it("takes never into the cycle only when the session started in it", async () => {
     const { app } = await mount([], { mode: "never" });
     await press(app, "\u001b[Z", "\u001b[Z", "\u001b[Z", "\u001b[Z");
-    expect(app.lastFrame()).toContain("mode is now ask\nmode is now project\nmode is now auto\nmode is now never\n");
+    expect(app.lastFrame()).toContain("mode is now ask\n\nmode is now project\n\nmode is now auto\n\nmode is now never\n"); // each a block
   });
 
   it("does nothing on Shift+Tab while a question is showing", async () => {
@@ -3244,8 +3954,18 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     await type(app, "go");
     await until(app, "done");
     await press(app, "\u000f");
-    expect(app.lastFrame()).toContain('Last turn: 1 tool call\n● read_file {\n  "path": "a.txt"\n}\n  ⎿ ');
+    expect(app.lastFrame()).toContain("Last turn: 1 tool call\n● read_file\n  path: a.txt\n  ⎿ ");
     expect(app.lastFrame()).toMatch(/⎿ [^\n]*hello there/);
+  });
+
+  // TUI design pass, Task 14: Ctrl+O's printed lines are one block, with an empty line above them, as /tasks's are.
+  it("prints Ctrl+O's lines in classic as a block, an empty line above them", async () => {
+    const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")]);
+    await type(app, "go");
+    await until(app, "done");
+    await press(app, "\u000f");
+    await until(app, "Last turn: 1 tool call");
+    expect(app.lastFrame()).toContain("● done\n\nLast turn: 1 tool call\n● read_file\n");
   });
 });
 
@@ -3284,7 +4004,7 @@ describe("App's working line and tool lines", () => {
     await writeFile(path.join(ctx.root, "a.txt"), "x");
     await type(app, "go");
     await until(app, "done");
-    expect(app.lastFrame()).toContain("\nRead 2 files\n"); // the calls' rows fold (release 8c plan, Task 15)
+    expect(app.lastFrame()).toContain("\n● Read 2 files\n"); // the calls' rows fold (release 8c plan, Task 15)
     expect(app.lastFrame()).toMatch(/⏱[^\n]*\n✓ read_file ×2$/);
     await type(app, "more");
     await until(app, "again");
@@ -3347,38 +4067,40 @@ const SHIFT_DOWN = "\u001b[1;2B";
 const said = (n: number, text = (i: number) => `said ${i}.`) => Array.from({ length: n }, (_, i) => ({ text: text(i) }));
 // Each row of the frame, without the scroll bar's column (the last of ink-testing-library's 100) and the spaces before it.
 const shown = (app: ReturnType<typeof render>, columns = 100) => app.lastFrame()!.split("\n").map((r) => r.slice(0, columns - 1).trimEnd());
+const SHOWN_RULE = RULE.slice(0, 99); // the prompt's lines as shown() cuts them, the scroll bar's column left out
 
 describe("App in full screen", () => {
   it("draws the conversation at the top and the status line at the bottom, in a frame a row shorter than the terminal", async () => {
-    const { app } = await mount([reply("hello there")], { full: true, intro: [{ text: "Instructions: CLAUDE.md (12 bytes)", color: "gray" }] });
+    const { app } = await mount([reply("hello there")], { full: true, intro: [{ text: "Instructions left out: ~/x.md (not allowed)", color: "muted" }] });
     await type(app, "hi");
     await until(app, "hello there");
     const rows = shown(app);
     expect(rows).toHaveLength(23); // 24 rows: Ink clears the whole terminal for a frame as tall as it
-    expect(rows.slice(0, 4)).toEqual(["Instructions: CLAUDE.md (12 bytes)", "> hi", "hello there", ""]);
+    // Your message's band rows after a gap, then the reply after its own (TUI design pass, Task 3).
+    expect(rows.slice(0, 8)).toEqual(["Instructions left out: ~/x.md (not allowed)", "", "", "› hi", "", "", "● hello there", ""]);
     expect(rows.at(-1)).toContain("lead fake:a");
   });
 
   it("shows the newest lines, earlier ones on PgUp, holds the view while a reply arrives, and goes back to the newest on Ctrl+End", async () => {
     const lead = new Held();
     const { app } = await mount([], { full: true, lead, intro: said(60) });
-    // 20 rows of conversation: 23 less the prompt, the hint and the status line.
-    expect(shown(app).slice(0, 20)).toEqual(said(60).slice(40).map((l) => l.text));
-    await press(app, PG_UP); // half of 20
-    expect(shown(app)[0]).toBe("said 30.");
-    expect(shown(app)[19]).toBe("said 49.");
+    // 18 rows of conversation: 23 less the prompt, its two lines, the hint and the status line.
+    expect(shown(app).slice(0, 18)).toEqual(said(60).slice(42).map((l) => l.text));
+    await press(app, PG_UP); // half of 18
+    expect(shown(app)[0]).toBe("said 33.");
+    expect(shown(app)[17]).toBe("said 50.");
     await type(app, "hi"); // sending goes to the bottom
-    await until(app, "> hi");
-    expect(shown(app)[19]).toBe("> hi"); // the working line takes the hint's row
-    await press(app, PG_UP); // from row 41 of 61
-    expect(shown(app)[0]).toBe("said 31.");
+    await until(app, "\n› hi");
+    expect(shown(app).slice(16, 18)).toEqual(["› hi", ""]); // the working line takes the hint's row
+    await press(app, PG_UP); // from row 46 of 64: the gap and three band rows after said 59. (TUI design pass, Task 3)
+    expect(shown(app)[0]).toBe("said 37.");
     lead.answer("a\nb");
-    await until(app, "↓ 2 new lines · Ctrl+End");
+    await until(app, "↓ 3 new lines · Ctrl+End"); // the reply's gap and its two lines
     await gone(app, "Esc to stop");
-    expect(shown(app)[0]).toBe("said 31.");
-    expect(app.lastFrame()).not.toContain("> hi");
+    expect(shown(app)[0]).toBe("said 37.");
+    expect(app.lastFrame()).not.toContain("› hi");
     await press(app, CTRL_END);
-    expect(shown(app).slice(17, 20)).toEqual(["> hi", "a", "b"]);
+    expect(shown(app).slice(13, 18)).toEqual(["› hi", "", "", "● a", "  b"]);
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -3438,8 +4160,9 @@ describe("App in full screen", () => {
     );
     try {
       await tick();
-      // The prompt's row is under 20 of conversation, in a frame of 23: up 3 from the frame's foot, then to after "› ".
-      expect(terminal.out).toContain("\u001b[3A\u001b[3G\u001b[?25h");
+      // The prompt's row is under 18 of conversation and its upper line, in a frame of 23: up 4 from the frame's foot, then
+      // to after "› ".
+      expect(terminal.out).toContain("\u001b[4A\u001b[3G\u001b[?25h");
     } finally {
       app.unmount();
     }
@@ -3448,11 +4171,11 @@ describe("App in full screen", () => {
   it("moves a row on Shift+Up and Shift+Down, goes to the top on Ctrl+Home, and stays at the bottom on PgDn", async () => {
     const { app } = await mount([], { full: true, intro: said(60) });
     await press(app, PG_DOWN);
-    expect(shown(app)[0]).toBe("said 40.");
+    expect(shown(app)[0]).toBe("said 42.");
     await press(app, SHIFT_UP);
-    expect(shown(app)[0]).toBe("said 39.");
+    expect(shown(app)[0]).toBe("said 41.");
     await press(app, SHIFT_DOWN);
-    expect(shown(app)[0]).toBe("said 40.");
+    expect(shown(app)[0]).toBe("said 42.");
     await press(app, CTRL_HOME);
     expect(shown(app)[0]).toBe("said 0.");
   });
@@ -3461,15 +4184,47 @@ describe("App in full screen", () => {
     const long = (i: number) => `said ${i}. ${"word ".repeat(14).trimEnd()}`; // under 80 columns: one row at 99, two at 59
     const { app } = await mount([], { full: true, intro: said(60, long) });
     await press(app, PG_UP);
-    expect(shown(app)[0]).toBe(long(30));
+    expect(shown(app)[0]).toBe(long(33));
     Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
     app.stdout.emit("resize");
     await tick();
     const rows = shown(app, 60);
-    expect(rows[0]).toMatch(/^said 30\. word/);
+    expect(rows[0]).toMatch(/^said 33\. word/);
     expect(rows[1]).toMatch(/^word/);
-    expect(rows[2]).toMatch(/^said 31\. word/);
+    expect(rows[2]).toMatch(/^said 34\. word/);
     expect(rows).toHaveLength(23);
+  });
+
+  // TUI design pass, Task 6 (design, "Resizing"): the start-up box is laid out once, for 120 columns, and never again; each
+  // of its rows is one screen row at any width, cut with "…" when the screen is narrower.
+  it("keeps the start-up box as drawn at 120 columns, each row cut to one at 50, and the frame as at first back at 120, a selection and the held view on the same text", async () => {
+    await inColour(1, async () => {
+      const resize = async (app: ReturnType<typeof render>, columns: number) => {
+        Object.defineProperty(app.stdout, "columns", { value: columns, configurable: true });
+        app.stdout.emit("resize");
+        await tick();
+      };
+      const info = { version: "0.1.0", lead: "fake:a", folder: "~/proj", branch: "main", mode: "ask", sandbox: "off" as const, files: ["CLAUDE.md"], servers: 0, hooks: 0 };
+      const box = startBox(info, textWidth(120, true), { light: false, color: true, full: true });
+      expect(box[1]!.text.length).toBeGreaterThan(50); // the pixel art's row, wider than the narrow screen
+      // 26 rows: 20 of conversation, the box's 14 and its hint, then the lines after it.
+      const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: [...box, ...said(40)] });
+      const rows = (columns: number) => stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => r.slice(0, columns - 1).trimEnd());
+      await resize(app, 120);
+      await press(app, CTRL_HOME); // the view held at the top
+      await pointer(mouse, at("press", 3, 0), at("drag", 11, 0), at("release", 11, 0)); // "Tachikoma" in the top border
+      expect(copies).toEqual(["Tachikoma"]);
+      expect(rows(120).slice(0, box.length + 1)).toEqual([...box.map((l) => l.text), "said 0."]);
+      expect(reversed(app)[0]).toBe("Tachikoma");
+      const first = app.lastFrame();
+      await resize(app, 50);
+      const cut = (text: string) => (text.length > 49 ? `${text.slice(0, 48)}…` : text); // the box's characters are one column each
+      expect(rows(50).slice(0, box.length + 1)).toEqual([...box.map((l) => cut(l.text)), "said 0."]);
+      expect(reversed(app)[0]).toBe("Tachikoma");
+      await resize(app, 120);
+      expect(app.lastFrame()).toBe(first);
+      expect(copies).toEqual(["Tachikoma"]);
+    });
   });
 
   // Release 7 plan, choice 120 (the user's hand check): a tall prompt draws at most half the rows, twelve of 24.
@@ -3478,10 +4233,10 @@ describe("App in full screen", () => {
     await press(app, Array.from({ length: 20 }, (_, i) => `p${i}`).join("\n")); // Ctrl+J between them
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[0]).toBe("said 51.");
-    expect(rows[8]).toBe("said 59.");
-    expect(rows[9]).toBe("› ↑ 9 rows above");
-    expect(rows[20]).toBe("  p19");
+    expect(rows[0]).toBe("said 53."); // seven rows of conversation, then the prompt's upper line
+    expect(rows[6]).toBe("said 59.");
+    expect(rows[8]).toBe("› ↑ 9 rows above");
+    expect(rows[19]).toBe("  p19");
   });
 
   it("scrolls with PgUp while a question waits, and still answers it with y", async () => {
@@ -3508,9 +4263,9 @@ describe("App in full screen", () => {
     await type(app, "next"); // queued: a turn is running
     await until(app, "↑ to edit queued messages");
     await press(app, PG_UP);
-    expect(app.lastFrame()).not.toContain("> go");
+    expect(app.lastFrame()).not.toContain("› go");
     lead.answer("first reply");
-    await until(app, "> next");
+    await until(app, "› next");
     expect(app.lastFrame()).toContain("first reply");
     expect(app.lastFrame()).not.toContain("new lines");
     lead.answer("second reply"); // following: it shows as it comes
@@ -3526,7 +4281,7 @@ describe("App in full screen", () => {
   ])("goes to the bottom, following, on $name", async ({ key, shows }) => {
     const { app } = await mount([], { full: true, intro: said(60), note: "a note on the login", models: [{ provider: "fake", models: ["a"] }] });
     await press(app, PG_UP);
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
     await press(app, key);
     await until(app, shows);
     expect(app.lastFrame()).not.toContain("new lines");
@@ -3536,9 +4291,9 @@ describe("App in full screen", () => {
     const { app } = await mount([], { full: true, intro: said(60), past: ["about"] });
     await press(app, "\u0012", "ab");
     await until(app, "search: ab ·");
-    expect(shown(app)[0]).toBe("said 40.");
+    expect(shown(app)[0]).toBe("said 42.");
     await press(app, PG_UP);
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
     await press(app, SHIFT_DOWN, CTRL_HOME);
     expect(shown(app)[0]).toBe("said 0.");
     expect(app.lastFrame()).toContain("search: ab ·");
@@ -3592,14 +4347,16 @@ describe("App in full screen", () => {
     await until(app, "Esc to stop");
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows.slice(-9)).toEqual([
+    expect(rows.slice(-11)).toEqual([
       expect.stringContaining("Esc to stop"),
       "◐ one",
       "☐ two",
       "q1",
       "q2",
       "q3",
+      SHOWN_RULE,
       "›",
+      SHOWN_RULE,
       "↑ to edit queued messages",
       expect.stringContaining("lead fake:hang"),
     ]);
@@ -3618,7 +4375,7 @@ describe("App in full screen", () => {
     rows = shown(app);
     expect(rows).toHaveLength(23);
     expect(rows[16]).toBe("said 59.");
-    expect(rows.slice(19)).toEqual(["fake", "  fake:c", "Filter: c · ↑↓ move · Enter picks · Esc closes", rows[22]]);
+    expect(rows.slice(19)).toEqual(["fake", "  fake:c", "Filter: c · ↑↓ move · Enter pick · Esc close", rows[22]]);
     expect(rows[22]).toContain("lead fake:a");
   });
 });
@@ -3652,9 +4409,10 @@ const thumb = (app: ReturnType<typeof render>) =>
     .flatMap((r, i) => ([...r][BAR] === "┃" ? [i] : []));
 
 describe("App's wheel and scroll bar in full screen", () => {
-  // 80 lines in 20 rows of conversation: the newest 20 show, said 60. to said 79.
+  // 80 lines in 20 rows of conversation: the newest 20 show, said 60. to said 79. A case that counts the rows has a
+  // terminal of 26 for them: Ink's 24 and the prompt's two lines (TUI design pass, Task 4).
   it("scrolls 3 rows a notch of the wheel, wherever the pointer is", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     expect(shown(app)[0]).toBe("said 60.");
     await wheel(mouse, "up");
     expect(shown(app)[0]).toBe("said 57.");
@@ -3665,7 +4423,7 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 
   it("moves one row every second notch at a speed of 0.5", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80), scrollSpeed: 0.5 });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80), scrollSpeed: 0.5 });
     const tops = [];
     for (let i = 0; i < 4; i++) {
       await wheel(mouse, "up");
@@ -3678,18 +4436,18 @@ describe("App's wheel and scroll bar in full screen", () => {
     const lead = new Held();
     const { app, mouse } = await mount([], { full: true, lead, intro: said(80) });
     await type(app, "go");
-    await until(app, "> go");
+    await until(app, "› go");
     await wheel(mouse, "up", 2);
-    expect(app.lastFrame()).not.toContain("> go");
+    expect(app.lastFrame()).not.toContain("› go");
     await wheel(mouse, "down", 5); // past the bottom
-    expect(app.lastFrame()).toContain("> go");
+    expect(app.lastFrame()).toContain("› go");
     lead.answer("fresh");
     await until(app, "fresh");
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
   it("goes to the first lines on a click on the bar's track near its top", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     expect(thumb(app)).toEqual([15, 16, 17, 18, 19]); // 20 rows of 80 seen: a thumb of 5 rows, at the foot
     await pointer(mouse, at("press", BAR, 1), at("release", BAR, 1));
     expect(shown(app)[0]).toBe("said 0.");
@@ -3697,14 +4455,14 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 
   it("centres the thumb on the row of the track clicked", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     await pointer(mouse, at("press", BAR, 8), at("release", BAR, 8));
     expect(thumb(app)).toEqual([6, 7, 8, 9, 10]);
     expect(shown(app)[0]).toBe("said 24."); // the thumb at 6 of its 15 rows of travel: 6 * 60 / 15
   });
 
   it("moves the thumb with the pointer while it is dragged, keeping where on it it was pressed, until the button is let go", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     await press(app, CTRL_HOME);
     expect(thumb(app)).toEqual([0, 1, 2, 3, 4]);
     await pointer(mouse, at("press", BAR, 1), at("drag", BAR, 8));
@@ -3718,19 +4476,19 @@ describe("App's wheel and scroll bar in full screen", () => {
 
   it("follows again when the thumb is dragged to the bottom, so a new reply shows at once", async () => {
     const lead = new Held();
-    const { app, mouse } = await mount([], { full: true, lead, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, lead, intro: said(80) });
     await type(app, "go");
-    await until(app, "> go");
+    await until(app, "› go");
     await press(app, CTRL_HOME);
     await pointer(mouse, at("press", BAR, 0), at("drag", BAR, 19), at("release", BAR, 19));
-    expect(shown(app)[19]).toBe("> go");
+    expect(shown(app).slice(18, 20)).toEqual(["› go", ""]); // your message's last band row at the foot (TUI design pass, Task 3)
     lead.answer("fresh");
     await until(app, "fresh");
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
   it("moves the thumb as PgUp scrolls", async () => {
-    const { app } = await mount([], { full: true, intro: said(80) });
+    const { app } = await mount([], { full: true, rows: 26, intro: said(80) });
     await press(app, PG_UP); // 10 rows up, to row 50 of the 60 the view can start at: the thumb at 12.5 of 15, rounded
     expect(thumb(app)).toEqual([13, 14, 15, 16, 17]);
   });
@@ -3745,7 +4503,7 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 
   it("keeps the view where it is when the grabbed thumb moves sideways on its row, and draws nothing new", async () => {
-    let { app, mouse } = await mount([], { full: true, intro: said(80) });
+    let { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     await press(app, PG_UP);
     expect(thumb(app)).toEqual([13, 14, 15, 16, 17]);
     await pointer(mouse, at("press", BAR, 15), at("drag", BAR - 1, 15));
@@ -3754,7 +4512,7 @@ describe("App's wheel and scroll bar in full screen", () => {
     for (let i = 0; i < 10; i++) await pointer(mouse, at("drag", BAR - 1, 15));
     expect(app.frames.length).toBe(frames);
     // 1,000 lines: a thumb of one row, which stands for many first rows
-    ({ app, mouse } = await mount([], { full: true, intro: said(1000) }));
+    ({ app, mouse } = await mount([], { full: true, rows: 26, intro: said(1000) }));
     await press(app, PG_UP, PG_UP);
     expect(shown(app)[0]).toBe("said 960.");
     await pointer(mouse, at("press", BAR, 19), at("drag", BAR - 1, 19));
@@ -3762,13 +4520,13 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 
   it("ends an earlier grab on a new press, as when its release was lost", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     await pointer(mouse, at("press", BAR, 17), at("press", 10, 5), at("drag", 10, 12));
     expect(shown(app)[0]).toBe("said 60.");
   });
 
   it("grabs a thumb held at the bar's end by a track click where the pointer is on it", async () => {
-    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
     await pointer(mouse, at("press", BAR, 1));
     expect(thumb(app)).toEqual([0, 1, 2, 3, 4]); // centred on row 1 it would start above the bar, so it starts at 0
     await pointer(mouse, at("drag", BAR, 5)); // 4 rows down
@@ -3811,25 +4569,14 @@ describe("App's wheel and scroll bar in full screen", () => {
   });
 });
 
-// The frame with its colours: Ink colours through chalk, which finds no colour in a test's output, so a test that looks
-// for reverse colours turns them on for itself and back off after. chalk is Ink's dependency, not ours, reached through
-// Ink's install; that is acceptable, as were it ever to move, the import fails loudly rather than a test passing
-// silently.
-async function inColour(test: () => Promise<void>) {
-  const level = chalk.level;
-  chalk.level = 1; // 1: chalk's basic 16 colours, enough for reverse (\u001b[7m)
-  try {
-    await test();
-  } finally {
-    chalk.level = level;
-  }
-}
 // The text drawn in reverse colours on each row of the frame; the status line has some of its own.
 const reverse = (row: string) => [...row.matchAll(/\u001b\[7m(.*?)\u001b\[27m/g)].map((m) => m[1]).join("");
 const reversed = (app: ReturnType<typeof render>) => app.lastFrame()!.split("\n").map(reverse);
 const click = (x: number, y: number) => [at("press", x, y), at("release", x, y)];
 
 describe("App's selecting and copying in full screen", () => {
+  // A case that counts the conversation's 20 rows has a terminal of 26 for them: Ink's 24 and the prompt's two lines
+  // (TUI design pass, Task 4).
   // 149 columns of words: a row of 99, then the rest.
   const long = "word ".repeat(30).trimEnd();
 
@@ -3847,8 +4594,8 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("shows the selection in reverse colours as it grows, never on the scroll bar's column", async () => {
-    await inColour(async () => {
-      const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    await inColour(1, async () => {
+      const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
       await pointer(mouse, at("press", 2, 5), at("drag", 3, 6));
       expect(reversed(app).slice(4, 8)).toEqual(["", "id 65.", "said", ""]);
       await pointer(mouse, at("drag", BAR, 6));
@@ -3858,7 +4605,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("scrolls a row for each drag report below the conversation, or on its top row for a drag started below it, copying lines off screen", async () => {
-    const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
     await press(app, CTRL_HOME);
     await pointer(mouse, at("press", 0, 18), at("drag", 50, 21), at("drag", 50, 22), at("release", 50, 22));
     expect(shown(app)[0]).toBe("said 2.");
@@ -3882,7 +4629,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("clears a selection on a click without a drag, copying nothing", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
       await pointer(mouse, at("press", 0, 3), at("drag", 4, 3), at("release", 4, 3));
       expect(reversed(app)[3]).toBe("said ");
@@ -3909,32 +4656,32 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("says the terminal alone copied, with no failure, where there is no tool, as on Linux over SSH", async () => {
-    const { app, mouse, copies } = await mount([], { full: true, intro: said(80), run: null });
+    const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80), run: null });
     await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
     expect(copies).toEqual(["said 63."]);
     expect(app.lastFrame()).toContain("Copied 8 characters with the terminal only");
   });
 
   it("keeps the selection on its text as new output moves the view, and as the wheel scrolls it", async () => {
-    await inColour(async () => {
-      const { app, mouse, bus } = await mount([], { full: true, intro: said(80) });
+    await inColour(1, async () => {
+      const { app, mouse, bus } = await mount([], { full: true, rows: 26, intro: said(80) });
       await pointer(mouse, at("press", 0, 19), at("drag", 98, 19)); // said 79., the button still held
       expect(reversed(app)[19]).toBe("said 79.");
       bus.emit("error", { kind: "fallback", attempted: "x", message: "moved on", lead: "fake:a" });
       await until(app, "↪ moved on");
-      expect(reversed(app)[18]).toBe("said 79.");
+      expect(reversed(app)[17]).toBe("said 79."); // a block: its gap and its line (TUI design pass, Task 3)
       await wheel(mouse, "up"); // 3 rows: said 79. goes below the view
       expect(reversed(app).slice(0, 20).join("")).toBe("");
       await wheel(mouse, "down");
-      expect(reversed(app)[18]).toBe("said 79.");
+      expect(reversed(app)[17]).toBe("said 79.");
     });
   });
 
   // Shift+Up and Shift+Down only scroll: moving the selection's end and copying again would put an old selection back
   // over newer clipboard contents (the user's choice at Task 9's review, 2026-10-27, dropping the plan's choice 9).
   it("only scrolls on Shift+Up with a selection showing, copying nothing and leaving the selection on its text", async () => {
-    await inColour(async () => {
-      const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
+    await inColour(1, async () => {
+      const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
       await press(app, PG_UP);
       await pointer(mouse, at("press", 0, 2), at("drag", 50, 2), at("release", 50, 2));
       expect(copies).toEqual(["said 52."]);
@@ -3946,7 +4693,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("keeps a double-clicked word and a dragged selection on their text when a resize wraps the line again", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const narrow = async (app: ReturnType<typeof render>) => {
         Object.defineProperty(app.stdout, "columns", { value: 50, configurable: true });
         app.stdout.emit("resize");
@@ -3966,7 +4713,7 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("never scrolls for a drag that started on the conversation's top row, selecting within it", async () => {
-    const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
     await pointer(mouse, at("press", 2, 0), at("drag", 5, 0), at("drag", 3, 2), at("drag", 6, 0), at("release", 6, 0));
     expect(shown(app)[0]).toBe("said 60.");
     expect(copies).toEqual(["id 60"]);
@@ -3975,7 +4722,7 @@ describe("App's selecting and copying in full screen", () => {
   // The line about a copy takes the hint row's place only when it is showing, so a copy never moves the conversation
   // (the user's choice at Task 9's review, 2026-10-27).
   it("says nothing about a copy during a turn, which has no hint row, so the conversation stays where it is", async () => {
-    const { app, mouse, copies } = await mount([], { full: true, intro: said(80), lead: hanging() });
+    const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80), lead: hanging() });
     await type(app, "go");
     await until(app, "Esc to stop");
     const before = shown(app).slice(0, 19);
@@ -4035,6 +4782,7 @@ describe("App's selecting and copying in full screen", () => {
   // as in "forgets a first press after 800 ms", so the mouse reports are sent without pointer's real wait.
   async function behindExitWarning(run?: (text: string) => Promise<void>) {
     const { app, mouse, copies } = await mount([], { full: true, intro: said(80), ...(run ? { run } : {}) });
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const wait = async (ms: number) => {
       await vi.advanceTimersByTimeAsync(ms);
@@ -4075,9 +4823,9 @@ describe("App's selecting and copying in full screen", () => {
   // A selection stays until a click: any press but one on the scroll bar, which scrolls as the wheel does (the user's
   // choice at Task 9's review, 2026-10-27).
   it("clears a selection on a press on the prompt, on the status line, or with another button, copying nothing", async () => {
-    await inColour(async () => {
-      const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
-      for (const [i, press] of [at("press", 5, 20), at("press", 5, 22), at("press", 10, 10, { button: "right" })].entries()) {
+    await inColour(1, async () => {
+      const { app, mouse, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
+      for (const [i, press] of [at("press", 5, 21), at("press", 5, 24), at("press", 10, 10, { button: "right" })].entries()) {
         await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
         expect(reversed(app)[3]).toBe("said 63.");
         await pointer(mouse, press, { ...press, kind: "release" }); // the prompt's row, the status line's, a right click
@@ -4088,8 +4836,8 @@ describe("App's selecting and copying in full screen", () => {
   });
 
   it("keeps a selection while the scroll bar's thumb is dragged", async () => {
-    await inColour(async () => {
-      const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    await inColour(1, async () => {
+      const { app, mouse } = await mount([], { full: true, rows: 26, intro: said(80) });
       await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
       await pointer(mouse, at("press", BAR, 17), at("drag", BAR, 15), at("release", BAR, 15));
       expect(shown(app)[0]).not.toBe("said 60.");
@@ -4099,10 +4847,10 @@ describe("App's selecting and copying in full screen", () => {
 
   // The "↓ N new lines" row is not text: a press there starts nothing, and a drag onto it counts as the row above it.
   it("never selects or copies the line hidden under the new-lines row", async () => {
-    const { app, mouse, bus, copies } = await mount([], { full: true, intro: said(80) });
+    const { app, mouse, bus, copies } = await mount([], { full: true, rows: 26, intro: said(80) });
     await press(app, PG_UP); // said 50. to said 69.
     bus.emit("error", { kind: "fallback", attempted: "x", message: "moved on", lead: "fake:a" });
-    await until(app, "↓ 1 new line");
+    await until(app, "↓ 2 new lines"); // a block: its gap and its line (TUI design pass, Task 3)
     await pointer(mouse, at("press", 0, 17), at("drag", 3, 19), at("drag", 50, 19), at("release", 50, 19));
     expect(copies).toEqual(["said 67.\nsaid 68."]);
     await pointer(mouse, ...click(2, 19), ...click(2, 19)); // a double-click on the row
@@ -4115,15 +4863,16 @@ describe("App's selecting and copying in full screen", () => {
   it("selects on the conversation's last row when every line that came in shows", async () => {
     const { app, mouse, bus, copies } = await mount([], { full: true, intro: said(22) });
     await press(app, PG_UP); // held at said 0.
-    Object.assign(app.stdout, { rows: 30 }); // 26 rows of conversation: said 0. to said 21., then 4 blank
+    Object.assign(app.stdout, { rows: 32 }); // 26 rows of conversation, the prompt's two lines taken: said 0. to said 21., then 4 blank
     app.stdout.emit("resize");
     await tick();
-    bus.emit("message", { role: "assistant", parts: [{ type: "text", text: "one\ntwo\nthree\nfour" }] });
-    await until(app, "four");
-    expect(shown(app)[25]).toBe("four");
+    // A reply of three lines, after its gap, fills the 4 (TUI design pass, Task 3).
+    bus.emit("message", { role: "assistant", parts: [{ type: "text", text: "one\ntwo\nthree" }] });
+    await until(app, "three");
+    expect(shown(app).slice(22, 26)).toEqual(["", "● one", "  two", "  three"]);
     expect(app.lastFrame()).not.toContain("new line");
-    await pointer(mouse, ...click(1, 25), ...click(1, 25));
-    expect(copies).toEqual(["four"]);
+    await pointer(mouse, ...click(3, 25), ...click(3, 25));
+    expect(copies).toEqual(["three"]);
   });
 
   it("takes away the line about a copy on a paste, as on a key", async () => {
@@ -4137,20 +4886,21 @@ describe("App's selecting and copying in full screen", () => {
 });
 
 // Clicks in the prompt and on menu entries (release 5 design, "Clicking"). With 24 rows and nothing else live, the prompt
-// is the frame's row 20, under 20 rows of conversation; its text starts after the two columns of "› ".
+// is the frame's row 19, under 18 rows of conversation and its upper line (TUI design pass, Task 4); its text starts after
+// the two columns of "› ".
 describe("App's clicks in full screen", () => {
   it("puts the prompt's cursor at the character clicked, at a row's end past it, and on a wrapped prompt's second row", async () => {
     const { app, mouse } = await mount([], { full: true });
     await press(app, "hello world");
-    await pointer(mouse, ...click(8, 20)); // the "w": column 6 of the text
+    await pointer(mouse, ...click(8, 19)); // the "w": column 6 of the text
     await press(app, "X");
     expect(app.lastFrame()).toContain("› hello Xworld\n");
-    await pointer(mouse, ...click(60, 20));
+    await pointer(mouse, ...click(60, 19));
     await press(app, "!");
     expect(app.lastFrame()).toContain("› hello Xworld!\n");
     await press(app, "\u0015", `${"a".repeat(97)}bcd`); // Ctrl+U empties it; 97 columns a row, so "bcd" wraps
-    expect(app.lastFrame()).toContain(`› ${"a".repeat(97)}\n  bcd\n`); // two rows: 19 and 20
-    await pointer(mouse, ...click(3, 20)); // the "c"
+    expect(app.lastFrame()).toContain(`› ${"a".repeat(97)}\n  bcd\n`); // two rows: 18 and 19, under the upper line
+    await pointer(mouse, ...click(3, 19)); // the "c"
     await press(app, "X");
     expect(app.lastFrame()).toContain(`› ${"a".repeat(97)}\n  bXcd\n`);
   });
@@ -4158,13 +4908,39 @@ describe("App's clicks in full screen", () => {
   it("puts the prompt's cursor at a row's start on a click in the row's first two columns", async () => {
     const { app, mouse } = await mount([], { full: true });
     await press(app, "ab", "\n", "cd");
-    expect(shown(app).slice(19, 21)).toEqual(["› ab", "  cd"]);
-    await pointer(mouse, ...click(1, 19)); // on the "›"'s space
+    expect(shown(app).slice(18, 20)).toEqual(["› ab", "  cd"]);
+    await pointer(mouse, ...click(1, 18)); // on the "›"'s space
     await press(app, "X");
-    expect(shown(app).slice(19, 21)).toEqual(["› Xab", "  cd"]);
-    await pointer(mouse, ...click(0, 20)); // a continuation row
+    expect(shown(app).slice(18, 20)).toEqual(["› Xab", "  cd"]);
+    await pointer(mouse, ...click(0, 19)); // a continuation row
     await press(app, "Y");
-    expect(shown(app).slice(19, 21)).toEqual(["› Xab", "  Ycd"]);
+    expect(shown(app).slice(18, 20)).toEqual(["› Xab", "  Ycd"]);
+  });
+
+  // TUI design pass, Task 4: the prompt's lines, above and below it, take no click; under the lower one, the menu's first
+  // entry is the row after it.
+  it("does nothing on a click on the prompt's lines, and puts the cursor on its first row under the upper one", async () => {
+    const { app, mouse } = await mount([], { full: true });
+    await press(app, "hello world");
+    const rule = SHOWN_RULE;
+    expect(shown(app).slice(18, 21)).toEqual([rule, "› hello world", rule]);
+    let frame = app.lastFrame();
+    await pointer(mouse, ...click(8, 18), ...click(8, 20));
+    expect(app.lastFrame()).toBe(frame);
+    await press(app, "X");
+    expect(app.lastFrame()).toContain("› hello worldX\n"); // the cursor where typing left it
+    await pointer(mouse, ...click(8, 19)); // the "w": column 6 of the text
+    await press(app, "Y");
+    expect(app.lastFrame()).toContain("› hello YworldX\n");
+    await press(app, "\u0003", "/", "e"); // Ctrl-C empties it; `/e` opens a menu of three, which leaves room for the lines
+    const row = shown(app).indexOf("› /e");
+    expect(shown(app)[row + 1]).toBe(rule);
+    expect(shown(app)[row + 2]).toMatch(/^ {2}\/export /); // the menu's first entry
+    frame = app.lastFrame();
+    await pointer(mouse, ...click(4, row + 1));
+    expect(app.lastFrame()).toBe(frame); // the lower line: no entry run
+    await pointer(mouse, ...click(4, row + 2)); // the row after it: /export, run as Enter runs it, alone copying
+    await until(app, "Copied the conversation");
   });
 
   // React draws no frame between a key and a mouse report from the same read of the terminal, so a click there would be
@@ -4172,9 +4948,9 @@ describe("App's clicks in full screen", () => {
   it("drops a click that comes in the same read as a key that changes the prompt", async () => {
     const { app, mouse } = await mount([], { full: true });
     await press(app, "ab", "\n", "cd", "\n", "ef");
-    expect(shown(app).slice(18, 21)).toEqual(["› ab", "  cd", "  ef"]);
+    expect(shown(app).slice(17, 20)).toEqual(["› ab", "  cd", "  ef"]);
     app.stdin.write("\u0003"); // Ctrl-C empties the prompt to one row
-    for (const m of click(3, 20)) mouse.emit("mouse", m); // on "ef", drawn before the key
+    for (const m of click(3, 19)) mouse.emit("mouse", m); // on "ef", drawn before the key
     await tick();
     expect(app.lastFrame()).toContain("\n›\n");
     await press(app, "X");
@@ -4211,7 +4987,7 @@ describe("App's clicks in full screen", () => {
       await writeFile(path.join(ctx.root, "a.txt"), "");
       await writeFile(path.join(ctx.root, "b.txt"), "");
       await press(app, "@");
-      expect(shown(app).slice(18, 21)).toEqual(["› @", "  a.txt", "  b.txt"]);
+      expect(shown(app).slice(17, 21)).toEqual(["› @", SHOWN_RULE, "  a.txt", "  b.txt"]); // the menu under the lower line
       await pointer(mouse, ...click(4, 20));
       expect(app.lastFrame()).toContain("› @b.txt\n");
     } finally {
@@ -4225,7 +5001,7 @@ describe("App's clicks in full screen", () => {
     await type(app, "/model");
     await until(app, "fake:b");
     await tick(); // the picker starts reading keys just after it first appears
-    expect(shown(app).slice(18, 22)).toEqual(["fake", "● fake:a", "  fake:b", "Filter: (type to filter) · ↑↓ move · Enter picks · Esc closes"]);
+    expect(shown(app).slice(18, 22)).toEqual(["fake", "● fake:a", "  fake:b", "Filter: (type to filter) · ↑↓ move · Enter pick · Esc close"]);
     await pointer(mouse, ...click(4, 20));
     await until(app, "lead is now fake:b");
     expect(made).toEqual(["fake:b"]);
@@ -4318,7 +5094,7 @@ describe("App's clicks in full screen", () => {
     await type(app, "/model");
     await until(app, "fake:b");
     await tick(); // the picker starts reading keys just after it first appears
-    expect(shown(app).slice(18, 22)).toEqual(["fake", "● fake:a", "  fake:b", "Filter: (type to filter) · ↑↓ move · Enter picks · Esc closes"]);
+    expect(shown(app).slice(18, 22)).toEqual(["fake", "● fake:a", "  fake:b", "Filter: (type to filter) · ↑↓ move · Enter pick · Esc close"]);
     await pointer(mouse, ...click(4, 18), ...click(4, 21));
     expect(made).toEqual([]);
     expect(app.lastFrame()).toContain("Filter: (type to filter)");
@@ -4371,7 +5147,7 @@ describe("App's clicks in full screen", () => {
   it("starts the press-twice count again on a click", async () => {
     const { app, mouse } = await mount([], { full: true });
     await press(app, "abc", "\u001b");
-    await pointer(mouse, ...click(3, 20));
+    await pointer(mouse, ...click(3, 19));
     await press(app, "\u001b"); // within 800 ms of the first: a first press again
     expect(app.lastFrame()).toContain("› abc\n");
     await press(app, "\u001b"); // the second
@@ -4388,11 +5164,11 @@ describe("App's questions in full screen", () => {
 
   it("brings a short detail into view, its last line on the conversation's second-last row", async () => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
-    await press(app, PG_UP);
-    expect(shown(app)[0]).toBe("said 30.");
+    await press(app, PG_UP); // half of the 18 rows the prompt and its two lines leave
+    expect(shown(app)[0]).toBe("said 33.");
     const answer = ask("write a.txt", detail(5));
     await until(app, "Allow write a.txt? [y/n]");
-    expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt"), ""]); // the last row kept for "↓ N new lines"
+    expect(shown(app).slice(12, 19)).toEqual([...headed("write a.txt"), ""]); // the last row kept for "↓ N new lines"
     await press(app, "y");
     expect(await answer).toBe(true);
   });
@@ -4405,23 +5181,23 @@ describe("App's questions in full screen", () => {
     const lead = new Held();
     const { app, mouse, ask } = await mount([], { full: true, lead, intro: said(60) });
     await type(app, "go");
-    await until(app, "> go");
+    await until(app, "\n› go");
     if (up) await press(app, PG_UP);
     const answer = ask("write a.txt", detail(100));
     await until(app, "[y/n]");
     expect(shown(app)[0]).toBe("┌ write a.txt (100 lines)");
-    await press(app, PG_DOWN); // half of 21
-    expect(shown(app)[0]).toBe("line 9.");
+    await press(app, PG_DOWN); // half of 19, the rows the question's box leaves
+    expect(shown(app)[0]).toBe("line 8.");
     await wheel(mouse, "down");
-    expect(shown(app)[0]).toBe("line 12.");
+    expect(shown(app)[0]).toBe("line 11.");
     await press(app, "y");
     expect(await answer).toBe(true);
     lead.answer("later reply");
     if (up) {
       await gone(app, "Esc to stop");
-      expect(shown(app)[0]).toBe("line 12.");
+      expect(shown(app)[0]).toBe("line 11.");
       expect(app.lastFrame()).not.toContain("later reply");
-      expect(app.lastFrame()).toContain("↓ 2 new lines · Ctrl+End"); // the answer's line and the reply
+      expect(app.lastFrame()).toContain("↓ 3 new lines · Ctrl+End"); // the answer's line, the reply's gap and the reply
       await press(app, CTRL_END);
     }
     await until(app, "later reply");
@@ -4433,37 +5209,37 @@ describe("App's questions in full screen", () => {
     await press(app, PG_UP);
     const answer = ask("run: ls");
     await until(app, "Allow run: ls? [y/n]");
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
     await press(app, "y");
     expect(await answer).toBe(true);
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
   });
 
   it("holds the view on the shown question's detail while another's and a reply arrive, then goes to the next one's, then follows", async () => {
     const lead = new Held();
     const { app, ask } = await mount([], { full: true, lead, intro: said(60) });
     await type(app, "go");
-    await until(app, "> go");
+    await until(app, "\n› go");
     const t2 = asker("t2 (a)");
     const t3 = asker("t3 (b)");
     const first = ask("write a.txt", detail(5, "a"), t2.owner);
     await until(app, "Allow t2 (a) to write a.txt? [y/n]");
-    expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt", "a"), ""]);
+    expect(shown(app).slice(12, 19)).toEqual([...headed("write a.txt", "a"), ""]);
     const second = ask("write b.txt", detail(5, "b"), t3.owner);
-    await until(app, "↓ 6 new lines · Ctrl+End"); // the second's heading and detail, below
-    expect(shown(app).slice(14, 20)).toEqual(headed("write a.txt", "a"));
+    await until(app, "↓ 7 new lines · Ctrl+End"); // the second's gap, heading and detail, below (TUI design pass, Task 3)
+    expect(shown(app).slice(12, 18)).toEqual(headed("write a.txt", "a"));
     lead.answer("a reply");
-    await until(app, "↓ 7 new lines · Ctrl+End");
-    expect(shown(app).slice(14, 20)).toEqual(headed("write a.txt", "a"));
+    await until(app, "↓ 9 new lines · Ctrl+End");
+    expect(shown(app).slice(12, 18)).toEqual(headed("write a.txt", "a"));
     await press(app, "y");
     expect(await first).toBe(true);
     await until(app, "Allow t3 (b) to write b.txt? [y/n]");
-    // Below the second's detail: the reply and the first's answer.
-    expect(shown(app).slice(14, 21)).toEqual([...headed("write b.txt", "b"), "↓ 2 new lines · Ctrl+End"]);
+    // Below the second's detail: the reply, with its gap, and the first's answer.
+    expect(shown(app).slice(12, 19)).toEqual([...headed("write b.txt", "b"), "↓ 3 new lines · Ctrl+End"]);
     await press(app, "y");
     expect(await second).toBe(true);
     await gone(app, "[y/n]");
-    expect(shown(app).slice(16, 20)).toEqual(["b 4.", "a reply", "t2 (a) to write a.txt: You allowed this.", "t3 (b) to write b.txt: You allowed this."]);
+    expect(shown(app).slice(13, 18)).toEqual(["b 4.", "", "● a reply", "t2 (a) to write a.txt: You allowed this.", "t3 (b) to write b.txt: You allowed this."]);
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -4472,13 +5248,14 @@ describe("App's questions in full screen", () => {
     const lead = new Held();
     const { app, ask } = await mount([], { full: true, lead, intro: said(3) });
     await type(app, "go");
-    await until(app, "> go");
+    await until(app, "\n› go");
     const answer = ask("write a.txt", detail(5), asker("t2 (a)").owner);
     await until(app, "[y/n]");
-    expect(shown(app).slice(3, 10)).toEqual(["> go", ...headed("write a.txt")]);
+    // The prompt's gap and band rows, then the detail after its own gap (TUI design pass, Task 3 and its code review).
+    expect(shown(app).slice(3, 14)).toEqual(["", "", "› go", "", "", ...headed("write a.txt")]);
     lead.answer("short reply");
     await until(app, "short reply");
-    expect(shown(app)[10]).toBe("short reply");
+    expect(shown(app).slice(14, 16)).toEqual(["", "● short reply"]);
     expect(app.lastFrame()).not.toContain("new line");
     await press(app, "y");
     expect(await answer).toBe(true);
@@ -4494,7 +5271,7 @@ describe("App's questions in full screen", () => {
     expect(app.lastFrame()).not.toContain("[y/n]");
     await press(app, "\u001b"); // closes the list
     await until(app, "Allow t2 (a) to write a.txt? [y/n]");
-    expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt"), ""]);
+    expect(shown(app).slice(12, 19)).toEqual([...headed("write a.txt"), ""]);
     await press(app, "y");
     expect(await answer).toBe(true);
   });
@@ -4509,7 +5286,7 @@ describe("App's questions in full screen", () => {
     await press(app, "y");
     expect(await answer).toBe(true);
     await until(app, "write a.txt: You allowed this.");
-    expect(shown(app)[19]).toBe("write a.txt: You allowed this.");
+    expect(shown(app)[17]).toBe("write a.txt: You allowed this."); // the conversation's last row, over the prompt's upper line
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -4517,25 +5294,28 @@ describe("App's questions in full screen", () => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
     const answer = ask("write a.txt", detail(5));
     await until(app, "[y/n]");
-    expect(shown(app).slice(14, 20)).toEqual(headed("write a.txt"));
+    expect(shown(app).slice(12, 18)).toEqual(headed("write a.txt"));
     Object.assign(app.stdout, { rows: 30 });
     app.stdout.emit("resize");
     await tick();
     const rows = shown(app);
     expect(rows).toHaveLength(29);
-    expect(rows.slice(14, 20)).toEqual(headed("write a.txt")); // not put again on the taller view's second-last row
+    expect(rows.slice(12, 18)).toEqual(headed("write a.txt")); // not put again on the taller view's second-last row
     await press(app, "y");
     expect(await answer).toBe(true);
   });
 
   // A question too long to leave the conversation its one row puts its text in the conversation (the user's choice at
-  // Task 11's review). A command `m` times "echo word " long, its question taking `rows` rows at 100 columns.
+  // Task 11's review). A command `m` times "echo word " long, its question taking `rows` rows at the 96 columns inside its
+  // box (TUI design pass, Task 9). `inBox` is a row of the box as shown() gives it: the right border is in the column
+  // shown() leaves out.
   const command = (m: number) => `run: ${"echo word ".repeat(m)}`;
   const taking = (rows: number) => {
     let m = 1;
-    while (wrap(`Allow ${command(m)}? [y/n] · Esc to decline`, 100, false).length < rows) m++;
+    while (wrap(`Allow ${command(m)}? [y/n] · Esc to decline`, 96, false).length < rows) m++;
     return command(m);
   };
+  const inBox = (text: string) => `│ ${text}`;
 
   it.each([
     { key: "y", ok: true, how: "You allowed this." },
@@ -4549,13 +5329,13 @@ describe("App's questions in full screen", () => {
     const rows = shown(app);
     expect(rows).toHaveLength(23);
     expect(rows[0]).toBe("┌ run (3005 characters)");
-    expect(rows[21]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+    expect(rows[20]).toBe(inBox("Allow run (shown above)? [y/n] · Esc to decline"));
     expect(rows[1]).toMatch(/^run: echo word echo/);
-    // Every row of it: rows 1 to 20 show, and the rest come onto the last row a row at a time.
-    const text = rows.slice(1, 21);
+    // Every row of it: rows 1 to 18 show, and the rest come onto the last row a row at a time.
+    const text = rows.slice(1, 19);
     while (text.length < wrap(long, 99, false).length) {
       await press(app, SHIFT_DOWN);
-      text.push(shown(app)[20]!);
+      text.push(shown(app)[18]!);
     }
     expect(text.join("").replaceAll(" ", "")).toBe(long.replaceAll(" ", ""));
     await press(app, key);
@@ -4565,20 +5345,21 @@ describe("App's questions in full screen", () => {
 
   it("shows a question as before while it leaves the conversation a row, and puts it in the conversation once it would not", async () => {
     let { app, ask } = await mount([], { full: true, intro: said(60) });
-    const fits = taking(21); // 23 rows less the status line's
+    const fits = taking(19); // 23 rows less the status line's, the box's two and the conversation's one
     void ask(fits);
     await until(app, "[y/n]");
     let rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows.slice(0, 2)).toEqual(["said 59.", `Allow ${fits.slice(0, 93)}`]);
+    expect(rows[0]).toBe("said 59.");
+    expect(rows[2]).toBe(inBox(`Allow ${fits.slice(0, 89)}`)); // under the box's top
     expect(app.lastFrame()).not.toContain("shown above");
 
     ({ app, ask } = await mount([], { full: true, intro: said(60) }));
-    void ask(taking(22));
+    void ask(taking(20));
     await until(app, "[y/n]");
     rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[21]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+    expect(rows[20]).toBe(inBox("Allow run (shown above)? [y/n] · Esc to decline"));
   });
 
   // The user's choices at Task 11's re-review: a question with a write's preview points at it, adding no copy; the line
@@ -4599,7 +5380,7 @@ describe("App's questions in full screen", () => {
     await press(app, PG_DOWN, PG_DOWN); // past the heading's rows, to its preview's lines
     expect(shown(app)).toEqual(expect.arrayContaining(detail(5, "b").split("\n")));
     await press(app, CTRL_END);
-    expect(shown(app).slice(19, 21)).toEqual(["c 29.", "t2 (a) to run: ls: You allowed this."]); // the newest lines: no copy of the path
+    expect(shown(app).slice(17, 19)).toEqual(["c 29.", "t2 (a) to run: ls: You allowed this."]); // the newest lines: no copy of the path
     await press(app, "y");
     expect(await second).toBe(true);
     await until(app, "Allow t4 (c) to write c.txt? [y/n]");
@@ -4613,7 +5394,7 @@ describe("App's questions in full screen", () => {
     await until(app, "[y/n]");
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[21]).toBe("Allow t2 to run (shown above)? [y/n] · Esc to decline");
+    expect(rows[20]).toBe(inBox("Allow t2 to run (shown above)? [y/n] · Esc to decline"));
     expect(rows[0]).toMatch(/^┌ t2 to run \(\d+ characters\)$/);
     expect(rows[1]).toMatch(/^t2 \(word word/); // the full name, in the conversation
   });
@@ -4652,28 +5433,29 @@ describe("App's questions in full screen", () => {
     if (!before) expect(app.lastFrame()).not.toContain("new line");
   });
 
-  // 21 rows of conversation: a detail fits in 20 with its heading, the last kept for "↓ N new lines".
+  // 19 rows of conversation beside the question's box: a detail fits in 18 with its heading, the last kept for "↓ N new
+  // lines".
   it("puts a detail that fits above the last row at the foot of the view, and one a row taller with its heading at the top", async () => {
     let { app, ask } = await mount([], { full: true, intro: said(60) });
+    void ask("write a.txt", detail(16)); // 17 rows
+    await until(app, "[y/n]");
+    expect(shown(app).slice(17, 19)).toEqual(["line 15.", ""]);
+    expect(shown(app)[1]).toBe("┌ write a.txt (16 lines)");
+    ({ app, ask } = await mount([], { full: true, intro: said(60) }));
     void ask("write a.txt", detail(18)); // 19 rows
     await until(app, "[y/n]");
-    expect(shown(app).slice(19, 21)).toEqual(["line 17.", ""]);
-    expect(shown(app)[1]).toBe("┌ write a.txt (18 lines)");
-    ({ app, ask } = await mount([], { full: true, intro: said(60) }));
-    void ask("write a.txt", detail(20)); // 21 rows
-    await until(app, "[y/n]");
-    expect(shown(app)[0]).toBe("┌ write a.txt (20 lines)");
+    expect(shown(app)[0]).toBe("┌ write a.txt (18 lines)");
   });
 
   it("counts the hint row when deciding whether a question fits", async () => {
     const { app, ask } = await mount([], { full: true, intro: said(60), past: ["hello"] });
     await press(app, "\u0012"); // Ctrl+R's search keeps the hint row while the question waits
     await until(app, "search:");
-    void ask(taking(21)); // fits beside one row of conversation only without the hint row
+    void ask(taking(19)); // fits beside one row of conversation only without the hint row
     await until(app, "[y/n]");
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[20]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+    expect(rows[19]).toBe(inBox("Allow run (shown above)? [y/n] · Esc to decline")); // in the box, over its foot
     expect(rows[21]).toMatch(/^search: /);
   });
 
@@ -4682,7 +5464,7 @@ describe("App's questions in full screen", () => {
     const fits = taking(15);
     const answer = ask(fits);
     await until(app, "[y/n]");
-    expect(shown(app)[7]).toBe(`Allow ${fits.slice(0, 93)}`); // under 7 rows of conversation
+    expect(shown(app)[6]).toBe(inBox(`Allow ${fits.slice(0, 89)}`)); // under 5 rows of conversation and the box's top
     Object.defineProperty(app.stdout, "columns", { value: 40, configurable: true });
     app.stdout.emit("resize");
     await tick();
@@ -4690,16 +5472,143 @@ describe("App's questions in full screen", () => {
     expect(rows).toHaveLength(23);
     expect(rows[0]).toBe(`┌ run (${fits.length} characters)`);
     expect(rows[1]).toMatch(/^run: echo word/);
-    expect(`${rows[20]} ${rows[21]}`).toBe("Allow run (shown above)? [y/n] · Esc to decline"); // two rows at 40 columns
+    // Two rows at the 36 columns inside the box, the space that does not fit the first starting the second.
+    expect(app.lastFrame()!.split("\n").slice(18, 22)).toEqual([boxTop(40), boxed("Allow run (shown above)? [y/n] · Esc", 40), boxed(" to decline", 40), boxFoot(40)]);
     Object.defineProperty(app.stdout, "columns", { value: 100, configurable: true });
     app.stdout.emit("resize");
     await tick();
     rows = shown(app);
     expect(rows).toHaveLength(23);
     expect(rows[0]).toBe(`┌ run (${fits.length} characters)`);
-    expect(rows[21]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+    expect(rows[20]).toBe(inBox("Allow run (shown above)? [y/n] · Esc to decline"));
     await press(app, "y");
     expect(await answer).toBe(true);
+  });
+});
+
+// TUI design pass, Task 9 (audit 4): the question in a rounded box, its grey line, red lines and its own line inside, a
+// border and a space of padding each side, so its text has the terminal's columns less 4. The border is muted when there
+// is colour. The short line a question too long to fit moves to is boxed the same way.
+describe("App's question box", () => {
+  const rowsOf = (app: ReturnType<typeof render>) => app.lastFrame()!.split("\n");
+  const red = "Danger: rewriting or deleting git history: git push --force";
+  const SHORT = "Allow run (shown above)? [y/n] · Esc to decline";
+  const MUTED = "\u001b[38;2;138;138;138m"; // the dark full palette's muted (theme.ts)
+  const wide = (app: ReturnType<typeof render>, columns: number) => {
+    Object.defineProperty(app.stdout, "columns", { value: columns, configurable: true });
+    app.stdout.emit("resize");
+  };
+
+  it("draws a question that fits in the box over the status line in full screen, the conversation two rows shorter", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    const answer = ask("run: ls");
+    await until(app, "[y/n]");
+    const rows = rowsOf(app);
+    expect(rows).toHaveLength(23);
+    expect(shown(app)[18]).toBe("said 59."); // the conversation's last row of 19
+    expect(rows.slice(19, 22)).toEqual([boxTop(), boxed("Allow run: ls? [y/n] · Esc to decline"), boxFoot()]);
+    await press(app, "y");
+    expect(await answer).toBe(true);
+  });
+
+  it("draws the red lines and the grey line in the box, above the question's line", async () => {
+    let { app, ask } = await mount([], { full: true, intro: said(60) });
+    void ask("run: git push --force", undefined, undefined, false, [red, red]);
+    await until(app, "[y/n]");
+    expect(rowsOf(app).slice(17, 22)).toEqual([boxTop(), boxed(red), boxed(red), boxed("Allow run: git push --force? [y/n] · Esc to decline"), boxFoot()]);
+    ({ app, ask } = await mount([], { full: true, intro: said(60) }));
+    void ask("read /a", undefined, undefined, false, [], "Auto mode paused.");
+    await until(app, "[y/n]");
+    expect(rowsOf(app).slice(18, 22)).toEqual([boxTop(), boxed("Auto mode paused."), boxed("Allow read /a? [y/n] · Esc to decline"), boxFoot()]);
+  });
+
+  it("boxes the short line of a question too long to fit, its text in the conversation", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    void ask(`run: ${"echo word ".repeat(300)}`);
+    await until(app, "(shown above)");
+    const rows = rowsOf(app);
+    expect(rows).toHaveLength(23);
+    expect(shown(app)[0]).toBe("┌ run (3005 characters)");
+    expect(rows.slice(19, 22)).toEqual([boxTop(), boxed(SHORT), boxFoot()]);
+  });
+
+  // Wrap boundaries (review): 76 columns inside an 80-column box, 36 inside a 40-column one.
+  it.each([80, 40])("wraps a question's line at %i columns less 4, and cuts a red line there", async (columns) => {
+    const inner = columns - 4;
+    const line = (k: number) => `Allow run: ${"x".repeat(k)}? [y/n] · Esc to decline`;
+    const exactly = inner - line(0).length; // the x's that make the line exactly the inner width
+    let { app, ask } = await mount([], { full: true, intro: said(60) });
+    wide(app, columns);
+    void ask(`run: ${"x".repeat(exactly)}`);
+    await until(app, "[y/n]");
+    expect(rowsOf(app).slice(19, 22)).toEqual([boxTop(columns), boxed(line(exactly), columns), boxFoot(columns)]);
+    ({ app, ask } = await mount([], { full: true, intro: said(60) }));
+    wide(app, columns);
+    const redLine = `Danger: ${"x".repeat(inner - "Danger: ".length)}`;
+    void ask(`run: ${"x".repeat(exactly + 1)}`, undefined, undefined, false, [redLine, `${redLine}x`]);
+    await until(app, "decline");
+    // One column longer: the line's last word goes to a second row; the red line one column longer is cut with "…".
+    expect(rowsOf(app).slice(16, 22)).toEqual([
+      boxTop(columns),
+      boxed(redLine, columns),
+      boxed(`${redLine.slice(0, -1)}…`, columns),
+      boxed(`Allow run: ${"x".repeat(exactly + 1)}? [y/n] · Esc to`, columns),
+      boxed("decline", columns),
+      boxFoot(columns),
+    ]);
+  });
+
+  // Short terminals: a question of two rows needs the frame's row short, the conversation's, the box's two, its own two
+  // and the status line's, seven.
+  it("moves a question to its short line on the tallest terminal where the box leaves the conversation no row, and not one taller", async () => {
+    const asked = `run: ${"x".repeat(62)}`;
+    expect(wrap(`Allow ${asked}? [y/n] · Esc to decline`, 96, false)).toHaveLength(2);
+    let { app, ask } = await mount([], { full: true, intro: said(60), rows: 6 });
+    void ask(asked);
+    await until(app, "(shown above)");
+    expect(rowsOf(app).slice(1, 4)).toEqual([boxTop(), boxed(SHORT), boxFoot()]);
+    ({ app, ask } = await mount([], { full: true, intro: said(60), rows: 7 }));
+    void ask(asked);
+    await until(app, "[y/n]");
+    expect(app.lastFrame()).not.toContain("shown above");
+    expect(rowsOf(app).slice(1, 5)).toEqual([boxTop(), boxed(`Allow ${asked}? [y/n] · Esc to`), boxed("decline"), boxFoot()]);
+  });
+
+  it("draws the box in classic mode, its red lines wrapped inside it", async () => {
+    const { app, ask } = await mount([], { intro: said(3) });
+    const long = `Danger: ${"word ".repeat(30).trim()}`; // 157 columns: two rows of 96
+    expect(wrap(long, 96, false)).toHaveLength(2);
+    const answer = ask("run: git push --force", undefined, undefined, false, [red, long]);
+    await until(app, "[y/n]");
+    const rows = rowsOf(app);
+    const at = rows.indexOf(boxTop());
+    expect(at).toBeGreaterThan(0);
+    expect(rows.slice(at, at + 6)).toEqual([
+      boxTop(),
+      boxed(red),
+      ...wrap(long, 96, false).map((r) => boxed(r.text)),
+      boxed("Allow run: git push --force? [y/n] · Esc to decline"),
+      boxFoot(),
+    ]);
+    expect(rows[at + 6]).toMatch(/^ ?\S/); // the status line, under the box
+    await press(app, "y");
+    expect(await answer).toBe(true);
+  });
+
+  it("draws the border muted with colour, and in the terminal's own without", async () => {
+    await inColour(3, async () => {
+      let { app, ask } = await mount([], { full: true });
+      void ask("run: ls");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("[y/n]"));
+      expect(app.lastFrame()).toContain(`${MUTED}${boxTop()}`);
+      expect(app.lastFrame()).toContain(`${MUTED}│`);
+      const off = { light: false, color: false, full: false };
+      ({ app, ask } = await mount([], { full: true, theme: { look: off, palette: palette(off) } }));
+      void ask("run: ls");
+      await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("[y/n]"));
+      expect(app.lastFrame()!.split("\n")).toContain(boxTop());
+      expect(app.lastFrame()).toMatch(/\n│/);
+    });
   });
 });
 
@@ -4739,22 +5648,22 @@ describe("App's detail view in full screen", () => {
     await press(app, "\u000f");
     let rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows.slice(0, 4)).toEqual(["Last turn: 1 tool call", "● read_file {", '  "path": "a.txt"', "}"]);
+    expect(rows.slice(0, 3)).toEqual(["Last turn: 1 tool call", "● read_file", "  path: a.txt"]);
     expect(rows.slice(20)).toEqual([KEYS, expect.stringContaining("lead fake:a"), expect.stringContaining("read_file")]);
     expect(rows).not.toContain("›");
-    expect(app.lastFrame()).not.toContain("> go");
+    expect(app.lastFrame()).not.toContain("› go");
     await press(app, key);
     rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[19]).toBe("›");
-    expect(app.lastFrame()).toContain("> go");
+    expect(rows[18]).toBe("›"); // between its two lines, over the hint, the status line and the tool line
+    expect(app.lastFrame()).toContain("› go");
     expect(app.lastFrame()).not.toContain("Last turn"); // not put in the conversation
   });
 
   it("prints the last turn below on Ctrl+O in classic mode, as before", async () => {
     const { app } = await mount([]);
     await press(app, "\u000f");
-    expect(app.lastFrame()).toMatch(/^No turn yet, so no tool calls to show\.\n›/);
+    expect(app.lastFrame()).toMatch(/^No turn yet, so no tool calls to show\.\n─{100}\n›/);
   });
 
   it("opens a subagent's record in the view with /tasks t1, putting nothing in the conversation, and prints a mistake as before", async () => {
@@ -4810,7 +5719,7 @@ describe("App's detail view in full screen", () => {
   const logins = () => lines(100, (i) => (i > 0 && i % 30 === 0 ? `the login ${i}.` : `line ${i}.`));
 
   it("searches as the query is typed, in any case, matches in reverse colours, keeps the search on Enter, and goes round with n and N", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await record(logins());
       await press(app, "/");
       expect(plain(app)[20]).toBe("/");
@@ -4837,7 +5746,7 @@ describe("App's detail view in full screen", () => {
   });
 
   it("edits the query with Backspace, and on Esc while typing drops the search and puts the view back where it was", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await record(logins());
       await press(app, "j", "/", "loginx");
       expect(plain(app)[20]).toBe("/loginx (no match)"); // as Ctrl+R's row says it (the user's choice at Task 12's review)
@@ -4904,14 +5813,14 @@ describe("App's detail view in full screen", () => {
     expect(app.lastFrame()).not.toContain(KEYS);
     expect(app.lastFrame()).not.toContain("No turn yet");
     // The conversation's 21 rows beside the question: the detail's last line on the second-last (plan, Task 11).
-    expect(shown(app).slice(14, 21)).toEqual(["┌ write a.txt (5 lines)", "line 0.", "line 1.", "line 2.", "line 3.", "line 4.", ""]);
+    expect(shown(app).slice(12, 19)).toEqual(["┌ write a.txt (5 lines)", "line 0.", "line 1.", "line 2.", "line 3.", "line 4.", ""]);
     await press(app, "n");
     expect(await answer).toBe(false);
     await until(app, "write a.txt: You declined this.");
   });
 
   it("selects and copies in the view, saying so in the key row's place until a key, and clears the selection when it closes", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, mouse, copies } = await record(lines(100));
       await pointer(mouse, at("press", 0, 2), at("drag", 98, 3), at("release", 98, 3));
       expect(copies).toEqual(["line 0.\nline 1."]);
@@ -4959,7 +5868,7 @@ describe("App's detail view in full screen", () => {
     await press(app, "\u0003");
     expect(app.lastFrame()).not.toContain(KEYS);
     expect(app.lastFrame()).not.toContain("again to exit");
-    expect(shown(app)[20]).toBe("›");
+    expect(shown(app)[19]).toBe("›");
   });
 
   it("closes the view on Ctrl-C with nothing running, leaving the prompt's draft as it was and not counting toward exiting", async () => {
@@ -4985,7 +5894,7 @@ describe("App's detail view in full screen", () => {
   });
 
   it("clears a selection in the conversation when the view opens, so none shows on the record's lines", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const worker = new FakeProvider("w", [reply(lines(100))]);
       const turns = [callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")];
       const { app, mouse } = await mount(turns, { full: true, worker, intro: said(10) });
@@ -5199,9 +6108,9 @@ describe("App's detail view in full screen", () => {
   it("leaves the conversation where it is for a G read with the q that closes the view", async () => {
     const { app } = await mount([], { full: true, intro: said(60) });
     await press(app, PG_UP);
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
     await press(app, "\u000f", "qG");
-    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[0]).toBe("said 33.");
   });
 
   // The user's choice at Task 12's review.
@@ -5251,7 +6160,7 @@ describe("App's detail view in full screen", () => {
     expect(shown(app)[21]).toBe(KEYS);
     expect(app.lastFrame()).not.toContain("Filter:");
     await press(app, "q");
-    expect(shown(app)[20]).toBe("›");
+    expect(shown(app)[19]).toBe("›");
     expect(app.lastFrame()).not.toContain("search:");
   });
 
@@ -5321,7 +6230,7 @@ async function onTerminal(
   const session = new Session({ lead, tools, system: "t", ctx: { ...ctx, gate }, bus, inbox: () => tasks.take() });
   const screen = new Screen(record, () => {});
   if (!opts.classic) screen.enter();
-  const ink = renderInk(
+  const tree = (
     <App
       session={session}
       tasks={tasks}
@@ -5352,9 +6261,9 @@ async function onTerminal(
       clipboard={(report) => new Clipboard(() => {}, null, report)}
       readPicture={() => new Promise(() => {})} // never answers: no test reads the user's clipboard
       home={opts.home ?? sharedHome}
-    />,
-    { stdout: terminal as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
+    />
   );
+  const ink = renderInk(themed(tree), { stdout: terminal as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true });
   inks.push(ink);
   await tick();
   return {
@@ -5413,7 +6322,7 @@ describe("App's detail view printed out", () => {
   };
 
   it("prints the view on [: keyboard held, mouse off, Ink suspended, the normal screen, the lines and how to go back, keys to a reader", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { steps, key } = await record();
       steps.length = 0;
       await key("[");
@@ -5775,13 +6684,13 @@ describe("App's /screen", () => {
     await until(app, "Unknown command: /nope.");
     expect(app.lastFrame()!.replaceAll(/ *\n */g, " ")).toContain("/errors, /screen, /settings, /keybindings, /vim, /exit"); // a long line wraps
     await press(app, "/", "s");
-    expect(app.lastFrame()).toContain("› /s\n  /screen  Switch between full screen and classic\n");
+    expect(app.lastFrame()).toContain(`› /s\n${RULE}\n  /screen    Switch between full screen and classic\n`);
   });
 
   // Found at the final review: where the session started in classic as full screen can't draw (the output is not a
   // terminal, or CI), /screen says so in grey, as a note, and stays in classic.
   it("stays in classic, saying why, where full screen can't draw", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const writes: string[] = [];
       const { app } = await mount([], { fullPossible: false, written: (s) => writes.push(s) });
       await type(app, "/screen");
@@ -5801,7 +6710,8 @@ describe("App's /screen", () => {
     await until(app, "the reply");
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows.slice(0, 7)).toEqual(["said 0.", "said 1.", "said 2.", "screen is now full", "> hi", "the reply", ""]);
+    // /screen's line a block of its own (the user's choice at TUI design pass Task 3's review), your message after a gap.
+    expect(rows.slice(0, 12)).toEqual(["said 0.", "said 1.", "said 2.", "", "screen is now full", "", "", "› hi", "", "", "● the reply", ""]);
   });
 
   it("prints a reply that comes after /screen to classic", async () => {
@@ -5810,7 +6720,7 @@ describe("App's /screen", () => {
     await until(app, "screen is now classic");
     await type(app, "hi");
     await until(app, "the reply");
-    expect(app.lastFrame()).toMatch(/^said 0\.\nsaid 1\.\nsaid 2\.\nscreen is now classic\n> hi\nthe reply\n›/);
+    expect(app.lastFrame()).toMatch(/^said 0\.\nsaid 1\.\nsaid 2\.\n\nscreen is now classic\n\n\n› hi\n\n\n● the reply\n─{100}\n›/);
   });
 
   // bindAsk is set up at mount too (Task 11): after a switch to full screen a question's detail is kept and brought into view.
@@ -5822,7 +6732,7 @@ describe("App's /screen", () => {
     expect(shown(app)[0]).not.toBe("said 0.");
     const answer = ask("write a.txt", "line 0.\nline 1.");
     await until(app, "Allow write a.txt? [y/n]");
-    expect(shown(app).slice(17, 21)).toEqual(["┌ write a.txt (2 lines)", "line 0.", "line 1.", ""]);
+    expect(shown(app).slice(15, 19)).toEqual(["┌ write a.txt (2 lines)", "line 0.", "line 1.", ""]);
     await press(app, "y");
     expect(await answer).toBe(true);
   });
@@ -5904,7 +6814,8 @@ describe("App's /screen", () => {
     await type(app, "/screen");
     await until(app, `screen is now ${to}`);
     expect(app.lastFrame()!.split("mid-switch reply")).toHaveLength(2);
-    expect(app.lastFrame()).toMatch(/said 2\.\nmid-switch reply\nscreen is now/);
+    // Each a block after one gap: the reply, and /screen's line, its output (TUI design pass, Task 3).
+    expect(app.lastFrame()).toMatch(/said 2\.[ ]*\n[ ]*\n● mid-switch reply[ ]*\n[ ]*\nscreen is now/);
   });
 
   // Found at Task 7's review: what the mouse was doing belongs to the screen before the switch.
@@ -6060,7 +6971,10 @@ describe("App's /screen", () => {
     await until(app, "No subagents or commands yet.");
     await type(app, "/screen");
     await until(app, "screen is now full");
-    expect(shown(app).slice(0, 8)).toEqual(["> hi", "alpha", "beta", "screen is now classic", "No subagents or commands yet.", "screen is now full", "", ""]);
+    // Your message's band rows and the reply, a block, its later line indented; each command's output a block (TUI design
+    // pass, Task 3).
+    const said = ["", "› hi", "", "", "● alpha", "  beta", "", "screen is now classic", "", "No subagents or commands yet.", "", "screen is now full"];
+    expect(shown(app).slice(0, said.length + 2)).toEqual([...said, "", ""]);
   });
 
   // Found at Task 14's spec review: a switch holds the queue as a turn does. What is sent while it runs waits for it, and a
@@ -6072,7 +6986,7 @@ describe("App's /screen", () => {
     await until(app, "screen is now full");
     const frame = app.lastFrame()!;
     expect(frame).not.toContain("suspended");
-    expect(inOrder(...["screen is now classic", "> hi", "ok", "screen is now full"].map((s) => frame.indexOf(s)))).toBe(true);
+    expect(inOrder(...["screen is now classic", "› hi", "● ok", "screen is now full"].map((s) => frame.indexOf(s)))).toBe(true);
   });
 
   // Found at Task 14's spec review: a question asked as the switch to full screen starts has its detail kept and brought
@@ -6141,6 +7055,15 @@ describe("App's keys from the table of actions", () => {
   const todo: TodoItem[] = [{ text: "write the fix", status: "pending" }];
   const CTRL_X = "\u0018";
 
+  // Task 14's code review: a key bound to a command runs it as if typed, so the hint row's "?" shows after it.
+  it("shows the shortcuts hint after a key bound to a command, pressed at launch", async () => {
+    const { app } = await mount([], { bindings: table("Chat", { "ctrl+y": "command:tasks" }) });
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+    await press(app, "\u0019"); // Ctrl+Y
+    await until(app, "No subagents or commands yet.");
+    expect(app.lastFrame()).toContain("? for shortcuts");
+  });
+
   it("takes Ctrl+E from the editor's end-of-line when the table binds it to chat:externalEditor", async () => {
     const editor = standInEditor();
     editor.next("edited");
@@ -6205,6 +7128,7 @@ describe("App's keys from the table of actions", () => {
   // with the editor ("App's external editor").
   it("shows a chord's first key in the hint row until the second key, or for 3 s", async () => {
     const { app } = await mount([], { bindings: table("Chat", { "ctrl+x ctrl+e": "app:toggleTodos" }) });
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     await onFakeClock(async (wait) => {
       app.stdin.write(CTRL_X);
       await wait(10);
@@ -6266,9 +7190,9 @@ describe("App's keys from the table of actions", () => {
   it("types q into Ctrl+R's query, and Esc still puts the match in the prompt", async () => {
     const { app } = await mount([], { past: ["quit now"] });
     await press(app, "\u0012", "q");
-    expect(app.lastFrame()).toContain("› quit now\nsearch: q · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel");
+    expect(app.lastFrame()).toContain(`› quit now\n${RULE}\nsearch: q · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel`);
     await press(app, "\u001b");
-    expect(app.lastFrame()).toContain("› quit now\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› quit now\n${RULE}\n? for shortcuts`);
   });
 
   // A chord ending in a plain letter (plan, Task 6, "A chord under way comes first").
@@ -6335,13 +7259,23 @@ describe("App's keys from the table of actions", () => {
     expect(app.lastFrame()).toContain("Allow write a.txt? [y/n] · Esc to decline");
   });
 
+  // The whole PR's review (the user's choice: "Give them a gap"): said in the conversation, Ctrl+O's lines are a block.
+  it("puts an empty line above the last turn shown on Ctrl+O at a question", async () => {
+    const { app, ask } = await mount([], { full: true, intro: [{ text: "start" }] });
+    void ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    await press(app, "\u000f");
+    await until(app, "No turn yet");
+    expect(app.lastFrame()).toContain("start\n\nNo turn yet, so no tool calls to show.\n");
+  });
+
   it("exits on Ctrl-D pressed twice at a question", async () => {
     const { app, ask } = await mount([]);
     let answered = false;
     void ask("write a.txt").then(() => (answered = true));
     await until(app, "Allow write a.txt? [y/n] · Esc to decline");
     await press(app, "\u0004");
-    expect(app.lastFrame()).toContain("Allow write a.txt? [y/n] · Esc to decline\nPress Ctrl-D again to exit");
+    expect(app.lastFrame()).toContain(`${boxed("Allow write a.txt? [y/n] · Esc to decline")}\n${boxFoot()}\nPress Ctrl-D again to exit`);
     await press(app, "\u0004", "y"); // gone: y answers nothing
     expect(answered).toBe(false);
   });
@@ -6388,7 +7322,7 @@ describe("App's keys from the table of actions", () => {
   it("presses a wheel notch in a menu's contexts, Autocomplete first", async () => {
     const { app, mouse } = await mount([], { full: true, bindings: table("Autocomplete", { wheeldown: "autocomplete:next" }) });
     await press(app, "/", "e");
-    await until(app, "  /exit  Quit");
+    await until(app, "  /exit           Quit");
     await wheel(mouse, "down");
     await press(app, "\t");
     // /export comes first, so a notch down is the second entry.
@@ -6421,7 +7355,7 @@ describe("App's keys from the table of actions", () => {
     bus.emit("todo", todo);
     await tick();
     await press(app, CTRL_X, "ab", "t");
-    expect(app.lastFrame()).toContain("☐ write the fix\n› abt\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`☐ write the fix\n${RULE}\n› abt\n${RULE}\n? for shortcuts`);
   });
 
   it("drops a waiting chord on a paste, so the next letter is typed", async () => {
@@ -6429,7 +7363,7 @@ describe("App's keys from the table of actions", () => {
     bus.emit("todo", todo);
     await tick();
     await press(app, CTRL_X, "\u001b[200~ab\u001b[201~", "t");
-    expect(app.lastFrame()).toContain("☐ write the fix\n› abt\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`☐ write the fix\n${RULE}\n› abt\n${RULE}\n? for shortcuts`);
   });
 
   // Each hint names the keys a table leaves bound, in release 5's words (keys.ts, named).
@@ -6446,7 +7380,7 @@ describe("App's keys from the table of actions", () => {
     const { app } = await mount([], { bindings, models: [{ provider: "fake", models: ["a", "b"] }] });
     await type(app, "/model");
     await until(app, "fake:a");
-    expect(app.lastFrame()).toContain("Filter: (type to filter) · Ctrl+P Ctrl+N move · Enter picks · Esc closes");
+    expect(app.lastFrame()).toContain("Filter: (type to filter) · Ctrl+P Ctrl+N move · Enter pick · Esc close");
   });
 
   it("names a menu's moved keys in its hint, leaving out what no key does", async () => {
@@ -6532,6 +7466,7 @@ describe("App's external editor", () => {
     await press(app, CTRL_G);
     await waitFor(() => flat(app).includes(`tachi-no-such-editor was not found. ${SET}`));
     expect(app.lastFrame()).toContain("› keep me\n");
+    expect(flat(app)).toContain(`${SET}  tachi-no-such-editor`); // each a block, an empty line between (the whole PR's review)
   });
 
   // Nothing escapes as an unhandled rejection, which would end the program: here the terminal write that leaves full
@@ -6676,43 +7611,43 @@ describe("App's stash", () => {
     await press(app, "abcd", LEFT, LEFT, CTRL_S);
     expect(app.lastFrame()).toMatch(/^›$/m);
     await press(app, CTRL_S, "X");
-    expect(app.lastFrame()).toContain("› abXcd\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› abXcd\n${RULE}\n? for shortcuts`);
   });
 
   it("swaps the prompt and the slot when both have text", async () => {
     const { app } = await mount([]);
     await press(app, "one", CTRL_S, "two", CTRL_S);
-    expect(app.lastFrame()).toContain(`› one\n${STASHED}`);
+    expect(app.lastFrame()).toContain(`› one\n${RULE}\n${STASHED}`);
     await press(app, CTRL_S);
-    expect(app.lastFrame()).toContain(`› two\n${STASHED}`);
+    expect(app.lastFrame()).toContain(`› two\n${RULE}\n${STASHED}`);
   });
 
   it("shows the hint while the slot is full and no other hint takes the row: a menu's and the queue's come first", async () => {
     const { lead, release } = gated([reply("r1"), reply("r2")]);
     const { app } = await mount([], { lead });
     await press(app, "aside", CTRL_S);
-    expect(app.lastFrame()).toContain(`›\n${STASHED}\n`);
+    expect(app.lastFrame()).toContain(`›\n${RULE}\n${STASHED}\n`);
     await press(app, "/");
     expect(app.lastFrame()).toContain("↑↓ choose");
     expect(app.lastFrame()).not.toContain("Stashed");
     await press(app, "\u007f", "go", "\r");
     await until(app, "Esc to stop");
-    expect(app.lastFrame()).toContain(`›\n${STASHED}`); // during a turn too, where no hint shows otherwise
+    expect(app.lastFrame()).toContain(`›\n${RULE}\n${STASHED}`); // during a turn too, where no hint shows otherwise
     await press(app, "later", "\r");
-    expect(app.lastFrame()).toContain("›\n↑ to edit queued messages");
+    expect(app.lastFrame()).toContain(`›\n${RULE}\n↑ to edit queued messages`);
     release();
     await until(app, "r2");
     await press(app, CTRL_S);
-    expect(app.lastFrame()).toContain("› aside\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› aside\n${RULE}\n? for shortcuts`);
   });
 
   it("names the key chat:stash is bound to in the hint", async () => {
     const bindings = new Bindings(tableOf({ ...DEFAULTS, Chat: { ...DEFAULTS.Chat, "ctrl+s": null, "ctrl+q": "chat:stash" } }));
     const { app } = await mount([], { bindings });
     await press(app, "aside", CTRL_S);
-    expect(app.lastFrame()).toContain("› aside\n? for shortcuts"); // Ctrl+S is bound to nothing now
+    expect(app.lastFrame()).toContain(`› aside\n${RULE}\n? for shortcuts`); // Ctrl+S is bound to nothing now
     await press(app, CTRL_Q);
-    expect(app.lastFrame()).toContain("›\nStashed · Ctrl+Q to bring back");
+    expect(app.lastFrame()).toContain(`›\n${RULE}\nStashed · Ctrl+Q to bring back`);
   });
 
   it("undoes within the text brought back", async () => {
@@ -6734,7 +7669,7 @@ describe("App's stash", () => {
     await type(app, "two");
     await until(app, "r2");
     await press(app, "\u001b[A", CTRL_S, "\u001b[A");
-    expect(app.lastFrame()).toContain(`› two\n${STASHED}`);
+    expect(app.lastFrame()).toContain(`› two\n${RULE}\n${STASHED}`);
   });
 
   // Final review: Ctrl+S after Up stashed the line Up showed and dropped the draft Up keeps, picture and all. The slot
@@ -6760,10 +7695,11 @@ describe("App's stash", () => {
 
   it("does nothing on Ctrl+S with an empty prompt and an empty slot", async () => {
     const { app } = await mount([]);
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     const frame = app.lastFrame();
     await press(app, CTRL_S);
     expect(app.lastFrame()).toBe(frame);
-    expect(frame).toContain("›\n? for shortcuts");
+    expect(frame).toContain(`›\n${RULE}\n? for shortcuts`);
   });
 });
 
@@ -6787,7 +7723,7 @@ describe("App's pictures", () => {
     pictures.set(1, PNG);
     await until(app, "seen");
     expect(userParts(session)).toEqual([[{ type: "text", text: "look at " }, { type: "image", id: 1, ...PNG }]]);
-    expect(app.lastFrame()).toContain("> look at [Image #1]\n"); // in the conversation, one line (choice 22)
+    expect(app.lastFrame()).toContain("\n› look at [Image #1]\n"); // in the conversation, one line (choice 22)
   });
 
   it("keeps the spans of a queued message and of the stash", async () => {
@@ -6924,7 +7860,7 @@ describe("App's pictures", () => {
   });
 
   it("sends without a picture whose read fails after Enter, its marker gone, and says so in red", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const pictures = new Pictures();
       const { app, session } = await mount([reply("ok")], { pictures });
       await press(app, "look ", PICTURE, " here", "\r");
@@ -6936,7 +7872,7 @@ describe("App's pictures", () => {
   });
 
   it("sends without a picture the read found none of, and says so in grey", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const pictures = new Pictures();
       const { app, session } = await mount([reply("ok")], { pictures });
       await press(app, "look ", PICTURE, "\r");
@@ -6973,8 +7909,8 @@ describe("App's pictures", () => {
     expect(app.lastFrame()).toContain("› b [Image #2]");
     pictures.set(1, "none");
     pictures.set(2, "none");
-    await until(app, "No picture on the clipboard.\nNo picture on the clipboard.");
-    expect(app.lastFrame()).toMatch(/› b ?\n\? for shortcuts/); // the stash, left empty, is gone too
+    await until(app, "No picture on the clipboard.\n\nNo picture on the clipboard."); // each a block (the whole PR's review)
+    expect(app.lastFrame()).toMatch(/› b ?\n─{100}\n\? for shortcuts/); // the stash, left empty, is gone too
   });
 
   // Found at the combined review: what Ctrl+K took, and vim's register, kept a failed read's marker, so Ctrl+Y or p put
@@ -7035,7 +7971,8 @@ describe("App's pictures", () => {
     expect(app.lastFrame()).not.toContain("Allow Send"); // a plain question, not a permission one
     await press(app, "y");
     await until(app, "next one");
-    expect(app.lastFrame()).toContain("Send again without the pictures: yes\nPictures are left out for fake:a from now on.\nseen");
+    // The note a notice and the reply a block, each after its gap (TUI design pass, Task 3).
+    expect(app.lastFrame()).toContain("Send again without the pictures: yes\n\n● Pictures are left out for fake:a from now on.\n\n● seen");
     expect(fake.seen).toHaveLength(3);
     expect(userParts(session)).toEqual([looked, [{ type: "text", text: "queued" }]]); // the conversation is never changed
   });
@@ -7109,10 +8046,10 @@ describe("App's picture reads", () => {
     const { read, answers } = answered();
     const { app, session } = await mount([reply("seen")], { readPicture: read });
     await press(app, "look ", PICTURE);
-    expect(app.lastFrame()).toContain(`› look [Image #1]\n${READING}`);
+    expect(app.lastFrame()).toContain(`› look [Image #1]\n${RULE}\n${READING}`);
     answers[0]!(PNG);
     await gone(app, READING);
-    expect(app.lastFrame()).toContain("› look [Image #1]\n? for shortcuts");
+    expect(app.lastFrame()).toContain(`› look [Image #1]\n${RULE}\n? for shortcuts`);
     await press(app, "\r");
     await until(app, "seen");
     expect(userParts(session)).toEqual([[{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }]]);
@@ -7226,8 +8163,26 @@ describe("App's picture reads", () => {
     expect(app.lastFrame()).not.toContain(READING);
   });
 
+  // The whole PR's review (the user's choice: "Give them a gap"): Alt+V's lines are blocks, an empty line above each.
+  it("puts an empty line above a failed read's line and above the no-reader line", async () => {
+    const pictures = new Pictures();
+    const { app } = await mount([reply("ok")], { pictures });
+    await type(app, "hi");
+    await until(app, "ok");
+    await press(app, PICTURE);
+    pictures.set(1, "none");
+    await until(app, "No picture on the clipboard.");
+    expect(app.lastFrame()).toContain("● ok\n\nNo picture on the clipboard.\n");
+    const bare = await mount([reply("ok")], { readPicture: null });
+    await type(bare.app, "hi");
+    await until(bare.app, "ok");
+    await press(bare.app, PICTURE);
+    await until(bare.app, "No clipboard reader here");
+    expect(bare.app.lastFrame()).toContain("● ok\n\nNo clipboard reader here: install wl-paste or xclip.\n");
+  });
+
   it("says so in red where there is no clipboard reader, and puts no marker in", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await mount([], { readPicture: null });
       await press(app, "see ", PICTURE);
       await until(app, "\u001b[31mNo clipboard reader here: install wl-paste or xclip.");
@@ -7290,7 +8245,7 @@ describe("App's picture reads", () => {
   });
 
   it("says in red that a pasted file that is not a picture could not be read, naming the file, and takes its marker out", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ctx } = await mount([]);
       writeFileSync(path.join(ctx.root, "notes.png"), "hello"); // a path in the project, as typed relative to it
       onTestFinished(() => rmSync(path.join(ctx.root, "notes.png"), { force: true }));
@@ -7328,6 +8283,7 @@ describe("App's vim mode", () => {
     const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
     onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const { app } = await mount([], { home });
+    await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     expect(app.lastFrame()).toContain("? for shortcuts");
     await type(app, "/vim");
     await until(app, "editorMode is now vim");
@@ -7415,7 +8371,7 @@ describe("App's vim mode", () => {
     const { app } = await mount([], { past: ["older"] });
     await normal(app);
     await press(app, "?");
-    expect(app.lastFrame()).toContain("Keys:");
+    expect(app.lastFrame()).toMatch(/[^\n]\n\nKeys:\n/); // a block, under /vim's line (the whole PR's review)
     await press(app, "k");
     expect(app.lastFrame()).toContain("› /vim\n");
     await press(app, "/");
@@ -7497,7 +8453,7 @@ describe("App's vim mode", () => {
 
   // The plan's choice 28: VISUAL's selection in reverse colours, as Claude Code 2.1.312 draws it.
   it("draws VISUAL's selection in reverse colours, the cursor's character in it, and clears it on leaving", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await mount([]);
       await normal(app, "one two");
       await press(app, "0", "v");
@@ -7522,7 +8478,7 @@ describe("App's vim mode", () => {
     { name: "a past prompt recalled", keys: ["\u{1b}[A"] },
     { name: "a paste", keys: ["\u{1b}[200~\u{1f600}\u{1b}[201~"] },
   ])("leaves VISUAL for NORMAL when $name changes the text, and o then works", async ({ keys }) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       // On from the settings file, so no /vim is in the history for Up to bring back.
       const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
       onTestFinished(() => rmSync(home, { recursive: true, force: true }));
@@ -7549,7 +8505,7 @@ describe("App's vim mode", () => {
   });
 
   it("leaves VISUAL for NORMAL when a picture's failed read takes its marker out", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const pictures = new Pictures();
       const { app } = await mount([], { pictures });
       await type(app, "/vim");
@@ -7591,7 +8547,7 @@ describe("App's vim mode", () => {
   });
 
   it("draws VISUAL LINE's selection over whole lines", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await mount([]);
       await type(app, "/vim");
       await until(app, "-- INSERT --");
@@ -7604,7 +8560,7 @@ describe("App's vim mode", () => {
   });
 
   it("draws the whole of a picture's marker the selection reaches into, as a delete there takes all of it", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app } = await mount([]);
       await type(app, "/vim");
       await until(app, "-- INSERT --");
@@ -7728,6 +8684,17 @@ describe("App's live settings", () => {
     for (const key of ["sandbox", "network", "judge"]) await sees(c.app, `settings.json's "${key}" was left as --${key} set it for this session`);
   });
 
+  // TUI design pass, Task 1: the theme is read at the launch only, so a live edit says so with the same kind of line.
+  it("keeps the theme as at launch on a live edit, and says so", async () => {
+    const stays = (value: string) => `"theme" changes in settings.json take effect at the next launch; it stays ${value}`;
+    const a = await watching([], {});
+    a.write({ theme: "light" });
+    await sees(a.app, stays("auto"));
+    const b = await watching([], { theme: "light" });
+    b.write({ theme: "dark" });
+    await sees(b.app, stays("light"));
+  });
+
   // Release 8a plan, choice 26: "autoCompactWindow" is LIVE, set as /autocompact sets it; a bad one keeps the last good.
   it("sets the /autocompact size from a live autoCompactWindow, off when removed, and says a bad one", async () => {
     const { app, session, write } = await watching([], {});
@@ -7737,6 +8704,11 @@ describe("App's live settings", () => {
     write({ autoCompactWindow: 0 });
     await sees(app, 'settings.json: "autoCompactWindow" must be a whole number from 1 (got "0"); the last good settings still apply');
     expect(session.autoCompact).toBe(200_000);
+    // The edit's line a notice, its problem an error: red, a block of its own, no grey dot (TUI design pass, Task 3).
+    const r = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
+    expect(r.some((x) => x.startsWith("● autoCompactWindow is now 200,000"))).toBe(true);
+    const problem = r.findIndex((x) => x.startsWith('settings.json: "autoCompactWindow" must be'));
+    expect(r[problem - 1]).toBe("");
     write({});
     await sees(app, `autoCompactWindow is now off ${FROM}`);
     expect(session.autoCompact).toBeNull();
@@ -7758,7 +8730,7 @@ describe("App's live settings", () => {
     const plain = (app: ReturnType<typeof render>) => stripVTControlCharacters(app.lastFrame()!).replaceAll(/ *\n */g, " ");
 
     it("leaves a kind switched off for the next launch, with a red warning, and applies an added rule at once, in grey", async () => {
-      await inColour(async () => {
+      await inColour(1, async () => {
         const { app, gate, write } = await watching([], {});
         write({ dangerousCommands: { off: ["installing software"] } });
         await vi.waitFor(() => expect(plain(app)).toContain(OFF), WATCHED);
@@ -7775,14 +8747,14 @@ describe("App's live settings", () => {
     });
 
     it("leaves a removed rule for the next launch, with a red warning, and applies a kind switched back on at once, in grey", async () => {
-      await inColour(async () => {
+      await inColour(1, async () => {
         const { app, gate, write } = await watching([], { dangerousCommands: { add: ["make deploy"], off: ["installing software"] } });
         expect(kinds("npm install left-pad", gate)).toEqual([]);
         write({});
         await vi.waitFor(() => expect(plain(app)).toContain(ON), WATCHED);
         expect(plain(app)).toContain(REMOVED);
         expect(app.lastFrame()).toContain(`\u001b[31m${CHECK} your rule "make deploy" removed;`);
-        expect(app.lastFrame()).toContain(`\u001b[90m${CHECK} "installing software" switched back on;`);
+        expect(app.lastFrame()).toContain(`\u001b[90m● ${CHECK} "installing software" switched back on;`);
         expect(gate.rules).toEqual({ add: ["make deploy"], off: [] });
         expect(kinds("npm install left-pad", gate)).toEqual(["installing software"]);
         expect(kinds("make deploy", gate)).toEqual(["your own rule: make deploy"]);
@@ -8188,7 +9160,7 @@ describe("App's live settings", () => {
   // Release 7 plan, Task 4: the launch's line naming the kinds of the dangerous-command check that are off, in red, as it
   // says the check is weaker (the user's choice); in classic mode and -p only on stderr.
   it("shows in full screen, in red, which kinds of the dangerous-command check are off, and nothing while none is", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const start = "The dangerous-command check is off for: installing software, sending files out;";
       const line = `${start} in auto and never, those commands run without it.`;
       const launch = (dangerousCommands: Settings["dangerousCommands"]) => ({ loaded: { settings: { dangerousCommands }, warnings: [] }, given: {} });
@@ -8207,11 +9179,11 @@ describe("App's live settings", () => {
   // on stderr until the user quits, so it shows in the session too, grey as the settings file's warnings; in classic mode
   // only on stderr.
   it("shows in full screen, in grey, that --network was ignored without the sandbox, and nothing without the line", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = "--network acts only with the sandbox on; it was ignored";
       const live = { loaded: { settings: {}, warnings: [] }, given: { network: "--network" }, networkLine: line };
       const full = await mount([], { full: true, home: freshHome(), live });
-      expect(full.app.lastFrame()).toContain(`\u001b[90m${line}`);
+      expect(full.app.lastFrame()).toContain(`\u001b[90m● ${line}`);
       const classic = await mount([], { home: freshHome(), live });
       expect(classic.app.lastFrame()).not.toContain(line);
       const none = await mount([], { full: true, home: freshHome(), live: { loaded: { settings: {}, warnings: [] }, given: {} } });
@@ -8222,13 +9194,13 @@ describe("App's live settings", () => {
   // Release 7 plan, Task 8: the launch's line saying git's settings could not be read, repeated in full screen as the
   // --network line is, grey as the settings file's warnings; in classic mode only on stderr.
   it("shows in full screen, in grey, that git's settings could not be read, and nothing without the line", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = "git's settings could not be read (stdout maxBuffer length exceeded); only the fixed list of protected paths applies";
       const live = { loaded: { settings: {}, warnings: [] }, given: {}, gitLine: line };
       const full = await mount([], { full: true, home: freshHome(), live });
       // Ink wraps it at the test terminal's 100 columns.
-      expect(full.app.lastFrame()).toContain("\u001b[90mgit's settings could not be read (stdout maxBuffer length exceeded); only the fixed list of ");
-      expect(full.app.lastFrame()).toContain("\u001b[90mprotected paths applies");
+      expect(full.app.lastFrame()).toContain("\u001b[90m● git's settings could not be read (stdout maxBuffer length exceeded); only the fixed list of ");
+      expect(full.app.lastFrame()).toContain("\u001b[90m  protected paths applies"); // a notice's, after its dot (TUI design pass, Task 3)
       const classic = await mount([], { home: freshHome(), live });
       expect(classic.app.lastFrame()).not.toContain("git's settings");
       const none = await mount([], { full: true, home: freshHome(), live: { loaded: { settings: {}, warnings: [] }, given: {} } });
@@ -8670,7 +9642,7 @@ describe("App's live settings", () => {
   });
 
   it("shows a problem from a live edit in the hint row in red, until the next key", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, write } = await watching([], {});
       write('{"mode": ');
       const red = "\u001b[31msettings.json is not valid JSON";
@@ -8916,9 +9888,9 @@ describe("App's live settings", () => {
     await type(app, "/nope");
     await sees(app, "/errors, /screen, /settings, /keybindings, /vim, /exit");
     await press(app, "/", "k");
-    expect(app.lastFrame()).toContain("› /k\n  /keybindings  Open the keys file in your editor\n");
+    expect(app.lastFrame()).toContain(`› /k\n${RULE}\n  /keybindings  Open the keys file in your editor\n`);
     await press(app, "\u007f", "s", "e");
-    expect(app.lastFrame()).toContain("› /se\n  /settings  Open the settings file in your editor\n");
+    expect(app.lastFrame()).toContain(`› /se\n${RULE}\n  /settings  Open the settings file in your editor\n`);
   });
 
   it("says /settings and /keybindings take nothing after them", async () => {
@@ -9351,10 +10323,10 @@ describe("App's sessions", () => {
     await type(app, "/resume");
     await until(app, "Saved sessions in this folder, newest first:");
     expect(app.lastFrame()).toMatch(/Saved sessions in this folder, newest first:\nremember apple +<1m ago +fake:a +[\d.]+k? bytes\n/);
-    expect(app.lastFrame()).toContain("↑↓ move · Enter opens · Esc closes");
+    expect(app.lastFrame()).toContain("↑↓ move · Enter open · Esc close");
     await press(app, "\r");
     await until(app, "Resumed: remember apple.");
-    expect(app.lastFrame()).toMatch(/> remember apple\nnoted\nResumed: remember apple\.\n/);
+    expect(app.lastFrame()).toMatch(/› remember apple\n\n\n● noted\n\nResumed: remember apple\.\n/); // a block, as after -r
     expect(session.id).toBe(first.session.id);
     expect(free(own)).toBe(true);
     await type(app, "which fruit?");
@@ -9373,7 +10345,7 @@ describe("App's sessions", () => {
     await press(app, "\r");
     await until(app, "lead is now fake:a");
     expect(made).toEqual(["fake:a"]);
-    expect(app.lastFrame()).toMatch(/Resumed: lead a's session\.\nlead is now fake:a\n/);
+    expect(app.lastFrame()).toMatch(/Resumed: lead a's session\.\n\n● lead is now fake:a\n/); // a notice, after its gap (TUI design pass, Task 3)
     expect(app.lastFrame()).toMatch(/lead fake:a/); // the status line
     expect(session.lead).toBe(saidAgain);
     await type(app, "go on");
@@ -9432,7 +10404,7 @@ describe("App's sessions", () => {
     await until(app, "remember pear");
     await press(app, "\r");
     await until(app, "Resumed: remember pear.");
-    expect(app.lastFrame()).toMatch(/noted\nOpened a copy: that session is open in another window\.\nResumed: remember pear\.\n/);
+    expect(app.lastFrame()).toMatch(/noted\n\nOpened a copy: that session is open in another window\.\nResumed: remember pear\.\n/); // one block
     expect(session.id).not.toBe(first.session.id);
     await type(app, "which fruit?");
     await until(app, "a pear");
@@ -9492,7 +10464,7 @@ describe("App's sessions", () => {
   });
 
   it("says in red that a picked session could not be read, and stays in this one", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const first = await earlier("soon gone");
       const { app, session } = await saved([]);
       const own = session.id;
@@ -9613,8 +10585,9 @@ describe("App's sessions", () => {
     await type(app, "/branch side road");
     await until(app, "Branched:");
     // The same conversation, so it is not drawn again (release 8a final review, user, 2026-11-07: "Drop the reprint").
-    expect(bare(app.lastFrame()!)).toContain(bare(`> first\none\nBranched: this window is now side road; the original is kept as ${original}.`));
-    expect(app.lastFrame()!.split("> first")).toHaveLength(2);
+    expect(bare(app.lastFrame()!)).toContain(bare(`› first\n● one\nBranched: this window is now side road; the original is kept as ${original}.`));
+    expect(app.lastFrame()).toContain("● one\n\nBranched: this window is now side road;"); // the command's block, its one gap
+    expect(app.lastFrame()!.split("› first")).toHaveLength(2);
     expect(session.id).not.toBe(original);
     expect(free(original)).toBe(true);
     await type(app, "second");
@@ -9674,7 +10647,7 @@ describe("App's sessions", () => {
   });
 
   it("says in red that this session could not be copied for /branch, and stays in it", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session } = await saved([reply("one")]);
       await type(app, "first");
       await until(app, "one");
@@ -9688,7 +10661,7 @@ describe("App's sessions", () => {
   });
 
   it("names the session on /rename, as the list shows it, and says how it is used when given no name", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session } = await saved([reply("one")]);
       await type(app, "hello");
       await until(app, "one");
@@ -9714,7 +10687,7 @@ describe("App's sessions", () => {
   });
 
   it.each(["/clear", "/resume", "/branch"])("refuses %s in red while a subagent runs, naming it", async (command) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session } = await saved([bg("c1", "find x"), reply("started it")], { worker: new Held("fake:w") });
       await type(app, "go");
       await until(app, "started it");
@@ -9806,7 +10779,7 @@ describe("App's /export", () => {
   });
 
   it("refuses a file that already exists, in red, and leaves it as it was", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ctx } = await talk();
       const file = path.join(ctx.root, "talk.txt");
       writeFileSync(file, "mine");
@@ -9822,7 +10795,7 @@ describe("App's /export", () => {
   // The reason is Node's code and words, without the path they end with, so the file is named once (quality review). Windows
   // reports a path through a file as missing.
   it("says in red when the file cannot be written", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ctx } = await talk();
       writeFileSync(path.join(ctx.root, "notes"), "a file, not a folder");
       await type(app, "/export notes/talk.txt");
@@ -9846,7 +10819,7 @@ describe("App's /export", () => {
   // there counts as a file already there. The junction is this test's own, in the mount's own folder, and is unlinked,
   // never followed. Links in the folders above are a known limit.
   it("refuses a link standing at the file's name, writing nothing where it points", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, ctx } = await talk();
       const link = path.join(ctx.root, "planted.txt");
       const target = path.join(ctx.root, "elsewhere");
@@ -9939,7 +10912,7 @@ describe("App's /compact and /autocompact", () => {
     expect(texts(lead.seen[1]!.at(-1)!).at(-1)).toBe(INSTRUCTIONS);
     expect(session.messages.map(texts)).toEqual([[`${HISTORY}Compacted.`]]);
     await press(app, "\u000f");
-    expect(app.lastFrame()).toContain(`${LINE}\nThe summary the conversation was shortened to:\nCompacted.\n`);
+    expect(app.lastFrame()).toContain(`${LINE}\n\nThe summary the conversation was shortened to:\nCompacted.\n`); // a block (Task 14)
     await type(app, "more");
     await until(app, "again");
     await press(app, "\u000f");
@@ -9971,7 +10944,7 @@ describe("App's /compact and /autocompact", () => {
   });
 
   it("says a failed /compact in red, the conversation unchanged", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session } = await talked([new Error("overloaded")]);
       await type(app, "/compact");
       await waitFor(() => flat(app).includes("✗ The conversation could not be shortened (overloaded); it is unchanged."));
@@ -10045,7 +11018,7 @@ describe("App's /compact and /autocompact", () => {
   });
 
   it("gives the usage line in red for a wrong /autocompact, leaving the size as it was", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, session } = await mount([]);
       session.autoCompact = 5;
       const wrongs = ["/autocompact", "/autocompact 0", "/autocompact 2g", "/autocompact 1.5k", "/autocompact 200k more", "/autocompact 9007199254740992"];
@@ -10107,6 +11080,15 @@ process.stdin.resume().on("end", () => {
       count: () => (existsSync(at("count")) ? Number(readFileSync(at("count"), "utf8")) : 0),
     };
   }
+
+  // The whole PR's review: the line saying the words are back stays under the line saying why, the hook's notice here,
+  // which is the block with the empty line above it.
+  it("keeps the line saying a blocked prompt's words are back under the hook's notice", async () => {
+    const { app } = await mount([reply("seen")], { hooks: hookFor(BLOCK).hooks, intro: [{ text: "start" }] });
+    await type(app, "look");
+    await untilSlow(app, BACK);
+    expect(app.lastFrame()).toContain(`start\n\n● A UserPromptSubmit hook blocked the prompt: not yet\n${BACK}\n`);
+  });
 
   // A stop gives the words back as a block does (approved by the user, 2026-11-09).
   it.each([
@@ -10512,7 +11494,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   const squashed = (text: string) => stripVTControlCharacters(text).replace(/\s/g, "");
 
   it("shows a hook's systemMessage grey and escaped, and a hook's failure red with the line alone", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const said = nodeHook('process.stdout.write(JSON.stringify({ systemMessage: "look\\u0007\\nnow" }));');
       const broken = nodeHook('process.stderr.write("broken\\n"); process.exitCode = 1;');
       const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], {
@@ -10522,7 +11504,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       await untilSlow(app, "done");
       const frame = app.lastFrame()!;
       // A bell would act on the terminal, and a line break could pass for a line of the window's own (Task 6's review).
-      expect(frame).toContain("\u001b[90mPreToolUse hook: look\\u0007⏎now");
+      expect(frame).toContain("\u001b[90m● PreToolUse hook: look\\u0007⏎now");
       expect(frame).toContain("\u001b[31m✗ PreToolUse hook failed: ");
       expect(squashed(frame)).toContain(squashed(`✗ PreToolUse hook failed: ${broken.command} exited with code 1: broken`));
     });
@@ -10547,8 +11529,9 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     });
     await type(app, "go");
     await untilSlow(app, "all done");
-    expect(app.lastFrame()).toContain("t1: SubagentStop hook: hi\nA SubagentStop hook kept t1 going: again\n");
-    expect(app.lastFrame()).toContain("t1: A SubagentStop hook stopped the turn: enough\n");
+    // Each a notice, a block of its own (TUI design pass, Task 3).
+    expect(app.lastFrame()).toContain("● t1: SubagentStop hook: hi\n\n● A SubagentStop hook kept t1 going: again\n");
+    expect(app.lastFrame()).toContain("\n● t1: A SubagentStop hook stopped the turn: enough\n");
   });
 
   // Choice 24, and Task 6's review: the call is shown as the model sent it, and the rewrite under its hook's run.
@@ -10562,7 +11545,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     await untilSlow(app, "done");
     await press(app, "\u000f");
     const frame = app.lastFrame()!;
-    expect(frame).toContain('Last turn: 1 tool call\n● read_file {\n  "path": "a.txt"\n}\n  ⎿ ');
+    expect(frame).toContain("Last turn: 1 tool call\n● read_file\n  path: a.txt\n  ⎿ ");
     expect(frame).toMatch(/⎿ [^\n]*from b/);
     const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     // Named as /hooks names it, its program and script (the user's choice, 2026-11-10, terminal checklist).
@@ -10708,12 +11691,12 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // Choice 2: the launch's line, which full screen hides on stderr until the user quits, shows in the session too, grey as
   // the settings file's warnings, as the --network line does.
   it("shows in full screen, in grey, that Git Bash was not found", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const line = "Git Bash was not found, so hooks run by a shell use Windows PowerShell; set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe to change that.";
       const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
       onTestFinished(() => removeTree(home));
       const { app } = await mount([], { full: true, home, live: { loaded: { settings: {}, warnings: [] }, given: {}, bashLine: line } });
-      expect(app.lastFrame()).toContain("\u001b[90mGit Bash was not found");
+      expect(app.lastFrame()).toContain("\u001b[90m● Git Bash was not found");
       expect(squashed(app.lastFrame()!)).toContain(squashed(line));
     });
   });
@@ -10760,12 +11743,12 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   });
 
   it("shows in grey that never mode cannot put a PreToolUse hook's question", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const h = nodeHook(`process.stdout.write(${JSON.stringify(pre({ permissionDecision: "ask", permissionDecisionReason: "Sure?" }))});`);
       const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { mode: "never", hooks: [h.hook("PreToolUse")] });
       await type(app, "go");
       await untilSlow(app, "done");
-      expect(app.lastFrame()).toContain("\u001b[90mNot allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).");
+      expect(app.lastFrame()).toContain("\u001b[90m● Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).");
     });
   });
 
@@ -10774,7 +11757,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { hooks: [h.hook("PreToolUse")] });
     await type(app, "go");
     await untilSlow(app, "Allow");
-    expect(app.lastFrame()).toMatch(/A hook asks: Sure\?\nAllow read_file/);
+    expect(app.lastFrame()).toContain(`${boxed("A hook asks: Sure?")}\n│ Allow read_file`); // in the question's box
     await press(app, "n");
     await untilSlow(app, "done");
   });
@@ -10799,7 +11782,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     ["block", 'process.stderr.write("no\\n"); process.exitCode = 2;', "asked to block, but an \"async\" hook cannot block"],
     ["stop", 'process.stdout.write(JSON.stringify({ continue: false, stopReason: "enough" }));', "asked to stop, but an \"async\" hook cannot stop"],
   ])("shows in red that an async hook cannot %s", async (_name, body, words) => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const h = nodeHook(body);
       const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { hooks: [h.hook("PreToolUse", { async: true })] });
       await type(app, "go");
@@ -11009,14 +11992,14 @@ describe("App's MCP", () => {
   // Choice 26: an MCP grey line is grey, a failure red, each line alone, as it names what failed, as a hook's is; both
   // escaped whole, as they carry what a server sent.
   it("says an MCP note in grey and an MCP failure in red, escaped", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { app, bus } = await mount([]);
       bus.emit("mcp-note", "MCP server tv is ready: 3 tools.\u0007");
       const message = "MCP server tv failed to start: it exited with code 3: bad\u001b[2J";
       bus.emit("error", { kind: "mcp", attempted: "MCP server tv", message, lead: "fake:a" });
       await until(app, "failed to start");
       const frame = app.lastFrame()!;
-      expect(frame).toContain("\u001b[90mMCP server tv is ready: 3 tools.\\u0007");
+      expect(frame).toContain("\u001b[90m● MCP server tv is ready: 3 tools.\\u0007");
       expect(frame).toContain("\u001b[31m✗ MCP server tv failed to start: it exited with code 3: bad\\u001b[2J");
     });
   });
@@ -11103,12 +12086,12 @@ describe("App's MCP", () => {
         "ends · stopped: it exited with code 3",
         "asks (project) · waiting for your yes",
         "nope (project) · you said no",
-        "↑↓ move · Enter opens · Esc closes", // choice 51's hint, as /resume's list ends
+        "↑↓ move · Enter open · Esc close", // choice 51's hint, as /resume's list ends
       ].join("\n"),
     );
     // A ready server's actions, with their own hint; Esc goes back to the list.
     await press(app, "\r");
-    await shows(app, "ready · 2 tools · trusted\nReconnect\nShow tools\n↑↓ move · Enter runs · Esc back\n");
+    await shows(app, "ready · 2 tools · trusted\nReconnect\nShow tools\n↑↓ move · Enter run · Esc back\n");
     expect(app.lastFrame()).not.toContain(HEADING);
     await press(app, "\u001b");
     await shows(app, `${HEADING}\nready`);
@@ -11177,9 +12160,9 @@ describe("App's MCP", () => {
     await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
     await type(app, "/mcp");
     await shows(app, `${HEADING}\ns · 1 tool\n`);
-    expect(app.lastFrame()).toMatch(/s · 1 tool\n↑↓ move · Enter opens · Esc closes\n.*lead fake:a/);
+    expect(app.lastFrame()).toMatch(/s · 1 tool\n↑↓ move · Enter open · Esc close\n.*lead fake:a/);
     await press(app, "\r");
-    await shows(app, "s · 1 tool\nReconnect\nShow tools\n↑↓ move · Enter runs · Esc back\n");
+    await shows(app, "s · 1 tool\nReconnect\nShow tools\n↑↓ move · Enter run · Esc back\n");
     await press(app, "\u001b", "\u001b");
     await gone(app, HEADING);
   });
@@ -11199,6 +12182,11 @@ describe("App's MCP", () => {
     expect(app.lastFrame()).toContain(
       ["s's tools:", "  foo.bar", "  plain", "  odd\\u0007", "Left out:", '  "foo_bar" was left out: its name mcp__s__foo_bar is already s\'s "foo.bar"'].join("\n"),
     );
+    // The pick's output one block, as a command's is, under the server's notice (TUI design pass, Task 3's code review).
+    const r = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
+    const at = r.indexOf("s's tools:");
+    expect(r[at - 1]).toBe("");
+    expect(r[at - 2]).toMatch(/^● /);
   });
 
   // Choice 24: the reset is a line in the project's answers file, so the next launch asks again; this launch's server runs on.
@@ -11325,9 +12313,10 @@ describe("App's MCP", () => {
     await shows(first.app, "done");
     const rows = (app: ReturnType<typeof render>) => {
       const r = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
-      return r.slice(r.indexOf("> go"));
+      return r.slice(r.indexOf("› go"));
     };
-    expect(rows(first.app).slice(0, 6)).toEqual(["> go", "Read 1 file", '● s echo {"text":"hi"}', "  ⎿ You allowed this.", "  ⎿ ok", "done"]);
+    // After your message's last band row, the blocks with their gaps (TUI design pass, Task 3).
+    expect(rows(first.app).slice(0, 10)).toEqual(["› go", "", "", "● Read 1 file", "", '● s echo {"text":"hi"}', "  ⎿ You allowed this.", "  ⎿ ok", "", "● done"]);
     const file = sessionPaths(sessions, first.session.id).file;
     first.app.unmount();
     // Resumed, the asked line keeps its row; the answer line was the window's, not the conversation's.
@@ -11340,11 +12329,11 @@ describe("App's MCP", () => {
       return m;
     };
     const again = await resumed();
-    expect(rows(again.app).slice(0, 5)).toEqual(["> go", "Read 1 file", '● s echo {"text":"hi"}', "  ⎿ ok", "done"]);
+    expect(rows(again.app).slice(0, 9)).toEqual(["› go", "", "", "● Read 1 file", "", '● s echo {"text":"hi"}', "  ⎿ ok", "", "● done"]);
     again.app.unmount();
     writeFileSync(file, readFileSync(file, "utf8").split("\n").filter((l) => !l.includes('"t":"asked"')).join("\n"));
     const before = await resumed();
-    expect(rows(before.app).slice(0, 3)).toEqual(["> go", "Read 1 file, called s", "done"]);
+    expect(rows(before.app).slice(0, 6)).toEqual(["› go", "", "", "● Read 1 file, called s", "", "● done"]);
   });
 
   // Release 8c plan, choice 68 and Task 18: an MCP call's row names its server and its tool as the server gives them, as
@@ -11358,15 +12347,15 @@ describe("App's MCP", () => {
     await type(app, "go");
     await soon(() => expect(flat(app)).toContain('Allow my.s: foo.bar {"x":1}?'));
     const r = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
-    expect(r.slice(r.indexOf("> go"), r.indexOf("> go") + 2)).toEqual(["> go", '● my.s foo.bar {"x":1}']);
+    expect(r.slice(r.indexOf("› go"), r.indexOf("› go") + 4)).toEqual(["› go", "", "", '● my.s foo.bar {"x":1}']); // after the band's last row and a gap
     await press(app, "y");
     await shows(app, "finished");
     const done = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
-    expect(done.slice(done.indexOf("> go"), done.indexOf("finished") + 1)).toEqual(["> go", '● my.s foo.bar {"x":1}', "  ⎿ You allowed this.", "  ⎿ ok", "finished"]);
+    expect(done.slice(done.indexOf("› go"), done.indexOf("● finished") + 1)).toEqual(["› go", "", "", '● my.s foo.bar {"x":1}', "  ⎿ You allowed this.", "  ⎿ ok", "", "● finished"]);
     // So do the tool line under the prompt and Ctrl+O's full record (the user's answer, 2026-11-12).
     expect(done.at(-1)).toBe("✓ my.s foo.bar ×1");
     await press(app, "\u000f");
-    await shows(app, 'Last turn: 1 tool call\n● my.s foo.bar {\n  "x": 1\n}\n  ⎿ set');
+    await shows(app, "Last turn: 1 tool call\n● my.s foo.bar\n  x: 1\n  ⎿ set");
     expect(readFileSync(sessionPaths(sessions, session.id).file, "utf8")).toContain('"name":"mcp__my_s__foo_bar"');
   });
 
@@ -11508,7 +12497,7 @@ describe("App's MCP", () => {
     await shows(app, "Name: Ada");
     // The field's description is the server's grey note above its question.
     await shows(app, "In years\nAge (a number):");
-    expect(app.lastFrame()).not.toContain("Enter answers");
+    expect(app.lastFrame()).not.toContain("Enter answer");
     await type(app, "x");
     await shows(app, "That is not a number; type one, or Esc to decline the form.");
     expect(app.lastFrame()).toContain("Age (a number): x");
@@ -11517,7 +12506,7 @@ describe("App's MCP", () => {
     // A pick is a menu of the server's labels under its question.
     await shows(app, "Size:\n  Small\n  Medium");
     // A pick of one has its hint row, as /mcp's lists end (choice 51), without Space's part; a typed field has none.
-    await shows(app, "  Medium\n↑↓ move · Enter answers · Esc declines the form\n");
+    await shows(app, "  Medium\n↑↓ move · Enter answer · Esc decline\n");
     await press(app, DOWN, "\r");
     await shows(app, "Size: Medium");
     await press(app, "\r"); // an empty optional field is left out
@@ -11549,8 +12538,8 @@ describe("App's MCP", () => {
     await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
     await type(app, "go");
     // A pick of several names Space too, in its hint row under the menu.
-    await shows(app, "Tops (optional):\n  Cheese\n  Ham\n↑↓ move · Space marks · Enter answers · Esc declines the form\n");
-    expect(app.lastFrame()).toMatch(/Esc declines the form\n.*lead fake:a/);
+    await shows(app, "Tops (optional):\n  Cheese\n  Ham\n↑↓ move · Space mark · Enter answer · Esc decline\n");
+    expect(app.lastFrame()).toMatch(/Esc decline\n.*lead fake:a/);
     await press(app, " ", DOWN, " ");
     await shows(app, "Tops (optional): Cheese, Ham");
     await press(app, "\r");
@@ -11581,7 +12570,7 @@ describe("App's MCP", () => {
     const { app, session, mcp } = await mount(asking(formOf(schema)), { mcp: servers([await config("s", {}, trusted)]) });
     await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
     await type(app, "go");
-    await shows(app, "A (optional):\n  Small\n  Medium\n↑↓ move · Space marks · Enter answers · Esc declines the form\n");
+    await shows(app, "A (optional):\n  Small\n  Medium\n↑↓ move · Space mark · Enter answer · Esc decline\n");
     await press(app, " ", DOWN, " ");
     await shows(app, "A (optional): Medium\n");
     await press(app, "\r");
@@ -11696,14 +12685,14 @@ describe("App's MCP", () => {
     expect(frame.indexOf("  notes.txt\n")).toBeLessThan(frame.indexOf("  @fake:note://a\n"));
     // A uri's slashes make what is typed a folder that cannot be listed, which says nothing while a resource matches.
     await press(app, "fake:note:/");
-    await shows(app, "› @fake:note:/\n  @fake:note://a\n");
+    await shows(app, `› @fake:note:/\n${RULE}\n  @fake:note://a\n`);
     expect(app.lastFrame()).not.toContain("notes.txt");
     expect(app.lastFrame()).not.toContain("Cannot list");
     await mcp!.servers.server("fake")!.callTool("add-resource", { resource: { uri: "note://b", name: "b" } }, {});
     // The library waits 300 ms for more changes before it reads the list again (its debounceMs); a key draws it.
     await soon(() => expect(mcp!.servers.server("fake")!.resources).toHaveLength(2));
     await press(app, "/");
-    await shows(app, "› @fake:note://\n  @fake:note://a\n  @fake:note://b\n");
+    await shows(app, `› @fake:note://\n${RULE}\n  @fake:note://a\n  @fake:note://b\n`);
   });
 
   it("sends a picked resource's text after the typed words, as the server's, and shows the prompt as typed", async () => {
@@ -11719,7 +12708,7 @@ describe("App's MCP", () => {
       { type: "text", text: "@fake:note://a summarise" },
       { type: "text", text: "Resource @fake:note://a:\nthe note's text", from: "server" },
     ]);
-    expect(app.lastFrame()).toContain("> @fake:note://a summarise\n");
+    expect(app.lastFrame()).toContain("\n› @fake:note://a summarise\n");
     expect(app.lastFrame()).not.toContain("the note's text");
   });
 
@@ -11743,7 +12732,7 @@ describe("App's MCP", () => {
       { type: "text", text: "Resource @fake:pic://dot:", from: "server" },
       { type: "image", id: 1, mediaType: "image/png", data, from: "server" },
     ]);
-    expect(app.lastFrame()).toContain("> look at @fake:pic://dot now\n  ⎿ [Image #1]\n");
+    expect(app.lastFrame()).toContain("\n› look at @fake:pic://dot now\n\n  ⎿ [Image #1]\n"); // under your message's band rows
     await type(app, "/fake:talk");
     await shows(app, "talked");
     expect(lastSent(lead, 1)).toEqual([
@@ -11754,7 +12743,7 @@ describe("App's MCP", () => {
   });
 
   it("says in red that a picked resource could not be read, sends nothing, and keeps the words in the prompt box", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { config, servers } = await mcpSetup();
       const lead = new FakeProvider("a", [reply("never")]);
       const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", { resources: [{ ...NOTE, fails: "it is gone" }] })]) });
@@ -11775,19 +12764,35 @@ describe("App's MCP", () => {
     const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", { prompts: [GREET] })]) });
     await soon(() => expect(states(mcp!.servers)).toEqual(["fake ready"]));
     await press(app, "/fa");
-    await shows(app, "› /fa\n  /fake:greet  Greets someone\n"); // the description's first line
+    await shows(app, `› /fa\n${RULE}\n  /fake:greet  Greets someone\n`); // the description's first line
     await press(app, "\t", "Ann", "\r");
     await shows(app, "greeted");
     expect(lastSent(lead)).toEqual([
       { type: "text", text: "/fake:greet Ann" },
       { type: "text", text: "Say hello to Ann.", from: "server" },
     ]);
-    expect(app.lastFrame()).toContain("> /fake:greet Ann\n");
+    expect(app.lastFrame()).toContain("\n› /fake:greet Ann\n");
+  });
+
+  // TUI design pass, Task 3's code review: a prompt command is a turn, so it drops the command's block mark, and its call's
+  // result row stays under the call with no gap.
+  it("keeps a prompt command's turn's result rows under their calls", async () => {
+    const { config, servers } = await mcpSetup();
+    const lead = new FakeProvider("a", [callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("greeted")]);
+    const { app, mcp } = await mount([], { lead, mode: "never", mcp: servers([await config("fake", { prompts: [GREET] })]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["fake ready"]));
+    await press(app, "/fa");
+    await shows(app, "  /fake:greet  Greets someone\n");
+    await press(app, "\t", "Ann", "\r");
+    await shows(app, "greeted");
+    const r = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
+    const at = r.indexOf("● write_file a.txt");
+    expect(r.slice(at - 1, at + 4)).toEqual(["", "● write_file a.txt", "  ⎿ ok", "", "● greeted"]);
   });
 
   // The fix round: the check is made once the prompt is let through, so its words come back, with the grey line saying so.
   it("says in red which argument a prompt needs, sending nothing, and gives the words back", async () => {
-    await inColour(async () => {
+    await inColour(1, async () => {
       const { config, servers } = await mcpSetup();
       const lead = new FakeProvider("a", [reply("never")]);
       const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", { prompts: [GREET] })]) });
@@ -11798,6 +12803,16 @@ describe("App's MCP", () => {
       expect(app.lastFrame()).toContain("› /fake:greet");
       expect(lead.seen).toEqual([]);
     });
+  });
+
+  // The whole PR's review (the user's choice: "Give them a gap"): the red line starts a block, the words-back line under it.
+  it("puts an empty line above the red line saying a prompt needs an argument", async () => {
+    const { config, servers } = await mcpSetup();
+    const { app, mcp } = await mount([], { intro: [{ text: "start" }], mcp: servers([await config("fake", { prompts: [GREET] })]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["fake ready"]));
+    await type(app, "/fake:greet");
+    await soon(() => expect(plain(app)).toContain(BACK));
+    expect(stripVTControlCharacters(app.lastFrame()!)).toMatch(/[^\n]\n\n\/fake:greet needs name: \/fake:greet name\nYour words are back/);
   });
 
   it("says in red that a prompt could not be got, sends nothing, and keeps the words in the prompt box", async () => {
@@ -12018,5 +13033,75 @@ describe("App's MCP", () => {
     await soon(() => expect(plain(app)).toContain(`Could not read @fake:note://a: Not connected. ${BACK}`));
     expect(app.lastFrame()).toContain("› read @fake:note://a now");
     expect(lead.seen).toEqual([]);
+  });
+});
+
+// TUI design pass, Task 13 (audit 12): with NO_COLOR set, the look cli.tsx makes (theme.ts, look) has no colour, so nothing
+// is drawn in a colour though chalk would draw one (chalk at level 3, from inColour(3): chalk reads FORCE_COLOR once, at
+// import, so a stub of it would do nothing): not the conversation's lines, and not the status line's mode or context bar,
+// whose own colours are kept only with colour. Dim is a style, not a colour, and is kept without colour on purpose (Task
+// 2), so only colour codes are looked for: a foreground or a background, basic, bright, 256 or 24-bit, or their resets.
+// The file's afterEach puts NO_COLOR back.
+describe("App with NO_COLOR", () => {
+  beforeEach(() => {
+    vi.stubEnv("NO_COLOR", "1");
+  });
+  const theme = (): Theme => {
+    const shown = look({}, process.env, chalk.level);
+    return { look: shown, palette: palette(shown) };
+  };
+  const colourCodes = (app: ReturnType<typeof render>) =>
+    [...app.lastFrame()!.matchAll(/\u001b\[([\d;]*)m/g)].filter((m) => m[1]!.split(";").some((p) => (+p >= 30 && +p <= 49) || (+p >= 90 && +p <= 107))).map((m) => m[0]);
+  // A lead whose window is `window` tokens: its one reply's 15 (helpers.ts, usage) fill the bar's share of it.
+  const windowed = (window: number) => Object.assign(new FakeProvider("a", [reply("there")]), { contextWindow: async () => window });
+
+  it("draws the conversation, its notices and failures, and the status line without a colour", async () => {
+    await inColour(3, async () => {
+      expect(theme().look.color).toBe(false);
+      for (const [full, coloured] of [[false, false], [true, false], [false, true]] as const) {
+        const turns = [callTool("c1", "read_file", { path: "./missing.txt" }), callTool("c2", "edit_file", { path: "a.txt", old_text: "one", new_text: "uno" }), reply("looked")];
+        const { app, bus, ctx } = await mount(turns, { full, branches: ["main", "main", "main"], ...(coloured ? {} : { theme: theme() }) });
+        writeFileSync(path.join(ctx.root, "a.txt"), "one\n");
+        await type(app, "read it");
+        // The edit's question in ask mode: the permission box, its border, the preview and the question (Task 13's code
+        // review).
+        await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes("Allow edit"));
+        if (coloured) expect(colourCodes(app)).not.toEqual([]);
+        else expect(colourCodes(app)).toEqual([]);
+        app.stdin.write("y");
+        await until(app, "looked");
+        bus.emit("error", { kind: "fallback", attempted: "x", message: "moved on", lead: "fake:a" });
+        bus.emit("error", { kind: "provider", attempted: "x", message: "went wrong", lead: "fake:a" });
+        await type(app, "/nope");
+        await until(app, "Unknown command: /nope");
+        expect(stripVTControlCharacters(app.lastFrame()!)).toMatch(/\$0\.00\+ \| perm ask \| \d errors \| proj git:\(main\)/);
+        // The same screen with colour draws it, so the check would see it.
+        if (coloured) expect(colourCodes(app)).not.toEqual([]);
+        else expect(colourCodes(app)).toEqual([]);
+      }
+    });
+  });
+
+  it("draws each mode without its colour", async () => {
+    await inColour(3, async () => {
+      for (const mode of ["ask", "project", "auto", "never"] as const) {
+        const { app } = await mount([], { mode, theme: theme() });
+        await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes(`perm ${mode}`));
+        expect(colourCodes(app)).toEqual([]);
+      }
+    });
+  });
+
+  // 15 of 100 used is green, of 20 yellow (75%) and of 16 red (94%) (StatusLine.tsx, contextBar).
+  it("draws the context bar at each level by its cells alone", async () => {
+    await inColour(3, async () => {
+      for (const [window, bar] of [[100, "██░░░░░░░░ 85% left"], [20, "████████░░ 25% left"], [16, "█████████░ 6% left"]] as const) {
+        const { app } = await mount([], { lead: windowed(window), theme: theme() });
+        await type(app, "hi");
+        await until(app, "there");
+        await waitFor(() => stripVTControlCharacters(app.lastFrame()!).includes(bar));
+        expect(colourCodes(app)).toEqual([]);
+      }
+    });
   });
 });

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs, styleText } from "node:util";
+import chalk from "chalk";
 import { type Instance, render } from "ink";
 import type { ReactElement } from "react";
 import { accountCommand } from "./auth/chatgpt.js";
@@ -49,6 +50,7 @@ import {
   type Started,
   stopSoon,
   systemAgain,
+  tilde,
   turnAnswer,
   waitForBackground,
   WindowSessions,
@@ -83,7 +85,7 @@ import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
 import { shellOf } from "./safety/split.js";
-import { hooksOf, loadSettings, SETTINGS, shownFile } from "./settings.js";
+import { hooksOf, loadSettings, SETTINGS, type Settings, shownFile } from "./settings.js";
 import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "./tools/commands.js";
 import { delegateTool } from "./tools/delegate.js";
 import { editFileTool } from "./tools/files.js";
@@ -93,14 +95,18 @@ import { App } from "./tui/App.js";
 import { NOT_GONE } from "./tui/app/constants.js";
 import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
+import { asBlock } from "./tui/describe.js";
 import { conversationLines, mcpNames } from "./tui/fold.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
 import { programRunning } from "./tui/owner.js";
 import { Review, type ReviewCopy, type ReviewEnd } from "./tui/Review.js";
 import { SessionList } from "./tui/SessionList.js";
+import { startBox } from "./tui/startup.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
+import { ThemeContext, themeOf } from "./tui/theme.js";
+import { textWidth } from "./tui/view.js";
 
 const HELP = `tachi: a coding agent for your terminal
 
@@ -199,22 +205,27 @@ function askAtStart(question: string): Promise<boolean> {
 // A screen drawn alone before the session (`tachi review <name>`'s review, `tachi -r`'s list): in full screen where it can
 // draw, with the keys file's bindings as it reads at this moment (its problems said first, on the normal screen); the
 // mouse stays off, as nothing reads its reports. `draw` is given the bindings and the screen's close. Resolves once Ink
-// has ended and the terminal is back, so the lines printed after it come after.
-async function drawAlone(draw: (bindings: Bindings, close: () => void) => ReactElement): Promise<void> {
+// has ended and the terminal is back, so the lines printed after it come after. Drawn in the look from `settings`, as the
+// App is, so NO_COLOR and the light look reach it too (TUI design pass, Task 13).
+async function drawAlone(settings: Settings, draw: (bindings: Bindings, close: () => void) => ReactElement): Promise<void> {
   const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
   const bindings = keysNow();
   if (fullPossible(process.env, process.stdout.isTTY === true)) screen.setSecond(true);
-  ink = render(draw(bindings, () => ink?.unmount()), { exitOnCtrlC: false });
+  ink = render(<ThemeContext value={themeOf(settings, process.env, chalk.level)}>{draw(bindings, () => ink?.unmount())}</ThemeContext>, { exitOnCtrlC: false });
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   await exited;
 }
 
+// `tachi review` runs before the launch reads the settings, so it reads them here for their theme, quietly: a file that is
+// broken or cannot be read is the default look, and its warnings are not said, so the review says and stops for nothing it
+// did not before (Task 13).
 async function drawReview(copy: ReviewCopy, protection: Protection): Promise<ReviewEnd> {
   let end: ReviewEnd | undefined;
-  await drawAlone((bindings, close) => (
+  const read = loadSettings();
+  await drawAlone("problem" in read ? {} : read.settings, (bindings, close) => (
     <Review
       copy={copy}
       bindings={bindings}
@@ -228,10 +239,10 @@ async function drawReview(copy: ReviewCopy, protection: Protection): Promise<Rev
   return end!;
 }
 
-// The session picked from the list (release 8a plan, choice 12), or none when it was closed.
-async function drawSessions(rows: Row[], name: string | undefined): Promise<string | undefined> {
+// The session picked from the list (release 8a plan, choice 12), or none when it was closed; in the launch's settings' look.
+async function drawSessions(rows: Row[], name: string | undefined, settings: Settings): Promise<string | undefined> {
   let picked: string | undefined;
-  await drawAlone((bindings, close) => (
+  await drawAlone(settings, (bindings, close) => (
     <SessionList
       rows={rows}
       {...(name === undefined ? {} : { name })}
@@ -417,7 +428,7 @@ if (parsed.continue || parsed.resume !== undefined) {
   const c = chooseSession(sessions, { continue: parsed.continue, resume: parsed.resume, print: !interactive, terminal });
   if ("fail" in c) fail(visible(c.fail));
   if (interactive && !terminal) fail(NO_TERMINAL); // before a held session is copied for a window that cannot start
-  chosen = "id" in c ? c.id : await drawSessions(c.list, c.name);
+  chosen = "id" in c ? c.id : await drawSessions(c.list, c.name, loaded.settings);
   if (chosen === undefined) process.exit(0); // the list closed: nothing to open
 }
 // Opened, mended and read before anything starts, the instruction files' question and the sandbox among them, so a
@@ -875,63 +886,92 @@ if (parsed.print !== undefined) {
     ended: (lines: string[]) => reviewed.push(...lines),
   };
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();
+  // The look from the launch's settings (TUI design pass, Task 1), the colour depth as Ink's own check gives it.
+  const { look: shown, palette: colours } = themeOf(loaded.settings, process.env, chalk.level);
+  // Before the first frame, which shows it, in the start-up box and the App. In the box a read that fails (Docker
+  // unreachable) is no branch, so it cannot end the launch; the tools say what failed when used (release 7 plan, Task 14's
+  // review).
+  const branch = await workspace.branch().catch(() => null);
+  // The start-up box (TUI design pass, Task 6), from what the launch has gathered, laid out for the columns a line's text
+  // has in the mode the window starts in: 80 where the terminal does not say, the last of Ink's getWindowSize's fallbacks
+  // (it asks terminal-size first; a window has a terminal, which says). The MCP servers counted are those starting, read
+  // before startAll: none with the network off, nor a project's one not said yes to. The instruction files go by path,
+  // which the box shortens to their names where they differ.
+  const startLines = startBox(
+    {
+      version: VERSION,
+      lead: lead.id,
+      folder: tilde(root, os.homedir()),
+      branch,
+      mode,
+      sandbox,
+      files: instructions.read.map((f) => tilde(f.path, os.homedir())),
+      servers: servers.list().filter((s) => s.state.is === "starting").length,
+      hooks: hooks.config.off ? 0 : hooks.config.hooks.length,
+    },
+    textWidth(process.stdout.columns || 80, screen.full),
+    shown,
+  );
   ink = render(
-    <App
-      session={session}
-      tasks={tasks}
-      bus={bus}
-      stats={stats}
-      mode={mode}
-      onMode={(m) => {
-        gate.mode = m;
-      }}
-      onRules={(r) => {
-        gate.rules = r;
-      }}
-      project={path.basename(root) || root}
-      root={root}
-      workspace={workspace}
-      // Before the first frame, which shows it. In the box a read that fails (Docker unreachable) is no branch, so it cannot
-      // end the launch; the tools say what failed when used (Task 14's review).
-      branch={await workspace.branch().catch(() => null)}
-      historyFile={historyFile(root)}
-      // A resumed conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan,
-      // Task 6), its tool rows folded as they were live (release 8c plan, Task 15).
-      intro={[
-        ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
-        ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers) }),
-        ...said.map((l) => ({ ...l, color: "gray" as const })),
-      ]}
-      pictures={pictures}
-      errorFile={errorFile}
-      segments={segments}
-      makeProvider={makeProvider}
-      login={accountCommand}
-      listModels={(signal, warn) => listModels(signal, process.env, warn)}
-      bindAsk={(fn) => {
-        ask = fn;
-      }}
-      screen={screen}
-      fullPossible={fullPossible(process.env, process.stdout.isTTY === true)}
-      mouse={keys}
-      input={keys}
-      scrollSpeed={speed}
-      clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
-      home={os.homedir()}
-      live={{
-        loaded,
-        given: givenBy(parsed, process.env),
-        ...(netLine ? { networkLine: netLine } : {}),
-        ...(bashLine ? { bashLine } : {}),
-        ...(gitLine ? { gitLine } : {}),
-      }}
-      {...(copy ? { copy } : {})}
-      saved={windowSessions}
-      leftLines={(lines) => left.push(...lines)}
-      hooks={hooks}
-      mcp={{ servers, project: projectServers }}
-      shell={shell}
-    />,
+    <ThemeContext value={{ look: shown, palette: colours }}>
+      <App
+        session={session}
+        tasks={tasks}
+        bus={bus}
+        stats={stats}
+        mode={mode}
+        onMode={(m) => {
+          gate.mode = m;
+        }}
+        onRules={(r) => {
+          gate.rules = r;
+        }}
+        project={path.basename(root) || root}
+        root={root}
+        workspace={workspace}
+        branch={branch}
+        historyFile={historyFile(root)}
+        // The start-up box first, then the files left out and the sandbox's lines (TUI design pass, Task 6). A resumed
+        // conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan, Task 6), its
+        // tool rows folded as they were live (release 8c plan, Task 15), with the live lines' marks (TUI design pass, Task 3).
+        intro={[
+          ...startLines,
+          ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "muted" as const }])),
+          ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours, root: workspace.root }),
+          ...asBlock(said.map((l) => ({ ...l, color: "muted" as const }))), // a block under the conversation (the whole PR's review)
+        ]}
+        restored={opened.conversation.messages.length > 0} // -c, -r, and their --fork-session copies, with messages
+        pictures={pictures}
+        errorFile={errorFile}
+        segments={segments}
+        makeProvider={makeProvider}
+        login={accountCommand}
+        listModels={(signal, warn) => listModels(signal, process.env, warn)}
+        bindAsk={(fn) => {
+          ask = fn;
+        }}
+        screen={screen}
+        fullPossible={fullPossible(process.env, process.stdout.isTTY === true)}
+        mouse={keys}
+        input={keys}
+        scrollSpeed={speed}
+        clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
+        home={os.homedir()}
+        live={{
+          loaded,
+          given: givenBy(parsed, process.env),
+          ...(netLine ? { networkLine: netLine } : {}),
+          ...(bashLine ? { bashLine } : {}),
+          ...(gitLine ? { gitLine } : {}),
+        }}
+        {...(copy ? { copy } : {})}
+        saved={windowSessions}
+        leftLines={(lines) => left.push(...lines)}
+        hooks={hooks}
+        mcp={{ servers, project: projectServers }}
+        shell={shell}
+      />
+    </ThemeContext>,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing
     // only the lines that changed, Ink's incrementalRendering, made no difference felt).

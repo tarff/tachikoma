@@ -1,5 +1,5 @@
 import { Box, Text, useInput, usePaste, useWindowSize } from "ink";
-import { useRef, useState } from "react";
+import { useContext, useRef, useState } from "react";
 import type { Row } from "../core/sessions.js";
 import { SESSION_WORDS } from "./app/constants.js";
 import { type Bindings, strokeOf } from "./bindings.js";
@@ -7,6 +7,7 @@ import { screen } from "./describe.js";
 import { both, named, pieces } from "./keys.js";
 import type { PickerKey } from "./ModelPicker.js";
 import { k } from "./StatusLine.js";
+import { ThemeContext } from "./theme.js";
 
 // `tachi -r`'s list of this folder's saved sessions (release 8a design, "Resuming"; plan, choice 12): newest first, each
 // row the session's name or first prompt, how long ago it was last used, its lead and its file's size. Up and Down move,
@@ -53,6 +54,7 @@ export function SessionList({
   keys?: { current: ((k: PickerKey) => void) | null };
   maxRows?: number;
 }) {
+  const { palette } = useContext(ThemeContext);
   const { rows: tall } = useWindowSize();
   const listed = name === undefined ? rows : rows.filter((r) => r.name === name);
   // Each key reads and changes this at once, as in ModelPicker: several keys can arrive before the screen is drawn again.
@@ -90,7 +92,7 @@ export function SessionList({
   const key = (action: string, usual: string) => named(bindings, action, "Select", [usual])[0];
   const moves = both(key("select:previous", "up"), key("select:next", "down"));
   const [enter, esc] = [key("select:accept", "enter"), key("select:cancel", "escape")];
-  const hint = [moves && `${moves} move`, enter && `${enter} opens`, esc && `${esc} ${keys ? SESSION_WORDS.closes : "quits"}`].filter(Boolean).join(" · ");
+  const hint = [moves && `${moves} move`, enter && `${enter} open`, esc && `${esc} ${keys ? SESSION_WORDS.closes : "quit"}`].filter(Boolean).join(" · ");
 
   // The list in the rows between the heading and the hint, its window moved only as far as keeps the chosen row in it.
   const room = Math.max(1, (maxRows ?? tall - 2) - 1); // the terminal's rows, less the one Ink ends on and the hint's
@@ -119,7 +121,7 @@ export function SessionList({
           </Box>
         );
       })}
-      <Text color="gray" wrap="truncate-end">
+      <Text color={palette.muted} wrap="truncate-end">
         {hint}
       </Text>
     </>

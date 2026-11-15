@@ -1,10 +1,11 @@
 import { Text, useStdout } from "ink";
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { visible } from "../core/permissions.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { Bindings } from "./bindings.js";
 import type { Mouse } from "./input.js";
 import { both, named } from "./keys.js";
+import { ThemeContext } from "./theme.js";
 
 // `/model`: every model of every provider that is set up (release 2 design, "The model picker").
 // Arrow keys move, Enter picks, Esc (or Ctrl-C) closes, and typing filters, since OpenRouter alone
@@ -56,6 +57,7 @@ export function ModelPicker({
   keys: { current: ((k: PickerKey) => void) | null }; // set at each drawing, for App to hand the list its keys
   bindings: Bindings; // for the help line's keys
 }) {
+  const { palette } = useContext(ThemeContext);
   // Each key reads and changes this at once: Ink can pass on several keys from one read of the
   // terminal before the screen is drawn again, and each must see what the one before it did.
   const state = useRef<{ filter: string; chosen: number } | null>(null);
@@ -125,7 +127,7 @@ export function ModelPicker({
   const key = (action: string, usual: string) => named(bindings, action, "Select", [usual])[0];
   const [up, down, enter, esc] = [key("select:previous", "up"), key("select:next", "down"), key("select:accept", "enter"), key("select:cancel", "escape")];
   const moves = both(up, down);
-  const help = [moves && `${moves} move`, enter && `${enter} picks`, esc && `${esc} closes`].filter(Boolean).join(" · ");
+  const help = [moves && `${moves} move`, enter && `${enter} pick`, esc && `${esc} close`].filter(Boolean).join(" · ");
 
   return (
     <>
@@ -141,8 +143,8 @@ export function ModelPicker({
           </Text>
         ),
       )}
-      {models.length === 0 && <Text color="gray">{filter ? "No models match." : "No models to pick from."}</Text>}
-      <Text color="gray" wrap="truncate-end">
+      {models.length === 0 && <Text color={palette.muted}>{filter ? "No models match." : "No models to pick from."}</Text>}
+      <Text color={palette.muted} wrap="truncate-end">
         Filter: {visible(filter) || "(type to filter)"} · {help}
       </Text>
     </>

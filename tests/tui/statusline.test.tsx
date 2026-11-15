@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { renderToString } from "ink";
 import { render } from "ink-testing-library";
-import { isValidElement, type ReactElement, type ReactNode } from "react";
+import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { describe as describeMessage, lastTurn, screen } from "../../src/tui/describe.js";
 import {
@@ -14,6 +14,7 @@ import {
   type StatusInfo,
   StatusLine,
 } from "../../src/tui/StatusLine.js";
+import { type Look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
 
 const info: StatusInfo = {
   lead: "anthropic:claude-opus-5-5",
@@ -31,59 +32,94 @@ const info: StatusInfo = {
   running: 0,
 };
 
-// Renders once and unmounts, so Ink instances do not pile up.
-function frame(i: StatusInfo, segments: Segment[]) {
-  const app = render(<StatusLine info={i} segments={segments} />);
+// The dark full look and its colours, as the App's tests get them (theme.ts).
+const on: Look = { light: false, color: true, full: true };
+const dark = palette(on);
+
+// The line in a theme, the dark full one unless given, as the App's context gives it (Task 13's code review: the status
+// line reads the theme itself).
+const themed = (line: ReactElement, theme: Theme = { look: on, palette: dark }) => <ThemeContext value={theme}>{line}</ThemeContext>;
+
+// Renders once and unmounts, so Ink instances do not pile up; at the test terminal's 100 columns unless given.
+function frame(i: StatusInfo, segments: Segment[], columns = 100) {
+  const app = render(themed(<StatusLine info={i} segments={segments} columns={columns} />));
   const shown = app.lastFrame();
   app.unmount();
   return shown;
 }
 
-// Every element the line hands Ink, with its props: the test terminal draws no colour codes (see conversation.test.tsx).
-function drawn(node: ReactNode): Record<string, unknown>[] {
-  if (Array.isArray(node)) return node.flatMap(drawn);
-  if (!isValidElement(node)) return [];
-  const props = node.props as { children?: ReactNode };
-  return [props, ...drawn(props.children)];
+// The line as a terminal `columns` wide draws it, where Ink would cut it at that width too.
+const lineAt = (columns: number, i: StatusInfo, segments: Segment[]) => renderToString(themed(<StatusLine info={i} segments={segments} columns={columns} />), { columns });
+
+// The line with its colours, chalk at level 3 so the palette's hex is drawn as it is, 1000 columns wide so no part is cut
+// (Task 13's code review: drawn, as the line reads the theme from its context).
+const ESC = String.fromCharCode(27);
+function coloured(i: StatusInfo, segments: Segment[], theme?: Theme): string {
+  const level = chalk.level;
+  chalk.level = 3;
+  try {
+    return renderToString(themed(<StatusLine info={i} segments={segments} columns={Infinity} />, theme), { columns: 1000 });
+  } finally {
+    chalk.level = level;
+  }
 }
+// A colour's code as chalk draws it at level 3: a hex one in 24-bit, a name (the mode's and the bar's) in the basic 16.
+const NAMED: Record<string, number> = { red: 31, green: 32, yellow: 33, magenta: 35 };
+const code = (colour: string) =>
+  colour.startsWith("#") ? `${ESC}[38;2;${[1, 3, 5].map((k) => parseInt(colour.slice(k, k + 2), 16)).join(";")}m` : `${ESC}[${NAMED[colour]}m`;
+const colourCodes = (shown: string) =>
+  [...shown.matchAll(new RegExp(`${ESC}\\[([\\d;]*)m`, "g"))].filter((m) => m[1]!.split(";").some((p) => (+p >= 30 && +p <= 49) || (+p >= 90 && +p <= 107)));
 
 // What a part says: its pieces' words, which are written nowhere else.
-const formatSegment = (s: LineSegment, i: StatusInfo) => pieces(s, i).map((p) => p.text).join("");
-
-// The line's elements: a Text per part, each holding its separator, its bar and its pieces' Texts.
-type Line = ReactElement<{ children: ReactElement<{ children: ReactNode[] }>[] }>;
+const formatSegment = (s: LineSegment, i: StatusInfo) => pieces(s, i, dark, on).map((p) => p.text).join("");
 
 describe("StatusLine's pieces", () => {
   // The colours are claude-hud's, by risk where it has no such part (release 5 design, "The status line's colours").
+  // The labels muted and the model in the accent colour (TUI design pass, Task 10).
   it("colour each part as the design's table says", () => {
-    expect(pieces("lead", info)).toEqual([{ text: "lead", dim: true }, { text: " " }, { text: "anthropic:claude-opus-5-5", color: "cyan" }]);
-    expect(pieces("context", { ...info, contextWindow: null })).toEqual([{ text: "ctx", dim: true }, { text: " 500.0k" }]);
-    expect(pieces("tokens", info)).toEqual([{ text: "12.3k " }, { text: "in", dim: true }, { text: " / 678 " }, { text: "out", dim: true }]);
-    expect(pieces("cost", info)).toEqual([{ text: "$0.42", color: "green" }]);
-    expect(pieces("cost", { ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0 })).toEqual([{ text: "ChatGPT plan", color: "green" }]);
+    expect(pieces("lead", info, dark, on)).toEqual([{ text: "lead", color: dark.muted }, { text: " " }, { text: "anthropic:claude-opus-5-5", color: dark.accent }]);
+    expect(pieces("context", { ...info, contextWindow: null }, dark, on)).toEqual([{ text: "ctx", color: dark.muted }, { text: " 500.0k" }]);
+    expect(pieces("tokens", info, dark, on)).toEqual([{ text: "12.3k " }, { text: "in", color: dark.muted }, { text: " / 678 " }, { text: "out", color: dark.muted }]);
+    expect(pieces("cost", info, dark, on)).toEqual([{ text: "$0.42", color: dark.success }]);
+    expect(pieces("cost", { ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0 }, dark, on)).toEqual([{ text: "ChatGPT plan", color: dark.success }]);
     for (const [mode, color] of [
       ["ask", "green"],
       ["project", "yellow"],
       ["auto", "magenta"],
       ["never", "red"],
     ] as const)
-      expect(pieces("mode", { ...info, mode })).toEqual([{ text: "perm", dim: true }, { text: " " }, { text: mode, color }]);
-    expect(pieces("errors", { ...info, errors: 0 })).toEqual([{ text: "0 errors", dim: true }]);
-    expect(pieces("errors", { ...info, errors: 1 })).toEqual([{ text: "1 error", color: "red" }]);
-    expect(pieces("project", info)).toEqual([
-      { text: "Agent Harness", color: "yellow" },
+      expect(pieces("mode", { ...info, mode }, dark, on)).toEqual([{ text: "perm", color: dark.muted }, { text: " " }, { text: mode, color }]);
+    expect(pieces("errors", { ...info, errors: 1 }, dark, on)).toEqual([{ text: "1 error", color: dark.error }]);
+    expect(pieces("project", info, dark, on)).toEqual([
+      { text: "Agent Harness", color: dark.warning },
       { text: " " },
-      { text: "git:(", color: "magenta" },
-      { text: "main", color: "cyan" },
-      { text: ")", color: "magenta" },
+      { text: "git:(", color: dark.muted },
+      { text: "main", color: dark.accent },
+      { text: ")", color: dark.muted },
     ]);
-    expect(pieces("project", { ...info, branch: null })).toEqual([{ text: "Agent Harness", color: "yellow" }]);
-    expect(pieces("time", info)).toEqual([{ text: "⏱ 14m", dim: true }]);
-    expect(pieces("tasks", { ...info, running: 2 })).toEqual([{ text: "2 running", color: "yellow" }]);
+    expect(pieces("project", { ...info, branch: null }, dark, on)).toEqual([{ text: "Agent Harness", color: dark.warning }]);
+    expect(pieces("time", info, dark, on)).toEqual([{ text: "⏱ 14m", dim: true }]);
+    expect(pieces("tasks", { ...info, running: 2 }, dark, on)).toEqual([{ text: "2 running", color: dark.warning }]);
+  });
+
+  // TUI design pass, Task 13: without colour the mode's and the context's own colours are left out too, as chalk does not
+  // read NO_COLOR, and every other piece has the palette's, none.
+  it("colour no part without colour", () => {
+    const off: Look = { light: false, color: false, full: false };
+    const none = palette(off);
+    const shown = SEGMENTS.filter((s): s is LineSegment => s !== "tools");
+    for (const mode of ["ask", "project", "auto", "never"] as const)
+      for (const context of [100_000, 750_000, 900_000]) {
+        const i = { ...info, mode, context, contextWindow: 1_000_000, errors: 1, running: 1 };
+        for (const s of shown) for (const p of pieces(s, i, none, off)) expect(p.color).toBeUndefined();
+        const line = coloured(i, shown, { look: off, palette: none });
+        expect(line).toContain("█");
+        expect(colourCodes(line)).toEqual([]);
+      }
   });
 
   it("escape the folder and the branch each, as the whole part was", () => {
-    expect(pieces("project", { ...info, project: "a\u001b[2Jb", branch: "x\u0007" }).map((p) => p.text)).toEqual([
+    expect(pieces("project", { ...info, project: "a\u001b[2Jb", branch: "x\u0007" }, dark, on).map((p) => p.text)).toEqual([
       "a\\u001b[2Jb",
       " ",
       "git:(",
@@ -94,7 +130,7 @@ describe("StatusLine's pieces", () => {
 
   // Found at the final review: a lead's id can come from the command line or the model list.
   it("escape the lead's id", () => {
-    expect(pieces("lead", { ...info, lead: "a\u001b[2Jb" }).map((p) => p.text)).toEqual(["lead", " ", "a\\u001b[2Jb"]);
+    expect(pieces("lead", { ...info, lead: "a\u001b[2Jb" }, dark, on).map((p) => p.text)).toEqual(["lead", " ", "a\\u001b[2Jb"]);
   });
 
   // contextBar's thresholds: yellow from 70% used, red from 85% (claude-hud's getContextColor).
@@ -104,33 +140,44 @@ describe("StatusLine's pieces", () => {
     [850_000, "15% left", "red"],
   ])("colour the context part and its bar alike at %d of 1M tokens used", (context, left, color) => {
     const at = { ...info, context, contextWindow: 1_000_000 };
-    expect(pieces("context", at)).toEqual([{ text: left, color }]);
-    const bar = drawn(StatusLine({ info: at, segments: ["context"] })).find((p) => typeof p.children === "string" && p.children.startsWith("█"));
-    expect(bar?.color).toBe(color);
+    expect(pieces("context", at, dark, on)).toEqual([{ text: left, color }]);
+    const line = coloured(at, ["context"]);
+    expect(line).toContain(`${code(color)}█`);
+    expect(line).toContain(`${code(color)}${left}`);
   });
 
-  it("are drawn with nothing inverse, the separators grey and the line's first and last spaces plain", () => {
-    const line = StatusLine({ info: { ...info, running: 1 }, segments: SEGMENTS });
-    const all = drawn(line);
-    expect(all.filter((p) => p.inverse)).toEqual([]);
-    // Nine parts on the line (every one but `tools`), so eight separators.
-    expect(all.filter((p) => p.children === " | ").map((p) => p.dimColor)).toEqual(Array(8).fill(true));
-    const parts = (line as Line).props.children;
-    expect(parts[0]!.props.children[0]).toBe(" ");
-    expect(parts.at(-1)!.props.children.at(-1)).toBe(" ");
+  it("are drawn with nothing inverse, the separators grey and the line's first space plain", () => {
+    const line = coloured({ ...info, running: 1 }, SEGMENTS); // never too long
+    expect(line).not.toContain(`${ESC}[7m`);
+    // Nine parts on the line (every one but `tools`), so eight separators, each where dim is on: a dim part beside one
+    // shares its run (the time's).
+    const dims: boolean[] = [];
+    let dim = false;
+    for (const part of line.split(new RegExp(`(${ESC}\\[[\\d;]*m)`))) {
+      if (part.startsWith(ESC)) {
+        const codes = part.slice(2, -1).split(";");
+        if (codes.includes("2")) dim = true;
+        if (codes.includes("22") || codes.includes("0")) dim = false;
+      } else dims.push(...Array<boolean>(part.split(" | ").length - 1).fill(dim));
+    }
+    expect(dims).toEqual(Array(8).fill(true));
+    // The first space before any code. The last Ink trims from the end of what it draws, so it is not seen here.
+    expect(line.startsWith(" ")).toBe(true);
   });
 
   it("are each drawn in their own colour, every piece of every part", () => {
     const shown = SEGMENTS.filter((s): s is LineSegment => s !== "tools");
     for (const i of [
       { ...info, running: 1 },
-      { ...info, contextWindow: null, errors: 0, mode: "never", branch: null, running: 1 },
+      { ...info, contextWindow: null, errors: 1, mode: "never", branch: null, running: 1 },
     ] satisfies StatusInfo[]) {
-      const parts = (StatusLine({ info: i, segments: shown }) as Line).props.children;
-      shown.forEach((s, n) => {
-        const texts = (parts[n]!.props.children.find(Array.isArray) as ReactElement[]).map((t) => t.props);
-        expect(texts).toEqual(pieces(s, i).map((p) => ({ children: p.text, color: p.color, dimColor: p.dim })));
-      });
+      const line = coloured(i, shown);
+      for (const s of shown)
+        for (const p of pieces(s, i, dark, on)) {
+          if (p.color) expect(line).toContain(`${code(p.color)}${p.text}`);
+          // A dim piece in a dim run, which the separator before it may have started.
+          if (p.dim) expect(line).toMatch(new RegExp(`${ESC}\\[2m[^${ESC}]*${p.text}`));
+        }
     }
   });
 });
@@ -140,6 +187,78 @@ describe("StatusLine's tasks part", () => {
     expect(frame({ ...info, running: 2 }, ["errors", "tasks"])).toBe(" 2 errors | 2 running");
     expect(frame(info, ["errors", "tasks"])).toBe(" 2 errors");
     expect(frame({ ...info, errors: 1 }, ["errors"])).toBe(" 1 error");
+  });
+});
+
+// TUI design pass, Task 10: `errors` at 0, `tokens` while both are 0, `cost` while 0 and known are left out.
+describe("StatusLine's parts at zero", () => {
+  it("leaves out the errors while there are none", () => {
+    expect(frame({ ...info, errors: 0 }, ["mode", "errors"])).toBe(" perm ask");
+    expect(frame({ ...info, errors: 1 }, ["mode", "errors"])).toBe(" perm ask | 1 error");
+  });
+
+  it("leaves out the tokens while both counts are 0, not while one is", () => {
+    expect(frame({ ...info, input: 0, output: 0 }, ["tokens", "mode"])).toBe(" perm ask");
+    expect(frame({ ...info, input: 0, output: 5 }, ["tokens", "mode"])).toBe(" 0 in / 5 out | perm ask");
+    expect(frame({ ...info, input: 5, output: 0 }, ["tokens", "mode"])).toBe(" 5 in / 0 out | perm ask");
+  });
+
+  it("leaves out a cost of 0 that is known, not one with calls of no known price, nor the ChatGPT plan", () => {
+    expect(frame({ ...info, cost: 0 }, ["cost", "mode"])).toBe(" perm ask");
+    expect(frame({ ...info, cost: 0, costUnknown: true }, ["cost", "mode"])).toBe(" $0.00+ | perm ask");
+    expect(frame({ ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0 }, ["cost", "mode"])).toBe(" ChatGPT plan | perm ask");
+  });
+
+  it("keeps every other part at its start", () => {
+    expect(frame({ ...info, input: 0, output: 0, cost: 0, errors: 0 }, SEGMENTS)).toBe(
+      " lead anthropic:claude-opus-5-5 | █████░░░░░ 50% left | perm ask | Agent Harness git:(main) | ⏱ 14m",
+    );
+  });
+});
+
+// TUI design pass, Task 10: too long for the width, parts drop from the end of the list one at a time, `lead` and `mode`
+// last, instead of the line being cut with `…`.
+describe("StatusLine's fit", () => {
+  const all = { ...info, running: 1 }; // every part shown: 152 columns
+  const full = " lead anthropic:claude-opus-5-5 | █████░░░░░ 50% left | 12.3k in / 678 out | $0.42 | perm ask"; // 94 with its last space
+
+  it.each([
+    [100, full],
+    [94, full],
+    [93, " lead anthropic:claude-opus-5-5 | █████░░░░░ 50% left | 12.3k in / 678 out | perm ask"],
+    [60, " lead anthropic:claude-opus-5-5 | $0.42 | perm ask | ⏱ 14m"], // the cost and the time put back
+    [40, " lead anthropic:claude-opus-5-5"], // nothing put back while `mode` is out
+  ])("drops parts from the end, putting back those that fit, at %d columns", (columns, shown) => {
+    const line = lineAt(columns, all, SEGMENTS);
+    expect(line).toBe(shown);
+    expect(line).not.toContain("…");
+  });
+
+  it("drops the parts listed before `lead` and `mode` before them, then the later of the two", () => {
+    const segments: Segment[] = ["time", "mode", "project", "lead", "errors"];
+    expect(lineAt(43, info, segments)).toBe(" perm ask | lead anthropic:claude-opus-5-5");
+    expect(lineAt(42, info, segments)).toBe(" perm ask");
+  });
+
+  // The user's "Put back what fits" (2026-11-14): a long part dropped does not take the short ones after it with it.
+  const long = { ...info, errors: 0, project: "my-rather-long-project-folder-name", branch: "feature/status-line-fit" };
+  const kept = " lead anthropic:claude-opus-5-5 | █████░░░░░ 50% left | 12.3k in / 678 out | $0.42 | perm ask"; // 94
+
+  it("puts back a part listed after a dropped one when it fits", () => {
+    expect(lineAt(120, long, SEGMENTS)).toBe(`${kept} | ⏱ 14m`); // the project dropped, the time back at 102
+  });
+
+  it("puts back, in the list's order, only the dropped parts that still fit after those put back before them", () => {
+    const busy = { ...long, running: 1 };
+    expect(lineAt(105, busy, SEGMENTS)).toBe(`${kept} | ⏱ 14m`); // the tasks part would make 114
+    expect(lineAt(114, busy, SEGMENTS)).toBe(`${kept} | ⏱ 14m | 1 running`);
+  });
+
+  it("counts a two-column character as two when it decides what drops", () => {
+    const wide = { ...info, project: "日本語のフォルダ" }; // 8 characters, 16 columns
+    const segments: Segment[] = ["mode", "project", "time"];
+    expect(lineAt(48, wide, segments)).toBe(" perm ask | 日本語のフォルダ git:(main) | ⏱ 14m");
+    expect(lineAt(47, wide, segments)).toBe(" perm ask | 日本語のフォルダ git:(main)");
   });
 });
 
@@ -188,7 +307,7 @@ describe("StatusLine", () => {
   it("shows only the chosen parts, and raw context size when the window is unknown", () => {
     const shown = frame({ ...info, contextWindow: null, costUnknown: true }, ["context", "cost"]);
     expect(shown).toContain("ctx 500.0k");
-    expect(shown).toContain("$0.42 + ?");
+    expect(shown).toContain("$0.42+");
     expect(shown).not.toContain("lead");
   });
 
@@ -197,33 +316,39 @@ describe("StatusLine", () => {
     expect(formatSegment("context", { ...info, context: 1_200_000, contextWindow: 1_000_000 })).toBe("0% left");
   });
 
+  // Choice D (TUI design pass, Task 10): a `+` after the cost means some calls had no known price.
   it("shows the ChatGPT plan where the cost would be, plus any API cost so far", () => {
     const plan = { ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0, costUnknown: false };
     expect(formatSegment("cost", plan)).toBe("ChatGPT plan");
     expect(formatSegment("cost", { ...plan, cost: 0.42 })).toBe("ChatGPT plan + $0.42");
-    expect(formatSegment("cost", { ...plan, costUnknown: true })).toBe("ChatGPT plan + ?");
-    expect(formatSegment("cost", { ...plan, cost: 0.42, costUnknown: true })).toBe("ChatGPT plan + $0.42 + ?");
+    expect(formatSegment("cost", { ...plan, costUnknown: true })).toBe("ChatGPT plan+");
+    expect(formatSegment("cost", { ...plan, cost: 0.42, costUnknown: true })).toBe("ChatGPT plan + $0.42+");
   });
 
-  it("stays on one line of the terminal, cutting off the end", () => {
+  it("marks a cost with calls of no known price with a `+`", () => {
+    expect(formatSegment("cost", info)).toBe("$0.42");
+    expect(formatSegment("cost", { ...info, costUnknown: true })).toBe("$0.42+");
+    expect(formatSegment("cost", { ...info, cost: 0, costUnknown: true })).toBe("$0.00+");
+  });
+
+  it("stays on one line of the terminal, cutting off the end of a part that is too long alone", () => {
     const shown = frame({ ...info, lead: `anthropic:${"x".repeat(200)}` }, SEGMENTS)!;
     expect(shown.split("\n")).toHaveLength(1);
-    expect(shown).toContain("…");
+    expect(shown).toMatch(/^ lead anthropic:x+…$/); // every other part dropped first
   });
 
-  // Ink cuts the whole line by display width, colour codes and all, whatever pieces it is drawn from; the cuts are
-  // release 4's, recorded from its inverse line before the pieces came in. Colour is turned on, as chalk finds none in
-  // a test's output (see conversation.test.tsx), so the cut is made across the codes as in a terminal.
+  // Ink cuts the line by display width, colour codes and all, whatever pieces it is drawn from: now only a part too long
+  // alone, as the others are dropped first (TUI design pass, Task 10). Colour is turned on, as chalk finds none in a
+  // test's output (see conversation.test.tsx), so the cut is made across the codes as in a terminal.
   it.each([
-    [30, "Agent Harness", " 2 errors | Agent Harness git…"], // within a piece
-    [26, "Agent Harness", " 2 errors | Agent Harness…"], // where the folder's piece ends
-    [13, "Agent Harness", " 2 errors | …"], // just after a separator, dropping the parts after it
-    [16, "日本語のフォルダ", " 2 errors | 日…"], // where the 16th column is half a two-column character
-  ])("cuts the line at %d columns, as release 4 did", (columns, project, shown) => {
+    [20, "Agent Harness", " Agent Harness git:…"], // within a piece
+    [15, "Agent Harness", " Agent Harness…"], // where the folder's piece ends
+    [6, "日本語のフォルダ", " 日本…"], // where the 6th column is half a two-column character
+  ])("cuts a lone part at %d columns", (columns, project, shown) => {
     const level = chalk.level;
     chalk.level = 1; // 1: chalk's basic 16 colours, enough for every colour the line uses
     try {
-      const line = renderToString(<StatusLine info={{ ...info, project }} segments={["errors", "project", "time"]} />, { columns });
+      const line = renderToString(themed(<StatusLine info={{ ...info, project }} segments={["project"]} columns={columns} />), { columns });
       expect(line).toMatch(/\u001b\[/);
       expect(line.replace(/\u001b\[\d+m/g, "")).toBe(shown);
     } finally {
@@ -251,13 +376,17 @@ describe("StatusLine", () => {
 });
 
 describe("describe", () => {
+  // The dark full look's colours, and the user's prompt as its three band lines (TUI design pass, Task 3).
+  const P = palette({ light: false, color: true, full: true });
+  const typed = (text: string) => [{ text: "", band: true, block: true }, { text: `› ${text}`, band: true, indent: 2 }, { text: "", band: true }];
+
   it("shows tool calls and failed results on one line each", () => {
-    const lines = describeMessage({ role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] });
-    expect(lines.map(screen)).toEqual([{ text: "  ⎿ exit code: 1", color: "red", oneLine: true }]);
+    const lines = describeMessage({ role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] }, P);
+    expect(lines.map(screen)).toEqual([{ text: "  ⎿ exit code: 1", color: "error", oneLine: true }]);
   });
 
   it("shows a call's main detail: the path for the file tools, the command's first line for shell", () => {
-    const shown = (name: string, input: unknown) => describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name, input }] })[0]!.text;
+    const shown = (name: string, input: unknown) => describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name, input }] }, P)[0]!.text;
     expect(shown("read_file", { path: "src/x.ts", offset: 5 })).toBe("● read_file src/x.ts");
     expect(shown("write_file", { path: "src/x.ts", content: "a" })).toBe("● write_file src/x.ts");
     expect(shown("edit_file", { path: "src/x.ts", old_text: "a", new_text: "b" })).toBe("● edit_file src/x.ts");
@@ -271,14 +400,14 @@ describe("describe", () => {
   it("leaves out or shortens the result rows of the calls given as answered, and only theirs", () => {
     const result = (callId: string) => ({ type: "tool_result", callId, output: `The user declined: run: ${callId}`, isError: true }) as const;
     const answered = new Map([["c1", null], ["c2", "You declined this."]]);
-    expect(describeMessage({ role: "user", parts: [result("c1"), result("c2"), result("c3")] }, answered)).toEqual([
-      { text: "  ⎿ You declined this.", color: "gray", oneLine: true },
-      { text: "  ⎿ The user declined: run: c3", color: "red", oneLine: true },
+    expect(describeMessage({ role: "user", parts: [result("c1"), result("c2"), result("c3")] }, P, answered)).toEqual([
+      { text: "  ⎿ You declined this.", color: "muted", oneLine: true },
+      { text: "  ⎿ The user declined: run: c3", color: "error", oneLine: true },
     ]);
   });
 
   it("does not show text a background task added for the lead", () => {
-    expect(describeMessage({ role: "user", parts: [{ type: "text", text: "go" }, { type: "text", text: "t3 finished: x", from: "tasks" }] })).toEqual([{ text: "> go", color: "cyan" }]);
+    expect(describeMessage({ role: "user", parts: [{ type: "text", text: "go" }, { type: "text", text: "t3 finished: x", from: "tasks" }] }, P)).toEqual(typed("go"));
   });
 
   // Release 6 plan, choice 22: one line, in the line's colour.
@@ -289,27 +418,27 @@ describe("describe", () => {
       { type: "image", id: 1, mediaType: "image/png", data },
       { type: "text", text: " please" },
     ] as const;
-    expect(describeMessage({ role: "user", parts: [...parts] })).toEqual([{ text: "> look at [Image #1] please", color: "cyan" }]);
+    expect(describeMessage({ role: "user", parts: [...parts] }, P)).toEqual(typed("look at [Image #1] please"));
   });
 
   it("puts a space between two pictures next to each other, so their markers do not run together", () => {
     const picture = (id: number) => ({ type: "image", id, mediaType: "image/png", data: Buffer.from([0x89, 0x50]) }) as const;
-    expect(describeMessage({ role: "user", parts: [picture(1), picture(2)] })).toEqual([{ text: "> [Image #1] [Image #2]", color: "cyan" }]);
+    expect(describeMessage({ role: "user", parts: [picture(1), picture(2)] }, P)).toEqual(typed("[Image #1] [Image #2]"));
   });
 
   it("does not show an unknown kind of part as a tool result", () => {
-    expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] })).toEqual([]);
+    expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] }, P)).toEqual([]);
   });
 
   it("escapes a one-line entry's line breaks too, so it stays one line", () => {
-    const [line] = describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name: "a\nb", input: 1 }] });
+    const [line] = describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name: "a\nb", input: 1 }] }, P);
     expect(screen(line!).text).toBe("● a⏎b 1");
   });
 });
 
 describe("lastTurn", () => {
   it("says there is none before any turn", () => {
-    expect(lastTurn([])).toEqual([{ text: "No turn yet, so no tool calls to show.", color: "gray" }]);
+    expect(lastTurn([])).toEqual([{ text: "No turn yet, so no tool calls to show.", color: "muted" }]);
   });
 
   it("shows the latest turn's tool calls only, each with its full input and result, grey", () => {
@@ -323,9 +452,9 @@ describe("lastTurn", () => {
       { role: "assistant", parts: [{ type: "tool_call", id: "c2", name: "shell", input: { command: "npm test" } }] },
     ]);
     expect(lines).toEqual([
-      { text: "Last turn: 2 tool calls", color: "gray" },
-      { text: '● read_file {\n  "path": "a"\n}\n  ⎿ line 1\nline 2', color: "gray" },
-      { text: '● shell {\n  "command": "npm test"\n}\n  ⎿ (not finished)', color: "gray" }, // the turn is still running
+      { text: "Last turn: 2 tool calls", color: "muted" },
+      { text: "● read_file\n  path: a\n  ⎿ line 1\nline 2", color: "muted" }, // name: value lines (TUI design pass, Task 12)
+      { text: "● shell\n  command: npm test\n  ⎿ (not finished)", color: "muted" }, // the turn is still running
     ]);
   });
 
@@ -336,8 +465,8 @@ describe("lastTurn", () => {
       { role: "user", parts: [{ type: "tool_result", callId: "c0", output: "ok", isError: false }, { type: "text", text: "t2 finished", from: "tasks" }] },
       { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "shell", input: {} }] },
     ]);
-    expect(lines[0]).toEqual({ text: "Last turn: 2 tool calls", color: "gray" });
-    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "t3 finished", from: "tasks" }] }])[0]).toEqual({ text: "Last turn: 0 tool calls", color: "gray" });
+    expect(lines[0]).toEqual({ text: "Last turn: 2 tool calls", color: "muted" });
+    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "t3 finished", from: "tasks" }] }])[0]).toEqual({ text: "Last turn: 0 tool calls", color: "muted" });
   });
 
   it("is cleaned of escape codes when shown, like every scrollback line", () => {
@@ -346,7 +475,7 @@ describe("lastTurn", () => {
       { role: "assistant", parts: [{ type: "tool_call", id: "c", name: "shell", input: {} }] },
       { role: "user", parts: [{ type: "tool_result", callId: "c", output: "a\u001b]52;c;eA==\u0007", isError: true }] },
     ]);
-    expect(screen(call!).text).toBe("● shell {}\n  ⎿ a\\u001b]52;c;eA==\\u0007");
+    expect(screen(call!).text).toBe("● shell\n  ⎿ a\\u001b]52;c;eA==\\u0007");
   });
 });
 

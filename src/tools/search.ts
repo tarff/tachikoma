@@ -107,10 +107,11 @@ function capped(lines: string[], noun: string, beyond = 0): string {
 }
 
 // Paths inside the project are shown relative to it, with forward slashes, as the model gives them to
-// read_file; others in full.
-const shownPath = (base: string, real: string) => {
-  const rel = path.relative(base, real);
-  return rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) ? real : posix(rel);
+// read_file; others in full. The window names an edit's or a write's file so too (describe.ts, fileShown; TUI design
+// pass, Task 8), by `paths`' rules, as the sandbox's folder is a Linux path on any host.
+export const shownPath = (base: string, real: string, paths: path.PlatformPath = path) => {
+  const rel = paths.relative(base, real);
+  return rel === ".." || rel.startsWith(`..${paths.sep}`) || paths.isAbsolute(rel) ? real : rel.split(paths.sep).join("/");
 };
 
 // The files `walked` gives whose path matches `pattern`, as shown, sorted: LocalWorkspace's find.

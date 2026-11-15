@@ -177,7 +177,7 @@ describe("tachi", { timeout: 15_000 }, () => {
     writeFileSync(path.join(proj, "CLAUDE.md"), `@${path.join(top, "secret.md")}`);
     const r = tachi("--lead", "ollama:none", "-p", "hi", { cwd: proj, TACHI_INSTRUCTIONS_TOP: top });
     expect(r.stderr).toContain(`note: 1 instruction file from outside the project left out, since nobody can approve it in -p mode: ${path.join(top, "secret.md")}, imported by ${path.join(proj, "CLAUDE.md")}`);
-    expect(r.stderr).not.toContain("Instructions:");
+    expect(r.stderr).not.toContain("Instructions left out");
   });
 
   it("lists --classic and /screen in the help", () => {

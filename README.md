@@ -1,8 +1,9 @@
 # Tachikoma
 
 > **Work in progress.** Release 8c of 15 is done (the third of release 8's five parts), and
-> background commands after it; 8c's second half, 8c-2, servers inside the sandbox and allowed
-> sites, comes next, and the rest is being built.
+> background commands and a new look for the screen after it; drawing replies' markdown comes
+> next, then a fuller system prompt and 8c's second half, 8c-2, servers inside the sandbox and
+> allowed sites, and the rest is being built.
 > Expect missing features and changes that break things, and don't rely on it for real work yet.
 
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
@@ -18,7 +19,7 @@ actions) and a check on dangerous commands; saved sessions you can reopen, with 
 too long for the model shortened into a summary; hooks, your own commands run at set moments
 of a session, in Claude Code's format; and MCP servers, whose tools the model can use, set up as
 in Claude Code. After 8c came background commands, shell commands that keep running while the
-model works. The command is `tachi`. So far it has been tested
+model works, and a new look for the screen. The command is `tachi`. So far it has been tested
 on Windows 11 only; release 14 adds testing on Linux and macOS.
 
 ## What it does
@@ -91,9 +92,10 @@ on Windows 11 only; release 14 adds testing on Linux and macOS.
   shows it.
 - **Your instruction files:** each session reads `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` (or
   `CODEX_HOME`'s), and the `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md` of
-  every folder from the top of the drive down to the project, with their `@` imports. A grey line at
-  the start lists them. A file they lead to outside the project asks first, before it is opened,
-  unless it is your own; Tachikoma's data folder is never read.
+  every folder from the top of the drive down to the project, with their `@` imports. The start-up
+  box names the ones read, and a grey line under it any left out, and why. A file they lead to
+  outside the project asks first, before it is opened, unless it is your own; Tachikoma's data
+  folder is never read.
 - **Your keys and login are kept from the model's tools, against accidents:** shell commands do not
   get the API keys, and the file tools refuse Tachikoma's own data folder, where the ChatGPT login
   is kept, and the [settings](#settings) and [keys](#keys) files. Without the sandbox, a shell
@@ -106,6 +108,10 @@ on Windows 11 only; release 14 adds testing on Linux and macOS.
   bar; the mouse selects and copies; Ctrl+O (the last turn's tool calls in full) and `/tasks t3`
   (a subagent's full record) open in place, with a search. Quitting leaves the terminal as it was.
   `--classic` keeps the terminal's own scrollback instead. See [Full screen](#full-screen).
+- **A look of its own** (after background commands): an empty line before each message, reply and
+  tool call, your messages on a grey band, `●` before replies and tool calls, lines above and below
+  the prompt, and at launch a box with the Tachikoma and what loaded; a dark and a light look, and
+  none with `NO_COLOR`. See [How the screen looks](#how-the-screen-looks).
 - **A settings file,** `~/.tachikoma/settings.json`, for every option, so a plain `tachi` starts the
   way you want; edits apply while it runs. See [Settings](#settings).
 - **Keys you can move:** every key is a named action, and a keys file in Claude Code's format
@@ -116,9 +122,11 @@ on Windows 11 only; release 14 adds testing on Linux and macOS.
   [Stash](#stash), [Pictures](#pictures) and [Vim mode](#vim-mode).
 - **A status line** showing the lead, how much of the context window is left (with a bar), tokens,
   cost (or "ChatGPT plan"), mode, error count, the project folder and git branch, how long the
-  session has run, and how many subagents and background commands run, its parts coloured as
-  [claude-hud](https://github.com/jarrodwatts/claude-hud)'s are; a line under it counts the turn's
+  session has run, and how many subagents and background commands run, its context bar coloured as
+  [claude-hud](https://github.com/jarrodwatts/claude-hud)'s is; a line under it counts the turn's
   tool calls. `--status` picks which parts to show. Subagents' tokens and cost count in the totals.
+  A part with nothing to say yet, such as no errors, is left out, and when the line is too long for
+  the screen, parts drop from the end of the `--status` list, the lead and the mode last.
 - **Headless runs:** `-p "<prompt>"` runs one prompt, prints the answer and exits. Add `--json` to
   get every event as one JSON line. Details below.
 - **An error log:** every failure, and every refusal another model answered, is written to a
@@ -666,7 +674,7 @@ In a session:
   instruction files read again: `Started a new session; the last one is kept (tachi --resume lists
   it).`
 - **`/resume`** shows the same list in the prompt's place, without this session (`↑↓ move · Enter
-  opens · Esc closes`), and switches this window to the one picked, with that session's saved
+  open · Esc close`), and switches this window to the one picked, with that session's saved
   lead. A session open in another window opens as a copy. With nothing else saved: `No other saved
   sessions in this folder.`
 - **`/branch [name]`** copies this session under a new id and carries on in the copy, named as
@@ -689,7 +697,7 @@ In a session:
 
 `/export <file>` writes the conversation as text: a heading over each message, `You:` or
 `Tachikoma (<lead>):`, the lead being the one that wrote that reply; each tool call as `● <name>
-<input as JSON>`, with its result under it after `⎿`, as Ctrl+O shows it; each picture as its
+<input as JSON>`, with its result under it after `⎿`; each picture as its
 `[Image #1]` marker; and the notes about background subagents and commands the model was given,
 under `Subagents:`. The file is UTF-8 with LF line endings throughout. After a shortening, it is
 the conversation from the summary on; the earlier messages are in the transcript only.
@@ -767,6 +775,56 @@ tool calls.
   shortening for that size fails while the request still fits the window, the red line shows and
   the request is sent as it is; the size is tried again at the next prompt.
 
+## How the screen looks
+
+The look is the same in full screen and classic.
+
+- **At launch,** a rounded box headed with Tachikoma's version draws the Tachikoma beside what
+  loaded: `lead`, `folder` with its git branch, `mode` with the sandbox, `read` (the instruction
+  files read), `mcp` (the MCP servers starting) and `hooks` (how many are in force). A row with
+  nothing to show is left out, a value too long for the box is cut with `…`, and a long list of
+  files ends `and N more`. Under it: `? for shortcuts · / for commands`. The Tachikoma is drawn in
+  coloured blocks where the terminal shows full colour and the window is wide enough, in plain
+  characters where it is not or with `NO_COLOR`, and not at all where even those and the list do
+  not fit side by side. After `-c` or `-r` the
+  box comes above the conversation brought back; `/clear` and `/resume` do not draw it again, and
+  `-p` runs have none. The hint row under the prompt stays blank until you first type, since the
+  box's line says the same; after `-c` or `-r` it shows `? for shortcuts` from the start.
+- **Blocks:** your message, a reply, a tool call with its result, a notice, an error and a
+  command's output each have an empty line before them.
+- **Your messages** sit on a grey band across the screen, `› ` before the text, with a band row
+  above and below. Without full colour the band is not drawn, and the rows are plain.
+- **Replies and tool calls** start with a blue `● `, a reply's later rows lined up under its first
+  word. A call's result is under it after `⎿`: `ok` in grey, a failure in red.
+- **Notices,** such as an MCP server's lines or `Conversation shortened`, and the rows that sum up
+  quiet calls, such as `Read 2 files`, start with a grey `● `; the session's errors start with a
+  red `✗`, and other problems, such as an unknown command, are a red line.
+- **An edit's preview** shows its added lines in green and its removed lines in red, each on a
+  faint tint of its colour with full colour.
+- **The permission question** is in a rounded grey box, with its red lines and its keys inside.
+- **The prompt** has a grey line across the screen above it and one below; the hint row and the
+  status line go under the lower one. On a terminal too short for everything, the two lines go
+  first.
+- **Light or dark:** `"theme"` in the [settings file](#settings) is `"auto"` (the default),
+  `"dark"` or `"light"`. It picks the shades of the band, the tints and the other colours for a
+  dark or a light background, with full colour only; with fewer colours, the terminal's own palette
+  draws them. `"auto"` reads `COLORFGBG`, which some terminals set to their text and background
+  colour numbers: a background of 7 or 15 is light, any other dark. Where it is not set, as in
+  Windows Terminal, `"auto"` is dark, so a light terminal needs `"theme": "light"`. Nothing is sent
+  to the terminal to ask. A change applies at the next launch. The Tachikoma has its own darker
+  shades in the light look.
+- **How many colours:** full colour where the terminal has it, by the check Ink itself uses
+  (Windows 10 build 14931 or later, or `COLORTERM=truecolor`, among other signs); with 256 or 16
+  colours, the terminal's own green, red, yellow, grey, blue and magenta, with no band, no tints
+  and the plain Tachikoma.
+- **`NO_COLOR`,** set to anything but empty, turns colour off: no band, the plain Tachikoma, and
+  the context bar's fill shown by `█` and `░` alone. Bold and dim text stay.
+- **Resizing:** in full screen the conversation wraps again at the new width. The start-up box is
+  drawn once, for the width at launch: on a narrower screen each of its rows is cut with `…` rather
+  than wrapped, as tool rows are, and copying a cut row gives the whole row; wider again, it shows
+  whole. In classic, what is printed belongs to the terminal's scrollback, and a resize is the
+  terminal's own.
+
 ## Full screen
 
 Tachikoma starts on the terminal's alternate screen (a separate screen the terminal keeps, which
@@ -806,7 +864,9 @@ started.
   or Home and End go to the top and bottom, and the wheel, the scroll bar, the scroll keys and
   selecting work as in the conversation. q, Esc or Ctrl+O close the view. Ctrl-C stops a turn
   that is running and leaves the view open; with nothing running it closes the view. A permission
-  question closes the view, so y and n go to the question.
+  question closes the view, so y and n go to the question. Each call's input shows as `name: value`
+  lines, a text with line breaks on lines of its own under its name, and a shell command's empty
+  `--- stderr ---` or `--- stdout ---` part is left out.
 - **Searching the detail view:** `/` searches as you type, ignoring case. Esc while typing drops the
   search, and Enter keeps it, or drops it when nothing matches; once it is kept, n and N go to the
   next and previous match. With a search kept, q, Esc and Ctrl+O still close the view.
@@ -861,6 +921,7 @@ Every entry is optional; one left out keeps its default.
 | `status` | the status line's parts, as `--status`, as a list: `["lead", "context"]` | all of them | at once |
 | `screen` | `"full"` or `"classic"`, as `--classic` | `"full"` | as `/screen`, waiting where `/screen` waits |
 | `scrollSpeed` | lines a wheel notch scrolls, as `--scroll-speed` | 3 | from the next notch |
+| `theme` | `"auto"`, `"dark"` or `"light"`: the colours' shades for a dark or a light background, see [How the screen looks](#how-the-screen-looks) | `"auto"` | at the next launch only, with the same kind of line as `"mode"` (below) |
 | `editorMode` | `"vim"` or `"normal"`: see [Vim mode](#vim-mode) | `"normal"` | at once, as `/vim` |
 | `vimInsertModeRemaps` | two characters that leave vim's INSERT mode, mapped to `"<Esc>"` | none | from the next key |
 | `editor` | the command for [the external editor](#the-external-editor) | Notepad on Windows, `vi` elsewhere | from the next Ctrl+G, `/settings` or `/keybindings` |
@@ -1879,8 +1940,9 @@ subagent still runs in the foreground; after the answer, `-p` waits only for bac
 | Kimi (Moonshot) | `kimi:` | `MOONSHOT_API_KEY` |
 | Ollama | `ollama:` | none; it talks to `http://localhost:11434` |
 
-Costs are shown only for models with a known price. Others show `?`; Ollama counts as free, and a
-ChatGPT plan shows as "ChatGPT plan".
+Costs are shown only for models with a known price. A `+` after the cost means some calls had no
+known price, so the real cost is higher (`$0.00+` when no call had one); Ollama counts as free,
+and a ChatGPT plan shows as "ChatGPT plan".
 
 For `openai:` leads at OpenAI's own address (no `OPENAI_BASE_URL`, or `https://api.openai.com/v1`),
 the status line shows how much of the context window is left from a table of OpenAI's model pages
@@ -2327,6 +2389,16 @@ it says so.
   `"autoCompactWindow"` and a typed `/autocompact` replace each other, the later one winning.
 - **`tachi -p` says nothing when it shortens,** and `-p --json` has no line for the shortening
   itself, only the summary request's `usage` line, marked `"summary":true`.
+
+### The look's limits
+
+- **A light terminal that does not set `COLORFGBG`,** Windows Terminal among them, gets the dark
+  look until `"theme"` is set to `"light"`.
+- **A font without block or box-drawing characters** shows the Tachikoma and the boxes as gaps or
+  squares. `NO_COLOR` gives the plain Tachikoma on any terminal; there is no setting for it alone.
+- **A terminal set to draw such characters two columns wide,** as some East Asian setups are,
+  wraps the prompt's lines, the boxes' borders and the Tachikoma's rows, and the rows under them
+  are drawn out of place.
 
 ### Hooks' limits
 

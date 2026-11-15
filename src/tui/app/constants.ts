@@ -68,7 +68,7 @@ export const SESSION_WORDS = {
   noOther: "No other saved sessions in this folder.",
   nothingToBranch: "Nothing to branch yet: this session has no prompt.",
   unsaved: (command: string) => `${command} needs this session saved, and saving it stopped.`,
-  closes: "closes",
+  closes: "close", // a plain verb, as every hint's since the TUI design pass's Task 11 (audit 8)
 };
 // Release 8a plan, Task 8's words, approved by the user on 2026-11-06: the `/` menu's note, and a file that cannot be
 // written for another reason than being there already.
@@ -103,7 +103,7 @@ export const names = (waiting: { id: string; kind: Task["kind"] }[]) => {
   ].join(" and ");
 };
 export const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
-export const gray = (text: string): Line => ({ text, color: "gray" });
+export const gray = (text: string): Line => ({ text, color: "muted" });
 // Characters as a person sees them, as the prompt counts them (release 5 plan, choice 7), counted without an array of
 // them, as /export's copy is the whole conversation (release 8a plan, Task 8).
 export const characters = (text: string) => {
@@ -132,7 +132,7 @@ export const isCommand = (text: string) =>
 export const LIVE = [
   "lead", "mode", "sandbox", "network", "judge", "effort", "fallback", "worker", "maxTasks",
   "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor", "dangerousCommands", "autoCompactWindow",
-  "hooks", "disableAllHooks", "mcpServers",
+  "hooks", "disableAllHooks", "mcpServers", "theme",
 ] as const;
 export const FROM = ` (from ${SETTINGS})`;
 

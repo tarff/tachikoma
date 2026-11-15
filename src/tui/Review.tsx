@@ -2,7 +2,7 @@ import { constants } from "node:buffer";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Box, Text, useInput, usePaste, useWindowSize } from "ink";
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import type { Protection } from "../core/permissions.js";
 import { errorText } from "../core/types.js";
 import { protectedPart } from "../safety/protected.js";
@@ -14,6 +14,7 @@ import { type Bindings, type Context, strokeOf } from "./bindings.js";
 import { type Line, screen } from "./describe.js";
 import { type Detail, DetailView, opened } from "./DetailView.js";
 import { both, named, pieces } from "./keys.js";
+import { ThemeContext } from "./theme.js";
 import { FOLLOWING, scrollBy, scrollTo, wrap } from "./view.js";
 
 // The review of a copy's changes (release 7 plan, Task 20; choices 26, 27 and 109): the list of what the box changed,
@@ -132,6 +133,7 @@ export function Review({
   protection: Protection;
   read?: ToReview; // the changes leave() has read already, so they are not read twice (copies.ts, dropIfNothing)
 }) {
+  const { palette } = useContext(ThemeContext);
   const { session, folder, manifest } = copy;
   const { columns, rows } = useWindowSize();
   const h = Math.max(1, height ?? rows - 1);
@@ -293,7 +295,7 @@ export function Review({
       lines = [{ text: diffUnread(errorText(err)) }];
     }
     if (s.stage !== "list" || s.at !== at || s.discard || s.diff) return;
-    s.diff = opened([{ text: `${r.change.kind} ${r.change.path}`, color: "gray", oneLine: true }, ...lines], columns - 1);
+    s.diff = opened([{ text: `${r.change.kind} ${r.change.path}`, color: "muted", oneLine: true }, ...lines], columns - 1);
     again();
   };
 
@@ -389,7 +391,7 @@ export function Review({
     return (
       <>
         <DetailView detail={s.diff} height={viewHeight} selection={null} />
-        <Text color="gray" wrap="truncate-end">
+        <Text color={palette.muted} wrap="truncate-end">
           {keys}
         </Text>
       </>
@@ -465,13 +467,13 @@ export function Review({
             </Box>
           </Box>
         ) : (
-          <Text key={s.first + i} color="gray" inverse={chosen} wrap="truncate-end">
+          <Text key={s.first + i} color={palette.muted} inverse={chosen} wrap="truncate-end">
             {shown(item.note)}
           </Text>
         );
       })}
       {foot.map((row, i) => (
-        <Text key={`f${i}`} color={s.discard || asking ? "yellow" : undefined} wrap="truncate-end">
+        <Text key={`f${i}`} color={s.discard || asking ? palette.warning : undefined} wrap="truncate-end">
           {row}
         </Text>
       ))}

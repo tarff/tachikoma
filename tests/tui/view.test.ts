@@ -1,6 +1,7 @@
 import stringWidth from "string-width";
 import { describe, expect, it } from "vitest";
-import type { Line } from "../../src/tui/describe.js";
+import { type Line, screen } from "../../src/tui/describe.js";
+import { placeAt, span, textOf } from "../../src/tui/select.js";
 import { arrived, bar, barFirst, first, FOLLOWING, notch, Rows, scrollBy, scrollTo, unseenBelow, wrap, type KeptLine, type View } from "../../src/tui/view.js";
 
 const texts = (rows: { text: string }[]) => rows.map((r) => r.text);
@@ -79,11 +80,11 @@ function mixed(n: number): Line[] {
 describe("Rows", () => {
   it("splits each line at its line breaks into lines of their own, the same colour", () => {
     const rows = new Rows(10);
-    rows.add([{ text: "a\nb", color: "red" }, { text: "c" }]);
-    const kept: KeptLine[] = [{ text: "a", color: "red" }, { text: "b", color: "red" }, { text: "c" }];
+    rows.add([{ text: "a\nb", color: "error" }, { text: "c" }]);
+    const kept: KeptLine[] = [{ text: "a", color: "error" }, { text: "b", color: "error" }, { text: "c" }];
     expect(rows.lines).toEqual(kept);
     expect(rows.total).toBe(3);
-    expect(rows.row(1)).toEqual({ line: 1, start: 0, end: 1, text: "b", color: "red" });
+    expect(rows.row(1)).toEqual({ line: 1, start: 0, end: 1, text: "b", color: "error" });
   });
 
   it("draws each row's text when asked: a tab as spaces, a one-line entry cut", () => {
@@ -98,7 +99,7 @@ describe("Rows", () => {
   it("replaces lines in place, the rows after them moving, each split and wrapped as added", () => {
     const rows = new Rows(10);
     rows.add([{ text: "a" }, { text: "Read 2 files", oneLine: true }, { text: "b c d e f g h" }]);
-    rows.replace(1, 1, [{ text: "● one\n● two" }, { text: "  ⎿ ok", color: "gray" }]);
+    rows.replace(1, 1, [{ text: "● one\n● two" }, { text: "  ⎿ ok", color: "muted" }]);
     expect(rows.lines.map((l) => l.text)).toEqual(["a", "● one", "● two", "  ⎿ ok", "b c d e f g h"]);
     expect(rows.total).toBe(6); // the last line's two rows
     expect(rows.row(5)).toEqual({ line: 4, start: 10, end: 13, text: "g h" });
@@ -151,6 +152,97 @@ describe("Rows", () => {
     expect(rows.width).toBe(3);
     expect(rows.total).toBe(4);
     expect(rows.rowOf({ line: 0, offset: 7 })).toBe(2);
+  });
+});
+
+// TUI design pass, Task 2: lines that carry styles, a band and an indent.
+describe("styled lines", () => {
+  it("keeps a span over the characters it covered once screen() has escaped a control character, and a line break", () => {
+    const shown = screen({ text: "a\u001bb c", styles: [{ start: 1, end: 2, bold: true }, { start: 4, end: 5, color: "red" }] });
+    expect(shown.text).toBe("a\\u001bb c");
+    expect(shown.styles).toEqual([{ start: 1, end: 7, bold: true }, { start: 9, end: 10, color: "red" }]);
+    const broken = screen({ text: "x\r\nyz", styles: [{ start: 3, end: 4, italic: true }], band: true, indent: 2, block: true });
+    expect(broken).toEqual({ text: "x\nyz", styles: [{ start: 2, end: 3, italic: true }], band: true, indent: 2, block: true });
+    expect(screen({ text: "a\u0007b", oneLine: true, styles: [{ start: 2, end: 3, dim: true }] }).styles).toEqual([{ start: 7, end: 8, dim: true }]);
+  });
+
+  it("puts a span across a wrap point and a line break on the rows it reaches, and carries the band", () => {
+    const rows = new Rows(9);
+    rows.add([{ text: "the quick brown\nfox", styles: [{ start: 4, end: 17, bold: true }], band: true }]);
+    expect(rows.lines).toEqual([
+      { text: "the quick brown", styles: [{ start: 4, end: 15, bold: true }], band: true },
+      { text: "fox", styles: [{ start: 0, end: 1, bold: true }], band: true },
+    ]);
+    expect(rows.row(0)).toEqual({ line: 0, start: 0, end: 9, text: "the quick", styles: [{ start: 4, end: 15, bold: true }], band: true });
+    expect(rows.row(1)).toMatchObject({ line: 0, start: 9, end: 15, text: " brown" });
+    expect(rows.row(2)).toEqual({ line: 1, start: 0, end: 3, text: "fox", styles: [{ start: 0, end: 1, bold: true }], band: true });
+  });
+
+  // Choice P3: the lead (the first `indent` characters) on the first row, the rest wrapped at the width less the indent.
+  const reply = `● ${Array.from({ length: 30 }, () => "word").join(" ")}`; // 151 characters
+  it("wraps an indented line's first row at the full width and its later rows at the width less the indent, at 50 columns", () => {
+    const rows = new Rows(50);
+    rows.add([{ text: reply, indent: 2 }]);
+    const nine = "word ".repeat(9);
+    expect(Array.from({ length: rows.total }, (_, i) => rows.row(i))).toEqual([
+      { line: 0, start: 0, end: 47, text: `● ${nine}` },
+      { line: 0, start: 47, end: 92, text: `  ${nine}`, indent: 2 },
+      { line: 0, start: 92, end: 137, text: `  ${nine}`, indent: 2 },
+      { line: 0, start: 137, end: 151, text: "  word word word", indent: 2 },
+    ]);
+    for (let i = 0; i < rows.total; i++) expect(stringWidth(rows.row(i).text.trimEnd())).toBeLessThanOrEqual(50);
+  });
+
+  it("wraps an indented line at 100 columns", () => {
+    const rows = new Rows(100);
+    rows.add([{ text: reply, indent: 2 }]);
+    expect(Array.from({ length: rows.total }, (_, i) => rows.row(i))).toEqual([
+      { line: 0, start: 0, end: 97, text: `● ${"word ".repeat(19)}` },
+      { line: 0, start: 97, end: 151, text: `  ${Array.from({ length: 11 }, () => "word").join(" ")}`, indent: 2 },
+    ]);
+  });
+
+  it("indents every row of the lines after an indented line's line breaks, wrapped at the width less the indent", () => {
+    const rows = new Rows(10);
+    rows.add([{ text: "› one\nabc defgh ij", indent: 2 }]);
+    expect(rows.lines).toEqual([
+      { text: "› one", indent: 2, lead: true },
+      { text: "abc defgh ij", indent: 2 },
+    ]);
+    expect(Array.from({ length: rows.total }, (_, i) => rows.row(i).text)).toEqual(["› one", "  abc ", "  defgh ij"]);
+    expect(rows.rowOf({ line: 1, offset: 4 })).toBe(2);
+  });
+
+  it("gives a click on an indented row the character under it, the indent the row's first, and copies no indent spaces", () => {
+    const rows = new Rows(50);
+    rows.add([{ text: reply, indent: 2 }]);
+    expect(placeAt(rows, 1, 0)).toEqual({ pos: { line: 0, offset: 47 }, past: false }); // in the indent
+    expect(placeAt(rows, 1, 2)).toEqual({ pos: { line: 0, offset: 47 }, past: false });
+    expect(placeAt(rows, 1, 5)).toEqual({ pos: { line: 0, offset: 50 }, past: false });
+    expect(placeAt(rows, 0, 2)).toEqual({ pos: { line: 0, offset: 2 }, past: false }); // the first row: the lead, then the text
+    const [a, b] = span(rows, { row: 0, x: 42 }, { row: 1, x: 5 });
+    expect([a, b]).toEqual([{ line: 0, offset: 42 }, { line: 0, offset: 51 }]);
+    expect(textOf(rows.lines, a, b)).toBe("word word");
+  });
+
+  // Task 7's review: an edit's preview has a span for each of its lines, so a long one has thousands. Each kept line's
+  // spans are found by stepping through them, not by looking at every span for every kept line: the spans' fields read
+  // grow with the lines, where the quadratic way read 2 for each span on each line (180,000 here).
+  it("finds each kept line's spans by stepping through them, not by reading every span for each line", () => {
+    const n = 300;
+    const text = Array.from({ length: n }, (_, k) => `- line ${k}`).join("\n");
+    let reads = 0;
+    let start = 0;
+    const styles = text.split("\n").map((l) => {
+      const s = { start, end: Math.min(start + l.length + 1, text.length), color: "red" as const };
+      start = s.end;
+      return new Proxy(s, { get: (t, k) => (reads++, t[k as keyof typeof t]) });
+    });
+    const rows = new Rows(100);
+    rows.add([{ text, styles }]);
+    expect(rows.lines).toHaveLength(n);
+    expect(rows.lines[299]).toEqual({ text: "- line 299", styles: [{ start: 0, end: 10, color: "red" }] });
+    expect(reads).toBeLessThan(20 * n);
   });
 });
 

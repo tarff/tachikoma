@@ -1,17 +1,19 @@
 import { Text } from "ink";
+import { useContext } from "react";
 import { visible } from "../core/permissions.js";
 import type { TodoItem, TodoStatus } from "../tools/todo.js";
+import { type Role, ThemeContext } from "./theme.js";
 
 export interface TodoRow {
   mark: string;
   text: string;
-  color?: "yellow" | "gray";
+  color?: Role;
 }
 
 const MARKS: Record<TodoStatus, Omit<TodoRow, "text">> = {
   pending: { mark: "☐" },
-  in_progress: { mark: "◐", color: "yellow" },
-  done: { mark: "☑", color: "gray" },
+  in_progress: { mark: "◐", color: "warning" },
+  done: { mark: "☑", color: "muted" },
 };
 
 // The list shows while any item is not done (release 4 design, "On screen").
@@ -28,13 +30,14 @@ export function todoRows(items: TodoItem[], rows: number): TodoRow[] {
   const doing = items.findIndex((i) => i.status === "in_progress");
   const at = Math.max(0, doing === -1 ? items.findIndex((i) => i.status !== "done") : doing);
   const start = Math.max(0, Math.min(at - Math.floor(shown / 2), items.length - shown));
-  const more: TodoRow[] = rows > 1 ? [{ mark: "", text: `+${items.length - shown} more`, color: "gray" }] : [];
+  const more: TodoRow[] = rows > 1 ? [{ mark: "", text: `+${items.length - shown} more`, color: "muted" }] : [];
   return [...items.slice(start, start + shown).map(row), ...more];
 }
 
 export function TodoList({ rows }: { rows: TodoRow[] }) {
+  const { palette } = useContext(ThemeContext);
   return rows.map((r, i) => (
-    <Text key={i} color={r.color} wrap="truncate-end">
+    <Text key={i} color={r.color && palette[r.color]} wrap="truncate-end">
       {r.mark ? `${r.mark} ${r.text}` : r.text}
     </Text>
   ));

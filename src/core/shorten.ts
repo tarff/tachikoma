@@ -188,7 +188,7 @@ function middle(part: Message[]): number | undefined {
   return best;
 }
 
-// The latest round as text: the reply's words, then each call with its result under it as Ctrl+O shows it (callText),
+// The latest round as text: the reply's words, then each call with its result under it as /export writes it (callText),
 // then any text that came in with the results, so nothing in it is left out.
 function roundText(reply: Message, after: Message | undefined): string {
   const results = new Map(after?.parts.flatMap((p) => (p.type === "tool_result" ? [[p.callId, p.output] as const] : [])));
