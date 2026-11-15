@@ -18,7 +18,7 @@ export interface Span {
   start: number;
   end: number;
   color?: Colour; // a colour, never a role (theme.ts)
-  bg?: string;
+  bg?: Colour;
   bold?: boolean;
   italic?: boolean;
   dim?: boolean;
@@ -143,6 +143,10 @@ export function gapped(lines: readonly Line[], before: { text: string; band?: tr
   }
   return out;
 }
+
+// The lines as one block, its first line marking it, so say() puts an empty line above them: what a key says, and the
+// resume lines (the whole PR's review, the user's choice: "Give them a gap").
+export const asBlock = (lines: readonly Line[]): Line[] => lines.map((l, i) => (i === 0 ? { ...l, block: true as const } : l));
 
 // A file's path as the conversation names it (Task 8; audit 3): relative to the project's folder `root`, with forward
 // slashes, when inside it, and in full otherwise; read against `root` by its kind's rules, as the sandbox's folder,

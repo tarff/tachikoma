@@ -2,6 +2,7 @@ import type { Key } from "ink";
 import { errorText } from "../../core/types.js";
 import type { Fns } from "../App.js";
 import { type Bindings, CHORD_MS, type Context, type Stroke, strokeOf } from "../bindings.js";
+import { asBlock } from "../describe.js";
 import { type Detail, searchFor, step as stepMatch } from "../DetailView.js";
 import { segmenter } from "../editor.js";
 import { commands, isScroll, keyList, pieces, vimKey } from "../keys.js";
@@ -214,7 +215,7 @@ export const keyRouting = (ui: UI, fns: Fns) => {
       if (action && ACTIONS[action]) fns.run(ACTIONS[action]);
       // Called without await, so nothing may escape (submit, queue.ts): what goes wrong is said, as for a switch
       // (next).
-      else if (action === "chat:externalEditor") void fns.externalEditor().catch((err) => fns.say({ text: errorText(err), color: "error" }));
+      else if (action === "chat:externalEditor") void fns.externalEditor().catch((err) => fns.say({ text: errorText(err), color: "error", block: true }));
       else if (action === "chat:stash") fns.swapStash(e);
       else if (action === "chat:imagePaste") fns.imagePaste(e);
       else if (action === "task:background") fns.everywhere(action, h);
@@ -251,7 +252,7 @@ export const keyRouting = (ui: UI, fns: Fns) => {
     ui.editor.current = r.e;
     ui.vimText.current = r.e.text;
     ui.goal.current = null;
-    if (r.act === "help") fns.show(...keyList(ui.table, contextsOf("prompt", ui.fullNow.current), fns.vimFirst(), ui.launchKeys.current).map(gray));
+    if (r.act === "help") fns.show(...asBlock(keyList(ui.table, contextsOf("prompt", ui.fullNow.current), fns.vimFirst(), ui.launchKeys.current).map(gray)));
     else if (r.act) fns.run(r.act === "submit" ? "submit" : ACTIONS[r.act]!); // history:previous, :next or :search
     return true;
   };

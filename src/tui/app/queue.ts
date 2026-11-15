@@ -231,7 +231,7 @@ export const queue = (ui: UI, fns: Fns) => {
           };
           const ended = await ui.session.send(read.parts, signal, ui.mcp ? got : undefined);
           if (ended && "unsupplied" in ended) {
-            if (refused) fns.say({ text: refused.line, color: "error" });
+            if (refused) fns.say({ text: refused.line, color: "error", block: true }); // the words-back line goes under it
             fns.giveBack(read.draft, before, refused?.said ?? false);
           }
           // A prompt a UserPromptSubmit hook blocked or stopped was not sent (approved by the user, 2026-11-09).

@@ -277,7 +277,7 @@ describe("Printed", () => {
   const tinted = (text: string, color?: Colour): Line => {
     let start = 0;
     const styles = text.split("\n").map((l) => {
-      const s = { start, end: Math.min(start + l.length + 1, text.length), bg: "#432124", ...(color ? { color } : {}) };
+      const s = { start, end: Math.min(start + l.length + 1, text.length), bg: "#432124" as const, ...(color ? { color } : {}) };
       start = s.end;
       return s;
     });

@@ -228,7 +228,7 @@ export const handover = (ui: UI, fns: Fns) => {
   // The one line for an editor that failed or was not found, naming how to set one (design, "On return").
   const editorFailed = (command: string, failed: string) => {
     const why = failed === NOT_FOUND ? `${command} was not found` : `The editor failed (${failed})`;
-    fns.say({ text: `${why}. Set VISUAL or EDITOR, or "editor" in ${shownFile()}.`, color: "error" });
+    fns.say({ text: `${why}. Set VISUAL or EDITOR, or "editor" in ${shownFile()}.`, color: "error", block: true });
   };
   // Ctrl+G and Ctrl+X Ctrl+E: the prompt as it is when the editor starts goes to it, and what it saved becomes the
   // prompt, the cursor at the end, as one step Ctrl+Z takes back; on failure the prompt stays (design, "On return").

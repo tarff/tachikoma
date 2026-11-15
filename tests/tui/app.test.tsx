@@ -55,6 +55,7 @@ import { readSettings, type Settings, settingsDir, shownFile } from "../../src/s
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
+import { asBlock } from "../../src/tui/describe.js";
 import { conversationLines, mcpNames } from "../../src/tui/fold.js";
 import { mcpRow } from "../../src/tui/McpList.js";
 import { Pictures, type Read } from "../../src/tui/pictures.js";
@@ -419,9 +420,12 @@ describe("App", () => {
     }
   });
 
-  it("shows the start line, grey, first", async () => {
-    const { app } = await mount([], { intro: [{ text: "Instructions left out: ~/x.md (not allowed)", color: "muted" }] });
-    expect(app.lastFrame()).toMatch(/^Instructions left out: ~\/x\.md \(not allowed\)\n/);
+  it("shows the intro's lines first, a muted one in the muted colour", async () => {
+    await inColour(1, async () => {
+      const { app } = await mount([], { intro: [{ text: "Instructions left out: ~/x.md (not allowed)", color: "muted" }] });
+      expect(stripVTControlCharacters(app.lastFrame()!)).toMatch(/^Instructions left out: ~\/x\.md \(not allowed\)\n/);
+      expect(app.lastFrame()).toContain("\u001b[90mInstructions left out"); // gray, the named colours' muted (theme.ts)
+    });
   });
 
   // Release 8a plan, Task 6 (user, 2026-11-06: "Show it"): a resumed conversation is drawn as a live one, above the lines
@@ -434,9 +438,10 @@ describe("App", () => {
       { role: "assistant", parts: [{ type: "text", text: "They say hello." }] },
     ];
     const folded = { asked: new Set<string>(), shell: "powershell" as const, names: mcpNames(), palette: DARK, root: tmpdir() };
-    const { app } = await mount([], { intro: [...conversationLines(history, folded), { text: "Resumed: read the notes.", color: "muted" }] });
+    // The resume lines a block, as cli.tsx marks them (the whole PR's review: "Give them a gap").
+    const { app } = await mount([], { intro: [...conversationLines(history, folded), ...asBlock([{ text: "Resumed: read the notes.", color: "muted" }])] });
     const frame = app.lastFrame()!;
-    expect(frame).toMatch(/^\n› read the notes\n\n\n● Read 1 file\n\n● They say hello\.\nResumed: read the notes\.\n/);
+    expect(frame).toMatch(/^\n› read the notes\n\n\n● Read 1 file\n\n● They say hello\.\n\nResumed: read the notes\.\n/);
   });
 
   // TUI design pass, Task 14 (the user's choice, 2026-11-15: "Show the hint after -r/-c"): a window opened on a restored
@@ -3763,6 +3768,17 @@ describe("App's menus", () => {
 });
 
 describe("App's keys for the modes, the model list and the last turn", () => {
+  // The whole PR's review (the user's choice: "Give them a gap"): a line a key says starts a block, an empty line above.
+  it("puts an empty line above the key list on ? and above Shift+Tab's line", async () => {
+    const { app } = await mount([reply("ok")]);
+    await type(app, "hi");
+    await until(app, "ok");
+    await press(app, "?");
+    expect(app.lastFrame()).toContain("● ok\n\nKeys:\n");
+    await press(app, "\u001b[Z");
+    expect(app.lastFrame()).toMatch(/[^\n]\n\nmode is now project\n/);
+  });
+
   it("prints the key list, grey, on ? at an empty prompt; with a space first, ? is typed", async () => {
     const { app } = await mount([]);
     await press(app, "?");
@@ -3863,7 +3879,7 @@ describe("App's keys for the modes, the model list and the last turn", () => {
   it("takes never into the cycle only when the session started in it", async () => {
     const { app } = await mount([], { mode: "never" });
     await press(app, "\u001b[Z", "\u001b[Z", "\u001b[Z", "\u001b[Z");
-    expect(app.lastFrame()).toContain("mode is now ask\nmode is now project\nmode is now auto\nmode is now never\n");
+    expect(app.lastFrame()).toContain("mode is now ask\n\nmode is now project\n\nmode is now auto\n\nmode is now never\n"); // each a block
   });
 
   it("does nothing on Shift+Tab while a question is showing", async () => {
@@ -7209,6 +7225,16 @@ describe("App's keys from the table of actions", () => {
     expect(app.lastFrame()).toContain("Allow write a.txt? [y/n] · Esc to decline");
   });
 
+  // The whole PR's review (the user's choice: "Give them a gap"): said in the conversation, Ctrl+O's lines are a block.
+  it("puts an empty line above the last turn shown on Ctrl+O at a question", async () => {
+    const { app, ask } = await mount([], { full: true, intro: [{ text: "start" }] });
+    void ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    await press(app, "\u000f");
+    await until(app, "No turn yet");
+    expect(app.lastFrame()).toContain("start\n\nNo turn yet, so no tool calls to show.\n");
+  });
+
   it("exits on Ctrl-D pressed twice at a question", async () => {
     const { app, ask } = await mount([]);
     let answered = false;
@@ -7406,6 +7432,7 @@ describe("App's external editor", () => {
     await press(app, CTRL_G);
     await waitFor(() => flat(app).includes(`tachi-no-such-editor was not found. ${SET}`));
     expect(app.lastFrame()).toContain("› keep me\n");
+    expect(flat(app)).toContain(`${SET}  tachi-no-such-editor`); // each a block, an empty line between (the whole PR's review)
   });
 
   // Nothing escapes as an unhandled rejection, which would end the program: here the terminal write that leaves full
@@ -7848,7 +7875,7 @@ describe("App's pictures", () => {
     expect(app.lastFrame()).toContain("› b [Image #2]");
     pictures.set(1, "none");
     pictures.set(2, "none");
-    await until(app, "No picture on the clipboard.\nNo picture on the clipboard.");
+    await until(app, "No picture on the clipboard.\n\nNo picture on the clipboard."); // each a block (the whole PR's review)
     expect(app.lastFrame()).toMatch(/› b ?\n─{100}\n\? for shortcuts/); // the stash, left empty, is gone too
   });
 
@@ -8102,6 +8129,24 @@ describe("App's picture reads", () => {
     expect(app.lastFrame()).not.toContain(READING);
   });
 
+  // The whole PR's review (the user's choice: "Give them a gap"): Alt+V's lines are blocks, an empty line above each.
+  it("puts an empty line above a failed read's line and above the no-reader line", async () => {
+    const pictures = new Pictures();
+    const { app } = await mount([reply("ok")], { pictures });
+    await type(app, "hi");
+    await until(app, "ok");
+    await press(app, PICTURE);
+    pictures.set(1, "none");
+    await until(app, "No picture on the clipboard.");
+    expect(app.lastFrame()).toContain("● ok\n\nNo picture on the clipboard.\n");
+    const bare = await mount([reply("ok")], { readPicture: null });
+    await type(bare.app, "hi");
+    await until(bare.app, "ok");
+    await press(bare.app, PICTURE);
+    await until(bare.app, "No clipboard reader here");
+    expect(bare.app.lastFrame()).toContain("● ok\n\nNo clipboard reader here: install wl-paste or xclip.\n");
+  });
+
   it("says so in red where there is no clipboard reader, and puts no marker in", async () => {
     await inColour(1, async () => {
       const { app } = await mount([], { readPicture: null });
@@ -8292,7 +8337,7 @@ describe("App's vim mode", () => {
     const { app } = await mount([], { past: ["older"] });
     await normal(app);
     await press(app, "?");
-    expect(app.lastFrame()).toContain("Keys:");
+    expect(app.lastFrame()).toMatch(/[^\n]\n\nKeys:\n/); // a block, under /vim's line (the whole PR's review)
     await press(app, "k");
     expect(app.lastFrame()).toContain("› /vim\n");
     await press(app, "/");
@@ -11001,6 +11046,15 @@ process.stdin.resume().on("end", () => {
     };
   }
 
+  // The whole PR's review: the line saying the words are back stays under the line saying why, the hook's notice here,
+  // which is the block with the empty line above it.
+  it("keeps the line saying a blocked prompt's words are back under the hook's notice", async () => {
+    const { app } = await mount([reply("seen")], { hooks: hookFor(BLOCK).hooks, intro: [{ text: "start" }] });
+    await type(app, "look");
+    await untilSlow(app, BACK);
+    expect(app.lastFrame()).toContain(`start\n\n● A UserPromptSubmit hook blocked the prompt: not yet\n${BACK}\n`);
+  });
+
   // A stop gives the words back as a block does (approved by the user, 2026-11-09).
   it.each([
     ["blocked", BLOCK],
@@ -12714,6 +12768,16 @@ describe("App's MCP", () => {
       expect(app.lastFrame()).toContain("› /fake:greet");
       expect(lead.seen).toEqual([]);
     });
+  });
+
+  // The whole PR's review (the user's choice: "Give them a gap"): the red line starts a block, the words-back line under it.
+  it("puts an empty line above the red line saying a prompt needs an argument", async () => {
+    const { config, servers } = await mcpSetup();
+    const { app, mcp } = await mount([], { intro: [{ text: "start" }], mcp: servers([await config("fake", { prompts: [GREET] })]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["fake ready"]));
+    await type(app, "/fake:greet");
+    await soon(() => expect(plain(app)).toContain(BACK));
+    expect(stripVTControlCharacters(app.lastFrame()!)).toMatch(/[^\n]\n\n\/fake:greet needs name: \/fake:greet name\nYour words are back/);
   });
 
   it("says in red that a prompt could not be got, sends nothing, and keeps the words in the prompt box", async () => {

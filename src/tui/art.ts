@@ -49,7 +49,7 @@ export const PIXEL_COLORS: Record<string, Colour> = {
 // The light look's (TUI design pass, Task 14; the user's choice): WCAG 2.1's contrast ratio against white, the brightest
 // light background, puts light (2.11:1), white (1.14:1) and grey (1.77:1) under WCAG 1.4.11's 3:1 for graphics, so each
 // is darkened, its channels scaled together, to the lightest shade at 3:1 or more; every other colour is 4.2:1 or more and
-// kept. Starting points, set by eye at the terminal check (choice P4).
+// kept. Starting values, not yet checked by eye; the user kept the dark ones at the terminal check (2026-11-16).
 export const LIGHT_PIXEL_COLORS: Record<string, Colour> = {
   ...PIXEL_COLORS,
   L: "#7596cc",

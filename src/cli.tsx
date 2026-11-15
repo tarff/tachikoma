@@ -95,6 +95,7 @@ import { App } from "./tui/App.js";
 import { NOT_GONE } from "./tui/app/constants.js";
 import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
+import { asBlock } from "./tui/describe.js";
 import { conversationLines, mcpNames } from "./tui/fold.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
@@ -937,7 +938,7 @@ if (parsed.print !== undefined) {
           ...startLines,
           ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "muted" as const }])),
           ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours, root: workspace.root }),
-          ...said.map((l) => ({ ...l, color: "muted" as const })),
+          ...asBlock(said.map((l) => ({ ...l, color: "muted" as const }))), // a block under the conversation (the whole PR's review)
         ]}
         restored={opened.conversation.messages.length > 0} // -c, -r, and their --fork-session copies, with messages
         pictures={pictures}

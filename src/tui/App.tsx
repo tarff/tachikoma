@@ -72,7 +72,7 @@ export interface AppProps {
   workspace: Workspace; // the project's files, for the branch (release 7 plan, Task 14)
   branch: string | null; // the git branch at the start, read before the first frame; read again after each turn
   historyFile: string; // this project's past prompts
-  intro: Line[]; // shown first: the instruction files read
+  intro: Line[]; // shown first: the start-up box, the files left out, the sandbox's lines and a restored conversation
   restored?: boolean; // the window opens on a conversation brought back (-c, -r): the hint row's "?" from the start
   errorFile: string;
   segments: Segment[];

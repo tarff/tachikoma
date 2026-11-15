@@ -44,8 +44,8 @@ export function look(settings: Settings, env: NodeJS.ProcessEnv, level: number):
 }
 
 // The hex colours for full colour. accent is the pixel art's blue B (plan, appendix "The pixel art"), the design's
-// Tachikoma blue; every other value is a placeholder, none measured, set by eye with the user at Task 14's terminal check
-// (choice P4).
+// Tachikoma blue. The user kept the dark values at Task 14's terminal check (2026-11-16; choice P4); the light ones are
+// starting values, not yet checked by eye.
 const DARK: Palette = {
   accent: "#4278de",
   muted: "#8a8a8a",
