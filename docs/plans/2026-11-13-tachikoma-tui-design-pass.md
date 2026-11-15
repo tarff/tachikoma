@@ -702,3 +702,24 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   review's `@@`, the branch); at chalk levels 1-2 the accent is ANSI `blue`, hard to read on many
   dark palettes (the classic Windows console), where those lines were magenta or cyan; the mode
   colours and context bar stay named colours in the light look (look at them at the check).
+- **Task 14** (cf38b6a, f6e83b5 and 8202f55; README with the PR's review): the check. The 44
+  captures were made again (scratchpad `screens-pr1\`, with light and no-colour copies of five and
+  COMPARE.md); every state was reached as before. From them the user chose (2026-11-15): "Hint row
+  quiet at launch" and "After the first key" (the hint row's `? for shortcuts` is blank, the row
+  kept, until the prompt first holds text; the box's line says it till then); "Add the empty line"
+  (classic Ctrl+O's printed block, and its /compact summary, start a block); "Darker shades for
+  light" (`LIGHT_PIXEL_COLORS`: light blue #7596cc, white #92959a, grey #91959d, each the lightest
+  shade at WCAG 1.4.11's 3:1 against white; the other five already reach it). From the review:
+  the flag reads what the prompt row shows, so a Ctrl+R match counts, and `command()` sets it;
+  the user chose "Show the hint after -r/-c" (cli.tsx passes `restored` when the conversation
+  brought back has messages). The README's new words, "How the screen looks" and the rest, were
+  approved by the user (2026-11-15/16). At the terminal check (2026-11-16, dark Windows Terminal)
+  the user found steps 1-5 and 7-9 fine, the band, tint and colours as they are; chose "Keep it,
+  cut with …" for the box on a narrower window, "Fine as is" for the context bar dropping before
+  the mode at 60 columns, and a smaller art: "40×24: 12 rows" (art.ts `PIXELS`, the same drawing
+  scaled with a step that puts back the pixels the shrink drops; the appendix's 48 by 30 grid and
+  this plan's "48 columns by 15 rows" and "95 columns" are the earlier size: the box is 8 columns
+  narrower, 87 columns of text on the user's machine). Not checked: the light look (step 6; the
+  user's terminal is dark), so its colours are the starting values. Known limits: keys piped in
+  one read (Ctrl+R, its text and Enter) send the match undrawn, and the hint stays blank until
+  the next key; in the light look the art's white and grey are nearly the same grey.
