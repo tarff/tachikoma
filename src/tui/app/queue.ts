@@ -24,7 +24,7 @@ import { SETTINGS, shownFile } from "../../settings.js";
 import { firstLine } from "../../tools/commands.js";
 import type { Fns } from "../App.js";
 import { typeOf, unquoted } from "../clipboard.js";
-import { callLines, type Line } from "../describe.js";
+import { asBlock, callLines, type Line } from "../describe.js";
 import { conversationLines } from "../fold.js";
 import { offers } from "../menus.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
@@ -783,10 +783,11 @@ export const queue = (ui: UI, fns: Fns) => {
         }
       });
       // Its red line a block of its own, as a command's output is (TUI design pass, Task 3's code review); a conversation
-      // opened brings its own blocks.
+      // opened brings its own blocks, and its resume lines are one under it, as after -c or -r (the whole PR's review). A
+      // pick runs with no command's mark on (perform's ended with the list's opening), so the gap is not doubled.
       if ("problem" in next) fns.say({ text: next.problem, color: "error", block: true });
       else {
-        const lines = [...next.lines, ...(gone ? [{ text: gone }] : [])].map((l) => ({ ...l, color: "muted" as const }));
+        const lines = asBlock([...next.lines, ...(gone ? [{ text: gone }] : [])].map((l) => ({ ...l, color: "muted" as const })));
         await switchTo(next, lines, { end: "resume", start: "resume", ...(made ? { lead: made } : {}) });
       }
     } catch (err) {

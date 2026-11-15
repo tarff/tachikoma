@@ -10292,7 +10292,7 @@ describe("App's sessions", () => {
     expect(app.lastFrame()).toContain("↑↓ move · Enter open · Esc close");
     await press(app, "\r");
     await until(app, "Resumed: remember apple.");
-    expect(app.lastFrame()).toMatch(/› remember apple\n\n\n● noted\nResumed: remember apple\.\n/);
+    expect(app.lastFrame()).toMatch(/› remember apple\n\n\n● noted\n\nResumed: remember apple\.\n/); // a block, as after -r
     expect(session.id).toBe(first.session.id);
     expect(free(own)).toBe(true);
     await type(app, "which fruit?");
@@ -10370,7 +10370,7 @@ describe("App's sessions", () => {
     await until(app, "remember pear");
     await press(app, "\r");
     await until(app, "Resumed: remember pear.");
-    expect(app.lastFrame()).toMatch(/noted\nOpened a copy: that session is open in another window\.\nResumed: remember pear\.\n/);
+    expect(app.lastFrame()).toMatch(/noted\n\nOpened a copy: that session is open in another window\.\nResumed: remember pear\.\n/); // one block
     expect(session.id).not.toBe(first.session.id);
     await type(app, "which fruit?");
     await until(app, "a pear");
@@ -10552,6 +10552,7 @@ describe("App's sessions", () => {
     await until(app, "Branched:");
     // The same conversation, so it is not drawn again (release 8a final review, user, 2026-11-07: "Drop the reprint").
     expect(bare(app.lastFrame()!)).toContain(bare(`› first\n● one\nBranched: this window is now side road; the original is kept as ${original}.`));
+    expect(app.lastFrame()).toContain("● one\n\nBranched: this window is now side road;"); // the command's block, its one gap
     expect(app.lastFrame()!.split("› first")).toHaveLength(2);
     expect(session.id).not.toBe(original);
     expect(free(original)).toBe(true);
