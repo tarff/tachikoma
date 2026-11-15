@@ -218,11 +218,18 @@ function blocks(tokens: readonly Token[], width: number, palette: Palette, inIte
 // The lines `text` is drawn as, in `palette`'s colours, laid out for `width` columns.
 // Text nested too deep for marked's lexer, which recurses into each level, or for blocks(), which walks the same tree,
 // overflows the stack ("*" or "- " or ">" thousands deep): it is drawn as its raw text, its line breaks read as marked
-// reads them (Task 15's code review).
+// reads them (Task 15's code review). Its blank lines are as the markdown path draws them: none at either end, a run of
+// them one empty line (the re-check); a raw table's or raw HTML's keep their own, as written.
 export function markdownLines(text: string, width: number, palette: Palette): Line[] {
   try {
     return blocks(marked.lexer(text), width, palette);
   } catch {
-    return rawLines(text.replace(/\r\n?/g, "\n"));
+    const out: Line[] = [];
+    for (const l of rawLines(text.replace(/\r\n?/g, "\n"))) {
+      if (l.text.trim() !== "") out.push(l);
+      else if (out.length && out.at(-1)!.text !== "") out.push({ text: "" });
+    }
+    if (out.at(-1)?.text === "") out.pop();
+    return out;
   }
 }

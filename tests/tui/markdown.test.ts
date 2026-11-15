@@ -295,12 +295,18 @@ describe("markdownLines, mixed", () => {
   });
 
   // Task 15's code review: marked's lexer recurses into each level, so input nested thousands deep overflows the stack;
-  // it is drawn as its raw text instead.
+  // it is drawn as its raw text instead. Ten times past where it overflows, as a warmed-up V8 goes deeper (the re-check).
+  const DEEP = ">".repeat(30000);
   it("draws input nested too deep for the lexer as its raw text", () => {
-    for (const deep of ["*".repeat(3000) + "x" + "*".repeat(3000), "- ".repeat(2000) + "x", "> - ".repeat(2000) + "x", ">".repeat(3000) + " x"]) {
-      expect(markdownLines(deep, 80, P)).toEqual([{ text: deep.trimEnd() }]);
+    for (const deep of ["*".repeat(30000) + "x" + "*".repeat(30000), "- ".repeat(20000) + "x", "> - ".repeat(20000) + "x", `${DEEP} x`]) {
+      expect(markdownLines(deep, 80, P)).toEqual([{ text: deep }]);
     }
-    expect(markdownLines(`${">".repeat(3000)} x\r\n\ty`, 80, P)).toEqual([{ text: `${">".repeat(3000)} x` }, { text: "\ty" }]);
+    expect(markdownLines(`${DEEP} x\r\n\ty`, 80, P)).toEqual([{ text: `${DEEP} x` }, { text: "\ty" }]);
+  });
+
+  // The re-check: the raw text's blank lines as the markdown path draws them, none at either end and a run of them one.
+  it("draws too-deep input with no empty line at either end and one for a run of blank lines", () => {
+    expect(markdownLines(`\n\n${DEEP} x\n\n\n\ny\n \n`, 80, P)).toEqual([{ text: `${DEEP} x` }, { text: "" }, { text: "y" }]);
   });
 });
 
