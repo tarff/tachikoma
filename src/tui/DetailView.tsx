@@ -10,18 +10,26 @@ import { first, type Pos, Rows, scrollTo, type View } from "./view.js";
 // the conversation's place, with rows and a view of its own. Its lines are fixed when it opens (plan, choice 12), so
 // none arrive and it never counts new lines. `search` is `/`'s: what is typed, its matches, the one brought into view,
 // whether it is still being typed (Enter keeps it), and where the view was when `/` was pressed, for Esc.
+// `printed`: what `[` prints where it differs from what the view draws, `/tasks t3`'s answer laid out as without
+// colour, as the print-out draws no styles or band (the whole PR's review, the user's choice, 2026-11-16: "Keep the
+// marks").
 export interface Detail {
   rows: Rows;
+  printed?: Rows;
   view: { current: View };
   search: { query: string; found: Found[]; at: number; typing: boolean; before: View } | null;
 }
 
 // Opened at its top, so a record is read from its heading. The lines are escaped as the conversation's are
 // (app/output.ts, say).
-export function opened(lines: Line[], width: number): Detail {
-  const rows = new Rows(width);
-  rows.add(lines.map(escaped));
-  return { rows, view: { current: { at: { line: 0, offset: 0 }, unseen: 0 } }, search: null };
+export function opened(lines: Line[], width: number, printed?: Line[]): Detail {
+  const rowsOf = (some: Line[]) => {
+    const rows = new Rows(width);
+    rows.add(some.map(escaped));
+    return rows;
+  };
+  const view = { current: { at: { line: 0, offset: 0 }, unseen: 0 } };
+  return { rows: rowsOf(lines), ...(printed ? { printed: rowsOf(printed) } : {}), view, search: null };
 }
 
 // Match `i` brought into view from the view `from`: left where it is when its row is on screen, otherwise its row on the

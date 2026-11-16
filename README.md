@@ -1,9 +1,9 @@
 # Tachikoma
 
 > **Work in progress.** Release 8c of 15 is done (the third of release 8's five parts), and
-> background commands and a new look for the screen after it; drawing replies' markdown comes
-> next, then a fuller system prompt and 8c's second half, 8c-2, servers inside the sandbox and
-> allowed sites, and the rest is being built.
+> background commands, a new look for the screen and replies drawn as markdown after it; a fuller
+> system prompt comes next, then 8c's second half, 8c-2, servers inside the sandbox and allowed
+> sites, and the rest is being built.
 > Expect missing features and changes that break things, and don't rely on it for real work yet.
 
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
@@ -19,8 +19,8 @@ actions) and a check on dangerous commands; saved sessions you can reopen, with 
 too long for the model shortened into a summary; hooks, your own commands run at set moments
 of a session, in Claude Code's format; and MCP servers, whose tools the model can use, set up as
 in Claude Code. After 8c came background commands, shell commands that keep running while the
-model works, and a new look for the screen. The command is `tachi`. So far it has been tested
-on Windows 11 only; release 14 adds testing on Linux and macOS.
+model works, a new look for the screen, and replies drawn as markdown. The command is `tachi`.
+So far it has been tested on Windows 11 only; release 14 adds testing on Linux and macOS.
 
 ## What it does
 
@@ -110,8 +110,9 @@ on Windows 11 only; release 14 adds testing on Linux and macOS.
   `--classic` keeps the terminal's own scrollback instead. See [Full screen](#full-screen).
 - **A look of its own** (after background commands): an empty line before each message, reply and
   tool call, your messages on a grey band, `●` before replies and tool calls, lines above and below
-  the prompt, and at launch a box with the Tachikoma and what loaded; a dark and a light look, and
-  none with `NO_COLOR`. See [How the screen looks](#how-the-screen-looks).
+  the prompt, at launch a box with the Tachikoma and what loaded, and replies drawn as markdown;
+  a dark and a light look, and none with `NO_COLOR`. See
+  [How the screen looks](#how-the-screen-looks).
 - **A settings file,** `~/.tachikoma/settings.json`, for every option, so a plain `tachi` starts the
   way you want; edits apply while it runs. See [Settings](#settings).
 - **Keys you can move:** every key is a named action, and a keys file in Claude Code's format
@@ -824,6 +825,39 @@ The look is the same in full screen and classic.
   than wrapped, as tool rows are, and copying a cut row gives the whole row; wider again, it shows
   whole. In classic, what is printed belongs to the terminal's scrollback, and a resize is the
   terminal's own.
+
+### Replies as markdown
+
+A reply's text is drawn as markdown, and so is a subagent's answer in `/tasks t3`. Your messages,
+tool output and notices are never read as markdown: they show as written.
+
+- **What is drawn:**
+  - headings in bold blue, without their `#` marks;
+  - bold, italic and struck-through (`~~text~~`) text, without the marks;
+  - inline code in blue, without its backticks;
+  - bulleted lists two columns in, `•` before each item and `◦` in a list inside one;
+  - numbered lists with their numbers;
+  - quotes after a grey `│ `;
+  - links with their text underlined and, when it differs from the text, the address after it in
+    grey brackets;
+  - code blocks on the grey band, in one colour with no highlighting, without their fences or
+    language;
+  - rules as a grey line across.
+
+  A run of blank lines is one empty line. Link definitions (`[1]: https://…`) draw nothing; raw
+  HTML, pictures and task boxes (`[ ]`) show as written. Without full colour a code block has no
+  band, as your messages have none, so it is drawn between its fence lines as written (`` ``` ``
+  or `~~~` and its language; `` ``` `` for an indented block). With `NO_COLOR`, inline code keeps
+  its backticks, and the bold, italic, underlined and struck text keep their style.
+- **Tables** are drawn in a rounded grey box, with a line under the header row and each column
+  aligned as the markdown says, when they fit the width at the moment the reply is drawn. A wider
+  one is left as its raw text. A later resize, or `/screen` from classic, which is a column
+  narrower, cuts a drawn table's rows, and a rule's, with `…` rather than wrapping them, as the
+  start-up box's are; the rest of the reply wraps again.
+- **Copying gives what is drawn:** `**hello**` copies as `hello`, and a table with its borders.
+  The reply's `● ` and the two spaces before its later lines are copied too.
+- **`/export` writes the raw markdown,** as the model wrote it, and `/export` alone copies the
+  same.
 
 ## Full screen
 
@@ -2399,6 +2433,15 @@ it says so.
 - **A terminal set to draw such characters two columns wide,** as some East Asian setups are,
   wraps the prompt's lines, the boxes' borders and the Tachikoma's rows, and the rows under them
   are drawn out of place.
+- **A quote line too long for the screen** shows its `│` on its first row only.
+- **List numbers are not padded,** so the text of item `9.` and item `10.` does not line up.
+- **Named HTML entities show as written** (`&amp;`); numbered ones (`&#60;`) show as their
+  character, except `&#38;`, which shows as `&amp;`.
+- **With `TERM=dumb`,** bold, italic, underlined and struck text show as plain text, as the
+  terminal is sent no styles.
+- **A long paragraph full of unmatched `*` is slow to draw:** in a test, 12,000 characters took
+  0.9 s and 24,000 took 3.9 s, each time it is drawn: when the reply arrives, at `-c` or `-r`, and
+  at each `/tasks t3` for a subagent's answer. A reply under 10,000 characters took under 0.3 s.
 
 ### Hooks' limits
 

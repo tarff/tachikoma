@@ -54,7 +54,7 @@ import { TaskPanel, taskRows } from "./TaskPanel.js";
 import type { Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { ToolLine } from "./ToolLine.js";
-import { first as firstRow, FOLLOWING, unseenBelow } from "./view.js";
+import { edgeBroken, first as firstRow, FOLLOWING, textWidth, unseenBelow } from "./view.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 export interface AppProps {
@@ -324,9 +324,11 @@ export function App(props: AppProps) {
     // call and each result keeps its place (choice 67). The quiet calls go to the open run, saying nothing and no result
     // row until their row is said (release 8c plan, Task 15), so they come between nothing; a folded row clicked open
     // before its results came is put again, so each shows under its call (choice 70; Task 21). An answered call's id is
-    // let go with its result, as a provider may use an id again.
+    // let go with its result, as a provider may use an id again. A reply's markdown is laid out for the columns its
+    // text has now, the mode's and the width last drawn, as this listener is the first drawing's (TUI design pass,
+    // Task 16).
     const onMessage = (m: Message) => {
-      latest.current.say(...describe(m, ui.palette, ui.answered.current, ui.run));
+      latest.current.say(...describe(m, ui.palette, textWidth(ui.frame.current.columns, ui.fullNow.current), ui.answered.current, ui.run));
       for (const fold of ui.run.filled()) if (fold.open) latest.current.putFold(fold);
       for (const p of m.parts) if (p.type === "tool_result") ui.answered.current.delete(p.callId);
       const last = m.parts.at(-1);
@@ -938,18 +940,21 @@ export function App(props: AppProps) {
               ))}
             </>
           ) : (
+            // In classic Ink wraps these lines itself, each in the 4 columns less: a space ending a row at the edge is
+            // handed to it as a line break, so the next row starts under the text, as full screen's rows (view.ts,
+            // edgeBroken; Task 17's captures, the user's choice: "Fix them too").
             <>
               {ui.question.note !== undefined && (
                 <Text color={ui.palette.muted} wrap={ui.question.oneRow ? "truncate-end" : "wrap"}>
-                  {ui.question.note}
+                  {ui.question.oneRow ? ui.question.note : edgeBroken(ui.question.note, ui.columns - 4)}
                 </Text>
               )}
               {ui.question.warnings.map((w, i) => (
                 <Text key={i} color={ui.palette.error}>
-                  {w}
+                  {edgeBroken(w, ui.columns - 4)}
                 </Text>
               ))}
-              <Text color={ui.palette.warning}>{allow(ui.question.text, ui.question.plain)}</Text>
+              <Text color={ui.palette.warning}>{edgeBroken(allow(ui.question.text, ui.question.plain), ui.columns - 4)}</Text>
             </>
           )}
         </Box>

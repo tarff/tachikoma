@@ -23,9 +23,11 @@ export const handover = (ui: UI, fns: Fns) => {
     ui.grab.current = null;
     ui.lastPress.current = null;
   };
-  const openDetail = (lines: Line[]) => {
+  // `printed`: what `[` prints instead, where it differs (DetailView.tsx, Detail). The width is the view's as last
+  // drawn, for a turn started before a resize.
+  const openDetail = (lines: Line[], printed?: Line[]) => {
     if (ui.questions.current.length) return fns.say(...lines);
-    ui.detail.current = opened(lines, ui.frame.current.columns - 1); // as last drawn, for a turn started before a resize
+    ui.detail.current = opened(lines, ui.frame.current.columns - 1, printed);
     fns.unselect();
     ui.rerender((n) => n + 1);
   };
@@ -56,7 +58,7 @@ export const handover = (ui: UI, fns: Fns) => {
     if (ui.printed.current !== p) return; // Ink ended meanwhile, and the cleanup in App.tsx let the keyboard go
     ui.screen.setSecond(false);
     ui.screen.suspended = true;
-    const page = d.rows.lines.map((l, i) => (
+    const page = (d.printed ?? d.rows).lines.map((l, i) => (
       <Text key={i} color={l.text && l.color ? ui.palette[l.color] : undefined} wrap={l.oneLine ? "truncate-end" : "wrap"}>
         {l.text || " "}
       </Text>

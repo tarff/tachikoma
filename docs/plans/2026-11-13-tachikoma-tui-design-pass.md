@@ -737,3 +737,92 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   Step 8 of the check covered the review's 16-colour point: the user found the plain ANSI blue
   readable on their dark terminal. Known limits: in classic mode a resize can leave rows behind
   (user: "Skip, known limit").
+- **The user's review of PR #20** (3c04960 and 73be6ae, merged as c819209): one point, a reply
+  ending in a line break got two empty lines under it, the break's own row and the next block's
+  gap. Lines are now said without their trailing empty rows (`withoutTrailingRows` in
+  describe.ts, used by `say()` in output.ts), so replies, notices, red lines and classic Ctrl+O's
+  printed calls take one gap. From the re-review: a write's preview keeps the file's own empty
+  lines (its line is marked `asIs`; one final line break comes off, as the heading counts), so it
+  shows the rows its heading counts. Coordinator's call: classic Ctrl+O and `/tasks t3` print a
+  result without its trailing blank lines (full screen's detail view still shows them).
+- **Task 15** (24389b6, 221388a and 2d5cb11, fixes cfba593 and 06b3afa): `marked` 18.1.2 (choice
+  P6: the newest at least two weeks old on 2026-11-16; 18.1.3 was 13 days old; the user chose it)
+  and `markdownLines` (src/tui/markdown.ts). The user chose (2026-11-16): "• then ◦ when nested"
+  (bullets alternate by depth among bulleted lists; a numbered list keeps its numbers and adds no
+  level); tables "As built" (rounded muted `╭┬╮├┼┤╰┴╯─│`, a space each side of a cell, a line
+  under the header when there are body rows, the header not bold, columns aligned as the markdown
+  says); "In brackets" (`text (address)`, the brackets and address muted, when they differ; an
+  empty address shows the text alone); "Hide them" (reference definitions draw nothing); "Struck
+  through" (`~~x~~` drawn struck, the marks dropped: `Span.strike` in describe.ts and Ink's
+  `strikethrough` in Conversation.tsx, outside the task's Files, kept without colour as bold is);
+  "Keep all three" (each source line its own row; a run of blank lines one empty line; the known
+  limits below). Builder's calls: a list two columns in, a nested one under its item's text;
+  rules `width` wide; a hard line break drawn as a break; code blocks `band`; strikethrough's
+  neighbours (task boxes, images) raw. From the review: text too deep for marked's lexer (it
+  recurses per level and overflows the stack at a few thousand `*`, `- ` or `>`) is drawn as its
+  raw text, blank lines as the markdown path draws them; `rows()` hands each span only to the rows
+  it covers (a 2,000-line styled paragraph took 1.4 s, now about 50 ms, the reviewer's timing).
+  The user asked for every URL on screen to be clickable too (OSC 8): investigated, not built; it
+  waits on the user's check of Ctrl+click under full screen's mouse capture (scratchpad
+  `link-test.mjs`) and becomes its own task. Known limits: a wrapped quote line shows `│` on its
+  first row only; list numbers are not padded (`9.` and `10.`); named HTML entities show raw
+  (`&amp;`), numbered ones decoded, as marked gives them, except `&#38;`, which shows as `&amp;`.
+- **Task 16** (299e3f3, fixes d0b2330, 020b4d3, f6ffe45, 4352d90, 20ae358 and 9bec1fc): replies
+  as markdown. `replyLines` (describe.ts) draws a reply's text with `markdownLines` at
+  `textWidth(columns, full) - 2`, the first line taking the accent `● `, later ones two spaces in
+  their text (a list's or quote's own lead after them); resumed replies alike (`conversationLines`
+  takes the width). Outside the plan's Files, to pass the width of that moment: App.tsx (from
+  `ui.frame`/`ui.fullNow`, as the listener belongs to the first render), app/queue.ts (`/resume`)
+  and cli.tsx (`-c`/`-r`, the start-up box's width). The user chose (2026-11-16): "Keep the
+  spaces" (a copy of a reply gives its `● ` and two-space lead, as drawn); "New line" (a lone `\r`
+  in a reply is a line break, as marked reads it; Ctrl+O still shows `␍`); "Band from the text" (a
+  code block's band starts where its code starts, after the reply's lead and any list's or
+  quote's: `bandFrom` on a line, drawn in both modes; your messages' band is the whole row); "Draw
+  it as markdown" (`/tasks t3`'s answer, at the text width of that moment, in the terminal's own
+  colours under the grey `Answer:`; it was all grey). Builder's call: a reply opening with a table
+  or code block takes `● ` on that row. From the review: a band line's tabs are drawn in classic as
+  the spaces to their stop, counted from the band's start (as Task 7's tinted lines), and the text
+  keeps its tabs, so a copy does; they had been dropped into the lead, or reached the terminal raw
+  and spilled past the edge (your messages' band lines gain the same first-row spaces in
+  classic). Ctrl+O shows no reply text and is unchanged. Known limits: marked's lexer takes time
+  growing with the square of a paragraph full of unmatched `*` (the reviewer's timing: 12,000 characters 0.9 s, 24,000 3.9 s; replies under 10,000 under 0.3 s), on each reply
+  drawn, at `-c` and at each `/tasks t3`; on a terminal a few columns wide (3 for top-level code, 7
+  in a list) a code band's start is past the row, and the modes differ (full screen blank, classic
+  past the edge); cli.tsx's width wiring is not under test, as Task 13's.
+- **Task 17** (README b4bdde5 and 231e581; fixes 6abe502, 9453921, 9db305e and ec07760): the
+  check. The captures were made as Task 14's (scratchpad `screens-pr2\`, with light and no-colour
+  copies). From them the user chose (2026-11-16): "Fix it" and "Fix them too" (a wrapped row never
+  starts with the space a word left at the exact edge, in both modes: view.ts's row breaking keeps
+  that space at the end of the earlier row, undrawn, and classic hands Ink a line break in its
+  place (`edgeBroken`); the conversation, the question box and the review screen's head and foot;
+  the text keeps the space, so a copy does; it predates PR 2); "Same look" (headings of every
+  level bold accent); "Keep backticks" (inline code with no colour keeps its backticks; a code
+  block with no band, below full colour, is drawn between its source's fence lines, its language
+  kept, ``` for an indented block); "Add an empty line" (after `/tasks`' `Answer:`). The README's
+  words were approved by the user, and the banner order (a fuller system prompt next, then 8c-2).
+  At the terminal check (2026-11-16, dark Windows Terminal, real replies from
+  anthropic:claude-opus-5-5, scratchpad `checklist-tui-pr2.md`) the user found all 15 steps fine,
+  the quote's first-row-only bar included. The clickable-link test (`link-test.mjs`): Ctrl+click
+  opened the page with the mouse as normal and with full screen's mouse capture on, and so did
+  Shift+Ctrl+click (user: "all work the same"), so OSC 8 links need no click handling of
+  Tachikoma's own. Known limits: combining marks at a row's edge can draw differently in the two
+  modes (seen in the review's fuzzing, older than this work); with tabs, later wrapped rows still
+  differ between the modes (Task 7's limit).
+- **The whole PR's review** (fix f214ac4): nothing Critical or Important, four Minor points. The
+  user chose (2026-11-16): "Keep the marks" (`[`'s print-out of `/tasks t3`, which draws text and
+  colour only, lays the answer out with no accent or band, so its code keeps its backticks and
+  fences; the view on screen is unchanged); the README's words for the entity limit (`&#38;`
+  shows as `&amp;`, as marked gives it) and for the resize sentence (`/screen` from classic, a
+  column narrower, cuts a table drawn at classic's full width). Three comments still calling the
+  band the whole row now name `bandFrom`. Known limit, from the re-check: `/tasks t3` lays a done
+  answer out twice when it opens, `[` pressed or not, so the slow case of unmatched `*` takes about
+  twice the README's time there.
+- **The user's review of PR #21** (fix ef98171): two points. In classic, a band line's tabs on a
+  later wrapped row reached the terminal raw and ran past the screen's width; a band line (a code
+  block, or your message's) is now broken where full screen breaks it, each row's tabs drawn as
+  spaces from that row's start, so the rows match full screen's. Task 7's limit stays for lines
+  with no band. The other point, NO_COLOR dropping bold, italic, underline and strikethrough,
+  did not reproduce: chalk 5.6.2 does not read NO_COLOR, and in a real console with NO_COLOR=1
+  bold and strikethrough were sent; theme.ts drops colours only. With TERM=dumb, or output that
+  is not a terminal, chalk sends no styles at all unless FORCE_COLOR is set; the user chose
+  "Known limit" (2026-11-16), a README bullet.

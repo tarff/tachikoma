@@ -132,8 +132,22 @@ describe("Conversation's styled rows", () => {
       const rows = new Rows(9);
       rows.add([{ text: "the quick brown\nfox", styles: [{ start: 4, end: 17, bold: true }] }]);
       const shown = drawIn(null, { rows, first: 0, height: 3, unseen: 0, following: true });
-      expect(shown.map(plain)).toEqual(["the quick", " brown", "fox"]);
-      expect(shown.map((r) => within(r, "1", "22"))).toEqual(["quick", " brown", "f"]);
+      // The space at the edge ends the first row unseen (Task 17's captures, "Fix it").
+      expect(shown.map(plain)).toEqual(["the quick", "brown", "fox"]);
+      expect(shown.map((r) => within(r, "1", "22"))).toEqual(["quick", "brown", "f"]);
+    }));
+
+  // The user's choice (2026-11-16, "Struck through"): a strikethrough is a style, drawn as bold is, and kept without colour.
+  it("draws a struck span across a wrap point and on a cut row, without colour too", () =>
+    coloured(() => {
+      const rows = new Rows(9);
+      rows.add([
+        { text: "the quick brown", styles: [{ start: 4, end: 15, strike: true }] },
+        { text: "a struck row cut", oneLine: true, styles: [{ start: 2, end: 16, strike: true }] },
+      ]);
+      const shown = drawIn({ light: false, color: false, full: false }, { rows, first: 0, height: 3, unseen: 0, following: true });
+      expect(shown.map(plain)).toEqual(["the quick", "brown", "a struck…"]);
+      expect(shown.map((r) => within(r, "9", "29"))).toEqual(["quick", "brown", "struck…"]);
     }));
 
   it("fills a band row to its width with the band colour, its indent's spaces too", () =>
@@ -145,14 +159,26 @@ describe("Conversation's styled rows", () => {
       for (const r of shown) expect(r.startsWith(BAND)).toBe(true);
     }));
 
+  // Task 16's code review: a band from a column has its lead plain and its tabs on the band, their stops counted from
+  // the indent, as Printed prints them in classic.
+  it("draws a band from a column's tabs on the band, their stops counted from the indent", () =>
+    coloured(() => {
+      const rows = new Rows(40);
+      rows.add([{ text: "  \tif x {", band: true, bandFrom: 2, indent: 2 }, { text: "  \t\tfmt.Println(1)", band: true, bandFrom: 2, indent: 2 }]);
+      const shown = drawIn(null, { rows, first: 0, height: 2, unseen: 0, following: true });
+      expect(shown.map(plain)).toEqual([`${" ".repeat(10)}if x {`.padEnd(40), `${" ".repeat(18)}fmt.Println(1)`.padEnd(40)]);
+      for (const r of shown) expect(plain(r.slice(0, r.indexOf(BAND)))).toBe("  ");
+    }));
+
   it("shows a selection over a styled row in reverse on the text only, not the indent or the band's padding", () =>
     coloured(() => {
       const rows = new Rows(20);
       rows.add([{ text: "● one two three four five", indent: 2, band: true, styles: [{ start: 0, end: 1, color: "blue" }] }]);
       const selection: [Pos, Pos] = [{ line: 0, offset: 0 }, { line: 0, offset: 25 }];
       const shown = drawIn(null, { rows, first: 0, height: 2, unseen: 0, following: true, selection });
-      expect(shown.map(plain)).toEqual(["● one two three four", "   five             "]);
-      expect(shown.map((r) => within(r, "7", "27"))).toEqual(["● one two three four", " five"]);
+      // The space after "four", at the edge, ends the first row unseen (Task 17's captures, "Fix it").
+      expect(shown.map(plain)).toEqual(["● one two three four", "  five              "]);
+      expect(shown.map((r) => within(r, "7", "27"))).toEqual(["● one two three four", "five"]);
       expect(within(shown[0]!, "34", "39")).toBe("●"); // the span's colour, under the reverse
     }));
 

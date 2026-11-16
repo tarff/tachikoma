@@ -5,6 +5,7 @@ import type { Line } from "../../src/tui/describe.js";
 import { callRow, describe as lines } from "../../src/tui/describe.js";
 import { conversationLines, foldRow, kindOf, mcpNames, OpenRun, openRows, rowText, shellKinds } from "../../src/tui/fold.js";
 import { palette } from "../../src/tui/theme.js";
+import { textWidth } from "../../src/tui/view.js";
 
 // Release 8c plan, choice 65 and Task 15: a run of quiet tool calls is one grey row of counts, as Claude Code's is.
 const call = (id: string, name: string, input: unknown): ToolCall => ({ type: "tool_call", id, name, input });
@@ -24,6 +25,9 @@ const OFFERED: Record<string, { server: string; tool: string }> = {
 const servers = { list: () => [{ name: "plugin:mempalace:mempalace" }], owner: (full: string) => OFFERED[full] } as unknown as Pick<Servers, "list" | "owner">;
 // The rows' colours: the dark full look's (TUI design pass, Task 3).
 const P = palette({ light: false, color: true, full: true });
+// The columns a kept line's text has, which a reply's markdown is laid out for: full screen's at 100 (TUI design pass,
+// Task 16).
+const W = textWidth(100, true);
 // The project's folder, which an edit's or a write's row names its file from (TUI design pass, Task 8).
 const opts = (asked: string[] = [], shell: "bash" | "powershell" = "bash") => ({ asked: new Set(asked), shell, names: mcpNames(servers), palette: P, root: process.cwd() });
 const words = (calls: ToolCall[], shell: "bash" | "powershell" = "bash") =>
@@ -209,9 +213,9 @@ describe("folded tool rows", () => {
 describe("the open run", () => {
   it("says a run of quiet calls as one row before the text that ends it, keeping each call's row for opening", () => {
     const run = new OpenRun(opts());
-    expect(lines(reply(text("Looking."), read("r1"), read("r2", "b.txt")), P, undefined, run)).toEqual([answer("Looking.")]);
-    expect(lines(results(ok("r1"), ok("r2")), P, undefined, run)).toEqual([]);
-    const said = lines(reply(text("Both say hi.")), P, undefined, run);
+    expect(lines(reply(text("Looking."), read("r1"), read("r2", "b.txt")), P, W, undefined, run)).toEqual([answer("Looking.")]);
+    expect(lines(results(ok("r1"), ok("r2")), P, W, undefined, run)).toEqual([]);
+    const said = lines(reply(text("Both say hi.")), P, W, undefined, run);
     expect(said.map(({ fold, ...l }) => l)).toEqual([folded("Read 2 files"), answer("Both say hi.")]);
     const rows = openRows(said[0]!.fold!, opts());
     expect(rows.every((r) => r.fold === said[0]!.fold)).toBe(true); // a click on any of them closes it
@@ -221,9 +225,9 @@ describe("the open run", () => {
 
   it("says the run before a call of its own row, which keeps its rows as today", () => {
     const run = new OpenRun(opts());
-    const said = lines(reply(read("r"), call("w", "write_file", { path: "b.txt", content: "x" })), P, undefined, run);
+    const said = lines(reply(read("r"), call("w", "write_file", { path: "b.txt", content: "x" })), P, W, undefined, run);
     expect(said.map(({ fold, ...l }) => l)).toEqual([folded("Read 1 file"), own("● write_file b.txt")]);
-    expect(lines(results(ok("r"), ok("w")), P, undefined, run)).toEqual([gray("  ⎿ ok")]);
+    expect(lines(results(ok("r"), ok("w")), P, W, undefined, run)).toEqual([gray("  ⎿ ok")]);
   });
 
   // A failed read keeps its row: its red first line stays seen. Failing while its run is open, it leaves the run, and its
@@ -231,17 +235,17 @@ describe("the open run", () => {
   // (a known limit).
   it("says a call that fails as its own red row, out of the run's count while the run is open", () => {
     const run = new OpenRun(opts());
-    lines(reply(read("r1"), read("r2", "gone.txt")), P, undefined, run);
-    expect(lines(results(ok("r1"), failed("r2", "ENOENT: no such file\nmore")), P, undefined, run)).toEqual([]);
+    lines(reply(read("r1"), read("r2", "gone.txt")), P, W, undefined, run);
+    expect(lines(results(ok("r1"), failed("r2", "ENOENT: no such file\nmore")), P, W, undefined, run)).toEqual([]);
     expect(run.end().map(({ fold, ...l }) => l)).toEqual([
       folded("Read 1 file"),
       own("● read_file gone.txt"),
       { text: "  ⎿ ENOENT: no such file", color: "error", oneLine: true },
     ]);
     // One said already: where the run after it ends.
-    lines(reply(read("r3"), read("r4", "late.txt")), P, undefined, run);
+    lines(reply(read("r3"), read("r4", "late.txt")), P, W, undefined, run);
     expect(run.question(undefined).lines.map(({ fold, ...l }) => l)).toEqual([folded("Read 2 files")]);
-    expect(lines(results(ok("r3"), failed("r4", "late")), P, undefined, run)).toEqual([]);
+    expect(lines(results(ok("r3"), failed("r4", "late")), P, W, undefined, run)).toEqual([]);
     expect(run.end()).toEqual([
       own("● read_file late.txt"),
       { text: "  ⎿ late", color: "error", oneLine: true },
@@ -254,9 +258,9 @@ describe("the open run", () => {
     const run = new OpenRun(opts());
     const plain = (ls: Line[]) => ls.map(({ fold, ...l }) => l.text);
     const said = [
-      ...lines(reply(read("r", "missing.txt"), sh("x", "rm x")), P, undefined, run),
-      ...lines(results(failed("r", "ENOENT: no such file"), ok("x")), P, undefined, run),
-      ...lines(reply(text("Done.")), P, undefined, run),
+      ...lines(reply(read("r", "missing.txt"), sh("x", "rm x")), P, W, undefined, run),
+      ...lines(results(failed("r", "ENOENT: no such file"), ok("x")), P, W, undefined, run),
+      ...lines(reply(text("Done.")), P, W, undefined, run),
     ];
     expect(plain(said)).toEqual(["● Read 1 file", "● shell rm x", "  ⎿ ok", "● read_file missing.txt", "  ⎿ ENOENT: no such file", "● Done."]);
   });
@@ -266,11 +270,11 @@ describe("the open run", () => {
     const run = new OpenRun(opts());
     const plain = (ls: Line[]) => ls.map(({ fold, ...l }) => l.text);
     const said = [
-      ...lines(reply(read("r", "missing.txt"), sh("x", "rm x")), P, undefined, run),
-      ...lines(results(failed("r", "ENOENT: no such file"), ok("x")), P, undefined, run),
-      ...lines(reply(read("r2", "b.txt")), P, undefined, run),
-      ...lines(results(ok("r2")), P, undefined, run),
-      ...lines(reply(text("Done.")), P, undefined, run),
+      ...lines(reply(read("r", "missing.txt"), sh("x", "rm x")), P, W, undefined, run),
+      ...lines(results(failed("r", "ENOENT: no such file"), ok("x")), P, W, undefined, run),
+      ...lines(reply(read("r2", "b.txt")), P, W, undefined, run),
+      ...lines(results(ok("r2")), P, W, undefined, run),
+      ...lines(reply(text("Done.")), P, W, undefined, run),
     ];
     const failedRows = ["● read_file missing.txt", "  ⎿ ENOENT: no such file"];
     expect(plain(said)).toEqual(["● Read 1 file", "● shell rm x", "  ⎿ ok", ...failedRows, "● Read 1 file", "● Done."]);
@@ -280,15 +284,15 @@ describe("the open run", () => {
   // after it, not yet run, stay in the run.
   it("ends the run at a question before the asked call, said after its row, the calls after it left open", () => {
     const run = new OpenRun(opts());
-    lines(reply(read("r"), call("m", "mcp__s__echo", { text: "hi" }), read("r2", "b.txt")), P, undefined, run);
+    lines(reply(read("r"), call("m", "mcp__s__echo", { text: "hi" }), read("r2", "b.txt")), P, W, undefined, run);
     const asked = run.question("m");
     expect(asked.under).toBe(true);
     expect(asked.lines.map(({ fold, ...l }) => l)).toEqual([folded("Read 1 file"), own('● s echo {"text":"hi"}')]);
-    expect(lines(results(ok("r"), ok("m"), ok("r2")), P, undefined, run)).toEqual([gray("  ⎿ ok")]);
+    expect(lines(results(ok("r"), ok("m"), ok("r2")), P, W, undefined, run)).toEqual([gray("  ⎿ ok")]);
     expect(run.question("m")).toEqual({ lines: [], under: false }); // its row is said
     expect(run.end().map(({ fold, ...l }) => l)).toEqual([folded("Read 1 file")]); // b.txt
     // A question for no call of the lead's ends the whole run.
-    lines(reply(read("r3")), P, undefined, run);
+    lines(reply(read("r3")), P, W, undefined, run);
     expect(run.question(undefined).lines.map(({ fold, ...l }) => l)).toEqual([folded("Read 1 file")]);
   });
 
@@ -296,14 +300,14 @@ describe("the open run", () => {
   // own, whose result would come between.
   it("puts an asked call's answer under its row only while no other call of its reply has a row of its own", () => {
     const run = new OpenRun(opts());
-    lines(reply(sh("a", "git status"), sh("b", "git log")), P, undefined, run);
+    lines(reply(sh("a", "git status"), sh("b", "git log")), P, W, undefined, run);
     expect(run.question("a")).toMatchObject({ under: true });
     expect(run.question("b")).toMatchObject({ under: false });
-    lines(results(ok("a"), ok("b")), P, undefined, run);
-    lines(reply(call("w", "write_file", { path: "x", content: "" }), call("m", "mcp__s__echo", {})), P, undefined, run);
+    lines(results(ok("a"), ok("b")), P, W, undefined, run);
+    lines(reply(call("w", "write_file", { path: "x", content: "" }), call("m", "mcp__s__echo", {})), P, W, undefined, run);
     expect(run.question("m")).toMatchObject({ under: false });
-    lines(results(ok("w"), ok("m")), P, undefined, run);
-    lines(reply(call("m2", "mcp__s__echo", {})), P, undefined, run); // a new reply
+    lines(results(ok("w"), ok("m")), P, W, undefined, run);
+    lines(reply(call("m2", "mcp__s__echo", {})), P, W, undefined, run); // a new reply
     expect(run.question("m2")).toMatchObject({ under: true });
   });
 
@@ -312,15 +316,15 @@ describe("the open run", () => {
   // not said yet, or for a call of its own row, gives none.
   it("gives each said run a result came for once, and none for a run not said yet or a call of its own row", () => {
     const run = new OpenRun(opts());
-    const said = lines(reply(read("r1"), read("r2", "b.txt"), sh("x", "npm test")), P, undefined, run);
+    const said = lines(reply(read("r1"), read("r2", "b.txt"), sh("x", "npm test")), P, W, undefined, run);
     const fold = said[0]!.fold!;
     expect(run.filled()).toEqual([]);
-    lines(results(ok("r1"), failed("r2", "gone"), ok("x")), P, undefined, run);
+    lines(results(ok("r1"), failed("r2", "gone"), ok("x")), P, W, undefined, run);
     expect(run.filled().map((f) => f === fold)).toEqual([true]);
     expect(run.filled()).toEqual([]);
     expect(openRows(fold, opts()).map((l) => l.text)).toEqual(["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ gone"]);
-    lines(reply(read("r3")), P, undefined, run);
-    lines(results(ok("r3")), P, undefined, run);
+    lines(reply(read("r3")), P, W, undefined, run);
+    lines(results(ok("r3")), P, W, undefined, run);
     expect(run.filled()).toEqual([]);
   });
 
@@ -333,9 +337,9 @@ describe("the open run", () => {
       reply(text("done")),
     ];
     const plain = (ls: Line[]) => ls.map(({ fold, ...l }) => l.text);
-    expect(plain(conversationLines(history, opts(["m"])))).toEqual(["", "› go", "", "● Read 1 file", "● s echo {}", "  ⎿ ok", "● Read 1 file", "● done"]);
+    expect(plain(conversationLines(history, opts(["m"]), W))).toEqual(["", "› go", "", "● Read 1 file", "● s echo {}", "  ⎿ ok", "● Read 1 file", "● done"]);
     // A transcript from before the asked mark folds it (a known limit).
-    expect(plain(conversationLines(history, opts()))).toEqual(["", "› go", "", "● Read 2 files, called s", "● done"]);
+    expect(plain(conversationLines(history, opts(), W))).toEqual(["", "› go", "", "● Read 2 files, called s", "● done"]);
   });
 
   // TUI design pass, Task 3: resumed, the lines carry the marks the live ones did (band, markers, blocks), as describe and
@@ -348,9 +352,9 @@ describe("the open run", () => {
       reply(text("done")),
     ];
     const run = new OpenRun(opts());
-    const live = [...history.flatMap((m) => lines(m, P, undefined, run)), ...run.end()];
+    const live = [...history.flatMap((m) => lines(m, P, W, undefined, run)), ...run.end()];
     const bare = (ls: Line[]) => ls.map(({ fold, ...l }) => l);
-    expect(bare(conversationLines(history, opts()))).toEqual(bare(live));
+    expect(bare(conversationLines(history, opts(), W))).toEqual(bare(live));
     expect(bare(live).slice(3)).toEqual([answer("Looking."), folded("Read 1 file"), own("● shell rm x"), gray("  ⎿ ok"), answer("done")]);
   });
 });
@@ -364,7 +368,7 @@ describe("the open run's live row", () => {
     const tv = call("m", "mcp__tradingview__quote_get", { symbol: "X" });
     const find = call("f", "find_files", { pattern: "*.ts" });
     const grep = call("g", "search_files", { pattern: "endRun" });
-    lines(reply(grep, find, read("r", "src\\tui\\fold.ts"), call("s", "search_files", { pattern: "x" }), tv, sh("c", "git status\necho more")), P, undefined, run);
+    lines(reply(grep, find, read("r", "src\\tui\\fold.ts"), call("s", "search_files", { pattern: "x" }), tv, sh("c", "git status\necho more")), P, W, undefined, run);
     expect(run.live(0)).toEqual([]); // no call has started
     run.start("g", 0);
     // The top line starts a block, its `● ` grey (TUI design pass, Task 3; audit 7); the ⎿ line is none.
@@ -390,23 +394,23 @@ describe("the open run's live row", () => {
 
   it("counts the run's shell commands, names a server as its row does, and searches first again in a new run", () => {
     const run = new OpenRun(opts());
-    lines(reply(sh("a", "ls"), call("m", "mcp__plugin_mempalace_mempalace__search", {})), P, undefined, run);
+    lines(reply(sh("a", "ls"), call("m", "mcp__plugin_mempalace_mempalace__search", {})), P, W, undefined, run);
     run.start("a", 0);
     run.finished("a", 10);
     run.start("m", 10);
     expect(texts(run.live(10))).toEqual(["● Calling plugin:mempalace:mempalace", "  ⎿  search"]);
-    lines(results(ok("a"), ok("m")), P, undefined, run);
-    lines(reply(sh("b", "cat a.txt")), P, undefined, run);
+    lines(results(ok("a"), ok("m")), P, W, undefined, run);
+    lines(reply(sh("b", "cat a.txt")), P, W, undefined, run);
     run.start("b", 0);
     expect(texts(run.live(65_000))).toEqual(["● Running 2 shell commands · 1m 5s", "  ⎿  $ cat a.txt (1m 5s)"]); // as the working line counts
-    lines(reply(text("Done.")), P, undefined, run);
+    lines(reply(text("Done.")), P, W, undefined, run);
     expect(run.live(0)).toEqual([]);
-    lines(reply(read("r"), call("f", "find_files", { pattern: "*.ts" })), P, undefined, run);
+    lines(reply(read("r"), call("f", "find_files", { pattern: "*.ts" })), P, W, undefined, run);
     run.start("r", 0);
     run.start("f", 0);
     expect(texts(run.live(0))).toEqual(["● Reading a.txt", '  ⎿  "*.ts"']);
     run.question(undefined);
-    lines(reply(call("f2", "find_files", { pattern: "*.md" })), P, undefined, run);
+    lines(reply(call("f2", "find_files", { pattern: "*.md" })), P, W, undefined, run);
     run.start("f2", 0);
     expect(texts(run.live(0))).toEqual(["● Searching for 1 pattern", '  ⎿  "*.md"']);
   });
@@ -414,12 +418,12 @@ describe("the open run's live row", () => {
   // tool_search sets neither line; a call of its own row, or a subagent's, is no call of the run.
   it("draws nothing for tool_search, a call of its own row or a call not in the run", () => {
     const run = new OpenRun(opts());
-    lines(reply(call("t", "tool_search", { query: "x" }), sh("w", "rm x")), P, undefined, run);
+    lines(reply(call("t", "tool_search", { query: "x" }), sh("w", "rm x")), P, W, undefined, run);
     run.start("t", 0);
     run.start("w", 0);
     run.start("elsewhere", 0);
     expect(run.live(0)).toEqual([]);
-    lines(reply(call("t2", "tool_search", { query: "y" }), read("r")), P, undefined, run);
+    lines(reply(call("t2", "tool_search", { query: "y" }), read("r")), P, W, undefined, run);
     run.start("r", 0);
     run.start("t2", 0);
     expect(texts(run.live(0))).toEqual(["● Reading a.txt", "  ⎿  a.txt"]);
@@ -428,7 +432,7 @@ describe("the open run's live row", () => {
   // A question ends the run before its call: the live row goes with it, and a call after it starts a new one.
   it("goes at a question, and comes back for the calls after the asked one", () => {
     const run = new OpenRun(opts());
-    lines(reply(read("r"), call("m", "mcp__s__echo", {}), read("r2", "b.txt")), P, undefined, run);
+    lines(reply(read("r"), call("m", "mcp__s__echo", {}), read("r2", "b.txt")), P, W, undefined, run);
     run.start("r", 0);
     run.start("m", 0);
     expect(texts(run.question("m").lines)).toEqual(["● Read 1 file", "● s echo {}"]);
@@ -450,18 +454,18 @@ describe("an MCP call's names on screen", () => {
     expect(callRow(tv, P, names)).toEqual(own('● tradingview chart_set_symbol {"symbol":"BTCUSDT"}'));
     expect(callRow(dotted, P, names)).toEqual(own('● my.tv foo.bar {"x":1}'));
     const run = new OpenRun(opts());
-    expect(texts(lines(reply(read("r"), tv), P, undefined, run))).toEqual([]);
+    expect(texts(lines(reply(read("r"), tv), P, W, undefined, run))).toEqual([]);
     expect(texts(run.question("m").lines)).toEqual(["● Read 1 file", '● tradingview chart_set_symbol {"symbol":"BTCUSDT"}']);
   });
 
   it("names them on the rows of a folded row clicked open, and on the live row's ⎿ line", () => {
     const run = new OpenRun(opts());
-    lines(reply(tv, dotted), P, undefined, run);
+    lines(reply(tv, dotted), P, W, undefined, run);
     run.start("m", 0);
     expect(texts(run.live(0))).toEqual(["● Calling tradingview", "  ⎿  chart_set_symbol"]);
     run.start("d", 0);
     expect(texts(run.live(0))).toEqual(["● Calling my.tv", "  ⎿  foo.bar"]);
-    lines(results(ok("m"), ok("d")), P, undefined, run);
+    lines(results(ok("m"), ok("d")), P, W, undefined, run);
     const [row] = run.end();
     expect(row!.text).toBe("● Called tradingview, called my.tv");
     expect(texts(openRows(row!.fold!, opts()))).toEqual(['● tradingview chart_set_symbol {"symbol":"BTCUSDT"}', "  ⎿ ok", '● my.tv foo.bar {"x":1}', "  ⎿ ok"]);

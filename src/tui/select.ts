@@ -35,6 +35,7 @@ export function* drawn(rows: Rows, r: Row): Generator<{ offset: number; col: num
   const n = l.oneLine ? 0 : (l.indent ?? 0);
   let col = r.indent ?? 0;
   for (const { segment, index } of segmenter.segment(l.text.slice(r.start, r.end))) {
+    if (!l.oneLine && segment === " " && col >= rows.width) return; // ending its row unseen (view.ts, starts; Task 17)
     const w = l.oneLine ? columnsOf(segment) : columnsAt(segment, col - n, inner(rows.width, n));
     if (col + w > room) {
       yield { offset: r.start + index, col, width: 1, text: "…", cut: true };

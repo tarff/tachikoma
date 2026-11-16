@@ -63,7 +63,7 @@ import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { startBox } from "../../src/tui/startup.js";
-import { look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
+import { type Look, look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
 import { textWidth, wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, standInRun, tempContext, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
@@ -439,7 +439,7 @@ describe("App", () => {
     ];
     const folded = { asked: new Set<string>(), shell: "powershell" as const, names: mcpNames(), palette: DARK, root: tmpdir() };
     // The resume lines a block, as cli.tsx marks them (the whole PR's review: "Give them a gap").
-    const { app } = await mount([], { intro: [...conversationLines(history, folded), ...asBlock([{ text: "Resumed: read the notes.", color: "muted" }])] });
+    const { app } = await mount([], { intro: [...conversationLines(history, folded, textWidth(100, false)), ...asBlock([{ text: "Resumed: read the notes.", color: "muted" }])] });
     const frame = app.lastFrame()!;
     expect(frame).toMatch(/^\n› read the notes\n\n\n● Read 1 file\n\n● They say hello\.\n\nResumed: read the notes\.\n/);
   });
@@ -996,7 +996,8 @@ describe("App", () => {
     await type(app, "hi");
     await until(app, "two");
     const frame = app.lastFrame();
-    expect(frame).toContain(`one${OSC52_SHOWN}\\u001b[8mhidden␍over\\u202eback\n`);
+    // Drawn as markdown (TUI design pass, Task 16), which reads a lone \r as a line break, as marked's lexer does.
+    expect(frame).toContain(`one${OSC52_SHOWN}\\u001b[8mhidden\n  over\\u202eback\n  two\n`);
     expectNoRawControls(frame);
   });
 
@@ -1917,7 +1918,7 @@ describe("App's background subagents", () => {
     await type(app, "/tasks t1");
     await until(app, "t1 (find x), done: 1 tool call");
     expect(app.lastFrame()).toContain("● find_files\n  pattern: *.ts\n  ⎿ No files match *.ts"); // name: value lines (TUI design pass, Task 12)
-    expect(app.lastFrame()).toContain("Answer:\nIt is in a.ts");
+    expect(app.lastFrame()).toContain("Answer:\n\nIt is in a.ts"); // an empty line under the heading (Task 17)
     await type(app, "/tasks t9");
     await until(app, "No task t9. /tasks lists them.");
   });
@@ -2853,7 +2854,7 @@ describe("App's folded tool rows", () => {
     const { file, pictures } = sessionPaths(sessions, session.id);
     const saved = readTranscript(file, pictures);
     if ("problem" in saved) throw new Error(saved.problem);
-    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: tmpdir() });
+    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: tmpdir() }, textWidth(100, false));
     expect(resumed.map((l) => l.text)).toEqual(["", "› look", "", "● Read 1 file, ran 1 shell command", "● done"]);
   });
 
@@ -3315,8 +3316,372 @@ describe("App's blocks and gaps", () => {
       const { file, pictures } = sessionPaths(sessions, session.id);
       const saved = readTranscript(file, pictures);
       if ("problem" in saved) throw new Error(saved.problem);
-      const lines = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: ctx.root });
+      const lines = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: ctx.root }, textWidth(100, full));
       const resumed = await mount([], { full, intro: lines });
+      expect(resumed.app.lastFrame()!.split("\n").slice(0, live.length)).toEqual(live);
+    });
+  });
+});
+
+// TUI design pass, Task 16 (design, "5. Markdown"): a reply's text is drawn as markdown, laid out for its budget, the
+// columns a kept line's text has less the reply's two lead columns (plan, Architecture); its later lines under the
+// first's text, a list's own lead after the reply's. Your message is never read as markdown.
+describe("App's replies as markdown", () => {
+  const rows = (app: ReturnType<typeof render>, full = false) =>
+    stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
+  // The dark look's band #2a2a2a and accent #4278de (theme.ts), as 24-bit colour draws them, and bold.
+  const BAND = "\u001b[48;2;42;42;42m";
+  const ACCENT = "\u001b[38;2;66;120;222m";
+  const BOLD = "\u001b[1m";
+  // The style codes just before `text` on a row.
+  const codes = (row: string, text: string) => /(?:\u001b\[[0-9;]*m)*$/.exec(row.slice(0, row.indexOf(text)))![0];
+  const MD = "# Plan\n\n- **one** thing\n- two\n\n```\nnpm test\n```";
+  const DRAWN = ["● Plan", "", "    • one thing", "    • two", "", "  npm test"];
+  const resize = async (app: ReturnType<typeof render>, columns: number) => {
+    Object.defineProperty(app.stdout, "columns", { value: columns, configurable: true });
+    app.stdout.emit("resize");
+    await tick();
+  };
+
+  it("draws a reply's heading, list and code block styled as markdown, and your message as typed", async () => {
+    await inColour(3, async () => {
+      const { app } = await mount([reply(MD)]);
+      await type(app, "**go**");
+      await until(app, "npm test");
+      const r = rows(app);
+      const first = r.indexOf("● Plan");
+      expect(r.slice(first - 4, first + DRAWN.length)).toEqual(["", "› **go**", "", "", ...DRAWN]);
+      const raw = app.lastFrame()!.split("\n");
+      expect(raw[first]).toBe(`${ACCENT}● ${BOLD}Plan\u001b[39m\u001b[22m`); // the heading bold, in the dot's accent
+      expect(codes(raw[first + 2]!, "one")).toContain(BOLD);
+      expect(codes(raw[first + 2]!, "one")).not.toContain(ACCENT);
+      expect(raw[first + 2]).not.toContain(BAND);
+      expect(raw[first + 5]).toContain(BAND); // the code block, on the band
+    });
+  });
+
+  it("copies a selection over a reply drawn as markdown as it is drawn", async () => {
+    const { app, mouse, copies } = await mount([reply(MD)], { full: true });
+    await type(app, "go");
+    await until(app, "npm test");
+    const first = rows(app, true).indexOf("● Plan");
+    await pointer(mouse, at("press", 0, first), at("drag", 98, first + 5), at("release", 98, first + 5));
+    expect(copies).toEqual([DRAWN.join("\n")]);
+  });
+
+  // Task 16's spec review, the user's choice (2026-11-16, "Band from the text"): a code block's band starts under the
+  // reply's text, where the code's text starts, a list's or a quote's lead before it plain too, to the row's edge; the
+  // `●` and lead columns plain, on every row of a wrapped code line and on an empty one. Your message's band is the
+  // whole row, as before.
+  it.each([true, false])("starts a reply's code block band where its text starts, as markdown (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const text = "```\nfirst\n\nsecond\n```\n\n- item\n\n  ```\n  in a list\n  ```\n\n> ```\n> in a quote\n> ```";
+      const { app } = await mount([reply(text)], { full });
+      await type(app, "go");
+      await until(app, "in a quote");
+      const r = rows(app, full);
+      const raw = app.lastFrame()!.split("\n");
+      const plain = (i: number) => stripVTControlCharacters(raw[i]!.slice(0, raw[i]!.indexOf(BAND)));
+      const edge = (i: number) => stripVTControlCharacters(raw[i]!).slice(0, full ? 99 : 100);
+      const first = r.indexOf("● first");
+      expect(r.slice(first, first + 3)).toEqual(["● first", "", "  second"]);
+      const banded = [
+        [first, "● "],
+        [first + 1, "  "], // the code's empty line
+        [first + 2, "  "],
+        [r.indexOf("      in a list"), "      "],
+        [r.indexOf("  │ in a quote"), "  │ "],
+      ] as const;
+      for (const [i, lead] of banded) {
+        expect(raw[i]).toContain(BAND);
+        expect(plain(i)).toBe(lead);
+        expect(edge(i)).toHaveLength(full ? 99 : 100); // the band to the row's edge
+      }
+      expect(raw[r.indexOf("    • item")]).not.toContain(BAND);
+      expect(plain(r.indexOf("› go"))).toBe(""); // your message: the whole row
+    });
+  });
+
+  it.each([true, false])("starts each row of a wrapped code line's band under the reply's text, as markdown (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app } = await mount([reply(`\`\`\`\n${"x".repeat(150)}\n\`\`\``)], { full });
+      await type(app, "go");
+      await until(app, "xxxx");
+      const r = rows(app, full);
+      const raw = app.lastFrame()!.split("\n");
+      const first = r.findIndex((row) => row.startsWith("● x"));
+      for (const [i, lead] of [
+        [first, "● "],
+        [first + 1, "  "],
+      ] as const) {
+        expect(r[i]).toMatch(/^(● | {2})x+$/);
+        expect(stripVTControlCharacters(raw[i]!.slice(0, raw[i]!.indexOf(BAND)))).toBe(lead);
+      }
+      expect(r[first]!.length + r[first + 1]!.length).toBe(154); // the two leads and the 150 x's
+    });
+  });
+
+  it("exports a reply drawn as markdown as its raw text", async () => {
+    const { app, ctx, session } = await mount([reply(MD)]);
+    await type(app, "go");
+    await until(app, "npm test");
+    await type(app, "/export talk.txt");
+    await until(app, "Exported to");
+    const text = readFileSync(path.join(ctx.root, "talk.txt"), "utf8");
+    expect(text).toBe(exportText(session.messages, "fake:a"));
+    expect(text.endsWith(`\n\nTachikoma (fake:a):\n${MD}\n`)).toBe(true);
+  });
+
+  // PR 20's review holds: one empty line before the reply and one after it, where it starts and ends with a code block
+  // or a table.
+  it.each([
+    { name: "a code block", text: "```\nnpm test\n```", drawn: ["● npm test"] },
+    { name: "a table", text: "| a |\n|---|\n| 1 |", drawn: ["● ╭───╮", "  │ a │", "  ├───┤", "  │ 1 │", "  ╰───╯"] },
+  ])("puts one empty line before and after a reply as markdown that is $name", async ({ text, drawn }) => {
+    const { app } = await mount([reply(text)]);
+    await type(app, "hi");
+    await until(app, drawn.at(-1)!);
+    await press(app, "\u001b[Z");
+    await until(app, "mode is now project");
+    const r = rows(app);
+    const first = r.indexOf(drawn[0]!);
+    expect(r.slice(first - 4, first + drawn.length + 2)).toEqual(["", "› hi", "", "", ...drawn, "", "mode is now project"]);
+  });
+
+  // Design, "Resizing": the table is laid out once, for 120 columns, and never again; each of its rows is one screen
+  // row at any width, cut with "…" when the screen is narrower. The table is wider than a reply's budget at the test
+  // terminal's own 100 columns (97) and within 120's (117), so it is boxed only if laid out at the width when the reply
+  // came (Task 16's spec review).
+  it("keeps a table drawn as markdown at 120 columns, each row cut to one at 50, and the frame as at first back at 120, a selection on the same text", async () => {
+    await inColour(1, async () => {
+      const holds = "a reply's markdown as styled lines, laid out once for the width it has when it arrives";
+      const table = `| file | what it holds |\n|---|---|\n| src/tui/markdown.ts | ${holds} |\n| src/tui/describe.ts | how one message appears |`;
+      const border = (l: string, m: string, r: string) => `  ${l}${"─".repeat(21)}${m}${"─".repeat(holds.length + 2)}${r}`;
+      const cells = (a: string, b: string) => `  │ ${a.padEnd(19)} │ ${b.padEnd(holds.length)} │`;
+      const drawn = [
+        border("╭", "┬", "╮"),
+        cells("file", "what it holds"),
+        border("├", "┼", "┤"),
+        cells("src/tui/markdown.ts", holds),
+        cells("src/tui/describe.ts", "how one message appears"),
+        border("╰", "┴", "╯"),
+      ];
+      expect(drawn[0]!.length - 2).toBeGreaterThan(textWidth(100, true) - 2); // the table alone, without the reply's lead
+      expect(drawn[0]!.length).toBeLessThanOrEqual(textWidth(120, true));
+      const { app, mouse, copies } = await mount([reply(`Files:\n\n${table}`)], { full: true, rows: 26 });
+      const shownAt = (columns: number) => stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => r.slice(0, columns - 1).trimEnd());
+      await resize(app, 120);
+      await type(app, "go");
+      await until(app, "╰");
+      const first = shownAt(120).indexOf("● Files:");
+      expect(shownAt(120).slice(first, first + 8)).toEqual(["● Files:", "", ...drawn]);
+      await pointer(mouse, at("press", 12, first + 5), at("drag", 22, first + 5), at("release", 22, first + 5));
+      expect(copies).toEqual(["markdown.ts"]);
+      expect(reversed(app)[first + 5]).toBe("markdown.ts");
+      const before = app.lastFrame();
+      await resize(app, 50);
+      const cut = (text: string) => (text.length > 49 ? `${text.slice(0, 48)}…` : text); // one column each
+      expect(shownAt(50).slice(first, first + 8)).toEqual(["● Files:", "", ...drawn.map(cut)]);
+      expect(reversed(app)[first + 5]).toBe("markdown.ts");
+      await resize(app, 120);
+      expect(app.lastFrame()).toBe(before);
+      expect(copies).toEqual(["markdown.ts"]);
+    });
+  });
+
+  // The plan's exact fit (review): at 100 columns full screen's budget is 97, the 99 a kept line's text has (the scroll
+  // bar keeps the last) less the reply's 2, and classic's 98. A one-column table of a cell `cell` wide is cell + 4
+  // wide.
+  it.each([
+    { full: true, cell: 93, boxed: true },
+    { full: true, cell: 94, boxed: false },
+    { full: false, cell: 94, boxed: true },
+    { full: false, cell: 95, boxed: false },
+  ])("draws a table as markdown with box lines only where it fits the reply's budget (full: $full, cell $cell)", async ({ full, cell, boxed }) => {
+    const wide = "x".repeat(cell);
+    const { app } = await mount([reply(`Here:\n\n| h |\n|---|\n| ${wide} |`)], { full });
+    await type(app, "go");
+    await until(app, "xxxx");
+    const r = rows(app, full);
+    if (boxed) {
+      const line = (l: string, r: string) => `  ${l}${"─".repeat(cell + 2)}${r}`;
+      const first = r.indexOf(line("╭", "╮"));
+      expect(r.slice(first, first + 5)).toEqual([line("╭", "╮"), `  │ ${"h".padEnd(cell)} │`, line("├", "┤"), `  │ ${wide} │`, line("╰", "╯")]);
+      expect(r[first + 3]).toHaveLength(full ? 99 : 100);
+      expect(app.lastFrame()).not.toContain("…");
+    } else {
+      expect(r).toContain("  | h |");
+      expect(r).toContain("  |---|");
+      expect(app.lastFrame()).not.toContain("╭");
+    }
+  });
+
+  // Task 17's captures, the user's choice (2026-11-16, "Keep backticks"): with no colour, inline code keeps its
+  // backticks and a code block its fences, and a copy gives them; with 16 colours, no band, the block has its fences
+  // and inline code its colour, without backticks.
+  const CODE = "Run `npm test`:\n\n```sh\nnpm test\n```";
+  it("marks code with backticks and fences as markdown where there is no colour, a copy giving them", async () => {
+    const shown: Look = { light: false, color: false, full: false };
+    const { app, mouse, copies } = await mount([reply(CODE)], { full: true, theme: { look: shown, palette: palette(shown) } });
+    await type(app, "go");
+    await until(app, "npm test");
+    const r = rows(app, true);
+    const first = r.indexOf("● Run `npm test`:");
+    const drawn = ["● Run `npm test`:", "", "  ```sh", "  npm test", "  ```"];
+    expect(r.slice(first, first + 5)).toEqual(drawn);
+    await pointer(mouse, at("press", 0, first), at("drag", 98, first + 4), at("release", 98, first + 4));
+    expect(copies).toEqual([drawn.join("\n")]);
+  });
+
+  it("draws a code block with its fences and inline code in its colour as markdown with 16 colours", async () => {
+    await inColour(1, async () => {
+      const { app } = await mount([reply(CODE)], { theme: NAMED });
+      await type(app, "go");
+      await until(app, "```sh");
+      const r = rows(app);
+      const first = r.indexOf("● Run npm test:");
+      expect(r.slice(first, first + 5)).toEqual(["● Run npm test:", "", "  ```sh", "  npm test", "  ```"]);
+      expect(app.lastFrame()!.split("\n")[first]).toContain("\u001b[34mnpm test"); // blue, the accent's named colour
+    });
+  });
+
+  // Task 17's captures, the user's choice (2026-11-16, "Fix it"): a word ending exactly at the edge leaves the next
+  // row starting under the text in both modes, prose and code alike; a code line's own leading spaces stay; a copy
+  // keeps the space at the break.
+  it.each([true, false])("starts the row after a word ending at the edge under a reply's text, as markdown (full screen: %s)", async (full) => {
+    const a = "a".repeat(full ? 97 : 98); // after "● ", to the edge: 99 columns in full screen, 100 in classic
+    const { app, mouse, copies } = await mount([reply(`${a} bbb\n\n\`\`\`\n${a} ccc\n    kept in\n\`\`\``)], { full });
+    await type(app, "go");
+    await until(app, "kept in");
+    const r = rows(app, full);
+    const first = r.indexOf(`● ${a}`);
+    expect(r.slice(first, first + 6)).toEqual([`● ${a}`, "  bbb", "", `  ${a}`, "  ccc", "      kept in"]);
+    if (full) {
+      await pointer(mouse, at("press", 0, first), at("drag", 98, first + 1), at("release", 98, first + 1));
+      expect(copies).toEqual([`● ${a} bbb`]);
+    }
+  });
+
+  // Task 16's code review: a code block's tabs are drawn as the spaces to their stops, counted from the band's start,
+  // in both modes, no row wider than the screen; a copy keeps the tabs, as a Makefile's recipe needs them.
+  const GO = "```go\n\tif x {\n\t\tfmt.Println(1)\n\t}\n```";
+  const GO_DRAWN = [`●${" ".repeat(9)}if x {`, `${" ".repeat(18)}fmt.Println(1)`, `${" ".repeat(10)}}`];
+  it.each([true, false])("draws a code block's tabs as markdown to their stops, no row wider than the screen (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app } = await mount([reply(GO)], { full });
+      await type(app, "go");
+      await until(app, "fmt.Println(1)");
+      const r = rows(app, full);
+      const first = r.indexOf(GO_DRAWN[0]!);
+      expect(r.slice(first, first + 3)).toEqual(GO_DRAWN);
+      for (const row of app.lastFrame()!.split("\n")) expect(stripVTControlCharacters(row).length).toBeLessThanOrEqual(100);
+      expect(app.lastFrame()).not.toContain("\t");
+    });
+  });
+
+  it("copies a code block drawn as markdown with its tabs", async () => {
+    const { app, mouse, copies } = await mount([reply(GO)], { full: true });
+    await type(app, "go");
+    await until(app, "fmt.Println(1)");
+    const first = rows(app, true).indexOf(GO_DRAWN[0]!);
+    await pointer(mouse, at("press", 0, first), at("drag", 98, first + 2), at("release", 98, first + 2));
+    expect(copies).toEqual(["● \tif x {\n  \t\tfmt.Println(1)\n  \t}"]);
+  });
+
+  // A reply after /screen is laid out for the new mode's budget: at 100 columns a table 98 wide fits classic's (98) and
+  // not full screen's (97).
+  it.each([
+    { from: false, boxed: false },
+    { from: true, boxed: true },
+  ])("lays a reply out as markdown for the mode /screen switched to (from full screen: $from)", async ({ from, boxed }) => {
+    const wide = "x".repeat(94);
+    const { app } = await mount([reply(`| h |\n|---|\n| ${wide} |`)], { full: from });
+    await type(app, "/screen");
+    await until(app, `screen is now ${from ? "classic" : "full"}`);
+    await type(app, "go");
+    await until(app, "xxxx");
+    const r = rows(app, !from);
+    if (boxed) expect(r).toContain(`  │ ${wide} │`);
+    else expect(r).toContain("  |---|");
+    expect(app.lastFrame()!.includes("╭")).toBe(boxed);
+  });
+
+  // Task 16's spec review, the user's choice (2026-11-16, "Draw it as markdown"): `/tasks t1`'s answer is drawn as a
+  // reply's text is, under its grey `Answer:`, laid out for the text width then, the answer having no lead of its own:
+  // in full screen's detail view, and said in classic.
+  const subagent = async (answer: string, full: boolean) => {
+    const worker = new FakeProvider("w", [reply(answer)]);
+    const m = await mount([callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")], { full, worker });
+    await type(m.app, "go");
+    await until(m.app, "done");
+    await type(m.app, "/tasks t1");
+    await until(m.app, "t1 (find x), done: 0 tool calls");
+    return m;
+  };
+
+  it.each([true, false])("draws a subagent's answer as markdown on /tasks t1 under its grey heading (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app } = await subagent(MD, full);
+      await until(app, "npm test");
+      const r = rows(app, full);
+      const first = r.indexOf("Answer:");
+      // An empty line between the heading and the answer (Task 17's captures, the user's choice: "Add an empty line").
+      expect(r.slice(first, first + 8)).toEqual(["Answer:", "", "Plan", "", "  • one thing", "  • two", "", "npm test"]);
+      const raw = app.lastFrame()!.split("\n");
+      expect(raw[first]).toContain("\u001b[38;2;138;138;138mAnswer:"); // the heading muted, as before
+      expect(codes(raw[first + 2]!, "Plan")).toContain(BOLD);
+      expect(codes(raw[first + 2]!, "Plan")).toContain(ACCENT);
+      expect(raw[first + 7]).toContain(BAND);
+    });
+  });
+
+  // Task 16's code review: its code block's band is the whole row, the answer having no lead, and its tabs are drawn as
+  // the spaces to their stops in both modes, no row wider than the screen.
+  it.each([true, false])("draws a subagent's answer's code tabs as markdown to their stops (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app } = await subagent(GO, full);
+      await until(app, "fmt.Println(1)");
+      const r = rows(app, full);
+      const first = r.indexOf(`${" ".repeat(8)}if x {`);
+      expect(r.slice(first, first + 3)).toEqual([`${" ".repeat(8)}if x {`, `${" ".repeat(16)}fmt.Println(1)`, `${" ".repeat(8)}}`]);
+      for (const row of app.lastFrame()!.split("\n")) expect(stripVTControlCharacters(row).length).toBeLessThanOrEqual(100);
+      expect(app.lastFrame()).not.toContain("\t");
+    });
+  });
+
+  // The answer's budget is the whole text width: 99 at 100 columns in full screen (the detail view's), 100 in classic.
+  it.each([
+    { full: true, cell: 95, boxed: true },
+    { full: true, cell: 96, boxed: false },
+    { full: false, cell: 96, boxed: true },
+    { full: false, cell: 97, boxed: false },
+  ])("draws a subagent's answer's table as markdown with box lines only where it fits (full: $full, cell $cell)", async ({ full, cell, boxed }) => {
+    const wide = "x".repeat(cell);
+    const { app } = await subagent(`| h |\n|---|\n| ${wide} |`, full);
+    await until(app, "xxxx");
+    const r = rows(app, full);
+    if (boxed) {
+      expect(r).toContain(`│ ${wide} │`);
+      expect(r).toContain(`╰${"─".repeat(cell + 2)}╯`);
+      expect(app.lastFrame()).not.toContain("…");
+    } else {
+      expect(r).toContain("| h |");
+      expect(app.lastFrame()).not.toContain("╭");
+    }
+  });
+
+  // Resumed, a reply is drawn as the live one was (fold.ts, conversationLines), at the width given.
+  it.each([true, false])("draws a resumed reply as markdown as the live one was drawn (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app, ctx, session, sessions } = await mount([reply(MD)], { full, save: true });
+      await type(app, "go");
+      await until(app, "npm test");
+      const live = app.lastFrame()!.split("\n").slice(0, rows(app, full).indexOf("  npm test") + 1);
+      const { file, pictures } = sessionPaths(sessions, session.id);
+      const saved = readTranscript(file, pictures);
+      if ("problem" in saved) throw new Error(saved.problem);
+      const opts = { asked: new Set(saved.asked), shell: "powershell" as const, names: mcpNames(), palette: DARK, root: ctx.root };
+      const resumed = await mount([], { full, intro: conversationLines(saved.messages, opts, textWidth(100, full)) });
       expect(resumed.app.lastFrame()!.split("\n").slice(0, live.length)).toEqual(live);
     });
   });
@@ -4708,7 +5073,9 @@ describe("App's selecting and copying in full screen", () => {
       await pointer(mouse, at("press", 2, 0), at("drag", 80, 0), at("release", 80, 0));
       expect(copies).toEqual([long.slice(2, 81)]);
       await narrow(app);
-      expect(reversed(app).slice(0, 20).join("")).toBe(long.slice(2, 81)); // now over two rows
+      // Now over two rows, the first ending at the 49th column with a word, so the space after it ends that row unseen
+      // (Task 17's captures, "Fix it"): selected and copied, but not drawn.
+      expect(reversed(app).slice(0, 20).join("")).toBe(`${long.slice(2, 49)}${long.slice(50, 81)}`);
     });
   });
 
@@ -5472,8 +5839,9 @@ describe("App's questions in full screen", () => {
     expect(rows).toHaveLength(23);
     expect(rows[0]).toBe(`┌ run (${fits.length} characters)`);
     expect(rows[1]).toMatch(/^run: echo word/);
-    // Two rows at the 36 columns inside the box, the space that does not fit the first starting the second.
-    expect(app.lastFrame()!.split("\n").slice(18, 22)).toEqual([boxTop(40), boxed("Allow run (shown above)? [y/n] · Esc", 40), boxed(" to decline", 40), boxFoot(40)]);
+    // Two rows at the 36 columns inside the box, the space that does not fit the first ending it unseen, so the second
+    // starts under the text (Task 17's captures; the user, "Fix them too").
+    expect(app.lastFrame()!.split("\n").slice(18, 22)).toEqual([boxTop(40), boxed("Allow run (shown above)? [y/n] · Esc", 40), boxed("to decline", 40), boxFoot(40)]);
     Object.defineProperty(app.stdout, "columns", { value: 100, configurable: true });
     app.stdout.emit("resize");
     await tick();
@@ -5509,6 +5877,29 @@ describe("App's question box", () => {
     expect(rows.slice(19, 22)).toEqual([boxTop(), boxed("Allow run: ls? [y/n] · Esc to decline"), boxFoot()]);
     await press(app, "y");
     expect(await answer).toBe(true);
+  });
+
+  // Task 17's captures, the user's choice (2026-11-16, "Fix them too"): in classic too, a row of the box's grey line,
+  // red lines or question after a word ending at its edge starts under the text, not with the space.
+  it("starts a box row after a word ending at the edge under the text in classic mode", async () => {
+    const { app, ask } = await mount([]);
+    wide(app, 40);
+    await tick();
+    const danger = `Danger: ${"x".repeat(28)} end`; // "Danger: " and the x's fill the 36 columns inside the box
+    void ask("run (shown above)", undefined, undefined, false, [danger], `${"a".repeat(36)} note`);
+    await until(app, "[y/n]");
+    const rows = rowsOf(app);
+    const top = rows.indexOf(boxTop(40));
+    expect(rows.slice(top, top + 8)).toEqual([
+      boxTop(40),
+      boxed("a".repeat(36), 40),
+      boxed("note", 40),
+      boxed(`Danger: ${"x".repeat(28)}`, 40),
+      boxed("end", 40),
+      boxed("Allow run (shown above)? [y/n] · Esc", 40),
+      boxed("to decline", 40),
+      boxFoot(40),
+    ]);
   });
 
   it("draws the red lines and the grey line in the box, above the question's line", async () => {
@@ -5669,7 +6060,8 @@ describe("App's detail view in full screen", () => {
   it("opens a subagent's record in the view with /tasks t1, putting nothing in the conversation, and prints a mistake as before", async () => {
     const { app } = await record("It is in a.ts");
     const rows = shown(app);
-    expect(rows.slice(0, 4)).toEqual(["t1 (find x), done: 0 tool calls", "Answer:", "It is in a.ts", ""]);
+    // An empty line under the heading (Task 17's captures, "Add an empty line").
+    expect(rows.slice(0, 5)).toEqual(["t1 (find x), done: 0 tool calls", "Answer:", "", "It is in a.ts", ""]);
     expect(rows[20]).toBe(KEYS);
     await press(app, "q");
     expect(app.lastFrame()).not.toContain("t1 (find x), done");
@@ -5678,17 +6070,18 @@ describe("App's detail view in full screen", () => {
     expect(app.lastFrame()).toContain("›");
   });
 
-  // 102 rows: the heading, "Answer:", then line 0. to line 99.; 20 on screen, so the last screenful starts at line 80.
+  // 103 rows: the heading, "Answer:", an empty line (Task 17's captures, "Add an empty line"), then line 0. to line
+  // 99.; 20 on screen, so the last screenful starts at line 80.
   it("moves a row on j, k, Down and Up, to the top on g and Home, to the bottom on G and End, and scrolls as the conversation does", async () => {
     const { app, mouse } = await record(lines(100));
     const top = () => shown(app)[0];
     expect(top()).toBe("t1 (find x), done: 0 tool calls"); // it opens at its top
-    expect(thumb(app)).toEqual([0, 1, 2, 3]); // 20 rows of 102 seen
-    await press(app, "j", "j");
+    expect(thumb(app)).toEqual([0, 1, 2, 3]); // 20 rows of 103 seen
+    await press(app, "j", "j", "j");
     expect(top()).toBe("line 0.");
-    await press(app, "k");
+    await press(app, "k", "k");
     expect(top()).toBe("Answer:");
-    await press(app, DOWN, DOWN);
+    await press(app, DOWN, DOWN, DOWN);
     expect(top()).toBe("line 1.");
     await press(app, UP);
     expect(top()).toBe("line 0.");
@@ -5702,11 +6095,11 @@ describe("App's detail view in full screen", () => {
     await press(app, HOME);
     expect(top()).toBe("t1 (find x), done: 0 tool calls");
     await press(app, PG_DOWN); // half of 20
-    expect(top()).toBe("line 8.");
+    expect(top()).toBe("line 7.");
     await wheel(mouse, "down"); // 3 rows
-    expect(top()).toBe("line 11.");
-    await press(app, SHIFT_UP);
     expect(top()).toBe("line 10.");
+    await press(app, SHIFT_UP);
+    expect(top()).toBe("line 9.");
     await press(app, CTRL_END);
     expect(top()).toBe("line 80.");
     await press(app, CTRL_HOME);
@@ -5715,7 +6108,7 @@ describe("App's detail view in full screen", () => {
     expect(shown(app)[19]).toBe("line 99.");
   });
 
-  // "login" on lines 30, 60 and 90: rows 32, 62 and 92 of 102.
+  // "login" on lines 30, 60 and 90: rows 33, 63 and 93 of 103.
   const logins = () => lines(100, (i) => (i > 0 && i % 30 === 0 ? `the login ${i}.` : `line ${i}.`));
 
   it("searches as the query is typed, in any case, matches in reverse colours, keeps the search on Enter, and goes round with n and N", async () => {
@@ -5794,10 +6187,10 @@ describe("App's detail view in full screen", () => {
   it("scrolls on PgUp, PgDn, Ctrl+Home and Ctrl+End", async () => {
     const { app } = await record(lines(100));
     const top = () => shown(app)[0];
-    await press(app, PG_DOWN, PG_DOWN); // half of 20, twice
-    expect(top()).toBe("line 18.");
+    await press(app, PG_DOWN, PG_DOWN); // half of 20, twice: row 20, line 17. under the heading, Answer: and its gap
+    expect(top()).toBe("line 17.");
     await press(app, PG_UP);
-    expect(top()).toBe("line 8.");
+    expect(top()).toBe("line 7.");
     await press(app, CTRL_END);
     expect(top()).toBe("line 80.");
     await press(app, CTRL_HOME);
@@ -5822,13 +6215,13 @@ describe("App's detail view in full screen", () => {
   it("selects and copies in the view, saying so in the key row's place until a key, and clears the selection when it closes", async () => {
     await inColour(1, async () => {
       const { app, mouse, copies } = await record(lines(100));
-      await pointer(mouse, at("press", 0, 2), at("drag", 98, 3), at("release", 98, 3));
+      await pointer(mouse, at("press", 0, 3), at("drag", 98, 4), at("release", 98, 4)); // under Answer: and its gap
       expect(copies).toEqual(["line 0.\nline 1."]);
       expect(plain(app)[20]).toBe("Copied 15 characters");
-      expect(reversed(app).slice(2, 4)).toEqual(["line 0.", "line 1."]);
+      expect(reversed(app).slice(3, 5)).toEqual(["line 0.", "line 1."]);
       await press(app, "j");
       expect(plain(app)[20]).toBe(KEYS);
-      expect(reversed(app).slice(1, 3)).toEqual(["line 0.", "line 1."]); // keys move the view, not the selection
+      expect(reversed(app).slice(2, 4)).toEqual(["line 0.", "line 1."]); // keys move the view, not the selection
       await pointer(mouse, ...click(2, 0), ...click(2, 0)); // a double-click on "Answer:"
       expect(copies.at(-1)).toBe("Answer");
       await press(app, "q");
@@ -5911,8 +6304,8 @@ describe("App's detail view in full screen", () => {
 
   it("searches from the view's top, not the record's first line, when the view is scrolled down", async () => {
     const { app } = await record(logins());
-    await press(app, PG_DOWN, PG_DOWN, PG_DOWN, PG_DOWN); // row 40, past the first login's row 32
-    expect(shown(app)[0]).toBe("line 38.");
+    await press(app, PG_DOWN, PG_DOWN, PG_DOWN, PG_DOWN); // row 40, past the first login's row 33
+    expect(shown(app)[0]).toBe("line 37.");
     await press(app, "/", "login", "\r");
     expect(shown(app)[0]).toBe("the login 60.");
     expect(shown(app)[20]).toBe('"login": 2 of 3 · n next · N previous');
@@ -5922,7 +6315,7 @@ describe("App's detail view in full screen", () => {
     const { app } = await record(logins());
     await press(app, "/", "line 5.");
     expect(shown(app)[0]).toBe("t1 (find x), done: 0 tool calls");
-    expect(shown(app)[7]).toBe("line 5.");
+    expect(shown(app)[8]).toBe("line 5.");
   });
 
   it("does nothing on a paste while the view is open", async () => {
@@ -5975,14 +6368,14 @@ describe("App's detail view in full screen", () => {
 
   it("wraps the view's lines again on a resize", async () => {
     const { app } = await record(lines(3, long));
-    expect(shown(app)[3]).toBe(long(1));
+    expect(shown(app)[4]).toBe(long(1)); // under the heading, Answer: and its gap
     Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
     app.stdout.emit("resize");
     await tick();
     const rows = shown(app, 60);
-    expect(rows[2]).toMatch(/^said 0\. word/);
-    expect(rows[3]).toMatch(/^word/);
-    expect(rows[4]).toMatch(/^said 1\. word/);
+    expect(rows[3]).toMatch(/^said 0\. word/);
+    expect(rows[4]).toMatch(/^word/);
+    expect(rows[5]).toMatch(/^said 1\. word/);
   });
 
   // A record opened by the queue going on from a listener set up once, at mount: a question's answer (bindAsk), the end
@@ -5999,9 +6392,9 @@ describe("App's detail view in full screen", () => {
   const wrappedAt60 = (app: ReturnType<typeof render>) => {
     const rows = shown(app, 60);
     expect(rows[0]).toBe("t1 (find x), done: 0 tool calls");
-    expect(rows[2]).toMatch(/^said 0\. word/);
-    expect(rows[3]).toMatch(/^word/);
-    expect(rows[4]).toMatch(/^said 1\. word/);
+    expect(rows[3]).toMatch(/^said 0\. word/); // under Answer: and its gap
+    expect(rows[4]).toMatch(/^word/);
+    expect(rows[5]).toMatch(/^said 1\. word/);
   };
 
   it("wraps a record opened after a resize at the new width, when a question's answer lets the queue go on", async () => {
@@ -6098,8 +6491,8 @@ describe("App's detail view in full screen", () => {
 
   it("keeps the search row while a search is typed, not putting the line about a copy in its place", async () => {
     const { app, mouse, copies } = await record(logins());
-    await press(app, "/", "line 1."); // on screen, on row 3: the view stays
-    await pointer(mouse, at("press", 0, 3), at("drag", 98, 3), at("release", 98, 3));
+    await press(app, "/", "line 1."); // on screen, on row 4: the view stays
+    await pointer(mouse, at("press", 0, 4), at("drag", 98, 4), at("release", 98, 4));
     expect(copies).toEqual(["line 1."]);
     expect(shown(app)[20]).toBe("/line 1.");
   });
@@ -6333,13 +6726,32 @@ describe("App's detail view printed out", () => {
       expect(steps.slice(first + 1)).toHaveLength(3);
       const printed = steps[first + 1]!;
       // The long line wrapped at the terminal's 100 columns, not the view's 99 nor renderToString's own 80.
-      const lines = ["t1 (find x), done: 0 tool calls", "Answer:", "one", "", "three", LONG.slice(0, 100), LONG.slice(100), LAST, ""];
+      const lines = ["t1 (find x), done: 0 tool calls", "Answer:", "", "one", "", "three", LONG.slice(0, 100), LONG.slice(100), LAST, ""];
       expect(stripVTControlCharacters(printed)).toBe(lines.join("\n"));
       expect(printed).toContain("\u001b[90mt1 (find x), done: 0 tool calls\u001b[39m"); // the view's colours: its lines are grey
       expect(printed).toContain(`\u001b[90m${LAST}\u001b[39m`);
       expect(steps[first + 2]).toBe(PASTE_ON); // so a paste comes marked, and the reader can drop it
       expect(steps[first + 3]).toBe("divert(reader)");
     });
+  });
+
+  // The whole PR's review, the user's choice (2026-11-16, "Keep the marks"): the print-out draws no styles or band, so
+  // its answer is laid out as without colour, code keeping its backticks and fences; the view keeps them drawn.
+  it("prints an answer's code with its backticks and fence lines, which the view in colour leaves out", async () => {
+    const answer = "Run `npm test` first:\n\n```sh\nnpm test\nnpm run build\n```";
+    const p = await onTerminal(new FakeProvider("a", [callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")]), {
+      worker: new FakeProvider("w", [reply(answer)]),
+    });
+    await p.key("go", "\r");
+    await waitFor(() => p.session.messages.at(-1)?.role === "assistant");
+    await p.key("/tasks t1", "\r");
+    await waitFor(() => text(p.steps).includes("t1 (find x), done: 0 tool calls"));
+    expect(text(p.steps)).toContain("Run npm test first:");
+    expect(text(p.steps)).not.toContain("```");
+    p.steps.length = 0;
+    await p.key("[");
+    const printed = stripVTControlCharacters(p.steps[p.steps.indexOf(FIRST_SCREEN) + 1]!);
+    expect(printed).toContain("Answer:\n\nRun `npm test` first:\n\n```sh\nnpm test\nnpm run build\n```\n");
   });
 
   it("prints the view at the terminal's width after a resize", async () => {
@@ -6350,7 +6762,7 @@ describe("App's detail view printed out", () => {
     steps.length = 0;
     await key("[");
     const first = steps.indexOf(FIRST_SCREEN);
-    const lines = ["t1 (find x), done: 0 tool calls", "Answer:", "one", "", "three", LONG.slice(0, 60), LONG.slice(60, 120), LONG.slice(120), LAST, ""];
+    const lines = ["t1 (find x), done: 0 tool calls", "Answer:", "", "one", "", "three", LONG.slice(0, 60), LONG.slice(60, 120), LONG.slice(120), LAST, ""];
     expect(stripVTControlCharacters(steps[first + 1]!)).toBe(lines.join("\n"));
   });
 
@@ -10332,6 +10744,20 @@ describe("App's sessions", () => {
     await type(app, "which fruit?");
     await until(app, "an apple");
     expect(lead.seen[0]).toEqual([typed("remember apple"), { role: "assistant", parts: [{ type: "text", text: "noted" }] }, typed("which fruit?")]);
+  });
+
+  // TUI design pass, Task 16: a resumed session's replies are drawn as markdown, as they were live.
+  it("draws a session's replies as markdown on /resume, as live", async () => {
+    const first = await saved([reply("# Plan\n\n- **one** thing\n- two")]);
+    await type(first.app, "make a plan");
+    await until(first.app, "• two");
+    first.app.unmount();
+    const { app } = await saved([]);
+    await type(app, "/resume");
+    await until(app, "make a plan");
+    await press(app, "\r");
+    await until(app, "Resumed: make a plan.");
+    expect(app.lastFrame()).toContain("\n● Plan\n\n    • one thing\n    • two\n\nResumed: make a plan.\n");
   });
 
   // User, 2026-11-06: "The session's saved lead", switched as /lead switches it, so the status line follows.

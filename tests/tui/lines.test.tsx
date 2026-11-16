@@ -11,7 +11,7 @@ import type { Message } from "../../src/core/types.js";
 import { callRow, describe as describeMessage, gapped, type Line, notice, resultRow } from "../../src/tui/describe.js";
 import { taskRows } from "../../src/tui/TaskPanel.js";
 import { type Colour, type Look, palette, ThemeContext } from "../../src/tui/theme.js";
-import { Rows } from "../../src/tui/view.js";
+import { Rows, textWidth } from "../../src/tui/view.js";
 import { todoRows } from "../../src/tui/TodoList.js";
 import { toolParts } from "../../src/tui/ToolLine.js";
 import { workingText } from "../../src/tui/WorkingLine.js";
@@ -260,6 +260,16 @@ describe("Printed", () => {
       expect(within(shown[0]!, "1", "22")).toBe("there");
     }));
 
+  // The user's choice (2026-11-16, "Struck through"): a strikethrough is a style, printed as bold is, kept without colour.
+  it("prints a struck span on each row it wraps to, without colour too", () =>
+    coloured(() => {
+      const line: Line = { text: "● the quick brown", indent: 2, styles: [{ start: 6, end: 17, strike: true }] };
+      const shown = print(line, 12, { light: false, color: false, full: false });
+      // Ink keeps the struck space it breaks the row at, at the first row's end.
+      expect(shown.map(plain)).toEqual(["● the quick ", "  brown"]);
+      expect(shown.map((r) => within(r, "9", "29"))).toEqual(["quick ", "brown"]);
+    }));
+
   it("drops the spans' colours and the band without colour, and keeps bold (the theme's look)", () =>
     coloured(() => {
       const line: Line = { text: "ab", band: true, styles: [{ start: 0, end: 1, color: "red", bg: "blue", bold: true }] };
@@ -320,6 +330,70 @@ describe("Printed", () => {
       expect(print(tinted("- \tone"), 100, { light: false, color: false, full: false }).join("")).toContain("\t");
     }));
 
+  // Task 16's code review: a band line's tabs on its first row are printed as the spaces to their stop, with colour and
+  // without, styled or not, as the terminal skips a raw tab's cells and Ink counts a tab as no column, which pushed the
+  // band's row past the screen's edge; a band from a column has its lead alone in the plain box and its tabs on the
+  // band, their stops counted from there, as full screen counts them from the indent. The text keeps its tabs.
+  it("prints a band line's first-row tabs as the spaces to their stop, a band from a column's after its lead", () =>
+    coloured(() => {
+      const lines: [Line, string][] = [
+        [{ text: "  \tif x {", band: true, bandFrom: 2, indent: 2 }, `  ${" ".repeat(8)}if x {`],
+        [{ text: "  \t\tfmt.Println(1)", band: true, bandFrom: 2, indent: 2 }, `  ${" ".repeat(16)}fmt.Println(1)`],
+        [{ text: "● \t}", band: true, bandFrom: 2, indent: 2, styles: [{ start: 0, end: 2, color: "blue" }] }, `● ${" ".repeat(8)}}`],
+        [{ text: "\tx", band: true }, `${" ".repeat(8)}x`],
+      ];
+      for (const look of [undefined, { light: false, color: false, full: false }]) {
+        for (const [line, drawn] of lines) {
+          const shown = print(line, 40, look);
+          expect(shown.map((r) => plain(r).trimEnd())).toEqual([drawn]);
+          expect(shown.map((r) => plain(r).trimEnd())).toEqual(fullRows(line, 40).map((r) => r.trimEnd()));
+          expect(plain(shown[0]!).length).toBeLessThanOrEqual(40);
+          expect(shown.join("")).not.toContain("\t");
+        }
+      }
+      const banded = print(lines[0]![0], 40)[0]!;
+      expect(plain(banded.slice(0, banded.indexOf("\u001b[48;2;42;42;42m")))).toBe("  "); // the lead plain, the tab on the band
+    }));
+
+  // PR 21's review: a band line's tabs on its later wrapped rows too are printed as the spaces to their stop, counted
+  // from their row's start, and each row starts where full screen's does, so the digits after a tab go to a row of
+  // their own and do not run past the edge Ink measured. The text keeps its tabs.
+  it("prints a band line's tabs on every wrapped row as full screen draws them", () =>
+    coloured(() => {
+      const cases: [Line, number][] = [
+        [{ text: "1234567890 x\t01234567", band: true }, 12],
+        [{ text: "  1234567890 x\t01234567", band: true, bandFrom: 2, indent: 2 }, 14],
+        [{ text: "ab\tcd 1234567890 x\t0123", band: true }, 12],
+      ];
+      for (const look of [undefined, { light: false, color: false, full: false }]) {
+        for (const [line, columns] of cases) {
+          const shown = print(line, columns, look);
+          expect(shown.map((r) => plain(r).trimEnd())).toEqual(fullRows(line, columns).map((r) => r.trimEnd()));
+          for (const r of shown) expect(plain(r).length).toBeLessThanOrEqual(columns);
+          expect(shown.join("")).not.toContain("\t");
+        }
+      }
+      expect(print(cases[0]![0], 12).map((r) => plain(r).trimEnd())).toEqual(["1234567890 x", "", "01234567"]);
+    }));
+
+  // Task 17's captures, the user's choice (2026-11-16, "Fix it"): a word that ends exactly at the row's edge, the space
+  // after it in no row's room, leaves the next row starting under the text, as full screen draws it, not a column
+  // further in: prose, a reply's line, a list item, a quote, your message's band line.
+  it("starts the row after a word ending at the edge under the text, as full screen does", () => {
+    // A line with no lead wraps at the terminal's own width, ink-testing-library's 100 columns.
+    const cases: [Line, number, string[]][] = [
+      [{ text: `${"a".repeat(100)} bbb` }, 100, ["a".repeat(100), "bbb"]],
+      [{ text: "● aaaaaaaa bbb", indent: 2 }, 10, ["● aaaaaaaa", "  bbb"]],
+      [{ text: "  • aaaaaa bbb", indent: 4 }, 10, ["  • aaaaaa", "    bbb"]],
+      [{ text: "│ aaaaaaaa bbb", indent: 2 }, 10, ["│ aaaaaaaa", "  bbb"]],
+      [{ text: "› aaaaaaaa bbb", band: true, indent: 2 }, 10, ["› aaaaaaaa", "  bbb"]],
+    ];
+    for (const [line, columns, drawn] of cases) {
+      expect(fullRows(line, columns).map((r) => r.trimEnd())).toEqual(drawn);
+      expect(print(line, columns).map((r) => r.trimEnd())).toEqual(drawn);
+    }
+  });
+
   // Task 7's re-check: the spans are stepped through by their starts, but laid in their own order, a later over an earlier,
   // so the red span given second lies over the green one inside it.
   it("lays a later span over an earlier one that starts after it", () =>
@@ -355,19 +429,27 @@ describe("Printed", () => {
 describe("describe's blocks and markers", () => {
   const P = palette({ light: false, color: true, full: true });
   const accent = { start: 0, end: 2, color: P.accent };
+  const W = textWidth(100, true); // the columns a reply's markdown is laid out for (Task 16)
 
   it("gives your message as three band lines, `› ` and its text in the middle, a block from the first, later lines indented", () => {
     const typed: Message = { role: "user", parts: [{ type: "text", text: "one\ntwo" }] };
-    expect(describeMessage(typed, P)).toEqual([
+    expect(describeMessage(typed, P, W)).toEqual([
       { text: "", band: true, block: true },
       { text: "› one\ntwo", band: true, indent: 2 },
       { text: "", band: true },
     ]);
   });
 
+  // Task 16: drawn as markdown, each line of the source a line, the later ones two spaces in, under the first's text.
   it("starts a reply with `● ` in the accent colour, indented under its first word, a block", () => {
     const answer: Message = { role: "assistant", parts: [{ type: "text", text: "Done.\nAll of it." }] };
-    expect(describeMessage(answer, P)).toEqual([{ text: "● Done.\nAll of it.", styles: [accent], indent: 2, block: true }]);
+    expect(describeMessage(answer, P, W)).toEqual([
+      { text: "● Done.", styles: [accent], indent: 2, block: true },
+      { text: "  All of it.", indent: 2 },
+    ]);
+    // A reply that draws nothing is `● ` alone, as before Task 16.
+    const empty: Message = { role: "assistant", parts: [{ type: "text", text: "" }] };
+    expect(describeMessage(empty, P, W)).toEqual([{ text: "● ", styles: [accent], indent: 2, block: true }]);
   });
 
   // Choice P2: the dot is the accent colour on every call row, as a printed row cannot change; its result row says how it
@@ -377,7 +459,7 @@ describe("describe's blocks and markers", () => {
     expect(callRow(call, P)).toEqual({ text: "● read_file a.txt", styles: [accent], oneLine: true, block: true });
     expect(resultRow({ type: "tool_result", callId: "c", output: "x", isError: false })).toEqual({ text: "  ⎿ ok", color: "muted", oneLine: true });
     const asked: Message = { role: "assistant", parts: [call] };
-    expect(describeMessage(asked, P)).toEqual([callRow(call, P)]);
+    expect(describeMessage(asked, P, W)).toEqual([callRow(call, P)]);
   });
 
   // As say() and an opened folded row space lines: a gap before each block, none first, none after an empty line.

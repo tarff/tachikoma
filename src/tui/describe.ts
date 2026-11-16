@@ -9,6 +9,7 @@ import type { Ran } from "../hooks/run.js";
 import { isMcp, outputFrom, tachikomaName } from "../hooks/tools.js";
 import { shownPath } from "../tools/search.js";
 import type { Fold, OpenRun } from "./fold.js";
+import { led, markdownLines } from "./markdown.js";
 import { marker } from "./pictures.js";
 import type { Colour, Palette, Role } from "./theme.js";
 
@@ -23,6 +24,7 @@ export interface Span {
   italic?: boolean;
   dim?: boolean;
   underline?: boolean;
+  strike?: boolean; // struck through: markdown's ~~x~~ (Task 15; the user's choice, 2026-11-16, "Struck through")
 }
 
 export interface Line {
@@ -30,11 +32,15 @@ export interface Line {
   color?: Role; // looked up in the palette where the line is drawn (TUI design pass, Task 13)
   oneLine?: boolean; // shown on one line, cut to the screen's width (App.tsx)
   fold?: Fold; // a folded tool row, or a row of one opened, which a click opens or closes (release 8c plan, Task 15)
-  // TUI design pass, Task 2: the spans' styles; the whole row on the band colour; later rows (wrapped, or after a line
-  // break) starting `indent` columns in, under the rest of the first row, the first `indent` characters its lead (choice
-  // P3); the line starts a block (Task 3).
+  // TUI design pass, Task 2: the spans' styles; the row on the band colour, from `bandFrom` on; later rows (wrapped, or
+  // after a line break) starting `indent` columns in, under the rest of the first row, the first `indent` characters
+  // its lead (choice P3); the line starts a block (Task 3).
   styles?: Span[];
   band?: true;
+  // The band starting this many columns in, the columns before it plain: on the first row the line's lead, on the
+  // others its indent, which a line with one equals; a reply's code block, under its text (Task 16's spec review, the
+  // user's choice: "Band from the text").
+  bandFrom?: number;
   indent?: number;
   block?: true;
   asIs?: true; // its ending line breaks kept, its rows a file's own (withoutTrailingRows; 3c04960's review)
@@ -74,6 +80,7 @@ export function screen(l: Line): Line {
     ...(l.fold ? { fold: l.fold } : {}),
     ...(l.styles ? { styles: l.styles.map((s) => ({ ...s, start: at.get(s.start)!, end: at.get(s.end)! })) } : {}),
     ...(l.band ? { band: true } : {}),
+    ...(l.bandFrom ? { bandFrom: l.bandFrom } : {}),
     ...(l.indent === undefined ? {} : { indent: l.indent }),
     ...(l.block ? { block: true } : {}),
   };
@@ -194,12 +201,31 @@ export const resultRow = (p: ToolResult): Line => ({
   oneLine: true,
 });
 
+// A reply's text drawn as markdown (TUI design pass, Task 16; design, "5. Markdown"), laid out for its budget: `width`,
+// the columns a kept line's text has now (view.ts, textWidth), less its lead's 2, so a table that fits is never cut
+// before a resize. The first line takes `● ` in the accent colour and is the block; each later line starts two spaces
+// in, under the first's text, a list's or a quote's own lead after them and its indent added to theirs. An empty later
+// line takes no spaces, so a copy has no trailing ones; a text that draws no line is `● ` alone, as before. A code
+// block's band starts after the lead, under the text (Task 16's spec review: "Band from the text").
+const LEAD = 2;
+function replyLines(text: string, width: number, palette: Palette): Line[] {
+  const drawn = markdownLines(text, width - LEAD, palette);
+  return (drawn.length ? drawn : [{ text: "" }]).map((l, k) => {
+    // As a list's lead goes before its item's lines (markdown.ts, led; Task 16's code review).
+    const line = led(l, k === 0 ? "● " : "  ", k === 0 ? palette.accent : undefined);
+    if (k > 0) return line;
+    // led() takes an empty line's lead without its trailing space; an empty first line keeps `● `, as before.
+    return { ...line, ...(l.text === "" ? { text: "● ", styles: [dot(palette.accent)], indent: LEAD } : {}), block: true as const };
+  });
+}
+
 // How one message appears in the scrollback. `answered`: the calls a question was declined for, each with the short row
 // that takes its result row's place, or null for none, as its answer line under the tool line says what came of it
 // (release 7 plan, choices 66 and 67; App.tsx). `run`: the open run of quiet calls (fold.ts), which takes them, and which
 // what is shown next ends, its row said first (release 8c plan, Task 15). `palette`: the colours of the marks (TUI design
-// pass, Task 3).
-export function describe(m: Message, palette: Palette, answered?: ReadonlyMap<string, string | null>, run?: OpenRun): Line[] {
+// pass, Task 3). `width`: the columns a kept line's text has now, textWidth's, which a reply's markdown is laid out for
+// (Task 16).
+export function describe(m: Message, palette: Palette, width: number, answered?: ReadonlyMap<string, string | null>, run?: OpenRun): Line[] {
   const lines: Line[] = [];
   let typed: Line | null = null; // the user's prompt so far, its text and pictures one line
   let picture = false; // the last part put in it was a picture
@@ -221,13 +247,15 @@ export function describe(m: Message, palette: Palette, answered?: ReadonlyMap<st
     }
     // A picture is its marker in its place, in the line's colour (release 6 plan, choice 22). Two next to each other
     // get a space between, as the blanks between them were left out of the message (pictures.ts, messageParts).
-    // A reply's text is a block, `● ` in the accent colour before it, its later rows under its first word; the user's
-    // prompt is a block of three band lines, `› ` and the prompt in the middle one, its later rows under the prompt's
-    // first word (TUI design pass, Task 3; choice P3).
+    // A reply's text is a block, `● ` in the accent colour before it, its later rows under its first word, drawn as
+    // markdown (Task 16), a picture its marker; the user's prompt is a block of three band lines, `› ` and the prompt
+    // in the middle one, its later rows under the prompt's first word (TUI design pass, Task 3; choice P3), never read
+    // as markdown.
     if (p.type === "text" || p.type === "image") {
       const text = p.type === "image" ? `${picture ? " " : ""}${marker(p.id)}` : p.text;
       picture = p.type === "image";
-      if (m.role !== "user") lines.push({ text: `● ${text}`, styles: [dot(palette.accent)], indent: 2, block: true });
+      if (m.role !== "user" && p.type === "text") lines.push(...replyLines(text, width, palette));
+      else if (m.role !== "user") lines.push({ text: `● ${text}`, styles: [dot(palette.accent)], indent: 2, block: true });
       else if (typed) typed.text += text;
       else lines.push({ text: "", band: true, block: true }, (typed = { text: `› ${text}`, band: true, indent: 2 }), { text: "", band: true });
     } else if (p.type === "tool_call") lines.push(...(run ? run.call(p) : [callRow(p, palette)]));
