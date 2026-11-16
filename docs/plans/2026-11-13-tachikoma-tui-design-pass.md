@@ -824,5 +824,5 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   with no band. The other point, NO_COLOR dropping bold, italic, underline and strikethrough,
   did not reproduce: chalk 5.6.2 does not read NO_COLOR, and in a real console with NO_COLOR=1
   bold and strikethrough were sent; theme.ts drops colours only. With TERM=dumb, or output that
-  is not a terminal, chalk sends no styles at all unless FORCE_COLOR is set; the user chose "Known limit" (2026-11-16), a
-  README bullet.
+  is not a terminal, chalk sends no styles at all unless FORCE_COLOR is set; the user chose
+  "Known limit" (2026-11-16), a README bullet.
