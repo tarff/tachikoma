@@ -846,8 +846,9 @@ tool output and notices are never read as markdown: they show as written.
 
   A run of blank lines is one empty line. Link definitions (`[1]: https://…`) draw nothing; raw
   HTML, pictures and task boxes (`[ ]`) show as written. Without full colour a code block has no
-  band, as your messages have none, and with `NO_COLOR` the bold, italic, underlined and struck
-  text keep their style.
+  band, as your messages have none, so it is drawn between its fence lines as written (`` ``` ``
+  or `~~~` and its language; `` ``` `` for an indented block). With `NO_COLOR`, inline code keeps
+  its backticks, and the bold, italic, underlined and struck text keep their style.
 - **Tables** are drawn in a rounded grey box, with a line under the header row and each column
   aligned as the markdown says, when they fit the width at the moment the reply is drawn. A wider
   one is left as its raw text. A later resize cuts a drawn table's rows, and a rule's, with `…`
