@@ -11,7 +11,7 @@ import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
 import { type Ask, Declined, type PermissionGate, StoppedFirst, visible } from "./permissions.js";
-import { dueNotes, localDate, type Told, toldAfter } from "./setup.js";
+import { dueNotes, isSetupNote, localDate, type Told, toldAfter } from "./setup.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
@@ -926,10 +926,19 @@ export class Session {
       instructions = c.instructions;
     }
     const focused = [focus, ...instructions].filter(Boolean).join("\n\n");
+    // The new history's prompt, built now so every size check measures the request as it will go (system prompt plan,
+    // Task 9, decision 9); a stop while the files are read changes nothing.
+    const fresh = await this.freshSystem();
+    if (signal?.aborted) return { problem: CANCELLED };
+    // A setup note still due goes with the summary request and the new history; a date note does not, as the new prompt
+    // has today's date (design, "What the model was told").
+    const note = this.#notes().find(isSetupNote);
     const tools = this.#specs(); // the same offer as the request it is made for (release 8c plan, choice 9)
     const s: Shortening = {
       lead,
       system: this.system,
+      next: fresh.system,
+      ...(note ? { note } : {}),
       // Its summary requests replay the history, so their thinking goes as the request's would (Task 6b's quality review).
       messages: this.#kept(tools),
       ...(asked ? { asked } : {}),
@@ -952,7 +961,8 @@ export class Session {
     // 2026-11-09, finding 2). SessionStart's text joins the new history's one message, first, as it goes first in the
     // next request's message (Task 8), so it is saved with the shortening and goes with the very next request, never
     // through the queue for the next request. shorten() checked the message against the window without it, and a turn
-    // shortens once a request, so it is checked again with the text; one that no longer fits is left out, with its line,
+    // shortens once a request, so it is checked again with the text, under the fresh prompt as shorten()'s checks are
+    // (fit; system prompt plan, Task 9); one that no longer fits is left out, with its line,
     // never cut, as no part of a hook's text is safe to drop (second round, finding 2). A subagent's shortening fires
     // PostCompact alone: SessionStart is about the user's session (the user's choice, 2026-11-09: "Pre/Post only").
     // `leftOut`: the line is said once the shortening is saved, so one that is then stopped or cannot be written says
@@ -978,18 +988,20 @@ export class Session {
         else leftOut = true;
       }
     }
-    // The new history goes with a system prompt built afresh, both in one line, so the shortening is saved whole or not
-    // at all (choices 3 and 4). A line that cannot be written changes nothing, though the hooks above have run (a known
-    // limit, Task 13).
-    const { system } = await this.freshSystem();
-    if (signal?.aborted) return { problem: CANCELLED }; // a stop while the files were read changes nothing either
-    t.write({ t: "shortened", system, message });
+    // The new history goes with the system prompt built afresh above, both in one line with that prompt's date and
+    // setup, so the shortening is saved whole or not at all (choices 3 and 4; system prompt plan, Task 9). A line that
+    // cannot be written changes nothing, though the hooks above have run (a known limit, Task 13).
+    const built = fresh.setup ? { date: fresh.date, setup: fresh.setup } : {};
+    t.write({ t: "shortened", system: fresh.system, message, ...built });
     if (t.failed !== null) {
       this.#saving();
       return "unsaved";
     }
-    this.system = system;
+    this.system = fresh.system;
     this.messages.splice(0, this.messages.length, message);
+    // What the model was told is now the new prompt's date and setup, then the setup note in the message (design, "What
+    // the model was told"), as a resume reads it from the line (transcript.ts).
+    if (this.#told && fresh.setup) this.#told = toldAfter({ date: fresh.date, setup: fresh.setup }, message.parts);
     if (leftOut) bus.emit("hook-note", LEFT_OUT);
     bus.emit("shortened", r.summary);
     return "done";

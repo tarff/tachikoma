@@ -2,6 +2,7 @@ import type { Workspace } from "../exec/workspace.js";
 import type { Cache } from "../providers/pictures.js";
 import { callText } from "./exportText.js";
 import { characters, fits, type Sizes } from "./fit.js";
+import { isDateNote, isSetupNote } from "./setup.js";
 import { errorText, type Message, type Part, type Provider, sentAll, type ToolSpec, type Usage } from "./types.js";
 
 // Shortening a conversation into one message (release 8a design, "How shortening works", steps 3-5; plan, choices 22-23).
@@ -38,6 +39,13 @@ const FILE_TOOLS = new Set(["read_file", "write_file", "edit_file"]);
 export interface Shortening {
   lead: Provider;
   system: string;
+  // The prompt the new history goes with, built before the summary, which every size check here measures (system
+  // prompt plan, Task 9; design, third review, finding 2); `system` is the conversation's, which the summary requests
+  // go under.
+  next: string;
+  // A setup note still due (design, "What the model was told"): after the summary's instructions, and last in the new
+  // history's message.
+  note?: Part;
   messages: Message[];
   // during: the message that started this turn, as the session holds it (after a shortening it is no longer in
   // `messages`, whose first message is then the last shortening's new history).
@@ -66,31 +74,38 @@ export async function shorten(s: Shortening, when: When): Promise<{ messages: Me
   // What is kept whole: the prompt in progress at the start of a turn or during one, and during one its latest round,
   // that reply with its calls' results, as text. Each option is the part summarised and the round kept, the second
   // option for when the round does not fit: then it goes into the summary too, a complete exchange (step 4).
+  // The prompt is kept without a date note, as the new prompt has today's date (system prompt plan, decision 8;
+  // design, third review, finding 1).
   let prompt: Part[] | undefined;
   let options: { part: Message[]; round?: string }[];
   if (when === "between") options = [{ part: messages }];
   else if (when === "start") {
-    prompt = messages.at(-1)!.parts;
+    prompt = messages.at(-1)!.parts.filter((p) => !isDateNote(p));
     options = [{ part: messages.slice(0, -1) }];
   } else {
     const reply = messages.findLastIndex((m) => m.role === "assistant");
     // The turn's prompt is the caller's, not looked for in `messages`: in a turn already shortened once, the last user
     // message there without results is that shortening's new history, which would be kept again, nesting deeper each time.
-    prompt = s.asked?.parts;
+    prompt = s.asked?.parts.filter((p) => !isDateNote(p));
     options = [{ part: messages.slice(0, reply), round: roundText(messages[reply]!, messages[reply + 1]) }, { part: messages }];
   }
+  // The setup note the summary is written knowing: the session's, or at the start of a turn the one in the request
+  // kept whole, which the part summarised leaves out and which, sent with it, is no longer due (system prompt plan,
+  // decision 13).
+  const told = s.note ?? (when === "start" ? prompt!.find(isSetupNote) : undefined);
   try {
     // What is kept is checked alone first, so no summary is paid for that could not be used: a prompt that does not fit on
     // its own ends the shortening, and a round that does not fit with it goes into the summary from the start.
-    if (prompt && !(await fit(s, newHistory({ prompt })))) return { problem: PROMPT_TOO_BIG };
+    if (prompt && !(await fit(s, newHistory({ prompt, note: s.note })))) return { problem: PROMPT_TOO_BIG };
     // Only the first option can be empty: the second, during a turn, is the whole history.
     if (!options[0]!.part.length) return { problem: NOTHING };
-    if (options[0]!.round !== undefined && !(await fit(s, newHistory({ prompt, round: options[0]!.round })))) options.shift();
+    const kept = options[0]!.round;
+    if (kept !== undefined && !(await fit(s, newHistory({ prompt, round: kept, note: s.note })))) options.shift();
     const files = await recentFiles(s);
     for (const { part, round } of options) {
-      const summary = await summarise(s, part);
+      const summary = await summarise(told ? { ...s, note: told } : s, part);
       // The summary must fit the space the next request has, and is checked before it is used (design, "Carried over").
-      const message = newHistory({ summary, prompt, round, files });
+      const message = newHistory({ summary, prompt, round, files, note: s.note });
       if (await fit(s, message)) return { messages: [message], summary };
     }
     return { problem: STILL_TOO_BIG };
@@ -101,12 +116,13 @@ export async function shorten(s: Shortening, when: When): Promise<{ messages: Me
   }
 }
 
-// Whether the new history, sent with the conversation's system prompt and tools, fits the window. No way to tell
-// (null: no ratio yet and no exact count) counts as fitting, as a request with no advance check is sent and the "too
-// long" safety net covers it (design, "When to shorten"). The session checks the new history again with a SessionStart
-// hook's text in it (release 8b plan, Task 11).
+// Whether the new history, sent with the fresh system prompt it will go with (`next`; system prompt plan, Task 9) and
+// the conversation's tools, fits the window. No way to tell (null: no ratio yet and no exact count) counts as fitting,
+// as a request with no advance check is sent and the "too long" safety net covers it (design, "When to shorten"). The
+// session checks the new history again with a SessionStart hook's text in it (release 8b plan, Task 11).
 export async function fit(s: Shortening, message: Message): Promise<boolean> {
-  return (await fits(s.lead, { ...pictures(s), system: s.system, messages: [message], tools: s.tools, signal: s.signal }, s.sizes, s.window)) !== false;
+  const req = { ...pictures(s), system: s.next, messages: [message], tools: s.tools, signal: s.signal };
+  return (await fits(s.lead, req, s.sizes, s.window)) !== false;
 }
 
 // The session's pictures, as each request carries them.
@@ -136,10 +152,16 @@ async function summarise(s: Shortening, part: Message[], later = false): Promise
 // throws has none to report, so nothing is made up for it. Undefined: too long, or cut off, so the part is split.
 async function ask(s: Shortening, part: Message[]): Promise<string | undefined> {
   if (s.signal?.aborted) throw new Problem(CANCELLED);
-  const words: Part = { type: "text", text: s.focus ? `${INSTRUCTIONS}\n\nFocus on: ${s.focus}` : INSTRUCTIONS };
+  // A setup note goes after the instructions (system prompt plan, Task 9).
+  const words: Part[] = [
+    { type: "text", text: s.focus ? `${INSTRUCTIONS}\n\nFocus on: ${s.focus}` : INSTRUCTIONS },
+    ...(s.note ? [s.note] : []),
+  ];
   const last = part.at(-1);
   const messages: Message[] =
-    last?.role === "user" ? [...part.slice(0, -1), { ...last, parts: [...last.parts, words] }] : [...part, { role: "user", parts: [words] }];
+    last?.role === "user"
+      ? [...part.slice(0, -1), { ...last, parts: [...last.parts, ...words] }]
+      : [...part, { role: "user", parts: words }];
   let turn;
   try {
     turn = await s.lead.complete({ ...pictures(s), system: s.system, messages: sentAll(messages), tools: s.tools, signal: s.signal });
@@ -189,17 +211,20 @@ function middle(part: Message[]): number | undefined {
 }
 
 // The latest round as text: the reply's words, then each call with its result under it as /export writes it (callText),
-// then any text that came in with the results, so nothing in it is left out.
+// then any text that came in with the results, so nothing in it is left out, but a date note (system prompt plan,
+// decision 8).
 function roundText(reply: Message, after: Message | undefined): string {
   const results = new Map(after?.parts.flatMap((p) => (p.type === "tool_result" ? [[p.callId, p.output] as const] : [])));
   const lines = reply.parts.flatMap((p) => (p.type === "text" ? [p.text] : p.type === "tool_call" ? [callText(p, results.get(p.id))] : []));
-  return [...lines, ...(after?.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])) ?? [])].join("\n");
+  const texts = after?.parts.flatMap((p) => (p.type === "text" && !isDateNote(p) ? [p.text] : [])) ?? [];
+  return [...lines, ...texts].join("\n");
 }
 
 // The new history's one message, in the approved layout (plan, "The new history's message"), each part only when it has
 // something in it. The prompt goes in as its parts, so its pictures are kept; its text and the layout's are one text
-// part where they meet, and a note the session added for the lead (`from: "tasks"`) stays its own.
-function newHistory(k: { summary?: string; prompt?: Part[]; round?: string; files?: string }): Message {
+// part where they meet, and a note the session added for the lead (`from: "tasks"`) stays its own. A setup note still
+// due goes last, its own part too (system prompt plan, Task 9).
+function newHistory(k: { summary?: string; prompt?: Part[]; round?: string; files?: string; note?: Part }): Message {
   const parts: Part[] = [];
   const put = (p: Part) => {
     const last = parts.at(-1);
@@ -215,6 +240,7 @@ function newHistory(k: { summary?: string; prompt?: Part[]; round?: string; file
     if (i) put({ type: "text", text: "\n\n" });
     for (const x of section) put(typeof x === "string" ? { type: "text", text: x } : x);
   }
+  if (k.note) put(k.note);
   return { role: "user", parts };
 }
 

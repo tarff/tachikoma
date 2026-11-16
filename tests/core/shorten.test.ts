@@ -81,6 +81,7 @@ function run(lead: Lead, messages: Message[], when: When, more: Partial<Args> = 
   const s: Args = {
     lead,
     system: "sys",
+    next: "sys",
     messages,
     tools: [spec],
     calls: [],
@@ -437,5 +438,109 @@ describe("usage", () => {
     const { used, result } = run(lead, [user("p1"), said("r1"), user("p2"), said("r2")], "between", { signal: stop.signal });
     expect(await result).toEqual({ problem: CANCELLED });
     expect(used).toEqual([{ provider: "fake:lead", usage }]);
+  });
+});
+
+// System prompt plan, Task 9 (decisions 8 and 13; design, "What the model was told"): every size check measures the
+// fresh prompt, the summary requests go under the conversation's, a setup note still due goes with both, and a date
+// note is left out of what is kept.
+describe("the fresh prompt and the notes", () => {
+  const LIVE_ON = { sandbox: "live", network: "on", git: "repo" } as const;
+  const setupNote = {
+    type: "text",
+    text: "This session was resumed under another setup.",
+    from: "note",
+    note: { setup: LIVE_ON },
+  } as const;
+  const dateNote = {
+    type: "text",
+    text: "Today's date is now 2026-11-18.",
+    from: "note",
+    note: { date: "2026-11-18" },
+  } as const;
+  const doX = { type: "text", text: "do x" } as const;
+  const c1 = call("c1", "a.txt");
+
+  it("measures the new history with the fresh prompt between turns", async () => {
+    const history = [user("hi"), said("hello")];
+    const fitting = run(new Lead([reply("S")]), history, "between", { sizes: counted(), window: 1000 });
+    expect(await fitting.result).toMatchObject({ summary: "S" }); // with the fresh prompt "sys" it fits
+    const { result } = run(new Lead([reply("S")]), history, "between", {
+      sizes: counted(),
+      window: 1000,
+      next: "n".repeat(1000),
+    });
+    expect(await result).toEqual({ problem: STILL_TOO_BIG });
+  });
+
+  it("measures the request kept at the start of a turn with the fresh prompt, before any summary request", async () => {
+    const history = [user("p1"), said("r1"), user("do x")];
+    const fitting = run(new Lead([reply("S")]), history, "start", { sizes: counted(), window: 1000 });
+    expect(await fitting.result).toMatchObject({ summary: "S" });
+    const lead = new Lead([]);
+    const { result } = run(lead, history, "start", { sizes: counted(), window: 1000, next: "n".repeat(1000) });
+    expect(await result).toEqual({ problem: PROMPT_TOO_BIG });
+    expect(lead.seen).toEqual([]);
+  });
+
+  it("sends the summary request under the conversation's prompt, not the fresh one", async () => {
+    const systems: string[] = [];
+    const lead = new Lead([(req) => (systems.push(req.system), reply("S"))]);
+    await run(lead, [user("hi"), said("hello")], "between", { next: "the fresh prompt" }).result;
+    expect(systems).toEqual(["sys"]);
+  });
+
+  it("sends a setup note after the summary's instructions and last in the new history, as its own part", async () => {
+    const lead = new Lead([reply("S")]);
+    const done = await run(lead, [user("p1"), said("r1"), user("do x")], "start", { note: setupNote }).result;
+    expect(lead.seen[0]!.at(-1)).toEqual({ role: "user", parts: [instructions, setupNote] });
+    const parts = [{ type: "text", text: `${SHORTENED}S\n\n${REQUEST}do x` }, setupNote];
+    expect(done).toEqual({ messages: [{ role: "user", parts }], summary: "S" });
+  });
+
+  it("sends the setup note in the request kept at a turn's start after the instructions, keeping it once", async () => {
+    const lead = new Lead([reply("S")]);
+    const more = { calls: [{ name: "read_file", input: { path: "a.txt" } }], workspace: workspace({ "a.txt": "A\n" }) };
+    const kept: Message = { role: "user", parts: [doX, setupNote] };
+    const done = await run(lead, [user("p1"), said("r1"), kept], "start", more).result;
+    expect(lead.seen[0]).toEqual([user("p1"), said("r1"), { role: "user", parts: [instructions, setupNote] }]);
+    // Once, in the request's section, before the files'.
+    const parts = [
+      { type: "text", text: `${SHORTENED}S\n\n${REQUEST}do x` },
+      setupNote,
+      { type: "text", text: `\n\n${FILES}--- a.txt (size not known yet; read it again if needed) ---` },
+    ];
+    expect(done).toEqual({ messages: [{ role: "user", parts }], summary: "S" });
+  });
+
+  it("leaves the setup note in the request being worked on during a turn to the part summarised, once", async () => {
+    const asked: Message = { role: "user", parts: [doX, setupNote] };
+    const lead = new Lead([reply("S")]);
+    const c2 = call("c2", "b.txt");
+    const history = [user("p1"), said("a1"), asked, asks(c1), results("c1", "A"), asks(c2), results("c2", "B")];
+    await run(lead, history, "during", { asked }).result;
+    const ask = { role: "user", parts: [...results("c1", "A").parts, instructions] };
+    expect(lead.seen).toEqual([[user("p1"), said("a1"), asked, asks(c1), ask]]);
+  });
+
+  it("leaves a date note out of the request kept at the start of a turn", async () => {
+    const kept: Message = { role: "user", parts: [doX, dateNote] };
+    const done = await run(new Lead([reply("S")]), [user("p1"), said("r1"), kept], "start").result;
+    const parts = [{ type: "text", text: `${SHORTENED}S\n\n${REQUEST}do x` }];
+    expect(done).toEqual({ messages: [{ role: "user", parts }], summary: "S" });
+  });
+
+  it("leaves a date note out of the request and the latest round during a turn, keeping a setup note", async () => {
+    const asked: Message = { role: "user", parts: [doX, dateNote, setupNote] };
+    const noted: Message = { role: "user", parts: [...results("c1", "A").parts, dateNote] };
+    const history = [user("p1"), said("a1"), asked, asks(c1), noted];
+    const done = await run(new Lead([reply("S")]), history, "during", { asked }).result;
+    const parts = [
+      { type: "text", text: `${SHORTENED}S\n\n${REQUEST}do x` },
+      setupNote,
+      { type: "text", text: `\n\n${ROUND}${callText(c1, "A")}` },
+    ];
+    expect(done).toEqual({ messages: [{ role: "user", parts }], summary: "S" });
+    expect(JSON.stringify(done)).not.toContain("Today's date is now");
   });
 });
