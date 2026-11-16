@@ -1,6 +1,6 @@
 import type { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, renameSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, renameSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -13,7 +13,7 @@ import { type Conversation, type Ended, Session, type SessionOptions } from "./c
 import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
 import type { CommandTask, Tasks } from "./core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "./core/transcript.js";
-import { errorText, madeUnder, type Message, type ToolSpec } from "./core/types.js";
+import { errorText, madeUnder, type Message, type Setup, type ToolSpec } from "./core/types.js";
 import { gitBash } from "./exec/env.js";
 import type { Executor } from "./exec/executor.js";
 import { headCommand } from "./exec/log.js";
@@ -483,6 +483,22 @@ const commitArgs = (branch: string | undefined) => [
 export function boxBranch(name: string | null): string | undefined {
   const plain = /^(?![-./])(?!.*(\.\.|\/\/|\/\.))[A-Za-z0-9._/-]+(?<![/.])$/;
   return name !== null && name !== "HEAD" && plain.test(name) && !/\.lock(\/|$)/.test(name) ? name : undefined;
+}
+
+// The setup as found now (system prompt plan, Task 1, decision 3): at the launch, and each time the lead's prompt is
+// built or its notes are checked. Git is found from the files, as the status line's branch is (tui/git.ts), never by
+// running git. With no sandbox, a repository the project is in, its own or one above it; in live link only a `.git` in
+// the project folder itself, as only that folder is mounted at /work, and "outside" when that `.git` names a git folder
+// outside the project (choice 107); copy mode's /work is always a repository of one commit (choice 24).
+export function setupOf(root: string, sandbox: Sandbox, network: Network): Setup {
+  if (sandbox === "off") return { sandbox, git: gitBranch(root) === null ? "none" : "repo" };
+  if (sandbox === "copy") return { sandbox, network, git: "copy" };
+  const git = !lstatSync(path.join(root, ".git"), { throwIfNoEntry: false })
+    ? "none"
+    : gitFolderOutside(root)
+      ? "outside"
+      : "repo";
+  return { sandbox, network, git };
 }
 
 // Until copy mode's session starts, its copy, with nothing run in it, is removed when the process ends, however it ends:

@@ -3,6 +3,12 @@ import type { Cache } from "../providers/pictures.js";
 
 // The conversation format Tachikoma stores. No provider owns it; each adapter converts to and from it.
 
+// Where the lead's commands run, as its system prompt and the setup note tell the model (system prompt plan, Task 1;
+// design, "Git" and "Another setup"): the sandbox setting, the box's network, and which git line holds (prompt.ts,
+// gitLine), as setupOf (clilib.ts) finds them.
+export type Git = "repo" | "none" | "outside" | "copy";
+export type Setup = { sandbox: "off"; git: Git } | { sandbox: "live" | "copy"; network: "on" | "off"; git: Git };
+
 export type Part =
   // `from: "tasks"`: text the session added for the lead, such as a background subagent's answer, not
   // something the user typed. `from: "hooks"`: text a hook handed the model, headed `<Event> hook:` (release 8b plan,

@@ -49,6 +49,7 @@ import {
   screenMode,
   scrollSpeed,
   serverQuestion,
+  setupOf,
   statusSegments,
   stopSoon,
   turnAnswer,
@@ -695,6 +696,58 @@ describe("gitBashLine", () => {
     expect(gitBashLine({}, "win32", none)).toBeUndefined();
     // Release 8c plan, Task 8: an mcp_tool hook calls a server, with no shell.
     expect(gitBashLine({ hooks: [hook({ command: "", mcp: { server: "s", tool: "t", input: {} } })] }, "win32", none)).toBeUndefined();
+  });
+});
+
+// System prompt plan, Task 1 (decision 3): git as found where the model's commands run, from the files alone.
+describe("setupOf", () => {
+  let top: string;
+  beforeAll(() => {
+    top = mkdtempSync(path.join(tmpdir(), "tachi-setup-"));
+  });
+  afterAll(() => removeTree(top));
+  const folder = (...names: string[]) => {
+    const d = path.join(top, ...names);
+    mkdirSync(d, { recursive: true });
+    return d;
+  };
+  const repo = (d: string) => {
+    mkdirSync(path.join(d, ".git"), { recursive: true });
+    writeFileSync(path.join(d, ".git", "HEAD"), "ref: refs/heads/main\n");
+    return d;
+  };
+
+  it("finds no repository in a plain folder, in each mode", () => {
+    const d = folder("plain");
+    expect(setupOf(d, "off", "on")).toEqual({ sandbox: "off", git: "none" });
+    expect(setupOf(d, "live", "off")).toEqual({ sandbox: "live", network: "off", git: "none" });
+    expect(setupOf(d, "copy", "on")).toEqual({ sandbox: "copy", network: "on", git: "copy" });
+  });
+
+  it("finds the project's own repository with no sandbox and in live link", () => {
+    const d = repo(folder("own"));
+    expect(setupOf(d, "off", "off")).toEqual({ sandbox: "off", git: "repo" });
+    expect(setupOf(d, "live", "on")).toEqual({ sandbox: "live", network: "on", git: "repo" });
+  });
+
+  // Only the project folder is mounted at /work, so a repository above it is not in the box.
+  it("finds a repository above the project with no sandbox, but not in live link", () => {
+    const d = folder("above", "sub");
+    repo(path.join(top, "above"));
+    expect(setupOf(d, "off", "off").git).toBe("repo");
+    expect(setupOf(d, "live", "off").git).toBe("none");
+  });
+
+  it("says live link's git does not work when the project's .git names a git folder outside it", () => {
+    const outside = repo(folder("elsewhere"));
+    const d = folder("worktree");
+    writeFileSync(path.join(d, ".git"), `gitdir: ${path.join(outside, ".git")}\n`);
+    expect(setupOf(d, "live", "off").git).toBe("outside");
+    expect(setupOf(d, "off", "off").git).toBe("repo");
+  });
+
+  it("always gives copy mode's own repository", () => {
+    expect(setupOf(repo(folder("copied")), "copy", "off").git).toBe("copy");
   });
 });
 
