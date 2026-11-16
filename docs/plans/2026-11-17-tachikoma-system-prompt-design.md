@@ -181,7 +181,9 @@ start and system lines, src/core/transcript.ts:44), and their prompts hold no da
   - It opens "This session was resumed under another setup." and closes "Earlier replies about the setup were right
     at the time."
   - From a session saved before this change, with `box` true, an unknown earlier fact is said without its "earlier"
-    half ("Shell commands cannot reach the web now."), and the note closes only if a known fact differs.
+    half ("Shell commands cannot reach the web now."), and the note closes only if a known fact differs. Resumed in
+    the sandbox, it opens "This session was resumed, and its earlier sandbox setup was not recorded." instead (Task
+    3's code review; the user's choice); resumed with no sandbox, it keeps the opening above.
 
   For example, live link with the network off resumed as a copy with the network on: "This session was resumed under
   another setup. The sandbox is now a copy of the project. The project is a git repository made for this sandbox copy;

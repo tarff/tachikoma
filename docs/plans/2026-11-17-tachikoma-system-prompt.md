@@ -212,7 +212,7 @@ From the design, approved by the user 2026-11-17, word for word. `<date>` is the
 | Prompt, edits (cut) | `Prefer edit_file to rewriting whole files, and say plainly when something failed.` |
 | Prompt, the screen | `In the interactive window, replies are shown as markdown, and the user sees each tool call as one short line, not its output, so put what they need from it in your reply.` |
 | Date note | `Today's date is now <date>.` |
-| Setup note | `This session was resumed under another setup.`, then in order: `Commands now run with bash in /work; earlier they ran with <shell> in <root>.` or `Commands now run with <shell> in <root>; earlier they ran with bash in /work.`; `The sandbox is now a copy of the project.` or `The sandbox is now a live link to the project.`; the new git line; `Shell commands can reach the web now; earlier they could not.` or `Shell commands cannot reach the web now; earlier they could.` (an unknown earlier: `Shell commands can reach the web now.` / `Shell commands cannot reach the web now.`); then, when a known fact differs, `Earlier replies about the setup were right at the time.` `<shell>` is `PowerShell` on Windows (choice 1 elsewhere). |
+| Setup note | `This session was resumed under another setup.` (a session saved before this change, with `box` true, resumed in the sandbox: `This session was resumed, and its earlier sandbox setup was not recorded.`; Task 3's code review; the user's choice), then in order: `Commands now run with bash in /work; earlier they ran with <shell> in <root>.` or `Commands now run with <shell> in <root>; earlier they ran with bash in /work.`; `The sandbox is now a copy of the project.` or `The sandbox is now a live link to the project.`; the new git line; `Shell commands can reach the web now; earlier they could not.` or `Shell commands cannot reach the web now; earlier they could.` (an unknown earlier: `Shell commands can reach the web now.` / `Shell commands cannot reach the web now.`); then, when a known fact differs, `Earlier replies about the setup were right at the time.` `<shell>` is `PowerShell` on Windows (choice 1 elsewhere). |
 | Resume line (to the user, choice 2) | see choice 2 |
 | `/export` heading (choice 3) | `Notes:` |
 
@@ -611,6 +611,8 @@ const REPO = "The project is a git repository.";
 const WEB_ON = "Shell commands can reach the web now; earlier they could not.";
 const WEB_OFF = "Shell commands cannot reach the web now; earlier they could.";
 const note = (...said: string[]) => [OPEN, ...said].join(" ");
+const UNRECORDED = "This session was resumed, and its earlier sandbox setup was not recorded.";
+const unrecorded = (...said: string[]) => [UNRECORDED, ...said].join(" ");
 
 describe("setupNote", () => {
   // Design, "Another setup": a sentence for each fact that differs, in its order, then the closing one.
@@ -659,11 +661,18 @@ describe("setupNote", () => {
   // half, and the note closes only when a known fact differs.
   it("claims nothing of an earlier setup it does not know", () => {
     const on = { sandbox: "on" } as const;
-    expect(setupNote(on, LIVE_OFF, HOST)).toBe(note(LIVE, REPO, "Shell commands cannot reach the web now."));
-    expect(setupNote(on, COPY_ON, HOST)).toBe(note(COPY, COPY_GIT, "Shell commands can reach the web now."));
+    expect(setupNote(on, LIVE_OFF, HOST)).toBe(unrecorded(LIVE, REPO, "Shell commands cannot reach the web now."));
+    expect(setupNote(on, COPY_ON, HOST)).toBe(unrecorded(COPY, COPY_GIT, "Shell commands can reach the web now."));
     expect(setupNote(on, OFF, HOST)).toBe(note(TO_HOST, REPO, "Shell commands can reach the web now.", CLOSE));
     expect(setupNote({ sandbox: "off" }, OFF, HOST)).toBeUndefined();
     expect(setupNote({ sandbox: "off" }, COPY_ON, HOST)).toBe(note(TO_BOX, COPY, COPY_GIT, CLOSE));
+  });
+
+  // Task 3's code review; the user's choice: only an old session's "on" resumed in the sandbox opens saying its earlier
+  // setup was not recorded; resumed with no sandbox, where commands run is known to differ.
+  it("opens as under another setup when an old session's sandbox is now off", () => {
+    expect(setupNote({ sandbox: "on" }, OFF, HOST)?.startsWith(`${OPEN} `)).toBe(true);
+    expect(setupNote({ sandbox: "on" }, COPY_OFF, HOST)?.startsWith(`${UNRECORDED} `)).toBe(true);
   });
 });
 
@@ -756,9 +765,10 @@ const reaches = (s: Known): boolean | undefined => (s.sandbox === "off" ? true :
 
 // The setup note (design, "Another setup"; the user's words, 2026-11-17), or undefined for the same setup: a sentence
 // for each fact that differs, in the design's order, between its opening and closing ones. An earlier fact not known
-// (`box` alone) is said without its "earlier" half, and the note closes only when a known fact differs. `host` is the
-// project folder as typed and the host's platform, whose shell the shell line names (choice 1); /work and bash are the
-// box's (clilib.ts, BOX_ROOT; release 7 plan, choice 19).
+// (`box` alone) is said without its "earlier" half, and the note closes only when a known fact differs. Such a session
+// resumed in the sandbox opens saying its earlier sandbox setup was not recorded (Task 3's code review; the user's
+// choice). `host` is the project folder as typed and the host's platform, whose shell the shell line names (choice 1);
+// /work and bash are the box's (clilib.ts, BOX_ROOT; release 7 plan, choice 19).
 export function setupNote(before: Known, now: Setup, host: { root: string; platform: NodeJS.Platform }): string | undefined {
   if (sameSetup(before, now)) return undefined;
   const shell = shellFor(host.platform).name;
@@ -789,7 +799,11 @@ export function setupNote(before: Known, now: Setup, host: { root: string; platf
     said.push(is ? "Shell commands can reach the web now; earlier they could not." : "Shell commands cannot reach the web now; earlier they could.");
   }
   const close = known ? ["Earlier replies about the setup were right at the time."] : [];
-  return ["This session was resumed under another setup.", ...said, ...close].join(" ");
+  const open =
+    before.sandbox === "on" && now.sandbox !== "off"
+      ? "This session was resumed, and its earlier sandbox setup was not recorded."
+      : "This session was resumed under another setup.";
+  return [open, ...said, ...close].join(" ");
 }
 
 // The notes due for the next user message (design, "Notes to the model"): the date note when today differs from the
@@ -1069,10 +1083,11 @@ Cases (each opens with `open(id, { prompt: { setup, full } })` and releases befo
 - **Saved before this change, box false:** a legacy start line, opened under OFF: `["Today's date is now 2026-11-17."]`
   (never told).
 - **Saved before this change, box true:** opened under `{ sandbox: "live", network: "off", git: "none" }`: the date note,
-  then `This session was resumed under another setup. The sandbox is now a live link to the project. The project is not
-  a git repository. Shell commands cannot reach the web now.`; opened under OFF instead: the date note, then the note
-  with `Commands now run with PowerShell in C:\proj; earlier they ran with bash in /work.`, the git line, `Shell
-  commands can reach the web now.` and the closing sentence.
+  then `This session was resumed, and its earlier sandbox setup was not recorded. The sandbox is now a live link to the
+  project. The project is not a git repository. Shell commands cannot reach the web now.` (Task 3's code review; the
+  user's choice); opened under OFF instead: the date note, then the note opening `This session was resumed under
+  another setup.`, with `Commands now run with PowerShell in C:\proj; earlier they ran with bash in /work.`, the git
+  line, `Shell commands can reach the web now.` and the closing sentence.
 
 **Step 2:** fails (`setup` is no Session option).
 
