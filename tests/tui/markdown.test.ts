@@ -161,11 +161,20 @@ describe("markdownLines, each piece", () => {
     ]);
   });
 
+  // Its band from where its text starts, an empty line's too (Task 16's spec review, "Band from the text").
   it("draws a code block in a list under the item's text", () => {
-    expect(markdownLines("- item\n\n  ```\n  code\n  ```", 80, P)).toEqual([
+    expect(markdownLines("- item\n\n  ```\n  code\n\n  more\n  ```", 80, P)).toEqual([
       { text: "  • item", indent: 4 },
       { text: "" },
-      { text: "    code", band: true, indent: 4 },
+      { text: "    code", band: true, bandFrom: 4, indent: 4 },
+      { text: "", band: true, bandFrom: 4 },
+      { text: "    more", band: true, bandFrom: 4, indent: 4 },
+    ]);
+  });
+
+  it("starts a code block's band in a quote after the quote's bar", () => {
+    expect(markdownLines("> ```\n> code\n> ```", 80, P)).toEqual([
+      { text: "│ code", band: true, bandFrom: 2, styles: [{ start: 0, end: 2, color: P.muted }], indent: 2 },
     ]);
   });
 

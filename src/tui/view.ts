@@ -19,6 +19,7 @@ export interface Row {
   color?: Line["color"];
   styles?: Span[];
   band?: true;
+  bandFrom?: number; // its line's (describe.ts, Line)
   indent?: number;
 }
 type Wrapped = { start: number; end: number; text: string };
@@ -31,6 +32,7 @@ export interface KeptLine {
   fold?: Line["fold"];
   styles?: Span[];
   band?: true;
+  bandFrom?: number;
   indent?: number;
   lead?: true;
 }
@@ -188,6 +190,7 @@ const keptOf = (l: Line): KeptLine[] => {
       ...(l.fold ? { fold: l.fold } : {}),
       ...(styles?.length ? { styles } : {}),
       ...(l.band ? { band: true } : {}),
+      ...(l.bandFrom ? { bandFrom: l.bandFrom } : {}),
       ...(l.indent ? { indent: l.indent, ...(k === 0 ? { lead: true } : {}) } : {}),
     };
   });
@@ -305,6 +308,7 @@ export class Rows {
       ...(l.color === undefined ? {} : { color: l.color }),
       ...(l.styles ? { styles: l.styles } : {}),
       ...(l.band ? { band: true } : {}),
+      ...(l.bandFrom ? { bandFrom: l.bandFrom } : {}),
       ...(spaces ? { indent: spaces } : {}),
     };
   }

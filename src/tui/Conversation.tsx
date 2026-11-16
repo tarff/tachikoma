@@ -5,7 +5,7 @@ import { segmenter } from "./editor.js";
 import type { Found } from "./find.js";
 import { drawn, ordered } from "./select.js";
 import { ThemeContext } from "./theme.js";
-import { bar, columnsAt, firstRowEnd, inner, type Pos, type Row, type Rows } from "./view.js";
+import { bar, columnsAt, columnsOf, firstRowEnd, inner, type Pos, type Row, type Rows } from "./view.js";
 
 // The conversation in full screen (release 5 design, "The screen", "Scrolling"): `height` rows from `first`, each in its
 // line's colour, then blank rows, so what is drawn under it stays at the bottom of the screen; a view held past the
@@ -45,15 +45,26 @@ export function Conversation({
   if (selection) marks.push(selection);
   return Array.from({ length: height }, (_, i) => {
     const row = note && i === height - 1 ? { text: note, color: "muted" as const } : first + i < rows.total ? rows.row(first + i) : null;
-    const parts = row && "line" in row ? marked(rows, row, marks) : null;
-    const shown = row && (
+    // A band from a column (Task 16's spec review, "Band from the text"): the columns before it plain, in a box of
+    // their own, the rest of the row on the band.
+    const from = row && "line" in row && row.band ? Math.min(row.bandFrom ?? 0, rows.width) : 0;
+    const parts = row && "line" in row ? marked(rows, row, marks, from) : null;
+    const text = (nodes: ReactNode) => row && (
       <Text color={row.color && palette[row.color]} wrap="truncate-end">
-        {parts ?? row.text}
+        {nodes}
       </Text>
     );
+    const shown = text(parts ? [...parts[0], ...parts[1]] : row?.text);
     return (
       <Box key={i} height={1}>
-        {row && "line" in row && row.band ? (
+        {row && "line" in row && row.band && from ? (
+          <Box width={rows.width} flexShrink={0}>
+            <Box width={from} flexShrink={0}>
+              {text(parts![0])}
+            </Box>
+            <Band width={rows.width - from}>{text(parts![1])}</Band>
+          </Box>
+        ) : row && "line" in row && row.band ? (
           <Band width={rows.width}>{shown}</Band>
         ) : (
           <Box width={rows.width} flexShrink={0}>
@@ -69,22 +80,29 @@ export function Conversation({
 // A row drawn in runs (TUI design pass, Task 2): its indent's spaces as they are, then its characters, each in its spans'
 // style and in reverse inside the marks (the selection, the search's matches); or null for a row with no span and no
 // mark on any of its text, drawn as its text. Its characters are drawn and found as select.ts's placeAt finds them
-// (select.ts, drawn).
-function marked(rows: Rows, r: Row, marks: [Pos, Pos][]): ReactNode[] | null {
+// (select.ts, drawn). In two parts: what is drawn before column `from` and what is drawn from it, a band from a column
+// drawn in a box of each (Task 16's spec review), so a row with one is never null; with none the first part is empty.
+function marked(rows: Rows, r: Row, marks: [Pos, Pos][], from = 0): [ReactNode[], ReactNode[]] | null {
   const inside = marks.flatMap((m) => {
     const [from, to] = ordered(...m);
     const a = r.line === from.line ? from.offset : r.line > from.line ? 0 : Infinity;
     const b = r.line === to.line ? to.offset : r.line < to.line ? Infinity : -Infinity;
     return a >= Math.min(b, r.end) || b <= r.start ? [] : [{ a, b }];
   });
-  if (!inside.length && !r.styles?.some((s) => s.end > r.start && s.start < r.end)) return null; // the line's spans: any on this row
+  if (!from && !inside.length && !r.styles?.some((s) => s.end > r.start && s.start < r.end)) return null; // the line's spans: any on this row
   const chars = [...drawn(rows, r)].map((c) => ({
     offset: c.offset,
+    col: c.col,
     text: c.text,
     // The "…" stands for all it cuts, which a mark reaches into or not.
     inverse: inside.some(({ a, b }) => (c.cut ? b > c.offset : c.offset >= a && c.offset < b)),
   }));
-  return [...(r.indent ? [" ".repeat(r.indent)] : []), ...runs(chars, r.styles)];
+  const spaces = r.indent ?? 0;
+  const before = Math.min(spaces, from); // the indent's spaces before the column
+  return [
+    [...(before ? [" ".repeat(before)] : []), ...runs(chars.filter((c) => c.col < from), r.styles)],
+    [...(spaces > before ? [" ".repeat(spaces - before)] : []), ...runs(chars.filter((c) => c.col >= from), r.styles)],
+  ];
 }
 
 type Style = Omit<Span, "start" | "end">;
@@ -208,6 +226,27 @@ export function Printed({ line, columns }: { line: Line; columns: number }) {
       {l.styles ? runs(chars(from, to, width), l.styles) : l.text.slice(from, to)}
     </Text>
   );
+  // A band from a column (Task 16's spec review, "Band from the text"): the characters in the columns before it plain,
+  // in a box that wide, and the rest on the band in a box beside it, which wraps, so its later rows start at the
+  // column, as full screen's start at the indent the line has there.
+  const from = l.band && l.bandFrom ? Math.min(l.bandFrom, columns) : 0;
+  if (from) {
+    let k = 0; // the characters before the column
+    let col = 0;
+    for (const { segment, index } of segmenter.segment(l.text)) {
+      col += columnsOf(segment);
+      if (col > from) break;
+      k = index + segment.length;
+    }
+    return (
+      <Box width={columns}>
+        <Box width={from} flexShrink={0}>
+          {text(0, k)}
+        </Box>
+        <Band width={inner(columns, from)}>{text(k, l.text.length, l.oneLine ? undefined : inner(columns, from))}</Band>
+      </Box>
+    );
+  }
   const body = n ? (
     <>
       <Box width={n} flexShrink={0}>

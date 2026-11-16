@@ -3369,6 +3369,58 @@ describe("App's replies as markdown", () => {
     expect(copies).toEqual([DRAWN.join("\n")]);
   });
 
+  // Task 16's spec review, the user's choice (2026-11-16, "Band from the text"): a code block's band starts under the
+  // reply's text, where the code's text starts, a list's or a quote's lead before it plain too, to the row's edge; the
+  // `●` and lead columns plain, on every row of a wrapped code line and on an empty one. Your message's band is the
+  // whole row, as before.
+  it.each([true, false])("starts a reply's code block band where its text starts, as markdown (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const text = "```\nfirst\n\nsecond\n```\n\n- item\n\n  ```\n  in a list\n  ```\n\n> ```\n> in a quote\n> ```";
+      const { app } = await mount([reply(text)], { full });
+      await type(app, "go");
+      await until(app, "in a quote");
+      const r = rows(app, full);
+      const raw = app.lastFrame()!.split("\n");
+      const plain = (i: number) => stripVTControlCharacters(raw[i]!.slice(0, raw[i]!.indexOf(BAND)));
+      const edge = (i: number) => stripVTControlCharacters(raw[i]!).slice(0, full ? 99 : 100);
+      const first = r.indexOf("● first");
+      expect(r.slice(first, first + 3)).toEqual(["● first", "", "  second"]);
+      const banded = [
+        [first, "● "],
+        [first + 1, "  "], // the code's empty line
+        [first + 2, "  "],
+        [r.indexOf("      in a list"), "      "],
+        [r.indexOf("  │ in a quote"), "  │ "],
+      ] as const;
+      for (const [i, lead] of banded) {
+        expect(raw[i]).toContain(BAND);
+        expect(plain(i)).toBe(lead);
+        expect(edge(i)).toHaveLength(full ? 99 : 100); // the band to the row's edge
+      }
+      expect(raw[r.indexOf("    • item")]).not.toContain(BAND);
+      expect(plain(r.indexOf("› go"))).toBe(""); // your message: the whole row
+    });
+  });
+
+  it.each([true, false])("starts each row of a wrapped code line's band under the reply's text, as markdown (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app } = await mount([reply(`\`\`\`\n${"x".repeat(150)}\n\`\`\``)], { full });
+      await type(app, "go");
+      await until(app, "xxxx");
+      const r = rows(app, full);
+      const raw = app.lastFrame()!.split("\n");
+      const first = r.findIndex((row) => row.startsWith("● x"));
+      for (const [i, lead] of [
+        [first, "● "],
+        [first + 1, "  "],
+      ] as const) {
+        expect(r[i]).toMatch(/^(● | {2})x+$/);
+        expect(stripVTControlCharacters(raw[i]!.slice(0, raw[i]!.indexOf(BAND)))).toBe(lead);
+      }
+      expect(r[first]!.length + r[first + 1]!.length).toBe(154); // the two leads and the 150 x's
+    });
+  });
+
   it("exports a reply drawn as markdown as its raw text", async () => {
     const { app, ctx, session } = await mount([reply(MD)]);
     await type(app, "go");

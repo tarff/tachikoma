@@ -37,6 +37,10 @@ export interface Line {
   // P3); the line starts a block (Task 3).
   styles?: Span[];
   band?: true;
+  // The band starting this many columns in, the columns before it plain: on the first row the line's lead, on the
+  // others its indent, which a line with one equals; a reply's code block, under its text (Task 16's spec review, the
+  // user's choice: "Band from the text").
+  bandFrom?: number;
   indent?: number;
   block?: true;
   asIs?: true; // its ending line breaks kept, its rows a file's own (withoutTrailingRows; 3c04960's review)
@@ -76,6 +80,7 @@ export function screen(l: Line): Line {
     ...(l.fold ? { fold: l.fold } : {}),
     ...(l.styles ? { styles: l.styles.map((s) => ({ ...s, start: at.get(s.start)!, end: at.get(s.end)! })) } : {}),
     ...(l.band ? { band: true } : {}),
+    ...(l.bandFrom ? { bandFrom: l.bandFrom } : {}),
     ...(l.indent === undefined ? {} : { indent: l.indent }),
     ...(l.block ? { block: true } : {}),
   };
@@ -200,7 +205,8 @@ export const resultRow = (p: ToolResult): Line => ({
 // the columns a kept line's text has now (view.ts, textWidth), less its lead's 2, so a table that fits is never cut
 // before a resize. The first line takes `● ` in the accent colour and is the block; each later line starts two spaces
 // in, under the first's text, a list's or a quote's own lead after them and its indent added to theirs. An empty later
-// line takes no spaces, so a copy has no trailing ones; a text that draws no line is `● ` alone, as before.
+// line takes no spaces, so a copy has no trailing ones; a text that draws no line is `● ` alone, as before. A code
+// block's band starts after the lead, under the text (Task 16's spec review: "Band from the text").
 const LEAD = 2;
 function replyLines(text: string, width: number, palette: Palette): Line[] {
   const drawn = markdownLines(text, width - LEAD, palette);
@@ -212,6 +218,7 @@ function replyLines(text: string, width: number, palette: Palette): Line[] {
       text: lead + l.text,
       ...(styles.length ? { styles } : {}),
       ...(l.oneLine || lead === "" ? {} : { indent: LEAD + (l.indent ?? 0) }),
+      ...(l.band ? { bandFrom: LEAD + (l.bandFrom ?? 0) } : {}), // the band under the text, an empty line's too
       ...(k === 0 ? { block: true as const } : {}),
     };
   });
