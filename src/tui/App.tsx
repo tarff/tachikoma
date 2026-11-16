@@ -32,7 +32,7 @@ import { queue } from "./app/queue.js";
 import { useAppState } from "./app/state.js";
 import { type Bindings, keyText } from "./bindings.js";
 import { type Clipboard, imagePaths } from "./clipboard.js";
-import { Conversation, Printed } from "./Conversation.js";
+import { Conversation, Linked, Printed } from "./Conversation.js";
 import { describe, fileShown, gapAfter, type Line, notice as noticeLine, previewStyles, screen as escaped, target } from "./describe.js";
 import { DetailView, keyRow, searchFor } from "./DetailView.js";
 import { Field } from "./Field.js";
@@ -40,6 +40,7 @@ import { History } from "./history.js";
 import type { Mouse } from "./input.js";
 import { both, named } from "./keys.js";
 import { frame as frameOf, layout } from "./layout.js";
+import { urls } from "./links.js";
 import { ACTIONS, McpList } from "./McpList.js";
 import { Menu } from "./Menu.js";
 import { ModelPicker, rows as listRows } from "./ModelPicker.js";
@@ -702,6 +703,12 @@ export function App(props: AppProps) {
     );
   };
   const shortOf = (q: Question) => `${q.label} (shown above)`;
+  // A row of the question's box Ink draws as it is, its addresses linked (clickable links plan, Task 5): urls() of the
+  // text handed to Ink, each id `<prefix><its start>`, q- for the question's line, qn- for the grey line and qw<line>-
+  // for each red line, so no two lines' addresses share one.
+  const linkedIn = (text: string, prefix: string) => (
+    <Linked text={text} links={urls(text).map((u) => ({ ...u, id: `${prefix}${u.start}` }))} />
+  );
   const laid = layout(prompt.text, promptWidth(ui.columns));
   const offered = ui.full && ui.picker ? listRows(ui.picker, "") : [];
   const movable = ui.full && ui.question && !picking && !ui.question.short; // a question that can still move into the conversation
@@ -925,17 +932,17 @@ export function App(props: AppProps) {
             <>
               {f.noted && (
                 <Text color={ui.palette.muted} wrap="truncate-end">
-                  {ui.question.note}
+                  {linkedIn(ui.question.note!, "qn-")}
                 </Text>
               )}
               {f.warned.map((r, i) => (
                 <Text key={`w${i}`} color={ui.palette.error} wrap="truncate-end">
-                  {r}
+                  {linkedIn(r, `qw${i}-`)}
                 </Text>
               ))}
               {f.asked.map((r, i) => (
                 <Text key={i} color={ui.palette.warning} wrap="truncate-end">
-                  {r}
+                  <Linked text={r} links={f.askedLinks[i]!} />
                 </Text>
               ))}
             </>
@@ -946,15 +953,20 @@ export function App(props: AppProps) {
             <>
               {ui.question.note !== undefined && (
                 <Text color={ui.palette.muted} wrap={ui.question.oneRow ? "truncate-end" : "wrap"}>
-                  {ui.question.oneRow ? ui.question.note : edgeBroken(ui.question.note, ui.columns - 4)}
+                  {linkedIn(
+                    ui.question.oneRow ? ui.question.note : edgeBroken(ui.question.note, ui.columns - 4),
+                    "qn-",
+                  )}
                 </Text>
               )}
               {ui.question.warnings.map((w, i) => (
                 <Text key={i} color={ui.palette.error}>
-                  {edgeBroken(w, ui.columns - 4)}
+                  {linkedIn(edgeBroken(w, ui.columns - 4), `qw${i}-`)}
                 </Text>
               ))}
-              <Text color={ui.palette.warning}>{edgeBroken(allow(ui.question.text, ui.question.plain), ui.columns - 4)}</Text>
+              <Text color={ui.palette.warning}>
+                {linkedIn(edgeBroken(allow(ui.question.text, ui.question.plain), ui.columns - 4), "q-")}
+              </Text>
             </>
           )}
         </Box>

@@ -196,6 +196,33 @@ function Run({ style, inverse, children }: { style: Style; inverse: boolean; chi
   );
 }
 
+// Text that is not a Line, the permission question's (clickable links plan, Task 5), inside a Text of its own colour:
+// each of `links`' ranges, in order, drawn as a Run with its link, each carrying its own id, so the rows of a wrapped
+// address share their address's; the rest as it is. With links off, the plain text.
+export function Linked({
+  text,
+  links,
+}: {
+  text: string;
+  links: readonly { start: number; end: number; link: string; id: string }[];
+}) {
+  const { look } = useContext(ThemeContext);
+  if (!look.links || !links.length) return text;
+  const parts: ReactNode[] = [];
+  let at = 0;
+  for (const [k, l] of links.entries()) {
+    if (l.start > at) parts.push(text.slice(at, l.start));
+    parts.push(
+      <Run key={k} style={{ link: l.link, id: l.id }} inverse={false}>
+        {text.slice(l.start, l.end)}
+      </Run>,
+    );
+    at = l.end;
+  }
+  if (at < text.length) parts.push(text.slice(at));
+  return parts;
+}
+
 // A band row's box (Task 2): `width` columns on the band colour, its text, indent and the rest of the row alike; drawn
 // plain without colour or without a band colour (theme.ts, palette: none below full colour).
 function Band({ width, children }: { width: number; children: ReactNode }) {

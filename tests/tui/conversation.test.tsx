@@ -1,7 +1,8 @@
 import chalk from "chalk";
+import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { afterEach, describe, expect, it } from "vitest";
-import { Conversation } from "../../src/tui/Conversation.js";
+import { Conversation, Linked } from "../../src/tui/Conversation.js";
 import { screen } from "../../src/tui/describe.js";
 import { markdownLines } from "../../src/tui/markdown.js";
 import { textOf } from "../../src/tui/select.js";
@@ -399,6 +400,36 @@ describe("Conversation's links", () => {
       expect(after).toContain("…");
       expect(after.slice(0, after.indexOf("…"))).not.toContain(ACCENT);
       expect(within(row, BLUE, "39")).toBe("https:");
+    }));
+
+  // Task 5: text that is not a Line, the permission question's, its links given with their ids.
+  it("draws Linked's ranges each inside its own link, in the accent, and the plain string with links off", () =>
+    coloured(() => {
+      const text = "open https://x.y or www.a.b now";
+      const links = [
+        { start: 5, end: 16, link: "https://x.y", id: "q-5" },
+        { start: 20, end: 27, link: "https://www.a.b", id: "q-20" },
+      ];
+      const linkedIn = (look: Look) => {
+        const app = render(
+          <ThemeContext value={{ look, palette: palette(look) }}>
+            <Text>
+              <Linked text={text} links={links} />
+            </Text>
+          </ThemeContext>,
+        );
+        mounted.push(app);
+        return app.lastFrame()!;
+      };
+      const on = linkedIn(ON);
+      expect(linksIn(on)).toEqual([
+        { id: "q-5", url: "https://x.y", text: "https://x.y" },
+        { id: "q-20", url: "https://www.a.b", text: "www.a.b" },
+      ]);
+      expect(on).toContain(`${ACCENT}${OPEN("q-5", "https://x.y")}https://x.y${CLOSE}`);
+      expect(on).toContain(`${ACCENT}${OPEN("q-20", "https://www.a.b")}www.a.b${CLOSE}`);
+      expect(plain(on)).toBe(text);
+      expect(linkedIn(OFF)).toBe(text);
     }));
 
   // A guard only: copying reads the kept lines' plain text, never what is drawn (app/mouse.ts, textOf), so this cannot

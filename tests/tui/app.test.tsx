@@ -3813,6 +3813,25 @@ describe("App's clickable links", () => {
     });
   });
 
+  // Task 5: a dangerous command's red line links its addresses as the question's line does, its ids its own
+  // (`qw<line>-<start>`), apart from the line's (`q-<start>`).
+  it.each([true, false])("links a question's red line's address and its line's (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app, ask } = await mount([], { full, theme: LINKS });
+      const danger = "Danger: piping https://x.y/s into a shell";
+      void ask("run: curl https://x.y/s | sh", undefined, undefined, false, [danger]);
+      await waitFor(() => plain(app.lastFrame()!).includes("[y/n]"));
+      const url = "https://x.y/s";
+      const shown = (links: ReturnType<typeof linksIn>) => links.map(({ id, url, text }) => ({ id, url, text }));
+      const red = linksIn(rowOf(app, "│ Danger"));
+      expect(shown(red)).toEqual([{ id: `qw0-${danger.indexOf("https")}`, url, text: url }]);
+      const asked = linksIn(rowOf(app, "│ Allow run"));
+      const line = "Allow run: curl https://x.y/s | sh? [y/n] · Esc to decline";
+      expect(shown(asked)).toEqual([{ id: `q-${line.indexOf("https")}`, url, text: url }]);
+      for (const l of [...red, ...asked]) expect(l.codes).toContain(ACCENT);
+    });
+  });
+
   // With links off, the frame is today's: no escape, no blue, the link's text underlined and its address muted.
   it.each([true, false])("draws addresses as before with links off (full screen: %s)", async (full) => {
     await inColour(3, async () => {
@@ -13229,6 +13248,78 @@ describe("App's MCP", () => {
     await shows(app, "answered");
     expect(opened).toEqual(["https://example.com/x"]);
     expect(answerOf(session)).toEqual({ action: "accept" });
+  });
+
+  // Clickable links plan, Task 5: the visit question's address is a link in the accent, the rest of its line in the
+  // warning colour, its id `q-<the address's start in the question's line>`; with links off, the box as before.
+  describe("a visit question's link", () => {
+    const LINKS: Theme = { look: { light: false, color: true, full: true, links: true }, palette: DARK };
+    const ACCENT = "\u001b[38;2;66;120;222m"; // #4278de, the accent (theme.ts)
+    const WARNING = "\u001b[38;2;224;184;74m"; // #e0b84a, the dark look's warning (theme.ts)
+    const LINK = /((?:\u001b\[[\d;]*m)*)\u001b\]8;id=([^;]*);([^\u0007]*)\u0007(.*?)\u001b\]8;;\u0007/g;
+    const plain = (s: string) => s.replace(/\u001b\[[\d;]*m/g, "").replace(/\u001b\]8;[^\u0007]*\u0007/g, "");
+    const linksIn = (row: string) =>
+      [...row.matchAll(LINK)].map((m) => ({ codes: m[1]!, id: m[2]!, url: m[3]!, text: plain(m[4]!) }));
+    const url = "https://example.com/x";
+    const line = `s asks you to open ${url} in your browser: Sign there. Open it? [y/n] · Esc to decline`;
+    const id = `q-${line.indexOf("https")}`;
+    const visitIn = async (full: boolean, theme: Theme) => {
+      const { config, servers } = await mcpSetup();
+      const visit = { mode: "url", message: "Sign there", elicitationId: "e1", url };
+      const { app, mcp } = await mount(asking(visit), { full, theme, mcp: servers([await config("s", {}, trusted)]) });
+      await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+      await type(app, "go");
+      await soon(() => expect(plain(flat(app))).toContain("Open it? [y/n]"));
+      return app;
+    };
+
+    it.each([true, false])("draws the address in a link, blue over the yellow (full screen: %s)", async (full) => {
+      await inColour(3, async () => {
+        const app = await visitIn(full, LINKS);
+        const rows = app.lastFrame()!.split("\n").filter((r) => r.includes("\u001b]8;id="));
+        expect(rows).toHaveLength(1);
+        const links = linksIn(rows[0]!);
+        expect(links.map(({ id, url, text }) => ({ id, url, text }))).toEqual([{ id, url, text: url }]);
+        expect(links[0]!.codes).toContain(ACCENT);
+        expect(rows[0]).toContain(`${WARNING}s asks you to open `);
+        // The text after the link is yellow again.
+        const after = rows[0]!.slice(rows[0]!.indexOf("\u001b]8;;\u0007") + "\u001b]8;;\u0007".length);
+        expect(/^(?:\u001b\[[\d;]*m)*/.exec(after)![0]).toContain(WARNING);
+        expect(plain(after).startsWith(" in your browser")).toBe(true);
+      });
+    });
+
+    // Second review, finding 4: each row of a wrapped address opens with the id of the address's start in the whole
+    // line, not the row's own start.
+    it("gives both rows of an address wrapped in full screen one id, the address's start in the line", async () => {
+      await inColour(3, async () => {
+        const app = await visitIn(true, LINKS);
+        Object.defineProperty(app.stdout, "columns", { value: 24, configurable: true }); // 20 columns inside the box
+        app.stdout.emit("resize");
+        await waitFor(() => app.lastFrame()!.split("\n").filter((r) => r.includes("\u001b]8;id=")).length === 2);
+        const rows = app.lastFrame()!.split("\n").filter((r) => r.includes("\u001b]8;id="));
+        expect(rows.map((r) => linksIn(r).map(({ id, url, text }) => ({ id, url, text })))).toEqual([
+          [{ id, url, text: "h" }],
+          [{ id, url, text: "ttps://example.com/x" }],
+        ]);
+        expect(id).not.toBe("q-0");
+      });
+    });
+
+    // As drawn before this task, read from the frame then, the same in both modes: the line in the warning colour,
+    // wrapped at 96 columns inside the muted border.
+    it.each([true, false])("draws the box as before with links off (full screen: %s)", async (full) => {
+      await inColour(3, async () => {
+        const app = await visitIn(full, { look: { light: false, color: true, full: true }, palette: DARK });
+        expect(app.lastFrame()).not.toContain("\u001b]8;");
+        const rows = app.lastFrame()!.split("\n");
+        const at = rows.findIndex((r) => r.includes("s asks you to open"));
+        const MUTED = "\u001b[38;2;138;138;138m"; // the muted grey (theme.ts)
+        const boxedIn = (text: string) =>
+          `${MUTED}│\u001b[39m ${WARNING}${text}\u001b[39m${" ".repeat(96 - text.length + 1)}${MUTED}│\u001b[39m`;
+        expect(rows.slice(at, at + 2)).toEqual([boxedIn(line.slice(0, line.indexOf("decline"))), boxedIn("decline")]);
+      });
+    });
   });
 
   // Release 8c plan, Task 13: a server's resources through `@` and its prompts as `/` commands (choices 30, 31), what they
