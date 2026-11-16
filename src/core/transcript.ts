@@ -180,6 +180,7 @@ export interface Read {
   nextTask: number; // choice 4
   tools: ToolSpec[]; // the tools the history was last saved under: the last start or tools line
   print: boolean; // a -p run not opened in the window since, as the session list reads it (readOutline)
+  // An older Tachikoma's shortened line has no setup, and leaves the one before it (system prompt plan, decision 10).
   setup: Known; // the prompt's: the last start, system or shortened line's
   told: Told; // what the model was told: the start or last shortened line's date and setup, then each note since
   loaded: string[]; // the MCP tools loaded through tool_search: the last loaded line's, kept by a shortening (release 8c plan, choice 41)

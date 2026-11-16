@@ -735,9 +735,11 @@ describe("transcript", { timeout: 15_000 }, () => {
       const t = new Transcript(p.file, p.pictures);
       t.write(recorded);
       t.write({ t: "system", system: "Box.", box: true, setup: LIVE_OFF });
-      t.write({ t: "message", message: told(dateNote("2026-11-18")) });
+      t.write({ t: "message", message: told(dateNote("2026-11-18"), setupNote(COPY_ON)) });
+      expect(read(p).told).toEqual({ date: "2026-11-18", setup: COPY_ON });
       t.write({ t: "shortened", system: "New.", message: prompt("summary") });
       const r = read(p);
+      // The notes before it stop counting: the model is told the prompt's setup, not the note's.
       expect([r.system, r.setup, r.told]).toEqual(["New.", LIVE_OFF, { setup: LIVE_OFF }]);
     });
 
