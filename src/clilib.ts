@@ -487,10 +487,10 @@ export function boxBranch(name: string | null): string | undefined {
 
 // The setup as found now for the host's project folder `root` (system prompt plan, Task 1, decision 3): at the launch,
 // and each time the lead's prompt is built or its notes are checked. Git is found from the files, as the status line's
-// branch is (tui/git.ts), never by
-// running git. With no sandbox, a repository the project is in, its own or one above it; in live link only a `.git` in
-// the project folder itself, as only that folder is mounted at /work, and "outside" when that `.git` names a git folder
-// outside the project (choice 107); copy mode's /work is always a repository of one commit (choice 24).
+// branch is (tui/git.ts), never by running git. With no sandbox, a repository the project is in, its own or one above
+// it; in live link only a `.git` in the project folder itself, as only that folder is mounted at /work, and "outside"
+// when that `.git` names a git folder outside the project (choice 107); copy mode's /work is always a repository of one
+// commit (choice 24).
 export function setupOf(root: string, sandbox: Sandbox, network: Network): Setup {
   if (sandbox === "off") return { sandbox, git: gitBranch(root) === null ? "none" : "repo" };
   if (sandbox === "copy") return { sandbox, network, git: "copy" };
