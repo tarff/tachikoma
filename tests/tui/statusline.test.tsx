@@ -380,7 +380,7 @@ describe("describe", () => {
   // The dark full look's colours, and the user's prompt as its three band lines (TUI design pass, Task 3).
   const P = palette({ light: false, color: true, full: true });
   const W = textWidth(100, true); // the columns a reply's markdown is laid out for (Task 16)
-  const typed =(text: string) => [{ text: "", band: true, block: true }, { text: `› ${text}`, band: true, indent: 2 }, { text: "", band: true }];
+  const typed = (text: string) => [{ text: "", band: true, block: true }, { text: `› ${text}`, band: true, indent: 2 }, { text: "", band: true }];
 
   it("shows tool calls and failed results on one line each", () => {
     const lines = describeMessage({ role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] }, P, W);
