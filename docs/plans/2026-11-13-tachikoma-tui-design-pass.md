@@ -789,3 +789,22 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   drawn, at `-c` and at each `/tasks t3`; on a terminal a few columns wide (3 for top-level code, 7
   in a list) a code band's start is past the row, and the modes differ (full screen blank, classic
   past the edge); cli.tsx's width wiring is not under test, as Task 13's.
+- **Task 17** (README b4bdde5 and 231e581; fixes 6abe502, 9453921, 9db305e and ec07760): the
+  check. The captures were made as Task 14's (scratchpad `screens-pr2\`, with light and no-colour
+  copies). From them the user chose (2026-11-16): "Fix it" and "Fix them too" (a wrapped row never
+  starts with the space a word left at the exact edge, in both modes: view.ts's row breaking keeps
+  that space at the end of the earlier row, undrawn, and classic hands Ink a line break in its
+  place (`edgeBroken`); the conversation, the question box and the review screen's head and foot;
+  the text keeps the space, so a copy does; it predates PR 2); "Same look" (headings of every
+  level bold accent); "Keep backticks" (inline code with no colour keeps its backticks; a code
+  block with no band, below full colour, is drawn between its source's fence lines, its language
+  kept, ``` for an indented block); "Add an empty line" (after `/tasks`' `Answer:`). The README's
+  words were approved by the user, and the banner order (a fuller system prompt next, then 8c-2).
+  At the terminal check (2026-11-16, dark Windows Terminal, real replies from
+  anthropic:claude-opus-5-5, scratchpad `checklist-tui-pr2.md`) the user found all 15 steps fine,
+  the quote's first-row-only bar included. The clickable-link test (`link-test.mjs`): Ctrl+click
+  opened the page with the mouse as normal and with full screen's mouse capture on, and so did
+  Shift+Ctrl+click (user: "all work the same"), so OSC 8 links need no click handling of
+  Tachikoma's own. Known limits: combining marks at a row's edge can draw differently in the two
+  modes (seen in the review's fuzzing, older than this work); with tabs, later wrapped rows still
+  differ between the modes (Task 7's limit).
