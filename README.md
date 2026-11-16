@@ -2437,6 +2437,8 @@ it says so.
 - **List numbers are not padded,** so the text of item `9.` and item `10.` does not line up.
 - **Named HTML entities show as written** (`&amp;`); numbered ones (`&#60;`) show as their
   character, except `&#38;`, which shows as `&amp;`.
+- **With `TERM=dumb`,** bold, italic, underlined and struck text show as plain text, as the
+  terminal is sent no styles.
 - **A long paragraph full of unmatched `*` is slow to draw:** in a test, 12,000 characters took
   0.9 s and 24,000 took 3.9 s, each time it is drawn: when the reply arrives, at `-c` or `-r`, and
   at each `/tasks t3` for a subagent's answer. A reply under 10,000 characters took under 0.3 s.
