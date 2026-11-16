@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Line } from "../../src/tui/describe.js";
+import { type Line, screen } from "../../src/tui/describe.js";
 import { markdownLines } from "../../src/tui/markdown.js";
 import { type Look, palette } from "../../src/tui/theme.js";
 
@@ -113,14 +113,17 @@ describe("markdownLines, each piece", () => {
     expect(markdownLines("> **b**", 80, P)[0]!.styles).toEqual([bar, { start: 2, end: 3, bold: true }]);
   });
 
-  // The user's choice (2026-11-16): "In brackets".
-  it("draws a link's text underlined and its address after it in brackets, muted", () => {
+  // The user's choice (2026-11-16): "In brackets". Its text and the address inside the brackets, not the brackets, open
+  // the address (clickable links plan, Task 4; decision 4).
+  it("draws a link's text underlined and its address after it in brackets, muted, both linked", () => {
     expect(markdownLines("see [docs](https://x.y/z)", 80, P)).toEqual([
       {
         text: "see docs (https://x.y/z)",
         styles: [
           { start: 4, end: 8, underline: true },
+          { start: 4, end: 8, link: "https://x.y/z" },
           { start: 9, end: 24, color: MUTED },
+          { start: 10, end: 23, link: "https://x.y/z" },
         ],
       },
     ]);
@@ -128,18 +131,99 @@ describe("markdownLines, each piece", () => {
 
   // Task 15's code review: no space before the address where the link drew no text, no brackets with no address.
   it("draws a link with no text as its address alone, and one with no address as its text", () => {
-    expect(markdownLines("see [](http://x.y)", 80, P)).toEqual([{ text: "see (http://x.y)", styles: [{ start: 4, end: 16, color: MUTED }] }]);
+    expect(markdownLines("see [](http://x.y)", 80, P)).toEqual([
+      {
+        text: "see (http://x.y)",
+        styles: [
+          { start: 4, end: 16, color: MUTED },
+          { start: 5, end: 15, link: "http://x.y" },
+        ],
+      },
+    ]);
     expect(texts(markdownLines("[](u)", 80, P))).toEqual(["(u)"]);
-    expect(markdownLines("[x](<>)", 80, P)).toEqual([{ text: "x", styles: [{ start: 0, end: 1, underline: true }] }]);
+    expect(markdownLines("[x](<>)", 80, P)).toEqual([
+      {
+        text: "x",
+        styles: [
+          { start: 0, end: 1, underline: true },
+          { start: 0, end: 1, link: "" },
+        ],
+      },
+    ]);
   });
 
-  it("draws a link whose text is its address once", () => {
-    const once = [{ text: "https://x.y", styles: [{ start: 0, end: 11, underline: true }] }];
+  it("draws a link whose text is its address once, linked", () => {
+    const once = [
+      {
+        text: "https://x.y",
+        styles: [
+          { start: 0, end: 11, underline: true },
+          { start: 0, end: 11, link: "https://x.y" },
+        ],
+      },
+    ];
     expect(markdownLines("[https://x.y](https://x.y)", 80, P)).toEqual(once);
     expect(markdownLines("<https://x.y>", 80, P)).toEqual(once);
     expect(markdownLines("https://x.y", 80, P)).toEqual(once);
-    // An autolink's text is its address as written (marked's `autolink`), though marked adds "mailto:" or "http://".
-    expect(texts(markdownLines("<a@b.c> www.x.y", 80, P))).toEqual(["a@b.c www.x.y"]);
+    // An autolink's text is its address as written (marked's `autolink`), though marked adds "mailto:" or "http://": a
+    // www. one opens https:// (clickable links plan, decision 3), an e-mail none.
+    expect(markdownLines("<a@b.c> www.x.y", 80, P)).toEqual([
+      {
+        text: "a@b.c www.x.y",
+        styles: [
+          { start: 0, end: 5, underline: true },
+          { start: 0, end: 5, link: "" },
+          { start: 6, end: 13, underline: true },
+          { start: 6, end: 13, link: "https://www.x.y" },
+        ],
+      },
+    ]);
+  });
+
+  // Clickable links plan, Task 4: the text opens the address in the brackets, even where it is another address
+  // (decision 7). A link definition's use opens its address (below, "draws a reference link as any link").
+  it("links a link's text to the address in its brackets, even where the text is another address", () => {
+    expect(markdownLines("[https://a.example](https://b.example)", 80, P)[0]!.styles).toEqual([
+      { start: 0, end: 17, underline: true },
+      { start: 0, end: 17, link: "https://b.example" },
+      { start: 18, end: 37, color: MUTED },
+      { start: 19, end: 36, link: "https://b.example" },
+    ]);
+  });
+
+  // Clickable links plan, Task 4: an address that is not http, https or www., or has no host (the review's finding 3),
+  // is handled and not a link, `link: ""`, its text drawn as before.
+  it.each([
+    { md: "[x](mailto:a@b.c)", text: "x (mailto:a@b.c)" },
+    { md: "[x](./a.md)", text: "x (./a.md)" },
+    { md: "[x](file:///c:/a)", text: "x (file:///c:/a)" },
+    { md: "[docs](https://)", text: "docs (https://)" },
+    { md: "[d](http://)", text: "d (http://)" },
+    { md: "[d](https://:80)", text: "d (https://:80)" },
+  ])("marks a link to $md as no link, drawn as before", ({ md, text }) => {
+    const label = text.indexOf(" (");
+    expect(markdownLines(md, 80, P)).toEqual([
+      {
+        text,
+        styles: [
+          { start: 0, end: label, underline: true },
+          { start: 0, end: label, link: "" },
+          { start: label + 1, end: text.length, color: MUTED },
+          { start: label + 2, end: text.length - 1, link: "" },
+        ],
+      },
+    ]);
+  });
+
+  // The second review's finding 2: screen()'s pass for bare addresses leaves a refused link alone, its label and its
+  // address, so a www. inside either is not opened as https://www.….
+  it.each([
+    { md: "[local](file:///www.example.org)", text: "local (file:///www.example.org)" },
+    { md: "[see www.a.com](file:///x)", text: "see www.a.com (file:///x)" },
+  ])("links no address inside a refused link to $md, once screened", ({ md, text }) => {
+    const line = screen(markdownLines(md, 80, P)[0]!);
+    expect(line.text).toBe(text);
+    expect(line.styles?.filter((s) => s.link)).toEqual([]);
   });
 
   it("draws a code block on the band, one colour, its fences and language not drawn", () => {
@@ -200,7 +284,9 @@ describe("markdownLines, each piece", () => {
         text: "r (https://r.s)",
         styles: [
           { start: 0, end: 1, underline: true },
+          { start: 0, end: 1, link: "https://r.s" }, // its use opens its address (clickable links plan, Task 4)
           { start: 2, end: 15, color: MUTED },
+          { start: 3, end: 14, link: "https://r.s" },
         ],
       },
     ]);
@@ -390,6 +476,8 @@ describe("markdownLines, what it shows", () => {
       { start: 0, end: 1, bold: true },
       { start: 2, end: 3, italic: true },
       { start: 8, end: 9, underline: true },
+      { start: 8, end: 9, link: "" }, // `u` is no web address (clickable links plan, Task 4)
+      { start: 11, end: 12, link: "" },
       { start: 14, end: 15, strike: true },
     ]);
     expect(lines.find((l) => l.text === "k")!.band).toBe(true); // the band is drawn as plain rows without colour (theme.ts)

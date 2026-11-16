@@ -3687,6 +3687,149 @@ describe("App's replies as markdown", () => {
   });
 });
 
+// Clickable links plan, Task 4: each address where the App really draws it (the review's finding 4), in full screen and
+// classic, with links on (a theme whose look has `links`) and chalk at level 3, so the accent's hex is drawn as it is;
+// with links off, today's frames.
+describe("App's clickable links", () => {
+  const LINKS: Theme = { look: { light: false, color: true, full: true, links: true }, palette: DARK };
+  const ACCENT = "\u001b[38;2;66;120;222m"; // #4278de, the accent in both looks (theme.ts)
+  const MUTED = "\u001b[38;2;138;138;138m"; // the muted grey (theme.ts)
+  const plain = (s: string) => s.replace(/\u001b\[[\d;]*m/g, "").replace(/\u001b\]8;[^\u0007]*\u0007/g, "");
+  // Each link on a row: its id, its address, its text, and the style codes drawn just before it opens.
+  const LINK = /((?:\u001b\[[\d;]*m)*)\u001b\]8;id=([^;]*);([^\u0007]*)\u0007(.*?)\u001b\]8;;\u0007/g;
+  const linksIn = (row: string) =>
+    [...row.matchAll(LINK)].map((m) => ({
+      codes: m[1]!,
+      id: m[2]!,
+      url: m[3]!,
+      text: plain(m[4]!),
+    }));
+  // The frame's row whose text, without its escapes, starts with `start`.
+  const rowOf = (app: ReturnType<typeof render>, start: string) => {
+    const row = app.lastFrame()!.split("\n").find((r) => plain(r).startsWith(start));
+    expect(row).toBeDefined();
+    return row!;
+  };
+  const REPLY = "see https://x.y and [docs](https://a.b)";
+  const drawn = (app: ReturnType<typeof render>, text: string) => plain(app.lastFrame()!).includes(text);
+
+  it.each([true, false])("links a reply's addresses and yours, in the accent (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app } = await mount([reply(REPLY)], { full, theme: LINKS });
+      await type(app, "try www.c.d");
+      await waitFor(() => app.lastFrame()!.includes("\u001b]8;id=") && drawn(app, "docs (https://a.b)"));
+      const mine = linksIn(rowOf(app, "› try"));
+      expect(mine.map(({ url, text }) => ({ url, text }))).toEqual([{ url: "https://www.c.d", text: "www.c.d" }]);
+      const said = linksIn(rowOf(app, "● see"));
+      expect(said.map(({ url, text }) => ({ url, text }))).toEqual([
+        { url: "https://x.y", text: "https://x.y" },
+        { url: "https://a.b", text: "docs" },
+        { url: "https://a.b", text: "https://a.b" },
+      ]);
+      for (const l of [...mine, ...said]) expect(l.codes).toContain(ACCENT);
+      // A link's text still underlined, a reply's bare address too (marked takes it as a link); your message's not.
+      expect(said[0]!.codes).toContain("\u001b[4m");
+      expect(said[1]!.codes).toContain("\u001b[4m");
+      expect(mine[0]!.codes).not.toContain("\u001b[4m");
+      // Each link's id is its line's and its start; in classic the said line's id (App.tsx, Printed's `at`), which
+      // for the reply, said after your message, is not 0.
+      const lineOf = (id: string) => id.split("-")[0];
+      expect(new Set(said.map((l) => lineOf(l.id))).size).toBe(1);
+      expect(lineOf(said[0]!.id)).not.toBe(lineOf(mine[0]!.id));
+      if (!full) expect(lineOf(said[0]!.id)).not.toBe("0");
+    });
+  });
+
+  // Ctrl+O shows the last turn's calls with their whole results (describe.ts, lastTurn and callLines), where the
+  // conversation shows the call's result row alone: in full screen in the detail pane, in classic printed into the
+  // conversation as a block (app/promptKeys.ts).
+  it.each([true, false])("links a tool's output's address on Ctrl+O, blue on grey (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const turns = [callTool("c1", "read_file", { path: "a.txt" }), reply("done")];
+      const { app, ctx } = await mount(turns, { full, theme: LINKS });
+      await writeFile(path.join(ctx.root, "a.txt"), "see http://e.f/g");
+      await type(app, "go");
+      await until(app, "done");
+      expect(app.lastFrame()).not.toContain("http://e.f/g");
+      await press(app, "\u000f");
+      await until(app, "Last turn: 1 tool call");
+      if (full) {
+        // the pane, at the top
+        expect(plain(app.lastFrame()!).split("\n")[0]!.trimEnd()).toBe("Last turn: 1 tool call");
+        expect(app.lastFrame()).not.toContain("› go");
+      } else expect(plain(app.lastFrame()!)).toContain("● done\n\nLast turn: 1 tool call\n● read_file\n");
+      const row = app.lastFrame()!.split("\n").find((r) => r.includes("http://e.f/g"))!;
+      expect(plain(row)).toMatch(/⎿ .*see http:\/\/e\.f\/g/);
+      expect(row).toContain(MUTED);
+      const links = linksIn(row);
+      expect(links.map(({ url, text }) => ({ url, text }))).toEqual([{ url: "http://e.f/g", text: "http://e.f/g" }]);
+      expect(links[0]!.codes).toContain(ACCENT);
+      if (!full) expect(links[0]!.id.split("-")[0]).not.toBe("0");
+    });
+  });
+
+  // A subagent's answer is drawn as markdown (app/queue.ts): in full screen in the detail pane, in classic said into
+  // the conversation.
+  it.each([true, false])("links a subagent's markdown link on /tasks t1 (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const worker = new FakeProvider("w", [reply("[docs](https://a.b)")]);
+      const turns = [callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")];
+      const m = await mount(turns, { full, worker, theme: LINKS });
+      await type(m.app, "go");
+      await until(m.app, "done");
+      await type(m.app, "/tasks t1");
+      await until(m.app, "t1 (find x), done: 0 tool calls");
+      if (full) expect(m.app.lastFrame()).not.toContain("› go"); // the pane
+      const row = rowOf(m.app, "docs (https://a.b)");
+      const links = linksIn(row);
+      expect(links.map(({ url, text }) => ({ url, text }))).toEqual([
+        { url: "https://a.b", text: "docs" },
+        { url: "https://a.b", text: "https://a.b" },
+      ]);
+      for (const l of links) expect(l.codes).toContain(ACCENT);
+    });
+  });
+
+  // Task 3's copy test is a guard only; this copies a real drag over a drawn link.
+  it("copies a dragged-over address as its text, with no escape, and exports the raw markdown", async () => {
+    await inColour(3, async () => {
+      const { app, mouse, copies, ctx, session } = await mount([reply(REPLY)], { full: true, theme: LINKS });
+      await type(app, "go");
+      await waitFor(() => app.lastFrame()!.includes("\u001b]8;id="));
+      const rows = app.lastFrame()!.split("\n").map(plain);
+      const y = rows.findIndex((r) => r.startsWith("● see"));
+      const x = rows[y]!.indexOf("https://x.y");
+      await pointer(mouse, at("press", x, y), at("drag", x + 10, y), at("release", x + 10, y));
+      expect(copies).toEqual(["https://x.y"]);
+      expect(copies[0]).not.toContain("\u001b");
+      await type(app, "/export talk.txt");
+      await until(app, "Exported to");
+      const text = readFileSync(path.join(ctx.root, "talk.txt"), "utf8");
+      expect(text).toBe(exportText(session.messages, "fake:a"));
+      expect(text.endsWith(`\n\nTachikoma (fake:a):\n${REPLY}\n`)).toBe(true);
+    });
+  });
+
+  // With links off, the frame is today's: no escape, no blue, the link's text underlined and its address muted.
+  it.each([true, false])("draws addresses as before with links off (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const off: Theme = { look: { light: false, color: true, full: true }, palette: DARK };
+      const { app } = await mount([reply(REPLY)], { full, theme: off });
+      await type(app, "try www.c.d");
+      await waitFor(() => drawn(app, "docs (https://a.b)"));
+      expect(app.lastFrame()).not.toContain("\u001b]8;");
+      // As drawn before this task, read from the frame then: your message on its band, the row's width in full screen
+      // 99 (the scroll bar keeps the last column) and 100 in classic; the reply's address and the link's text
+      // underlined (marked takes a bare address in a reply as a link), the bracketed address muted.
+      expect([rowOf(app, "› try"), rowOf(app, "● see")]).toEqual([
+        `\u001b[48;2;42;42;42m${"› try www.c.d".padEnd(full ? 99 : 100)}\u001b[49m`,
+        `${ACCENT}● \u001b[39msee \u001b[4mhttps://x.y\u001b[24m and \u001b[4mdocs\u001b[24m ` +
+          `${MUTED}(https://a.b)\u001b[39m`,
+      ]);
+    });
+  });
+});
+
 // TUI design pass, Task 7 (audit 2): an edit's preview, its `-` lines in the error colour on the delete tint and its `+`
 // lines in the success colour on the add tint; a write's preview, the file's own text, stays grey.
 describe("App's diffs in colour", () => {

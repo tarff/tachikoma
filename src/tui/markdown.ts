@@ -2,6 +2,7 @@ import { marked, type Token, type Tokens } from "marked";
 import stringWidth from "string-width";
 import { visible } from "../core/permissions.js";
 import type { Line, Span } from "./describe.js";
+import { target } from "./links.js";
 import type { Colour, Palette } from "./theme.js";
 
 // A reply's markdown as styled lines (TUI design pass, Task 15; design, "5. Markdown"): marked's lexer splits the text into
@@ -66,9 +67,19 @@ function inline(tokens: readonly Token[], palette: Palette, oneLine: boolean, ru
       // An autolink's text is its address as written, though marked adds "mailto:" or "http://" to its href. Another
       // address goes after the text in brackets, both muted (the user's choice, 2026-11-16: "In brackets").
       // No space where the link drew no text, and no brackets with no address (Task 15's code review).
-      if (!link.autolink && link.href !== "" && run.text.slice(start) !== escape(link.href)) {
+      // The text and the address in the brackets, not the brackets, open the address the brackets show, or an
+      // autolink's text (so www. opens https://, not marked's http://); "" where target() refuses it, handled and not
+      // a link, so screen() finds no address inside it (clickable links plan, Task 4; decisions 3, 4 and 7).
+      const drawn = run.text.slice(start);
+      const opens = { link: target(link.autolink ? drawn : escape(link.href)) ?? "" };
+      run.styles.push(...styled(start, run.text.length, opens));
+      if (!link.autolink && link.href !== "" && drawn !== escape(link.href)) {
         if (run.text.length > start) add(" ");
-        over({ color: palette.muted }, () => add(`(${link.href})`));
+        over({ color: palette.muted }, () => {
+          add("(");
+          over(opens, () => add(link.href));
+          add(")");
+        });
       }
     } else add(t.raw); // raw HTML, a picture, a task's box and anything else, as written
   }
