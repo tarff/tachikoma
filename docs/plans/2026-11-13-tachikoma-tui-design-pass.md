@@ -817,3 +817,12 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   band the whole row now name `bandFrom`. Known limit, from the re-check: `/tasks t3` lays a done
   answer out twice when it opens, `[` pressed or not, so the slow case of unmatched `*` takes about
   twice the README's time there.
+- **The user's review of PR #21** (fix ef98171): two points. In classic, a band line's tabs on a
+  later wrapped row reached the terminal raw and ran past the screen's width; a band line (a code
+  block, or your message's) is now broken where full screen breaks it, each row's tabs drawn as
+  spaces from that row's start, so the rows match full screen's. Task 7's limit stays for lines
+  with no band. The other point, NO_COLOR dropping bold, italic, underline and strikethrough,
+  did not reproduce: chalk 5.6.2 does not read NO_COLOR, and in a real console with NO_COLOR=1
+  bold and strikethrough were sent; theme.ts drops colours only. With TERM=dumb, or output that
+  is not a terminal, chalk sends no styles at all unless FORCE_COLOR is set; the user chose "Known limit" (2026-11-16), a
+  README bullet.
