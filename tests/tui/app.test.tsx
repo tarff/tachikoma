@@ -3397,20 +3397,25 @@ describe("App's replies as markdown", () => {
   });
 
   // Design, "Resizing": the table is laid out once, for 120 columns, and never again; each of its rows is one screen
-  // row at any width, cut with "…" when the screen is narrower.
+  // row at any width, cut with "…" when the screen is narrower. The table is wider than a reply's budget at the test
+  // terminal's own 100 columns (97) and within 120's (117), so it is boxed only if laid out at the width when the reply
+  // came (Task 16's spec review).
   it("keeps a table drawn as markdown at 120 columns, each row cut to one at 50, and the frame as at first back at 120, a selection on the same text", async () => {
     await inColour(1, async () => {
-      const table = "| file | what it holds |\n|---|---|\n| src/tui/markdown.ts | a reply's markdown as styled lines |\n| src/tui/describe.ts | how one message appears |";
-      const border = (l: string, m: string, r: string) => `  ${l}${"─".repeat(21)}${m}${"─".repeat(36)}${r}`;
-      const cells = (a: string, b: string) => `  │ ${a.padEnd(19)} │ ${b.padEnd(34)} │`;
+      const holds = "a reply's markdown as styled lines, laid out once for the width it has when it arrives";
+      const table = `| file | what it holds |\n|---|---|\n| src/tui/markdown.ts | ${holds} |\n| src/tui/describe.ts | how one message appears |`;
+      const border = (l: string, m: string, r: string) => `  ${l}${"─".repeat(21)}${m}${"─".repeat(holds.length + 2)}${r}`;
+      const cells = (a: string, b: string) => `  │ ${a.padEnd(19)} │ ${b.padEnd(holds.length)} │`;
       const drawn = [
         border("╭", "┬", "╮"),
         cells("file", "what it holds"),
         border("├", "┼", "┤"),
-        cells("src/tui/markdown.ts", "a reply's markdown as styled lines"),
+        cells("src/tui/markdown.ts", holds),
         cells("src/tui/describe.ts", "how one message appears"),
         border("╰", "┴", "╯"),
       ];
+      expect(drawn[0]!.length - 2).toBeGreaterThan(textWidth(100, true) - 2); // the table alone, without the reply's lead
+      expect(drawn[0]!.length).toBeLessThanOrEqual(textWidth(120, true));
       const { app, mouse, copies } = await mount([reply(`Files:\n\n${table}`)], { full: true, rows: 26 });
       const shownAt = (columns: number) => stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => r.slice(0, columns - 1).trimEnd());
       await resize(app, 120);
