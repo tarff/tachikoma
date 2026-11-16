@@ -2470,6 +2470,8 @@ it says so.
 - **`&amp;` in a markdown link's address opens as written,** not as `&`.
 - **A table too wide for the screen is shown as written,** and there a `www.` address inside a
   refused link (such as `[x](file:///www.a.b)`) still opens.
+- **In Windows Terminal an address still opens with Ctrl+click when links are off**
+  (`FORCE_HYPERLINK=0`): the terminal finds addresses in plain text itself. It isn't blue.
 
 ### Hooks' limits
 
