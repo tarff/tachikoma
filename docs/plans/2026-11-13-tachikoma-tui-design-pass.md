@@ -766,7 +766,7 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   waits on the user's check of Ctrl+click under full screen's mouse capture (scratchpad
   `link-test.mjs`) and becomes its own task. Known limits: a wrapped quote line shows `│` on its
   first row only; list numbers are not padded (`9.` and `10.`); named HTML entities show raw
-  (`&amp;`), numbered ones decoded, as marked gives them.
+  (`&amp;`), numbered ones decoded, as marked gives them, except `&#38;`, which shows as `&amp;`.
 - **Task 16** (299e3f3, fixes d0b2330, 020b4d3, f6ffe45, 4352d90, 20ae358 and 9bec1fc): replies
   as markdown. `replyLines` (describe.ts) draws a reply's text with `markdownLines` at
   `textWidth(columns, full) - 2`, the first line taking the accent `● `, later ones two spaces in
@@ -808,3 +808,12 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   Tachikoma's own. Known limits: combining marks at a row's edge can draw differently in the two
   modes (seen in the review's fuzzing, older than this work); with tabs, later wrapped rows still
   differ between the modes (Task 7's limit).
+- **The whole PR's review** (fix f214ac4): nothing Critical or Important, four Minor points. The
+  user chose (2026-11-16): "Keep the marks" (`[`'s print-out of `/tasks t3`, which draws text and
+  colour only, lays the answer out with no accent or band, so its code keeps its backticks and
+  fences; the view on screen is unchanged); the README's words for the entity limit (`&#38;`
+  shows as `&amp;`, as marked gives it) and for the resize sentence (`/screen` from classic, a
+  column narrower, cuts a table drawn at classic's full width). Three comments still calling the
+  band the whole row now name `bandFrom`. Known limit, from the re-check: `/tasks t3` lays a done
+  answer out twice when it opens, `[` pressed or not, so the slow case of unmatched `*` takes about
+  twice the README's time there.
