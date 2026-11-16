@@ -244,6 +244,8 @@ export function describe(m: Message, palette: Palette, width: number, answered?:
   for (const p of m.parts) {
     if (p.type === "text" && p.from === "tasks") continue; // shown when it arrived, as "t3 finished"
     if (p.type === "text" && p.from === "hooks") continue; // for the model, not the conversation (release 8b design, "What a hook's answer does")
+    // A note of a changed date or setup: for the model, as a hook's text (system prompt plan, Task 4).
+    if (p.type === "text" && p.from === "note") continue;
     // A picked resource's text and a prompt command's messages, which follow the typed line: the server's, never the
     // user's prompt (release 8c plan, choice 34), and for the model, as a hook's text is.
     if (p.type === "text" && p.from === "server") continue;

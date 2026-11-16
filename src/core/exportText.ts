@@ -11,7 +11,9 @@ export const callText = (c: ToolCall, result: string | undefined) =>
 // it, and one saved before replies kept their lead with the lead leading now. The notes the session added for the lead
 // (a background subagent's answer, failure or stop, and a crash's "answer was lost" line) go where they arrived, as the
 // lead got them, under "Subagents:" (user, 2026-11-06), though the scrollback shows them only as "t3 finished"
-// (describe.ts). Results have no heading of their own, being under their calls, each found in the message right after
+// (describe.ts). The notes of a changed date or setup go where they arrived too, under "Notes:", as they changed what
+// the model knew, though the scrollback leaves them out (system prompt plan, choice 3). Results have no heading of
+// their own, being under their calls, each found in the message right after
 // its reply, as a provider may give a call an earlier turn's id. Blocks are separated by a blank line, and every line
 // ends with LF alone, a message's own CRLF or CR included.
 export function exportText(messages: Message[], lead: string): string {
@@ -27,10 +29,12 @@ export function exportText(messages: Message[], lead: string): string {
       // are left out, as the scrollback leaves them out (describe.ts).
       if (p.type === "tool_result" || ((p.type === "image" || p.type === "text") && p.from === "server")) continue;
       const note = p.type === "text" && p.from === "tasks";
+      const told = p.type === "text" && p.from === "note";
       // A hook's text for the model is shown as those notes are, under its own first line, `<Event> hook:` (release 8b
       // plan, Task 8).
       const hook = p.type === "text" && p.from === "hooks" ? /^(.*)\n([^]*)$/.exec(p.text) : null;
-      const heading = hook ? hook[1]! : note ? "Subagents:" : m.role === "user" ? "You:" : `Tachikoma (${m.lead ?? lead}):`;
+      const heading = hook ? hook[1]! : note ? "Subagents:" : told ? "Notes:"
+        : m.role === "user" ? "You:" : `Tachikoma (${m.lead ?? lead}):`;
       if (block?.heading !== heading) {
         blocks.push((block = { heading, lines: [] }));
         picture = false;

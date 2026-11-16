@@ -138,6 +138,24 @@ describe("exportText", () => {
     );
   });
 
+  // System prompt plan, choice 3 (b): a note of a changed date or setup changed what the model knew, so it is shown
+  // where it arrived, under its own heading, `Notes:`.
+  it("puts a note of a changed date or setup where it arrived, under Notes:", () => {
+    const messages: Message[] = [
+      {
+        role: "user",
+        parts: [
+          { type: "text", text: "hi" },
+          { type: "text", text: "Today's date is now 2026-11-18.", from: "note", note: { date: "2026-11-18" } },
+        ],
+      },
+      { role: "assistant", parts: [{ type: "text", text: "ok" }] },
+    ];
+    expect(exportText(messages, "fake:a")).toBe(
+      "You:\nhi\n\nNotes:\nToday's date is now 2026-11-18.\n\nTachikoma (fake:a):\nok\n",
+    );
+  });
+
   // User, 2026-11-06: "Record each reply's lead". A reply saved before replies kept their lead is headed with the lead
   // leading now.
   it("heads each reply with the lead that wrote it, or without one the lead leading now", () => {
