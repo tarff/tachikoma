@@ -896,7 +896,9 @@ if (parsed.print !== undefined) {
   // has in the mode the window starts in: 80 where the terminal does not say, the last of Ink's getWindowSize's fallbacks
   // (it asks terminal-size first; a window has a terminal, which says). The MCP servers counted are those starting, read
   // before startAll: none with the network off, nor a project's one not said yes to. The instruction files go by path,
-  // which the box shortens to their names where they differ.
+  // which the box shortens to their names where they differ. A resumed conversation's replies are laid out for the same
+  // columns (Task 16).
+  const width = textWidth(process.stdout.columns || 80, screen.full);
   const startLines = startBox(
     {
       version: VERSION,
@@ -909,7 +911,7 @@ if (parsed.print !== undefined) {
       servers: servers.list().filter((s) => s.state.is === "starting").length,
       hooks: hooks.config.off ? 0 : hooks.config.hooks.length,
     },
-    textWidth(process.stdout.columns || 80, screen.full),
+    width,
     shown,
   );
   ink = render(
@@ -937,7 +939,7 @@ if (parsed.print !== undefined) {
         intro={[
           ...startLines,
           ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "muted" as const }])),
-          ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours, root: workspace.root }),
+          ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours, root: workspace.root }, width),
           ...asBlock(said.map((l) => ({ ...l, color: "muted" as const }))), // a block under the conversation (the whole PR's review)
         ]}
         restored={opened.conversation.messages.length > 0} // -c, -r, and their --fork-session copies, with messages

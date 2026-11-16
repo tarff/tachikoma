@@ -8,9 +8,11 @@ import type { Run } from "../../src/hooks/hooks.js";
 import type { Ran } from "../../src/hooks/run.js";
 import { callLines, lastTurn, describe as lines, previewStyles, screen, withoutTrailingRows } from "../../src/tui/describe.js";
 import { palette } from "../../src/tui/theme.js";
+import { textWidth } from "../../src/tui/view.js";
 
 describe("describe", () => {
   const P = palette({ light: false, color: true, full: true }); // the marks' colours (TUI design pass, Task 3)
+  const W = textWidth(100, true); // the columns a reply's markdown is laid out for (Task 16)
 
   // Release 8b design, "What a hook's answer does": the user does not see a hook's text for the model in the conversation.
   it("leaves a hook's text for the model out of the scrollback", () => {
@@ -21,7 +23,7 @@ describe("describe", () => {
         { type: "text", text: "PostToolUse hook:\nmore", from: "hooks" },
       ],
     };
-    expect(lines(results, P)).toEqual([{ text: "  ⎿ ok", color: "muted", oneLine: true }]);
+    expect(lines(results, P, W)).toEqual([{ text: "  ⎿ ok", color: "muted", oneLine: true }]);
   });
 
   // Release 8c plan, choice 34: a tool's pictures are the server's, so they are drawn under the results, never as a prompt.
@@ -35,7 +37,7 @@ describe("describe", () => {
         { ...png, id: 5 },
       ],
     };
-    expect(lines(results, P)).toEqual([
+    expect(lines(results, P, W)).toEqual([
       { text: "  ⎿ ok", color: "muted", oneLine: true },
       { text: "  ⎿ [Image #4] [Image #5]", color: "muted", oneLine: true },
     ]);
@@ -52,7 +54,7 @@ describe("describe", () => {
         { type: "image", id: 2, mediaType: "image/png", data: Buffer.from("png"), from: "server" },
       ],
     };
-    expect(lines(prompt, P)).toEqual([
+    expect(lines(prompt, P, W)).toEqual([
       { text: "", band: true, block: true },
       { text: "› /fake:greet Ann", band: true, indent: 2 },
       { text: "", band: true },

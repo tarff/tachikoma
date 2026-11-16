@@ -54,7 +54,7 @@ import { TaskPanel, taskRows } from "./TaskPanel.js";
 import type { Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { ToolLine } from "./ToolLine.js";
-import { first as firstRow, FOLLOWING, unseenBelow } from "./view.js";
+import { first as firstRow, FOLLOWING, textWidth, unseenBelow } from "./view.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 export interface AppProps {
@@ -324,9 +324,11 @@ export function App(props: AppProps) {
     // call and each result keeps its place (choice 67). The quiet calls go to the open run, saying nothing and no result
     // row until their row is said (release 8c plan, Task 15), so they come between nothing; a folded row clicked open
     // before its results came is put again, so each shows under its call (choice 70; Task 21). An answered call's id is
-    // let go with its result, as a provider may use an id again.
+    // let go with its result, as a provider may use an id again. A reply's markdown is laid out for the columns its
+    // text has now, the mode's and the width last drawn, as this listener is the first drawing's (TUI design pass,
+    // Task 16).
     const onMessage = (m: Message) => {
-      latest.current.say(...describe(m, ui.palette, ui.answered.current, ui.run));
+      latest.current.say(...describe(m, ui.palette, textWidth(ui.frame.current.columns, ui.fullNow.current), ui.answered.current, ui.run));
       for (const fold of ui.run.filled()) if (fold.open) latest.current.putFold(fold);
       for (const p of m.parts) if (p.type === "tool_result") ui.answered.current.delete(p.callId);
       const last = m.parts.at(-1);

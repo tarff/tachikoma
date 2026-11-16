@@ -11,7 +11,7 @@ import type { Message } from "../../src/core/types.js";
 import { callRow, describe as describeMessage, gapped, type Line, notice, resultRow } from "../../src/tui/describe.js";
 import { taskRows } from "../../src/tui/TaskPanel.js";
 import { type Colour, type Look, palette, ThemeContext } from "../../src/tui/theme.js";
-import { Rows } from "../../src/tui/view.js";
+import { Rows, textWidth } from "../../src/tui/view.js";
 import { todoRows } from "../../src/tui/TodoList.js";
 import { toolParts } from "../../src/tui/ToolLine.js";
 import { workingText } from "../../src/tui/WorkingLine.js";
@@ -365,19 +365,24 @@ describe("Printed", () => {
 describe("describe's blocks and markers", () => {
   const P = palette({ light: false, color: true, full: true });
   const accent = { start: 0, end: 2, color: P.accent };
+  const W = textWidth(100, true); // the columns a reply's markdown is laid out for (Task 16)
 
   it("gives your message as three band lines, `› ` and its text in the middle, a block from the first, later lines indented", () => {
     const typed: Message = { role: "user", parts: [{ type: "text", text: "one\ntwo" }] };
-    expect(describeMessage(typed, P)).toEqual([
+    expect(describeMessage(typed, P, W)).toEqual([
       { text: "", band: true, block: true },
       { text: "› one\ntwo", band: true, indent: 2 },
       { text: "", band: true },
     ]);
   });
 
+  // Task 16: drawn as markdown, each line of the source a line, the later ones two spaces in, under the first's text.
   it("starts a reply with `● ` in the accent colour, indented under its first word, a block", () => {
     const answer: Message = { role: "assistant", parts: [{ type: "text", text: "Done.\nAll of it." }] };
-    expect(describeMessage(answer, P)).toEqual([{ text: "● Done.\nAll of it.", styles: [accent], indent: 2, block: true }]);
+    expect(describeMessage(answer, P, W)).toEqual([
+      { text: "● Done.", styles: [accent], indent: 2, block: true },
+      { text: "  All of it.", indent: 2 },
+    ]);
   });
 
   // Choice P2: the dot is the accent colour on every call row, as a printed row cannot change; its result row says how it
@@ -387,7 +392,7 @@ describe("describe's blocks and markers", () => {
     expect(callRow(call, P)).toEqual({ text: "● read_file a.txt", styles: [accent], oneLine: true, block: true });
     expect(resultRow({ type: "tool_result", callId: "c", output: "x", isError: false })).toEqual({ text: "  ⎿ ok", color: "muted", oneLine: true });
     const asked: Message = { role: "assistant", parts: [call] };
-    expect(describeMessage(asked, P)).toEqual([callRow(call, P)]);
+    expect(describeMessage(asked, P, W)).toEqual([callRow(call, P)]);
   });
 
   // As say() and an opened folded row space lines: a gap before each block, none first, none after an empty line.

@@ -362,8 +362,9 @@ export class OpenRun {
 
 // A resumed conversation as the scrollback shows a live one, message by message (release 8a plan, Task 6; user,
 // 2026-11-06: "Show it"), its runs folded as the live window folds them, the asked calls known by their saved marks
-// (Task 15).
-export function conversationLines(messages: Message[], opts: FoldOptions): Line[] {
+// (Task 15). `width`: the columns a kept line's text has now (view.ts, textWidth), which its replies' markdown is laid
+// out for, as a live one's is (TUI design pass, Task 16).
+export function conversationLines(messages: Message[], opts: FoldOptions, width: number): Line[] {
   const run = new OpenRun(opts);
-  return [...messages.flatMap((m) => describe(m, opts.palette, undefined, run)), ...run.end()];
+  return [...messages.flatMap((m) => describe(m, opts.palette, width, undefined, run)), ...run.end()];
 }

@@ -31,7 +31,7 @@ import { type Draft, joined, trimmed } from "../pictures.js";
 import { type Action, stateText } from "../McpList.js";
 import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
-import { FOLLOWING } from "../view.js";
+import { FOLLOWING, textWidth } from "../view.js";
 import {
   characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, listed, names, NOT_GONE, reviewUnopened, SESSION_WORDS, SHORTEN_WORDS,
 } from "./constants.js";
@@ -730,8 +730,10 @@ export const queue = (ui: UI, fns: Fns) => {
       ui.answered.current.clear();
       ui.stats.context = 0;
     }
-    // Folded by the window's rules, the session's asked calls now the loaded conversation's (release 8c plan, Task 15).
-    fns.say(...(branched ? [] : conversationLines(next.conversation.messages, ui.run.options)), ...lines);
+    // Folded by the window's rules, the session's asked calls now the loaded conversation's (release 8c plan, Task 15),
+    // its replies' markdown laid out for the columns their text has now, as a live reply's (TUI design pass, Task 16).
+    const width = textWidth(ui.frame.current.columns, ui.fullNow.current);
+    fns.say(...(branched ? [] : conversationLines(next.conversation.messages, ui.run.options, width)), ...lines);
     ui.rerender((n) => n + 1);
     if (how.lead) {
       ui.waiting.current.lead = undefined; // it wins over a lead the settings file set meanwhile, as a /lead typed then would

@@ -439,7 +439,7 @@ describe("App", () => {
     ];
     const folded = { asked: new Set<string>(), shell: "powershell" as const, names: mcpNames(), palette: DARK, root: tmpdir() };
     // The resume lines a block, as cli.tsx marks them (the whole PR's review: "Give them a gap").
-    const { app } = await mount([], { intro: [...conversationLines(history, folded), ...asBlock([{ text: "Resumed: read the notes.", color: "muted" }])] });
+    const { app } = await mount([], { intro: [...conversationLines(history, folded, textWidth(100, false)), ...asBlock([{ text: "Resumed: read the notes.", color: "muted" }])] });
     const frame = app.lastFrame()!;
     expect(frame).toMatch(/^\n› read the notes\n\n\n● Read 1 file\n\n● They say hello\.\n\nResumed: read the notes\.\n/);
   });
@@ -996,7 +996,8 @@ describe("App", () => {
     await type(app, "hi");
     await until(app, "two");
     const frame = app.lastFrame();
-    expect(frame).toContain(`one${OSC52_SHOWN}\\u001b[8mhidden␍over\\u202eback\n`);
+    // Drawn as markdown (TUI design pass, Task 16), which reads a lone \r as a line break, as marked's lexer does.
+    expect(frame).toContain(`one${OSC52_SHOWN}\\u001b[8mhidden\n  over\\u202eback\n  two\n`);
     expectNoRawControls(frame);
   });
 
@@ -2853,7 +2854,7 @@ describe("App's folded tool rows", () => {
     const { file, pictures } = sessionPaths(sessions, session.id);
     const saved = readTranscript(file, pictures);
     if ("problem" in saved) throw new Error(saved.problem);
-    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: tmpdir() });
+    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: tmpdir() }, textWidth(100, false));
     expect(resumed.map((l) => l.text)).toEqual(["", "› look", "", "● Read 1 file, ran 1 shell command", "● done"]);
   });
 
@@ -3315,8 +3316,161 @@ describe("App's blocks and gaps", () => {
       const { file, pictures } = sessionPaths(sessions, session.id);
       const saved = readTranscript(file, pictures);
       if ("problem" in saved) throw new Error(saved.problem);
-      const lines = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: ctx.root });
+      const lines = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", names: mcpNames(), palette: DARK, root: ctx.root }, textWidth(100, full));
       const resumed = await mount([], { full, intro: lines });
+      expect(resumed.app.lastFrame()!.split("\n").slice(0, live.length)).toEqual(live);
+    });
+  });
+});
+
+// TUI design pass, Task 16 (design, "5. Markdown"): a reply's text is drawn as markdown, laid out for its budget, the
+// columns a kept line's text has less the reply's two lead columns (plan, Architecture); its later lines under the
+// first's text, a list's own lead after the reply's. Your message is never read as markdown.
+describe("App's replies as markdown", () => {
+  const rows = (app: ReturnType<typeof render>, full = false) =>
+    stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
+  // The dark look's band #2a2a2a and accent #4278de (theme.ts), as 24-bit colour draws them, and bold.
+  const BAND = "\u001b[48;2;42;42;42m";
+  const ACCENT = "\u001b[38;2;66;120;222m";
+  const BOLD = "\u001b[1m";
+  // The style codes just before `text` on a row.
+  const codes = (row: string, text: string) => /(?:\u001b\[[0-9;]*m)*$/.exec(row.slice(0, row.indexOf(text)))![0];
+  const MD = "# Plan\n\n- **one** thing\n- two\n\n```\nnpm test\n```";
+  const DRAWN = ["● Plan", "", "    • one thing", "    • two", "", "  npm test"];
+  const resize = async (app: ReturnType<typeof render>, columns: number) => {
+    Object.defineProperty(app.stdout, "columns", { value: columns, configurable: true });
+    app.stdout.emit("resize");
+    await tick();
+  };
+
+  it("draws a reply's heading, list and code block styled as markdown, and your message as typed", async () => {
+    await inColour(3, async () => {
+      const { app } = await mount([reply(MD)]);
+      await type(app, "**go**");
+      await until(app, "npm test");
+      const r = rows(app);
+      const first = r.indexOf("● Plan");
+      expect(r.slice(first - 4, first + DRAWN.length)).toEqual(["", "› **go**", "", "", ...DRAWN]);
+      const raw = app.lastFrame()!.split("\n");
+      expect(raw[first]).toBe(`${ACCENT}● ${BOLD}Plan\u001b[39m\u001b[22m`); // the heading bold, in the dot's accent
+      expect(codes(raw[first + 2]!, "one")).toContain(BOLD);
+      expect(codes(raw[first + 2]!, "one")).not.toContain(ACCENT);
+      expect(raw[first + 2]).not.toContain(BAND);
+      expect(raw[first + 5]).toContain(BAND); // the code block, on the band
+    });
+  });
+
+  it("copies a selection over a reply drawn as markdown as it is drawn", async () => {
+    const { app, mouse, copies } = await mount([reply(MD)], { full: true });
+    await type(app, "go");
+    await until(app, "npm test");
+    const first = rows(app, true).indexOf("● Plan");
+    await pointer(mouse, at("press", 0, first), at("drag", 98, first + 5), at("release", 98, first + 5));
+    expect(copies).toEqual([DRAWN.join("\n")]);
+  });
+
+  it("exports a reply drawn as markdown as its raw text", async () => {
+    const { app, ctx, session } = await mount([reply(MD)]);
+    await type(app, "go");
+    await until(app, "npm test");
+    await type(app, "/export talk.txt");
+    await until(app, "Exported to");
+    const text = readFileSync(path.join(ctx.root, "talk.txt"), "utf8");
+    expect(text).toBe(exportText(session.messages, "fake:a"));
+    expect(text.endsWith(`\n\nTachikoma (fake:a):\n${MD}\n`)).toBe(true);
+  });
+
+  // PR 20's review holds: one empty line before the reply and one after it, where it starts and ends with a code block
+  // or a table.
+  it.each([
+    { name: "a code block", text: "```\nnpm test\n```", drawn: ["● npm test"] },
+    { name: "a table", text: "| a |\n|---|\n| 1 |", drawn: ["● ╭───╮", "  │ a │", "  ├───┤", "  │ 1 │", "  ╰───╯"] },
+  ])("puts one empty line before and after a reply as markdown that is $name", async ({ text, drawn }) => {
+    const { app } = await mount([reply(text)]);
+    await type(app, "hi");
+    await until(app, drawn.at(-1)!);
+    await press(app, "\u001b[Z");
+    await until(app, "mode is now project");
+    const r = rows(app);
+    const first = r.indexOf(drawn[0]!);
+    expect(r.slice(first - 4, first + drawn.length + 2)).toEqual(["", "› hi", "", "", ...drawn, "", "mode is now project"]);
+  });
+
+  // Design, "Resizing": the table is laid out once, for 120 columns, and never again; each of its rows is one screen
+  // row at any width, cut with "…" when the screen is narrower.
+  it("keeps a table drawn as markdown at 120 columns, each row cut to one at 50, and the frame as at first back at 120, a selection on the same text", async () => {
+    await inColour(1, async () => {
+      const table = "| file | what it holds |\n|---|---|\n| src/tui/markdown.ts | a reply's markdown as styled lines |\n| src/tui/describe.ts | how one message appears |";
+      const border = (l: string, m: string, r: string) => `  ${l}${"─".repeat(21)}${m}${"─".repeat(36)}${r}`;
+      const cells = (a: string, b: string) => `  │ ${a.padEnd(19)} │ ${b.padEnd(34)} │`;
+      const drawn = [
+        border("╭", "┬", "╮"),
+        cells("file", "what it holds"),
+        border("├", "┼", "┤"),
+        cells("src/tui/markdown.ts", "a reply's markdown as styled lines"),
+        cells("src/tui/describe.ts", "how one message appears"),
+        border("╰", "┴", "╯"),
+      ];
+      const { app, mouse, copies } = await mount([reply(`Files:\n\n${table}`)], { full: true, rows: 26 });
+      const shownAt = (columns: number) => stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => r.slice(0, columns - 1).trimEnd());
+      await resize(app, 120);
+      await type(app, "go");
+      await until(app, "╰");
+      const first = shownAt(120).indexOf("● Files:");
+      expect(shownAt(120).slice(first, first + 8)).toEqual(["● Files:", "", ...drawn]);
+      await pointer(mouse, at("press", 12, first + 5), at("drag", 22, first + 5), at("release", 22, first + 5));
+      expect(copies).toEqual(["markdown.ts"]);
+      expect(reversed(app)[first + 5]).toBe("markdown.ts");
+      const before = app.lastFrame();
+      await resize(app, 50);
+      const cut = (text: string) => (text.length > 49 ? `${text.slice(0, 48)}…` : text); // one column each
+      expect(shownAt(50).slice(first, first + 8)).toEqual(["● Files:", "", ...drawn.map(cut)]);
+      expect(reversed(app)[first + 5]).toBe("markdown.ts");
+      await resize(app, 120);
+      expect(app.lastFrame()).toBe(before);
+      expect(copies).toEqual(["markdown.ts"]);
+    });
+  });
+
+  // The plan's exact fit (review): at 100 columns full screen's budget is 97, the 99 a kept line's text has (the scroll
+  // bar keeps the last) less the reply's 2, and classic's 98. A one-column table of a cell `cell` wide is cell + 4
+  // wide.
+  it.each([
+    { full: true, cell: 93, boxed: true },
+    { full: true, cell: 94, boxed: false },
+    { full: false, cell: 94, boxed: true },
+    { full: false, cell: 95, boxed: false },
+  ])("draws a table as markdown with box lines only where it fits the reply's budget (full: $full, cell $cell)", async ({ full, cell, boxed }) => {
+    const wide = "x".repeat(cell);
+    const { app } = await mount([reply(`Here:\n\n| h |\n|---|\n| ${wide} |`)], { full });
+    await type(app, "go");
+    await until(app, "xxxx");
+    const r = rows(app, full);
+    if (boxed) {
+      const line = (l: string, r: string) => `  ${l}${"─".repeat(cell + 2)}${r}`;
+      const first = r.indexOf(line("╭", "╮"));
+      expect(r.slice(first, first + 5)).toEqual([line("╭", "╮"), `  │ ${"h".padEnd(cell)} │`, line("├", "┤"), `  │ ${wide} │`, line("╰", "╯")]);
+      expect(r[first + 3]).toHaveLength(full ? 99 : 100);
+      expect(app.lastFrame()).not.toContain("…");
+    } else {
+      expect(r).toContain("  | h |");
+      expect(r).toContain("  |---|");
+      expect(app.lastFrame()).not.toContain("╭");
+    }
+  });
+
+  // Resumed, a reply is drawn as the live one was (fold.ts, conversationLines), at the width given.
+  it.each([true, false])("draws a resumed reply as markdown as the live one was drawn (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app, ctx, session, sessions } = await mount([reply(MD)], { full, save: true });
+      await type(app, "go");
+      await until(app, "npm test");
+      const live = app.lastFrame()!.split("\n").slice(0, rows(app, full).indexOf("  npm test") + 1);
+      const { file, pictures } = sessionPaths(sessions, session.id);
+      const saved = readTranscript(file, pictures);
+      if ("problem" in saved) throw new Error(saved.problem);
+      const opts = { asked: new Set(saved.asked), shell: "powershell" as const, names: mcpNames(), palette: DARK, root: ctx.root };
+      const resumed = await mount([], { full, intro: conversationLines(saved.messages, opts, textWidth(100, full)) });
       expect(resumed.app.lastFrame()!.split("\n").slice(0, live.length)).toEqual(live);
     });
   });
@@ -10332,6 +10486,20 @@ describe("App's sessions", () => {
     await type(app, "which fruit?");
     await until(app, "an apple");
     expect(lead.seen[0]).toEqual([typed("remember apple"), { role: "assistant", parts: [{ type: "text", text: "noted" }] }, typed("which fruit?")]);
+  });
+
+  // TUI design pass, Task 16: a resumed session's replies are drawn as markdown, as they were live.
+  it("draws a session's replies as markdown on /resume, as live", async () => {
+    const first = await saved([reply("# Plan\n\n- **one** thing\n- two")]);
+    await type(first.app, "make a plan");
+    await until(first.app, "• two");
+    first.app.unmount();
+    const { app } = await saved([]);
+    await type(app, "/resume");
+    await until(app, "make a plan");
+    await press(app, "\r");
+    await until(app, "Resumed: make a plan.");
+    expect(app.lastFrame()).toContain("\n● Plan\n\n    • one thing\n    • two\n\nResumed: make a plan.\n");
   });
 
   // User, 2026-11-06: "The session's saved lead", switched as /lead switches it, so the status line follows.
