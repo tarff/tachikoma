@@ -3320,6 +3320,11 @@ describe("Session, notes to the model", { timeout: 15_000 }, () => {
     const plain = new Session({
       lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
     });
-    expect(await plain.freshSystem()).toEqual({ system: "t", date: localDate() });
+    const before = localDate();
+    const fresh = await plain.freshSystem();
+    const days = [before, localDate()]; // a run across midnight takes either
+    expect(fresh.system).toBe("t");
+    expect(days).toContain(fresh.date);
+    expect("setup" in fresh).toBe(false);
   });
 });
