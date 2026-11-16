@@ -784,8 +784,8 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   the spaces to their stop, counted from the band's start (as Task 7's tinted lines), and the text
   keeps its tabs, so a copy does; they had been dropped into the lead, or reached the terminal raw
   and spilled past the edge (your messages' band lines gain the same first-row spaces in
-  classic). Ctrl+O shows no reply text and is unchanged. Known limits: marked's lexer takes time growing with the square of a paragraph full of unmatched `*` (the reviewer's
-  timing: 12,000 characters 0.9 s, 24,000 3.9 s; replies under 10,000 under 0.3 s), on each reply
+  classic). Ctrl+O shows no reply text and is unchanged. Known limits: marked's lexer takes time
+  growing with the square of a paragraph full of unmatched `*` (the reviewer's timing: 12,000 characters 0.9 s, 24,000 3.9 s; replies under 10,000 under 0.3 s), on each reply
   drawn, at `-c` and at each `/tasks t3`; on a terminal a few columns wide (3 for top-level code, 7
   in a list) a code band's start is past the row, and the modes differ (full screen blank, classic
   past the edge); cli.tsx's width wiring is not under test, as Task 13's.
