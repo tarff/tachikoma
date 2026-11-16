@@ -226,6 +226,65 @@ describe("markdownLines, each piece", () => {
     expect(line.styles?.filter((s) => s.link)).toEqual([]);
   });
 
+  // Task 4's code review: a link's www. address opens https:// (decision 3), and a space in an address is encoded.
+  it("opens a link to a www. address as https://, and one with a space with the space encoded", () => {
+    expect(markdownLines("[x](www.a.b)", 80, P)[0]!.styles).toEqual([
+      { start: 0, end: 1, underline: true },
+      { start: 0, end: 1, link: "https://www.a.b" },
+      { start: 2, end: 11, color: MUTED },
+      { start: 3, end: 10, link: "https://www.a.b" },
+    ]);
+    expect(markdownLines("[x](<https://a.b/c d>)", 80, P)).toEqual([
+      {
+        text: "x (https://a.b/c d)",
+        styles: [
+          { start: 0, end: 1, underline: true },
+          { start: 0, end: 1, link: "https://a.b/c%20d" },
+          { start: 2, end: 19, color: MUTED },
+          { start: 3, end: 18, link: "https://a.b/c%20d" },
+        ],
+      },
+    ]);
+  });
+
+  // Task 4's code review: a picture is drawn as written; where its address is refused, as a refused link's is, its
+  // text is no link, so screen() finds no www. inside it; with a web address, screen() links the address as in prose.
+  it("marks a picture with a refused address as no link, and leaves one with a web address to screen()", () => {
+    const refused = "![p](file:///www.x.y/p.png)";
+    const none = { start: 0, end: refused.length, link: "" };
+    expect(markdownLines(refused, 80, P)).toEqual([{ text: refused, styles: [none] }]);
+    expect(screen(markdownLines(refused, 80, P)[0]!).styles?.filter((s) => s.link)).toEqual([]);
+    const good = "![p](https://a.b/p.png)";
+    expect(markdownLines(good, 80, P)).toEqual([{ text: good }]);
+    expect(screen(markdownLines(good, 80, P)[0]!).styles).toEqual([{ start: 5, end: 22, link: "https://a.b/p.png" }]);
+  });
+
+  // Task 4's code review: a link's spans where a list's lead and a table's bar and space move its text.
+  it("puts a link's spans under its text in a list item and in a table cell", () => {
+    expect(markdownLines("- [d](https://a.b)", 80, P)).toEqual([
+      {
+        text: "  • d (https://a.b)",
+        styles: [
+          { start: 4, end: 5, underline: true },
+          { start: 4, end: 5, link: "https://a.b" },
+          { start: 6, end: 19, color: MUTED },
+          { start: 7, end: 18, link: "https://a.b" },
+        ],
+        indent: 4,
+      },
+    ]);
+    const header = markdownLines("| [d](https://a.b) |\n|---|\n| x |", 80, P)[1]!;
+    expect(header.text).toBe("│ d (https://a.b) │");
+    expect(header.styles).toEqual([
+      { start: 0, end: 1, color: MUTED },
+      { start: 2, end: 3, underline: true },
+      { start: 2, end: 3, link: "https://a.b" },
+      { start: 4, end: 17, color: MUTED },
+      { start: 5, end: 16, link: "https://a.b" },
+      { start: 18, end: 19, color: MUTED },
+    ]);
+  });
+
   it("draws a code block on the band, one colour, its fences and language not drawn", () => {
     expect(markdownLines("```ts\nconst a = 1;\n\n  b();\n```", 80, P)).toEqual([
       { text: "const a = 1;", band: true },
@@ -295,7 +354,10 @@ describe("markdownLines, each piece", () => {
   });
 
   it("draws anything else the lexer gives as its raw text", () => {
-    expect(markdownLines("![alt](p.png)", 80, P)).toEqual([{ text: "![alt](p.png)" }]);
+    // a picture's relative address no link (Task 4's code review)
+    expect(markdownLines("![alt](p.png)", 80, P)).toEqual([
+      { text: "![alt](p.png)", styles: [{ start: 0, end: 13, link: "" }] },
+    ]);
     expect(markdownLines("a\\*b", 80, P)).toEqual([{ text: "a*b" }]); // an escape is its character
   });
 });

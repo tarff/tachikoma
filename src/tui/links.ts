@@ -71,7 +71,8 @@ export function hyperlinks(env: NodeJS.ProcessEnv, tty: boolean, level: number, 
 }
 
 // The address a link opens, from the text as drawn (clickable links plan, Task 2): http:// or https:// in any letter
-// case, or www. opened as https:// (decision 3); each character outside 32-126 encoded, as the OSC 8 spec asks; null
+// case, or www. opened as https:// (decision 3); each character outside 32-126 encoded, as the OSC 8 spec asks, and a
+// space, which a markdown link's address can hold (`[x](<https://a.b/c d>)`; Task 4's code review); null
 // for any other text, for a lone surrogate (which encodeURIComponent throws on), for an address with no host, which
 // marked's link rule lets through (`https://`, `https://:80`), and for one over 2083 bytes, the spec's VTE and iTerm2
 // limit. The link opens the encoded text itself, not URL's rewrite of it; the // check stays, as URL takes `https:x.y`.
@@ -81,7 +82,7 @@ export function target(shown: string): string | null {
   try {
     for (const c of shown.startsWith("www.") ? `https://${shown}` : shown) {
       const code = c.codePointAt(0)!;
-      link += code >= 32 && code <= 126 ? c : encodeURIComponent(c);
+      link += code > 32 && code <= 126 ? c : encodeURIComponent(c); // a space too (Task 4's code review)
     }
   } catch {
     return null;

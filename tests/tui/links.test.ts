@@ -108,6 +108,11 @@ describe("target", () => {
     expect(target("https://x.y/\ud800")).toBeNull(); // a lone surrogate
   });
 
+  // Task 4's code review: a markdown link's address can hold a space (`[x](<https://a.b/c d>)`).
+  it("encodes a space", () => {
+    expect(target("https://a.b/c d")).toBe("https://a.b/c%20d");
+  });
+
   it("opens nothing over 2083 bytes, the OSC 8 spec's VTE and iTerm2 limit", () => {
     const of = (bytes: number) => "https://x.y/" + "a".repeat(bytes - "https://x.y/".length);
     expect(target(of(2083))).toBe(of(2083));

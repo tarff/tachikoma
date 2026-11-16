@@ -3747,7 +3747,7 @@ describe("App's clickable links", () => {
     await inColour(3, async () => {
       const turns = [callTool("c1", "read_file", { path: "a.txt" }), reply("done")];
       const { app, ctx } = await mount(turns, { full, theme: LINKS });
-      await writeFile(path.join(ctx.root, "a.txt"), "see http://e.f/g");
+      await writeFile(path.join(ctx.root, "a.txt"), "see http://e.f/g now");
       await type(app, "go");
       await until(app, "done");
       expect(app.lastFrame()).not.toContain("http://e.f/g");
@@ -3759,8 +3759,11 @@ describe("App's clickable links", () => {
         expect(app.lastFrame()).not.toContain("› go");
       } else expect(plain(app.lastFrame()!)).toContain("● done\n\nLast turn: 1 tool call\n● read_file\n");
       const row = app.lastFrame()!.split("\n").find((r) => r.includes("http://e.f/g"))!;
-      expect(plain(row)).toMatch(/⎿ .*see http:\/\/e\.f\/g/);
-      expect(row).toContain(MUTED);
+      expect(plain(row)).toMatch(/⎿ .*see http:\/\/e\.f\/g now/);
+      // The address blue inside the grey text (Task 4's code review): the text after the link's close is grey again.
+      const after = row.slice(row.indexOf("\u001b]8;;\u0007") + "\u001b]8;;\u0007".length);
+      expect(/^(?:\u001b\[[\d;]*m)*/.exec(after)![0]).toContain(MUTED);
+      expect(plain(after).startsWith(" now")).toBe(true);
       const links = linksIn(row);
       expect(links.map(({ url, text }) => ({ url, text }))).toEqual([{ url: "http://e.f/g", text: "http://e.f/g" }]);
       expect(links[0]!.codes).toContain(ACCENT);

@@ -81,7 +81,15 @@ function inline(tokens: readonly Token[], palette: Palette, oneLine: boolean, ru
           add(")");
         });
       }
-    } else add(t.raw); // raw HTML, a picture, a task's box and anything else, as written
+    } else if (t.type === "image") {
+      // As written; where its address is refused, as a link's is, its text is no link, so screen() finds no www. inside
+      // it (`![p](file:///www.x.y/p.png)`); with a web address, screen() links the address as in prose (Task 4's code
+      // review).
+      const start = run.text.length;
+      add(t.raw);
+      const refused = target(escape((t as Tokens.Image).href)) === null;
+      if (refused) run.styles.push(...styled(start, run.text.length, { link: "" }));
+    } else add(t.raw); // raw HTML, a task's box and anything else, as written
   }
 }
 
