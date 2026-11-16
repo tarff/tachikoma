@@ -158,6 +158,17 @@ describe("Conversation's styled rows", () => {
       for (const r of shown) expect(r.startsWith(BAND)).toBe(true);
     }));
 
+  // Task 16's code review: a band from a column has its lead plain and its tabs on the band, their stops counted from
+  // the indent, as Printed prints them in classic.
+  it("draws a band from a column's tabs on the band, their stops counted from the indent", () =>
+    coloured(() => {
+      const rows = new Rows(40);
+      rows.add([{ text: "  \tif x {", band: true, bandFrom: 2, indent: 2 }, { text: "  \t\tfmt.Println(1)", band: true, bandFrom: 2, indent: 2 }]);
+      const shown = drawIn(null, { rows, first: 0, height: 2, unseen: 0, following: true });
+      expect(shown.map(plain)).toEqual([`${" ".repeat(10)}if x {`.padEnd(40), `${" ".repeat(18)}fmt.Println(1)`.padEnd(40)]);
+      for (const r of shown) expect(plain(r.slice(0, r.indexOf(BAND)))).toBe("  ");
+    }));
+
   it("shows a selection over a styled row in reverse on the text only, not the indent or the band's padding", () =>
     coloured(() => {
       const rows = new Rows(20);

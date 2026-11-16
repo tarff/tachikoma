@@ -3516,6 +3516,50 @@ describe("App's replies as markdown", () => {
     }
   });
 
+  // Task 16's code review: a code block's tabs are drawn as the spaces to their stops, counted from the band's start,
+  // in both modes, no row wider than the screen; a copy keeps the tabs, as a Makefile's recipe needs them.
+  const GO = "```go\n\tif x {\n\t\tfmt.Println(1)\n\t}\n```";
+  const GO_DRAWN = [`●${" ".repeat(9)}if x {`, `${" ".repeat(18)}fmt.Println(1)`, `${" ".repeat(10)}}`];
+  it.each([true, false])("draws a code block's tabs as markdown to their stops, no row wider than the screen (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app } = await mount([reply(GO)], { full });
+      await type(app, "go");
+      await until(app, "fmt.Println(1)");
+      const r = rows(app, full);
+      const first = r.indexOf(GO_DRAWN[0]!);
+      expect(r.slice(first, first + 3)).toEqual(GO_DRAWN);
+      for (const row of app.lastFrame()!.split("\n")) expect(stripVTControlCharacters(row).length).toBeLessThanOrEqual(100);
+      expect(app.lastFrame()).not.toContain("\t");
+    });
+  });
+
+  it("copies a code block drawn as markdown with its tabs", async () => {
+    const { app, mouse, copies } = await mount([reply(GO)], { full: true });
+    await type(app, "go");
+    await until(app, "fmt.Println(1)");
+    const first = rows(app, true).indexOf(GO_DRAWN[0]!);
+    await pointer(mouse, at("press", 0, first), at("drag", 98, first + 2), at("release", 98, first + 2));
+    expect(copies).toEqual(["● \tif x {\n  \t\tfmt.Println(1)\n  \t}"]);
+  });
+
+  // A reply after /screen is laid out for the new mode's budget: at 100 columns a table 98 wide fits classic's (98) and
+  // not full screen's (97).
+  it.each([
+    { from: false, boxed: false },
+    { from: true, boxed: true },
+  ])("lays a reply out as markdown for the mode /screen switched to (from full screen: $from)", async ({ from, boxed }) => {
+    const wide = "x".repeat(94);
+    const { app } = await mount([reply(`| h |\n|---|\n| ${wide} |`)], { full: from });
+    await type(app, "/screen");
+    await until(app, `screen is now ${from ? "classic" : "full"}`);
+    await type(app, "go");
+    await until(app, "xxxx");
+    const r = rows(app, !from);
+    if (boxed) expect(r).toContain(`  │ ${wide} │`);
+    else expect(r).toContain("  |---|");
+    expect(app.lastFrame()!.includes("╭")).toBe(boxed);
+  });
+
   // Task 16's spec review, the user's choice (2026-11-16, "Draw it as markdown"): `/tasks t1`'s answer is drawn as a
   // reply's text is, under its grey `Answer:`, laid out for the text width then, the answer having no lead of its own:
   // in full screen's detail view, and said in classic.
@@ -3541,6 +3585,20 @@ describe("App's replies as markdown", () => {
       expect(codes(raw[first + 1]!, "Plan")).toContain(BOLD);
       expect(codes(raw[first + 1]!, "Plan")).toContain(ACCENT);
       expect(raw[first + 6]).toContain(BAND);
+    });
+  });
+
+  // Task 16's code review: its code block's band is the whole row, the answer having no lead, and its tabs are drawn as
+  // the spaces to their stops in both modes, no row wider than the screen.
+  it.each([true, false])("draws a subagent's answer's code tabs as markdown to their stops (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app } = await subagent(GO, full);
+      await until(app, "fmt.Println(1)");
+      const r = rows(app, full);
+      const first = r.indexOf(`${" ".repeat(8)}if x {`);
+      expect(r.slice(first, first + 3)).toEqual([`${" ".repeat(8)}if x {`, `${" ".repeat(16)}fmt.Println(1)`, `${" ".repeat(8)}}`]);
+      for (const row of app.lastFrame()!.split("\n")) expect(stripVTControlCharacters(row).length).toBeLessThanOrEqual(100);
+      expect(app.lastFrame()).not.toContain("\t");
     });
   });
 

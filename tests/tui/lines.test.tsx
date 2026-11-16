@@ -330,6 +330,31 @@ describe("Printed", () => {
       expect(print(tinted("- \tone"), 100, { light: false, color: false, full: false }).join("")).toContain("\t");
     }));
 
+  // Task 16's code review: a band line's tabs on its first row are printed as the spaces to their stop, with colour and
+  // without, styled or not, as the terminal skips a raw tab's cells and Ink counts a tab as no column, which pushed the
+  // band's row past the screen's edge; a band from a column has its lead alone in the plain box and its tabs on the
+  // band, their stops counted from there, as full screen counts them from the indent. The text keeps its tabs.
+  it("prints a band line's first-row tabs as the spaces to their stop, a band from a column's after its lead", () =>
+    coloured(() => {
+      const lines: [Line, string][] = [
+        [{ text: "  \tif x {", band: true, bandFrom: 2, indent: 2 }, `  ${" ".repeat(8)}if x {`],
+        [{ text: "  \t\tfmt.Println(1)", band: true, bandFrom: 2, indent: 2 }, `  ${" ".repeat(16)}fmt.Println(1)`],
+        [{ text: "● \t}", band: true, bandFrom: 2, indent: 2, styles: [{ start: 0, end: 2, color: "blue" }] }, `● ${" ".repeat(8)}}`],
+        [{ text: "\tx", band: true }, `${" ".repeat(8)}x`],
+      ];
+      for (const look of [undefined, { light: false, color: false, full: false }]) {
+        for (const [line, drawn] of lines) {
+          const shown = print(line, 40, look);
+          expect(shown.map((r) => plain(r).trimEnd())).toEqual([drawn]);
+          expect(shown.map((r) => plain(r).trimEnd())).toEqual(fullRows(line, 40).map((r) => r.trimEnd()));
+          expect(plain(shown[0]!).length).toBeLessThanOrEqual(40);
+          expect(shown.join("")).not.toContain("\t");
+        }
+      }
+      const banded = print(lines[0]![0], 40)[0]!;
+      expect(plain(banded.slice(0, banded.indexOf("\u001b[48;2;42;42;42m")))).toBe("  "); // the lead plain, the tab on the band
+    }));
+
   // Task 7's re-check: the spans are stepped through by their starts, but laid in their own order, a later over an earlier,
   // so the red span given second lies over the green one inside it.
   it("lays a later span over an earlier one that starts after it", () =>
