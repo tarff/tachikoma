@@ -1,14 +1,17 @@
 import type { ForegroundColorName } from "chalk";
 import { createContext } from "react";
 import type { Settings } from "../settings.js";
+import { hyperlinks } from "./links.js";
 
 // The one palette every component takes its colours from (TUI design pass, design's "Colour and themes"; plan, Task 1).
 
-// What the terminal can show: a light background or a dark one, any colour, and full (24-bit) colour.
+// What the terminal can show: a light background or a dark one, any colour, and full (24-bit) colour. `links` is there
+// only where the terminal takes OSC 8 links (clickable links plan, Task 1).
 export interface Look {
   light: boolean;
   color: boolean;
   full: boolean;
+  links?: true;
 }
 
 // A colour Ink's `color` and `backgroundColor` take: a hex colour or one of chalk's names. Never a role (Role, below),
@@ -35,12 +38,15 @@ export type Role = "accent" | "muted" | "success" | "error" | "warning";
 // `level` is chalk's (0 to 3), the check Ink itself uses. NO_COLOR set to anything non-empty is no colour (no-color.org),
 // which Tachikoma checks itself, as chalk's check does not. In auto, COLORFGBG ("foreground;background", which some
 // terminals set) with a background of 7 or 15 is light; unset, empty or not those numbers is dark, as on Windows Terminal.
-export function look(settings: Settings, env: NodeJS.ProcessEnv, level: number): Look {
+// `tty` is whether the output is a terminal, for hyperlinks() (links.ts; clickable links plan, Task 1).
+export function look(settings: Settings, env: NodeJS.ProcessEnv, level: number, tty = false): Look {
   const color = !env.NO_COLOR && level > 0;
   const theme = settings.theme ?? "auto";
   const background = env.COLORFGBG?.split(";").at(-1);
   const light = theme === "light" || (theme === "auto" && (background === "7" || background === "15"));
-  return { light, color, full: color && level === 3 };
+  const shown: Look = { light, color, full: color && level === 3 };
+  if (hyperlinks(env, tty, level)) shown.links = true;
+  return shown;
 }
 
 // The hex colours for full colour. accent is the pixel art's blue B (plan, appendix "The pixel art"), the design's
@@ -90,9 +96,9 @@ export interface Theme {
 }
 
 // The theme cli.tsx draws the App and the screens drawn alone in: the look from the settings, the environment and chalk's
-// level, with its palette (Task 13's code review).
-export function themeOf(settings: Settings, env: NodeJS.ProcessEnv, level: number): Theme {
-  const shown = look(settings, env, level);
+// level, with its palette (Task 13's code review). `tty` goes on to look() for its links (clickable links, Task 1).
+export function themeOf(settings: Settings, env: NodeJS.ProcessEnv, level: number, tty = false): Theme {
+  const shown = look(settings, env, level, tty);
   return { look: shown, palette: palette(shown) };
 }
 
