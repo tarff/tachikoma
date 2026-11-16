@@ -890,8 +890,12 @@ if (parsed.print !== undefined) {
   };
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();
   // The look from the launch's settings (TUI design pass, Task 1), the colour depth as Ink's own check gives it.
-  const tty = process.stdout.isTTY === true;
-  const { look: shown, palette: colours } = themeOf(loaded.settings, process.env, chalk.level, tty);
+  const { look: shown, palette: colours } = themeOf(
+    loaded.settings,
+    process.env,
+    chalk.level,
+    process.stdout.isTTY === true,
+  );
   // Before the first frame, which shows it, in the start-up box and the App. In the box a read that fails (Docker
   // unreachable) is no branch, so it cannot end the launch; the tools say what failed when used (release 7 plan, Task 14's
   // review).

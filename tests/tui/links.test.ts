@@ -31,7 +31,7 @@ describe("hyperlinks", () => {
     expect(on({ WT_SESSION: "x" }, "linux", 3, false)).toBe(false);
   });
 
-  it("on Windows, is on in Windows Terminal and ghostty only", () => {
+  it("on win32, skips supports-hyperlinks' terminal checks: Windows Terminal on; console, vscode, WezTerm off", () => {
     expect(on({ WT_SESSION: "x" }, "win32")).toBe(true);
     expect(on({}, "win32")).toBe(false); // the old console sets none of the variables
     // supports-hyperlinks' Windows build returns before its TERM_PROGRAM checks
@@ -52,6 +52,12 @@ describe("hyperlinks", () => {
     expect(on({ VTE_VERSION: "5001" })).toBe(true); // reads as 0.50.1
     expect(on({ VTE_VERSION: "0.49.0" })).toBe(false);
     expect(on({ TERM: "alacritty" })).toBe(true);
+    expect(on({ VTE_VERSION: "601" })).toBe(false); // reads as 0.6
+  });
+
+  it("takes NETLIFY before the colour check, and stops at TEAMCITY_VERSION as at CI", () => {
+    expect(on({ NETLIFY: "true" }, "linux", 0)).toBe(true);
+    expect(on({ TEAMCITY_VERSION: "2024.1", TERM_PROGRAM: "vscode", TERM_PROGRAM_VERSION: "1.90.0" })).toBe(false);
   });
 
   it("in CI or with no colour, skips supports-hyperlinks' terminals but not Claude Code's list", () => {

@@ -15,7 +15,9 @@ function parseVersion(value = ""): { major: number; minor: number } {
 }
 
 // supports-hyperlinks v3.2.0, from its NETLIFY check on, without its command-line flags (plan, decision 1); chalk's
-// `level` stands in for its supports-color check. Only its yes is used: Claude Code's `cw` goes on after its no.
+// `level` stands in for its supports-color check. Its TTY check is left out, as hyperlinks() makes it first (plan,
+// decision 2), so NETLIFY with output that is not a terminal is no. Only its yes is used: Claude Code's `cw` goes on
+// after its no.
 function supportsHyperlink(env: NodeJS.ProcessEnv, level: number, platform: NodeJS.Platform): boolean {
   if (env.NETLIFY) return true;
   if (level === 0) return false;
