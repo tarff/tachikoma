@@ -29,9 +29,10 @@ export function systemPrompt(
 ): string {
   const { setup } = o;
   const box = setup.sandbox !== "off";
-  const kind = o.lead.slice(0, o.lead.indexOf(":"));
-  // Windows PowerShell's own `curl` is Invoke-WebRequest (design, "The web").
-  const curl = !box && platform === "win32" ? "curl.exe" : "curl";
+  const kind = o.lead.split(":")[0]!;
+  // Windows PowerShell's own `curl` is Invoke-WebRequest (design, "The web"). The box's image has no curl
+  // (sandbox/Dockerfile), so the box names python3 or node (the user's choice, Task 2's code review).
+  const fetcher = box ? "python3 or node" : platform === "win32" ? "curl.exe" : "curl";
   return [
     "You are Tachikoma, a coding agent working in the user's terminal.",
     `Today's date is ${o.date}.`,
@@ -48,7 +49,7 @@ export function systemPrompt(
     // "Of its own": an MCP server can offer a web tool. "Shell commands": MCP servers run outside the box (design).
     setup.sandbox !== "off" && setup.network === "off"
       ? "The sandbox has no network, so shell commands cannot reach the web."
-      : `Tachikoma has no web tool of its own, but shell commands can fetch web pages, such as with ${curl}.`,
+      : `Tachikoma has no web tool of its own, but shell commands can fetch web pages, such as with ${fetcher}.`,
     // Says who decides (design, "Approvals": Gemini CLI's fix), keeping the refusal rule; it promises no question, as
     // -p and never refuse what would ask and auto's judge decides (user's choice, the plan's review).
     "Use tools without asking first. Tachikoma decides whether a risky action may run, asking the user when it can, " +

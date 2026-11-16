@@ -87,10 +87,11 @@ Each line, and what it is for:
 - **No input** (cut): the line keeps its first half; "Start a server or a watcher with background: true." goes, as the
   shell tool's description says it (choice 3; it was background commands choice 30).
 - **The web** (new, fixes 15fe6fd5): "of its own", as an MCP server can offer a web tool, directly or through
-  tool_search (review finding 4). `curl.exe` on Windows, where `curl` is PowerShell's own command; `curl` with bash. In
-  the sandbox with its network off the line is instead "The sandbox has no network, so shell commands cannot reach the
-  web." ("shell commands": MCP servers run outside the box; a failed command there already gets the network note,
-  release 7 plan choice 21).
+  tool_search (review finding 4). `curl.exe` on Windows, where `curl` is PowerShell's own command; `curl` on macOS and
+  Linux. In the sandbox with its network on the line names python3 or node instead, as the box's image has no curl
+  (Task 2's code review; the user's choice); with its network off the line is instead "The sandbox has no network, so
+  shell commands cannot reach the web." ("shell commands": MCP servers run outside the box; a failed command there
+  already gets the network note, release 7 plan choice 21).
 - **Approvals** (reworded): "Call tools directly. Risky actions need the user's approval" could be read as "ask in chat
   first" (Gemini CLI's fix, in the report). The new words say who decides, and keep the refusal rule. Not "asks the
   user before risky actions" (the plan's review, 2026-11-17; the user chose this wording): in `-p` and `never` an

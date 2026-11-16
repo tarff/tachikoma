@@ -59,14 +59,17 @@ describe("systemPrompt", () => {
     );
   });
 
-  // Release 7 plan, choice 19: in the box the model sees /work and bash, whatever the host; curl, not curl.exe.
-  it("names the box's folder, its shell and curl with the network on", () => {
-    const lines = systemPrompt(at({ sandbox: "live", network: "on", git: "repo" }, "/work"), "win32").split("\n");
+  // Release 7 plan, choice 19: in the box the model sees /work and bash, whatever the host; python3 or node, as the
+  // box's image has no curl (sandbox/Dockerfile; the user's choice, Task 2's code review).
+  it("names the box's folder, its shell and python3 or node with the network on", () => {
+    const prompt = systemPrompt(at({ sandbox: "live", network: "on", git: "repo" }, "/work"), "win32");
+    const lines = prompt.split("\n");
     expect(lines).toContain("The project root is /work. File paths are relative to it.");
     expect(lines).toContain("Shell commands run with bash on linux.");
     expect(lines).toContain(
-      "Tachikoma has no web tool of its own, but shell commands can fetch web pages, such as with curl.",
+      "Tachikoma has no web tool of its own, but shell commands can fetch web pages, such as with python3 or node.",
     );
+    expect(prompt).not.toContain("curl");
   });
 
   it("says the box has no network when it is off, and names no curl", () => {
@@ -101,6 +104,10 @@ describe("systemPrompt", () => {
       "openrouter:x/y",
     ];
     expect(new Set(leads.map((lead) => systemPrompt(at(OFF, "C:\\proj", lead), "win32"))).size).toBe(1);
+    // An id with no colon is its own kind, whole.
+    expect(systemPrompt(at(OFF, "C:\\proj", "lead"), "win32")).toBe(
+      systemPrompt(at(OFF, "C:\\proj", leads[0]!), "win32"),
+    );
   });
 
   it("does not promise that someone will be asked", () => {
