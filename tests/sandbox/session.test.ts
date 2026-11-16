@@ -110,8 +110,8 @@ function headless(started: Started, host: string, lead: FakeProvider, judge: Fak
   // The box's shell tool, made as cli.tsx makes it over a task list (background commands plan, Task 5).
   const tasks = new Tasks({ bus, max: 8, worker: () => lead, system: started.subagentSystem, tools: [], ctx });
   const tools = [...TOOLS, ...shellTools(tasks, { shell: "bash", headless: true })];
-  // The lead's prompt as cli.tsx builds it in the box (system prompt plan, Task 2), with the setup found for the host's
-  // folder, so the real lookup runs in a real box.
+  // The lead's prompt as cli.tsx builds it in the box (system prompt plan, Task 2), so the setup is found the real way,
+  // from the host's project folder of a real box's session.
   const setup = setupOf(host, "live", "off");
   const system = systemPrompt({ root, date: localDate(), setup, lead: lead.id });
   const session: Session = new Session({ lead, tools, system, ctx, bus });
