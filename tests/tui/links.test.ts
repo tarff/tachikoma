@@ -162,6 +162,12 @@ describe("urls", () => {
     expect(found("<https://x.y/a>.")).toEqual(["https://x.y/a"]);
     expect(found('"https://x.y/a","b"')).toEqual(["https://x.y/a"]);
     expect(found("`https://x.y`")).toEqual(["https://x.y"]);
+    // marked's rule sees the text only up to the next of them (the re-check), so an e-mail, mailto, xmpp or ftp token
+    // beside one is still taken whole
+    for (const text of ['"help@www.example.org"', 'mailto:a@www.b.com"x', "xmpp:a@www.b.com/r\\x", "<a.b@www.c.d>",
+      '"ftp://www.q.r"', "`a@www.b.com`"]) {
+      expect(urls(text), text).toEqual([]);
+    }
   });
 
   it("gives each address its place and the address it opens", () => {
@@ -187,6 +193,18 @@ describe("urls", () => {
       const start = performance.now();
       expect(urls(text)).toEqual([]);
       expect(performance.now() - start, `${text.length} characters`).toBeLessThan(500);
+    }
+  });
+
+  it("reads a long line of addresses with no spaces quickly", () => {
+    // Task 2's code review re-check: cutting marked's token at a STOP character after it had read on to the next space
+    // read the rest again from each address, 8,000 in one-line JSON 1,082 ms and 50,000 joined by backslashes 8.3 s
+    const json = JSON.stringify(Array.from({ length: 8_000 }, (_, id) => ({ id, url: `https://x.y/${id}` })));
+    const slashed = Array.from({ length: 50_000 }, (_, id) => `https://x.y/${id}`).join("\\");
+    for (const [text, n] of [[json, 8_000], [slashed, 50_000]] as const) {
+      const start = performance.now();
+      expect(urls(text)).toHaveLength(n);
+      expect(performance.now() - start, `${n} addresses`).toBeLessThan(500);
     }
   });
 });

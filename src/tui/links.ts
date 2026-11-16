@@ -103,7 +103,7 @@ const { url: URL_RULE, _backpedal: BACKPEDAL } = Lexer.rules.inline.gfm;
 // an <address> in plain text; ` ends inline code written in plain text; ⏎ ␍ ⇥ are visible()'s line break, carriage
 // return and a one-line entry's tab. `{}|^` and `]` are left out: `|` is in some real addresses, and the others are
 // rare or refused by target().
-const STOP = /[\\"<>`⏎␍⇥]/;
+const STOP = /[\\"<>`⏎␍⇥]/g;
 
 // The web addresses in a text, as marked finds them in a reply's text (plan, "The design"): each whole token marked's
 // rule takes, its trailing punctuation dropped as marked's url() drops it unless it is an e-mail, so an e-mail, ftp,
@@ -114,16 +114,23 @@ const STOP = /[\\"<>`⏎␍⇥]/;
 export function urls(text: string): { start: number; end: number; link: string }[] {
   const found: { start: number; end: number; link: string }[] = [];
   const start = new RegExp(START); // its own lastIndex
+  const stops = new RegExp(STOP);
+  // The first STOP character at or after the search's place, found once for every start before it, marked's rule given
+  // only the text up to it: cutting its token afterwards read the rest again from each address (Task 2's code review
+  // re-check: 8,000 addresses in one-line JSON 1,082 ms).
+  let stop = -1;
   for (let m = start.exec(text); m; m = start.exec(text)) {
-    const cap = URL_RULE.exec(text.slice(m.index));
+    if (stop < m.index) {
+      stops.lastIndex = m.index;
+      stop = stops.exec(text)?.index ?? text.length;
+    }
+    const cap = URL_RULE.exec(text.slice(m.index, stop));
     if (!cap) {
       start.lastIndex = m.index + 1;
       continue;
     }
     let token = cap[0];
     if (cap[2] !== "@") {
-      const cut = token.search(STOP);
-      if (cut >= 0) token = token.slice(0, cut);
       for (let before = ""; before !== token; ) {
         before = token;
         token = BACKPEDAL.exec(token)?.[0] ?? "";
