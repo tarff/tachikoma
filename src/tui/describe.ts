@@ -9,7 +9,7 @@ import type { Ran } from "../hooks/run.js";
 import { isMcp, outputFrom, tachikomaName } from "../hooks/tools.js";
 import { shownPath } from "../tools/search.js";
 import type { Fold, OpenRun } from "./fold.js";
-import { markdownLines } from "./markdown.js";
+import { led, markdownLines } from "./markdown.js";
 import { marker } from "./pictures.js";
 import type { Colour, Palette, Role } from "./theme.js";
 
@@ -211,16 +211,11 @@ const LEAD = 2;
 function replyLines(text: string, width: number, palette: Palette): Line[] {
   const drawn = markdownLines(text, width - LEAD, palette);
   return (drawn.length ? drawn : [{ text: "" }]).map((l, k) => {
-    const lead = k === 0 ? "● " : l.text === "" ? "" : "  ";
-    const styles = [...(k === 0 ? [dot(palette.accent)] : []), ...(l.styles ?? []).map((s) => ({ ...s, start: s.start + lead.length, end: s.end + lead.length }))];
-    return {
-      ...l,
-      text: lead + l.text,
-      ...(styles.length ? { styles } : {}),
-      ...(l.oneLine || lead === "" ? {} : { indent: LEAD + (l.indent ?? 0) }),
-      ...(l.band ? { bandFrom: LEAD + (l.bandFrom ?? 0) } : {}), // the band under the text, an empty line's too
-      ...(k === 0 ? { block: true as const } : {}),
-    };
+    // As a list's lead goes before its item's lines (markdown.ts, led; Task 16's code review).
+    const line = led(l, k === 0 ? "● " : "  ", k === 0 ? palette.accent : undefined);
+    if (k > 0) return line;
+    // led() takes an empty line's lead without its trailing space; an empty first line keeps `● `, as before.
+    return { ...line, ...(l.text === "" ? { text: "● ", styles: [dot(palette.accent)], indent: LEAD } : {}), block: true as const };
   });
 }
 

@@ -408,6 +408,9 @@ describe("describe's blocks and markers", () => {
       { text: "● Done.", styles: [accent], indent: 2, block: true },
       { text: "  All of it.", indent: 2 },
     ]);
+    // A reply that draws nothing is `● ` alone, as before Task 16.
+    const empty: Message = { role: "assistant", parts: [{ type: "text", text: "" }] };
+    expect(describeMessage(empty, P, W)).toEqual([{ text: "● ", styles: [accent], indent: 2, block: true }]);
   });
 
   // Choice P2: the dot is the accent colour on every call row, as a printed row cannot change; its result row says how it

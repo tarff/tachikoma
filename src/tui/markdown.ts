@@ -112,8 +112,9 @@ const rawLines = (raw: string): Line[] =>
 
 // The line with `lead` before its text, in `color` where given; a wrapped row starts after it. An empty line takes the
 // lead without its trailing spaces, so a copy has none. A code line's band starts after the whole lead, an empty one's
-// too, where the code's text starts (Task 16's spec review, the user's choice: "Band from the text").
-function led(l: Line, lead: string, color?: Colour): Line {
+// too, where the code's text starts (Task 16's spec review, the user's choice: "Band from the text"). Exported, as a
+// reply's lead is put before its lines the same way (describe.ts, replyLines; Task 16's code review).
+export function led(l: Line, lead: string, color?: Colour): Line {
   const shown = l.text === "" ? lead.trimEnd() : lead;
   const styles = [...styled(0, shown.length, { color }), ...(l.styles ?? []).map((s) => ({ ...s, start: s.start + shown.length, end: s.end + shown.length }))];
   return {
