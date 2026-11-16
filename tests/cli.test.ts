@@ -865,9 +865,10 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     return { proj, data, dir: sessionsDir(proj, data) };
   }
   const at = "2026-11-06T00:00:00.000Z";
+  // Saved under today's date and the launch's setup, so a resume finds no note due (system prompt plan, Task 6).
   const start = (id: string, lead = "openai:lead") => ({
     t: "start", at, v: 1, id, project: "p", lead, version: "0.8.0", print: false, system: "Saved prompt.",
-    tools: [],
+    tools: [], date: localDate(), setup: { sandbox: "off", git: "none" },
   });
   const message = (role: "user" | "assistant", text: string) => ({ t: "message", at, message: { role, parts: [{ type: "text", text }] } });
   const write = (dir: string, id: string, lines: object[], tail = "") => {

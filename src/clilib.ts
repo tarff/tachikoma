@@ -11,6 +11,7 @@ import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/perm
 import { subagentPrompt } from "./core/prompt.js";
 import { type Conversation, type Ended, Session, type SessionOptions } from "./core/session.js";
 import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
+import { localDate, sameSetup } from "./core/setup.js";
 import type { CommandTask, Tasks } from "./core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "./core/transcript.js";
 import { errorText, madeUnder, type Message, type Setup, type ToolSpec } from "./core/types.js";
@@ -754,6 +755,13 @@ const NEEDS_TERMINAL = "tachi --resume needs a terminal to list sessions; give i
 // another sandbox setting (resumed), and -r's when more than one session has the name it was given.
 const SANDBOX_CHANGED = "The sandbox setting has changed since this session was saved, so the model is told this launch's shell and project folder";
 const SHARED_NAME = (n: number, name: string) => `${n} sessions are named ${name}; give one's id instead (tachi --resume lists them in a terminal).`;
+// Approved by the user with the system prompt plan (choice 2 (c)): a resume's line when the box's mode or network
+// changed, and when a session saved in the sandbox before they were recorded is opened in the sandbox (resumed).
+const SETUP_CHANGED =
+  "The sandbox's setup has changed since this session was saved, so the model is told this launch's setup";
+const SETUP_UNKNOWN =
+  "This session was saved before Tachikoma recorded the sandbox's mode and network, so the model is told this " +
+  "launch's setup";
 
 // Which saved session a launch opens (release 8a design, "Resuming"; plan, choices 9, 11 and 12): `-c` the newest, with
 // -p the newest -p run; `-r <id or name>` that one, or the list of the sessions a name belongs to; `-r` alone the list,
@@ -797,13 +805,33 @@ export interface Opened {
 // A new session's transcript, its start line first, then its name, then its lock (release 8a plan, choices 4 and 8).
 // The start line makes the sessions folder private, so the folder is there before the lock's file is made in it. When it
 // cannot be written, the session goes on unsaved and takes no lock; Session.load says so in the "Saving fails" line.
-export function newSaved(dir: string, start: Omit<Extract<Line, { t: "start" }>, "t" | "at" | "v" | "box"> & { box: boolean }, name?: string): Opened {
+// It records the launch's date and setup, `box` too, so an older Tachikoma still reads the sandbox setting, and the
+// conversation starts having told the model them (system prompt plan, Task 6; decision 4).
+export function newSaved(
+  dir: string,
+  start: Omit<Extract<Line, { t: "start" }>, "t" | "at" | "v" | "box" | "date" | "setup"> & {
+    date: string;
+    setup: Setup;
+  },
+  name?: string,
+): Opened {
   const { file, pictures } = sessionPaths(dir, start.id);
   const transcript = new Transcript(file, pictures);
-  transcript.write({ t: "start", v: 1, ...start });
+  transcript.write({ t: "start", v: 1, ...start, box: start.setup.sandbox !== "off" });
   if (name) transcript.write({ t: "name", name });
   const lock = transcript.failed ? null : openSession(dir, start.id);
-  const conversation = { id: start.id, messages: [], system: start.system, transcript, prompts: [], calls: [], nextPicture: 1, nextTask: 1, tools: start.tools };
+  const conversation = {
+    id: start.id,
+    messages: [],
+    system: start.system,
+    transcript,
+    prompts: [],
+    calls: [],
+    nextPicture: 1,
+    nextTask: 1,
+    tools: start.tools,
+    told: { date: start.date, setup: start.setup },
+  };
   return { conversation, lines: [], lost: [], reported: () => {}, release: () => lock?.release() };
 }
 
@@ -872,20 +900,24 @@ export function openSaved(dir: string, id: string, o: { fork: boolean; copy?: st
 // the lost lines have been handed to the model (`reported`), each one told is marked, so it is reported once (user,
 // 2026-11-06: "Report once"): a subagent by a `lost` line in its own file, a command that had not ended by a
 // `command-ended` line in this session's transcript (background commands plan, choice 15). A session saved under
-// another sandbox setting than this launch's, `prompt.box`, has a system prompt naming another shell and project root,
-// so this launch's, `prompt.full`, takes its place and is written in a `system` line, the replies keeping their
-// thinking only under it (release 8a final review, user, 2026-11-07: "Rebuild it", "Save the setting"). The setting is
-// compared, not the prompt, whose root is the folder as typed. A -p run opened in the window becomes a session as any
+// another setup than this launch's, `prompt.setup`, has a system prompt naming another shell and project root, or
+// another sandbox mode or network, so this launch's, `prompt.full`, takes its place and is written in a `system` line
+// with the setup, the replies keeping their thinking only under it (release 8a final review, user, 2026-11-07:
+// "Rebuild it", "Save the setting"). The setup is compared, the sandbox setting and its network (system prompt plan,
+// Task 6), not the prompt, whose root is the folder as typed. A -p run opened in the window becomes a session as any
 // other, in -c and the list (same: "Becomes normal").
 export function resumed(
   s: Saved,
-  o: { tools: ToolSpec[]; lead: string; name?: string; prompt: { box: boolean; full: string }; interactive: boolean },
+  o: { tools: ToolSpec[]; lead: string; name?: string; prompt: { setup: Setup; full: string }; interactive: boolean },
 ): Opened {
   const { read, transcript } = s;
   if (o.name) transcript.write({ t: "name", name: o.name });
   if (o.lead !== read.lead) transcript.write({ t: "lead", lead: o.lead });
-  const rebuilt = (read.setup.sandbox !== "off") !== o.prompt.box;
-  if (rebuilt) transcript.write({ t: "system", system: o.prompt.full, box: o.prompt.box });
+  const rebuilt = !sameSetup(read.setup, o.prompt.setup);
+  if (rebuilt) {
+    const box = o.prompt.setup.sandbox !== "off";
+    transcript.write({ t: "system", system: o.prompt.full, box, setup: o.prompt.setup });
+  }
   if (o.interactive && read.print) transcript.write({ t: "interactive" });
   const system = rebuilt ? o.prompt.full : read.system;
   // Each in the subagents folder, as tasks.ts names a subagent's file, made inside the private sessions folder; an id
@@ -911,6 +943,15 @@ export function resumed(
   const { messages, dropped } = read.withTools(read.tools, system);
   const own = (tools: ToolSpec[]) => madeUnder("", tools.filter((t) => t.name !== SEARCH && !t.name.startsWith("mcp__")));
   const otherTools = own(read.tools) !== own(o.tools) && messages.some((m) => m.native?.provider === "anthropic");
+  // Which words say why the prompt was rebuilt (system prompt plan, choice 2): the sandbox went on or off; the box's
+  // mode or network changed; or a session saved before the setup was recorded, whose earlier mode and network are not
+  // known, opened in the sandbox.
+  const why =
+    (read.setup.sandbox === "off") !== (o.prompt.setup.sandbox === "off")
+      ? SANDBOX_CHANGED
+      : read.setup.sandbox === "on"
+        ? SETUP_UNKNOWN
+        : SETUP_CHANGED;
   const lines = [
     ...(s.copied ? [{ text: "Opened a copy: that session is open in another window." }] : []),
     { text: `Resumed: ${o.name || read.name || read.firstPrompt?.split(/\r?\n/)[0] || s.id}.`, oneLine: true },
@@ -919,7 +960,7 @@ export function resumed(
     // leave out; a later resume leaves out the same replies' thinking without a word (user, 2026-11-07: "Only at the
     // change").
     ...(rebuilt
-      ? [{ text: SANDBOX_CHANGED + (dropped ? ", and its earlier replies are sent without their thinking." : ".") }]
+      ? [{ text: why + (dropped ? ", and its earlier replies are sent without their thinking." : ".") }]
       : otherTools
         ? [{ text: "The tools have changed since this session was saved, so its earlier replies are sent without their thinking." }]
         : []),
@@ -937,6 +978,7 @@ export function resumed(
       loaded: read.loaded, // a resume's and /branch's (release 8c plan, choice 41)
       asked: read.asked, // so its rows fold as they did live (Task 15)
       tools: read.tools, // the tools saved last, which its replies were made under (Task 6b's quality review; choice 46)
+      told: read.told, // what the model was told, for the notes (system prompt plan, Task 6)
     },
     lines,
     // A command cut as every first line naming one cuts it (background commands plan, choice 24).
@@ -967,7 +1009,7 @@ export class WindowSessions {
   constructor(
     readonly dir: string,
     readonly start: { project: string; version: string; tools: ToolSpec[] },
-    readonly prompt: { box: boolean; full: string },
+    readonly prompt: { setup: Setup; full: string },
     open?: Opened,
   ) {
     this.#open = open;
@@ -982,9 +1024,11 @@ export class WindowSessions {
     return now;
   }
 
-  // /clear's session: a new one under a fresh id, as the launch starts one.
+  // /clear's session: a new one under a fresh id, as the launch starts one, under the launch's setup until Task 8 of
+  // the system prompt plan gives it the fresh prompt's.
   fresh(lead: string, system: string): Opened {
-    return newSaved(this.dir, { id: randomUUID(), ...this.start, lead, print: false, system, box: this.prompt.box });
+    const begin = { id: randomUUID(), ...this.start, lead, print: false, system };
+    return newSaved(this.dir, { ...begin, date: localDate(), setup: this.prompt.setup });
   }
 
   // /resume's pick, opened as the launch opens it, a copy when another window holds it. `lead` is given the session's

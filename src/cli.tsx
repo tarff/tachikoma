@@ -731,18 +731,36 @@ const tools = [
 // opened above, or its copy. Its lines are said before the conversation is loaded, and the error log's rows carry its id.
 const specs = tools.map((t) => t.spec);
 const name = parsed.name?.trim() || undefined;
+// The launch's prompt and the setup it was built under, which a resume compares with the saved one's (system prompt
+// plan, Task 6).
+const launchPrompt = { setup: launchSetup, full: system };
 const opened = saved
-  ? resumed(saved, { tools: specs, lead: lead.id, ...(name ? { name } : {}), prompt: { box: box !== undefined, full: system }, interactive })
+  ? resumed(saved, { tools: specs, lead: lead.id, ...(name ? { name } : {}), prompt: launchPrompt, interactive })
   : newSaved(
       sessions,
-      { id: sessionId, project: root, lead: lead.id, version: VERSION, print: !interactive, system, box: box !== undefined, tools: specs },
+      {
+        id: sessionId,
+        project: root,
+        lead: lead.id,
+        version: VERSION,
+        print: !interactive,
+        system,
+        date: today,
+        setup: launchSetup,
+        tools: specs,
+      },
       name,
     );
 const said = [...opened.lines, ...(leadLine ? [{ text: leadLine }] : [])].map((l) => ({ ...l, text: visible(l.text) }));
 // The subagents a crash cut short, and the background commands that had not ended (background commands plan, choice 15),
 // reach the model with its next request, as waiting answers do (release 8a design, "Resuming"), and are marked reported
 // once handed out: the window's session's, which /clear, /resume and /branch switch (release 8a plan, Task 7).
-const windowSessions = new WindowSessions(sessions, { project: root, version: VERSION, tools: specs }, { box: box !== undefined, full: system }, opened);
+const windowSessions = new WindowSessions(
+  sessions,
+  { project: root, version: VERSION, tools: specs },
+  launchPrompt,
+  opened,
+);
 const { session, pictures } = leadSession({
   lead,
   fallback,

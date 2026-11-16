@@ -11,6 +11,7 @@ import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
 import { type Ask, Declined, type PermissionGate, StoppedFirst, visible } from "./permissions.js";
+import type { Told } from "./setup.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
@@ -167,6 +168,7 @@ export interface Conversation {
   loaded?: string[];
   tools?: ToolSpec[];
   asked?: string[]; // the calls the user was asked about, read back from the transcript (release 8c plan, Task 15)
+  told?: Told; // what the model was told, for the notes (system prompt plan, Task 7); none, no notes
 }
 
 export class Session {
