@@ -327,18 +327,24 @@ describe("Conversation's links", () => {
   it("draws a markdown link's text underlined and blue and its address blue between muted brackets, both linked", () =>
     coloured(() => {
       const P = palette(ON);
-      const line = screen({
+      const today = {
         text: "docs (https://x.y)",
         styles: [
           { start: 0, end: 4, underline: true },
           { start: 5, end: 18, color: P.muted! },
+        ],
+      };
+      const line = screen({
+        ...today,
+        styles: [
+          ...today.styles,
           { start: 0, end: 4, link: "https://x.y" },
           { start: 6, end: 17, link: "https://x.y" },
         ],
       });
-      const draw = (look: Look) => {
+      const draw = (look: Look, shown = line) => {
         const rows = new Rows(40);
-        rows.add([line]);
+        rows.add([shown]);
         return top(look, rows);
       };
       const on = draw(ON);
@@ -355,6 +361,20 @@ describe("Conversation's links", () => {
       expect(within(off, "4", "24")).toBe("docs");
       expect(within(off, "38;2;138;138;138", "39")).toBe("(https://x.y)");
       expect(off).not.toContain(ACCENT);
+      // Links off: today's frame, as for the line with only its underline and muted spans, so `docs` has no colour.
+      expect(off).toBe(draw(OFF, today));
+    }));
+
+  // Task 3's code review: a link's id starts with its kept line's index, so the same address on two lines is two links.
+  it("gives a link on each kept line an id of that line's index", () =>
+    coloured(() => {
+      const rows = new Rows(40);
+      rows.add([screen({ text: "https://x.y" }), screen({ text: "https://x.y" })]);
+      const shown = drawIn(ON, { rows, first: 0, height: 2, unseen: 0, following: true });
+      expect(shown.map(linksIn)).toEqual([
+        [{ id: "0-0", url: "https://x.y", text: "https://x.y" }],
+        [{ id: "1-0", url: "https://x.y", text: "https://x.y" }],
+      ]);
     }));
 
   it("links an address in inline code, in the accent as the code around it is", () =>
@@ -381,7 +401,9 @@ describe("Conversation's links", () => {
       expect(within(row, BLUE, "39")).toBe("https:");
     }));
 
-  it("copies a linked row's text alone", () => {
+  // A guard only: copying reads the kept lines' plain text, never what is drawn (app/mouse.ts, textOf), so this cannot
+  // see an escape; Task 4's App test checks a real drag's copy.
+  it("keeps a linked line's kept text plain, which a copy reads", () => {
     const rows = new Rows(40);
     rows.add([screen({ text: "go to https://x.y now" })]);
     expect(textOf(rows.lines, { line: 0, offset: 0 }, { line: 0, offset: 21 })).toBe("go to https://x.y now");
