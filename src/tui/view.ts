@@ -78,8 +78,13 @@ export function columnsAt(g: string, col: number, width: number): number {
 // not fit starts the next row. A word longer than a row starts on the row it is on, unless starting it on the next
 // row takes fewer rows, and is cut at each row's end. A character is never split (graphemes, with string-width's
 // columns). A space or tab that the segmenter joins with a mark after it (a combining mark, ZWJ, FE0F) is still a
-// place to break, with the joined character's columns.
-function starts(text: string, width: number): number[] {
+// place to break, with the joined character's columns. One departure (Task 17's captures, the user's choice,
+// 2026-11-16: "Fix it"): for the conversation's lines, given `edges`, a space with no room on its row, the word before
+// it ending at the edge, ends that row unseen, so the next row starts under the text, where wrap-ansi with trim: false
+// starts it with the space, a column further in; its place goes in `edges`, for classic mode to hand Ink a line break
+// there (edgeSpaces). A tab, or a space the line ends with, breaks as before, and so does all of wrap()'s text (the
+// question box's rows and the review screen's), which Ink wraps itself in classic.
+function starts(text: string, width: number, edges?: number[]): number[] {
   const segs = ASCII.test(text) ? null : [...segmenter.segment(text)];
   const widths = segs?.map((s) => columnsOf(s.segment));
   const n = segs ? segs.length : text.length;
@@ -94,6 +99,12 @@ function starts(text: string, width: number): number[] {
   };
   for (let k = 0; k < n; ) {
     if (blank(k)) {
+      if (edges && col > 0 && col >= width && (segs ? segs[k]!.segment : text[at(k)]) === " " && k + 1 < n) {
+        edges.push(at(k));
+        breakAt(at(k + 1));
+        k++;
+        continue;
+      }
       if (col > 0 && col >= width) breakAt(at(k));
       col += text[at(k)] === "\t" ? columnsAt("\t", col, width) : columns(k);
       k++;
@@ -122,20 +133,37 @@ function starts(text: string, width: number): number[] {
 // Where one line's first row at `width` columns ends: where starts() breaks it, a tab counted to its stop, which is where
 // Ink breaks it in classic mode once that row's tabs under a background are printed as those spaces (Conversation.tsx,
 // Printed; TUI design pass, Task 7's review).
-export const firstRowEnd = (text: string, width: number): number => starts(text, width)[1] ?? text.length;
+export const firstRowEnd = (text: string, width: number): number => starts(text, width, [])[1] ?? text.length;
 
-// What a row of text[start, end) shows: the text itself, with each tab as spaces to its stop, cut at `width`.
+// What a row of text[start, end) shows: the text itself, with each tab as spaces to its stop, cut at `width`; a space
+// ending the row unseen past its edge (starts(), Task 17's captures) is not drawn.
 function draw(text: string, start: number, end: number, width: number): string {
   const part = text.slice(start, end);
-  if (!part.includes("\t")) return part;
-  let shown = "";
-  let col = 0;
-  for (const { segment } of segmenter.segment(part)) {
-    const w = columnsAt(segment, col, width);
-    shown += segment === "\t" ? " ".repeat(w) : segment;
-    col += w;
+  let shown = part.includes("\t") ? "" : part;
+  if (part.includes("\t")) {
+    let col = 0;
+    for (const { segment } of segmenter.segment(part)) {
+      const w = columnsAt(segment, col, width);
+      shown += segment === "\t" ? " ".repeat(w) : segment;
+      col += w;
+    }
   }
-  return shown;
+  return shown.endsWith(" ") && (ASCII.test(shown) ? shown.length : stringWidth(shown)) > width ? shown.slice(0, -1) : shown;
+}
+
+// The places in `text` of the spaces that end a row unseen at `width` columns (starts()), each line of it wrapped on
+// its own: classic mode hands Ink a line break in each one's place, so its next row starts under the text, as full
+// screen draws it (Conversation.tsx, Printed; Task 17's captures, the user's choice: "Fix it").
+export function edgeSpaces(text: string, width: number): number[] {
+  const out: number[] = [];
+  let at = 0;
+  for (const line of text.split("\n")) {
+    const edges: number[] = [];
+    starts(line, width, edges);
+    out.push(...edges.map((e) => e + at));
+    at += line.length + 1;
+  }
+  return out;
 }
 
 // One line's rows at `width` columns: where each starts and ends in the line's text, covering it without gaps, and what
@@ -204,9 +232,9 @@ export const inner = (width: number, indent: number) => Math.max(1, width - inde
 // width less the indent, so its first row takes the lead and as much as the full width has room for, and every later row
 // starts under that; it is what classic mode's row box (Conversation.tsx, Printed) wraps alike.
 function rowStarts(l: KeptLine, width: number): number[] {
-  if (!l.indent) return starts(l.text, width);
+  if (!l.indent) return starts(l.text, width, []);
   const lead = l.lead ? Math.min(l.indent, l.text.length) : 0;
-  const found = starts(l.text.slice(lead), inner(width, l.indent)).map((s) => s + lead);
+  const found = starts(l.text.slice(lead), inner(width, l.indent), []).map((s) => s + lead);
   found[0] = 0;
   return found;
 }

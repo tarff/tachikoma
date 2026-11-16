@@ -3516,6 +3516,23 @@ describe("App's replies as markdown", () => {
     }
   });
 
+  // Task 17's captures, the user's choice (2026-11-16, "Fix it"): a word ending exactly at the edge leaves the next
+  // row starting under the text in both modes, prose and code alike; a code line's own leading spaces stay; a copy
+  // keeps the space at the break.
+  it.each([true, false])("starts the row after a word ending at the edge under a reply's text, as markdown (full screen: %s)", async (full) => {
+    const a = "a".repeat(full ? 97 : 98); // after "● ", to the edge: 99 columns in full screen, 100 in classic
+    const { app, mouse, copies } = await mount([reply(`${a} bbb\n\n\`\`\`\n${a} ccc\n    kept in\n\`\`\``)], { full });
+    await type(app, "go");
+    await until(app, "kept in");
+    const r = rows(app, full);
+    const first = r.indexOf(`● ${a}`);
+    expect(r.slice(first, first + 6)).toEqual([`● ${a}`, "  bbb", "", `  ${a}`, "  ccc", "      kept in"]);
+    if (full) {
+      await pointer(mouse, at("press", 0, first), at("drag", 98, first + 1), at("release", 98, first + 1));
+      expect(copies).toEqual([`● ${a} bbb`]);
+    }
+  });
+
   // Task 16's code review: a code block's tabs are drawn as the spaces to their stops, counted from the band's start,
   // in both modes, no row wider than the screen; a copy keeps the tabs, as a Makefile's recipe needs them.
   const GO = "```go\n\tif x {\n\t\tfmt.Println(1)\n\t}\n```";
@@ -5026,7 +5043,9 @@ describe("App's selecting and copying in full screen", () => {
       await pointer(mouse, at("press", 2, 0), at("drag", 80, 0), at("release", 80, 0));
       expect(copies).toEqual([long.slice(2, 81)]);
       await narrow(app);
-      expect(reversed(app).slice(0, 20).join("")).toBe(long.slice(2, 81)); // now over two rows
+      // Now over two rows, the first ending at the 49th column with a word, so the space after it ends that row unseen
+      // (Task 17's captures, "Fix it"): selected and copied, but not drawn.
+      expect(reversed(app).slice(0, 20).join("")).toBe(`${long.slice(2, 49)}${long.slice(50, 81)}`);
     });
   });
 

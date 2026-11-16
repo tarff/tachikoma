@@ -5,7 +5,7 @@ import { segmenter } from "./editor.js";
 import type { Found } from "./find.js";
 import { drawn, ordered } from "./select.js";
 import { ThemeContext } from "./theme.js";
-import { bar, columnsAt, columnsOf, firstRowEnd, inner, type Pos, type Row, type Rows } from "./view.js";
+import { bar, columnsAt, columnsOf, edgeSpaces, firstRowEnd, inner, type Pos, type Row, type Rows } from "./view.js";
 
 // The conversation in full screen (release 5 design, "The screen", "Scrolling"): `height` rows from `first`, each in its
 // line's colour, then blank rows, so what is drawn under it stays at the bottom of the screen; a view held past the
@@ -204,13 +204,23 @@ export function Printed({ line, columns }: { line: Line; columns: number }) {
   // so it pads the band's row past the screen's edge, and a band from a column must start its tabs' stops there, as
   // full screen does (Task 16's code review). The text keeps its tabs, so a copy has them.
   const bandTabs = (from: number, to: number, width?: number) => width !== undefined && l.band === true && l.text.slice(from, to).includes("\t");
+  // A space that ends a row unseen at the box's edge (view.ts, edgeSpaces) is handed to Ink as a line break, so the
+  // next row starts under the text, as full screen draws it, where wrap-ansi with trim: false would start it with the
+  // space (Task 17's captures, the user's choice, 2026-11-16: "Fix it"). The text keeps the space, so a copy has it.
+  const edges = (from: number, to: number, width?: number): ReadonlySet<number> =>
+    new Set(width === undefined || l.oneLine ? [] : edgeSpaces(l.text.slice(from, to), width).map((e) => e + from));
   const chars = (from: number, to: number, width?: number) => {
     const tabs = width !== undefined && (look.color || l.band === true) && l.text.slice(from, to).includes("\t");
+    const breaks = edges(from, to, width);
     const out: { offset: number; text: string; inverse: boolean; spaces?: string }[] = [];
     let col = 0;
     let end = to; // where the first row of the line the character is on ends
     for (const { segment, index } of segmenter.segment(l.text.slice(from, to))) {
       const at = from + index;
+      if (breaks.has(at)) {
+        out.push({ offset: at, text: "\n", inverse: false });
+        continue;
+      }
       if (!tabs) {
         out.push({ offset: at, text: segment, inverse: false });
         continue;
@@ -229,9 +239,19 @@ export function Printed({ line, columns }: { line: Line; columns: number }) {
   };
   const text = (from: number, to: number, width?: number) => (
     <Text color={l.color && palette[l.color]} wrap={l.oneLine ? "truncate-end" : "wrap"}>
-      {l.styles || bandTabs(from, to, width) ? runs(chars(from, to, width), l.styles) : l.text.slice(from, to)}
+      {l.styles || bandTabs(from, to, width) ? runs(chars(from, to, width), l.styles) : broken(from, to, edges(from, to, width))}
     </Text>
   );
+  // text[from, to) with a line break in place of each of `breaks`.
+  const broken = (from: number, to: number, breaks: ReadonlySet<number>) => {
+    let s = "";
+    let at = from;
+    for (const e of [...breaks].sort((a, b) => a - b)) {
+      s += `${l.text.slice(at, e)}\n`;
+      at = e + 1;
+    }
+    return s + l.text.slice(at, to);
+  };
   // A band from a column (Task 16's spec review, "Band from the text"): the characters in the columns before it plain,
   // in a box that wide, and the rest on the band in a box beside it, which wraps, so its later rows start at the
   // column, as full screen's start at the indent the line has there. The split stops before the first character at or

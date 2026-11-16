@@ -355,6 +355,24 @@ describe("Printed", () => {
       expect(plain(banded.slice(0, banded.indexOf("\u001b[48;2;42;42;42m")))).toBe("  "); // the lead plain, the tab on the band
     }));
 
+  // Task 17's captures, the user's choice (2026-11-16, "Fix it"): a word that ends exactly at the row's edge, the space
+  // after it in no row's room, leaves the next row starting under the text, as full screen draws it, not a column
+  // further in: prose, a reply's line, a list item, a quote, your message's band line.
+  it("starts the row after a word ending at the edge under the text, as full screen does", () => {
+    // A line with no lead wraps at the terminal's own width, ink-testing-library's 100 columns.
+    const cases: [Line, number, string[]][] = [
+      [{ text: `${"a".repeat(100)} bbb` }, 100, ["a".repeat(100), "bbb"]],
+      [{ text: "● aaaaaaaa bbb", indent: 2 }, 10, ["● aaaaaaaa", "  bbb"]],
+      [{ text: "  • aaaaaa bbb", indent: 4 }, 10, ["  • aaaaaa", "    bbb"]],
+      [{ text: "│ aaaaaaaa bbb", indent: 2 }, 10, ["│ aaaaaaaa", "  bbb"]],
+      [{ text: "› aaaaaaaa bbb", band: true, indent: 2 }, 10, ["› aaaaaaaa", "  bbb"]],
+    ];
+    for (const [line, columns, drawn] of cases) {
+      expect(fullRows(line, columns).map((r) => r.trimEnd())).toEqual(drawn);
+      expect(print(line, columns).map((r) => r.trimEnd())).toEqual(drawn);
+    }
+  });
+
   // Task 7's re-check: the spans are stepped through by their starts, but laid in their own order, a later over an earlier,
   // so the red span given second lies over the green one inside it.
   it("lays a later span over an earlier one that starts after it", () =>

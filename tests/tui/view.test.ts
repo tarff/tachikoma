@@ -2,7 +2,7 @@ import stringWidth from "string-width";
 import { describe, expect, it } from "vitest";
 import { type Line, screen } from "../../src/tui/describe.js";
 import { placeAt, span, textOf } from "../../src/tui/select.js";
-import { arrived, bar, barFirst, first, FOLLOWING, notch, Rows, scrollBy, scrollTo, unseenBelow, wrap, type KeptLine, type View } from "../../src/tui/view.js";
+import { arrived, bar, barFirst, edgeSpaces, first, FOLLOWING, notch, Rows, scrollBy, scrollTo, unseenBelow, wrap, type KeptLine, type View } from "../../src/tui/view.js";
 
 const texts = (rows: { text: string }[]) => rows.map((r) => r.text);
 const lines = (n: number, from = 0): Line[] => Array.from({ length: n }, (_, i) => ({ text: `line ${from + i}` }));
@@ -22,6 +22,25 @@ describe("wrap", () => {
     expect(texts(wrap("ab cdefghijklmn", 10, false))).toEqual(["ab cdefghi", "jklmn"]); // a long word starts on the row it is on...
     expect(texts(wrap("abcdefgh cdefghijklmnopqrst", 10, false))).toEqual(["abcdefgh ", "cdefghijkl", "mnopqrst"]); // ...unless that saves a row
     expect(texts(wrap("ab 日本語テキスト", 5, false))).toEqual(["ab ", "日本", "語テ", "キス", "ト"]);
+  });
+
+  // Task 17's captures, the user's choice (2026-11-16, "Fix it"): a conversation line's space with no room, after a
+  // word ending at the edge, ends its row unseen, so the next row starts under the text; classic hands Ink a line break
+  // in its place (edgeSpaces). A space the line ends with breaks as wrap() does; wrap() itself is unchanged.
+  it("ends a conversation line's row with a space at the edge unseen, the next row under the text", () => {
+    const rows = new Rows(10);
+    rows.add([{ text: "the quickX brown" }, { text: "the quick  brown" }, { text: "the quickX " }]);
+    const all = Array.from({ length: rows.total }, (_, i) => rows.row(i));
+    expect(all.map((r) => [r.line, r.start, r.end, r.text])).toEqual([
+      [0, 0, 11, "the quickX"], // the space the first row's, not drawn
+      [0, 11, 16, "brown"],
+      [1, 0, 11, "the quick "],
+      [1, 11, 16, "brown"],
+      [2, 0, 10, "the quickX"],
+      [2, 10, 11, " "],
+    ]);
+    expect(edgeSpaces("the quickX brown\nab cd", 10)).toEqual([10]);
+    expect(edgeSpaces("the quick  brown", 10)).toEqual([10]);
   });
 
   it("never splits a wide character: two to a row of 5 columns, never three", () => {
@@ -121,7 +140,14 @@ describe("Rows", () => {
     rows.add(all.slice(0, 400));
     rows.add(all.slice(400));
     expect(all.filter((l) => wrap(l.text, 30, l.oneLine ?? false).length > 1).length).toBeGreaterThan(1000 / 3); // a third or more wrap, so the rows are tested
-    expect(rows.total).toBe(all.reduce((n, l) => n + wrap(l.text, 30, l.oneLine ?? false).length, 0));
+    // Each line's rows as a Rows of its own counts them: a conversation line's space at the edge ends its row unseen,
+    // where wrap() starts the next row with it (Task 17's captures, "Fix it").
+    const alone = (l: Line) => {
+      const one = new Rows(30);
+      one.add([l]);
+      return one.total;
+    };
+    expect(rows.total).toBe(all.reduce((n, l) => n + alone(l), 0));
     for (let i = 0; i < rows.total; i++) {
       const r = rows.row(i);
       expect(rows.rowOf({ line: r.line, offset: r.start })).toBe(i);
@@ -173,8 +199,9 @@ describe("styled lines", () => {
       { text: "the quick brown", styles: [{ start: 4, end: 15, bold: true }], band: true },
       { text: "fox", styles: [{ start: 0, end: 1, bold: true }], band: true },
     ]);
-    expect(rows.row(0)).toEqual({ line: 0, start: 0, end: 9, text: "the quick", styles: [{ start: 4, end: 15, bold: true }], band: true });
-    expect(rows.row(1)).toMatchObject({ line: 0, start: 9, end: 15, text: " brown" });
+    // The space after "quick", at the edge, ends the first row unseen (Task 17's captures).
+    expect(rows.row(0)).toEqual({ line: 0, start: 0, end: 10, text: "the quick", styles: [{ start: 4, end: 15, bold: true }], band: true });
+    expect(rows.row(1)).toMatchObject({ line: 0, start: 10, end: 15, text: "brown" });
     expect(rows.row(2)).toEqual({ line: 1, start: 0, end: 3, text: "fox", styles: [{ start: 0, end: 1, bold: true }], band: true });
   });
 
