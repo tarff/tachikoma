@@ -9,6 +9,7 @@ import type { Ran } from "../hooks/run.js";
 import { isMcp, outputFrom, tachikomaName } from "../hooks/tools.js";
 import { shownPath } from "../tools/search.js";
 import type { Fold, OpenRun } from "./fold.js";
+import { urls } from "./links.js";
 import { led, markdownLines } from "./markdown.js";
 import { marker } from "./pictures.js";
 import type { Colour, Palette, Role } from "./theme.js";
@@ -25,6 +26,9 @@ export interface Span {
   dim?: boolean;
   underline?: boolean;
   strike?: boolean; // struck through: markdown's ~~x~~ (Task 15; the user's choice, 2026-11-16, "Struck through")
+  // the address a Ctrl+click opens (links.ts, target); "" where markdown refused one, so screen() finds none inside it
+  // (clickable links plan, Task 2)
+  link?: string;
 }
 
 export interface Line {
@@ -64,6 +68,9 @@ export function brief(name: string, input: unknown): string | null {
 // breaks and tabs. A one-line entry has its line breaks escaped too; the screen cuts it after this, by
 // terminal columns, so the escapes and wide characters count toward the width. The text is escaped run by run between
 // the spans' ends, so each span still covers its characters once an escape has lengthened one (TUI design pass, Task 2).
+// Each web address in the escaped text gets a link span after the line's own, unless a span with a `link` (any value)
+// already reaches it, so a markdown link's spans win and a line screened twice gets none again (clickable links plan,
+// Task 2). The scan runs with links off too, so no caller needs the look; its spans then draw nothing.
 export function screen(l: Line): Line {
   const escape = (s: string) => (l.oneLine ? visible(s) : s.split(/\r?\n/).map((p) => visible(p, { tabs: true })).join("\n"));
   const cuts = [...new Set([0, l.text.length, ...(l.styles ?? []).flatMap((s) => [s.start, s.end])])].sort((a, b) => a - b);
@@ -73,12 +80,16 @@ export function screen(l: Line): Line {
     text += escape(l.text.slice(cuts[k - 1], cuts[k]));
     at.set(cuts[k]!, text.length);
   }
+  const styles = l.styles?.map((s) => ({ ...s, start: at.get(s.start)!, end: at.get(s.end)! }));
+  const linked = (styles ?? []).filter((s) => s.link !== undefined);
+  const found = urls(text).filter((u) => !linked.some((s) => s.start < u.end && u.start < s.end));
+  const all = found.length ? [...(styles ?? []), ...found] : styles;
   return {
     text,
     ...(l.color === undefined ? {} : { color: l.color }),
     ...(l.oneLine ? { oneLine: true } : {}),
     ...(l.fold ? { fold: l.fold } : {}),
-    ...(l.styles ? { styles: l.styles.map((s) => ({ ...s, start: at.get(s.start)!, end: at.get(s.end)! })) } : {}),
+    ...(all ? { styles: all } : {}),
     ...(l.band ? { band: true } : {}),
     ...(l.bandFrom ? { bandFrom: l.bandFrom } : {}),
     ...(l.indent === undefined ? {} : { indent: l.indent }),

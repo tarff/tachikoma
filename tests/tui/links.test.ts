@@ -1,5 +1,6 @@
+import { marked, type Token } from "marked";
 import { describe, expect, it } from "vitest";
-import { hyperlinks } from "../../src/tui/links.js";
+import { hyperlinks, linked, target, urls } from "../../src/tui/links.js";
 
 // Clickable links plan, Task 1: whether the terminal takes OSC 8 links. FORCE_HYPERLINK as Claude Code 2.1.323 reads it
 // (`t7e`, `ps`), then the supports-hyperlinks v3.2.0 checks, then Claude Code's own list (`cw`).
@@ -85,5 +86,108 @@ describe("hyperlinks", () => {
     expect(tmux("3.3a")).toBe(false);
     expect(tmux("3.4")).toBe(true);
     expect(tmux("4.0")).toBe(true);
+  });
+});
+
+// Clickable links plan, Task 2: the address a link opens, the addresses in a text, and the escape around a link.
+describe("target", () => {
+  it("opens http and https as they are, and www. as https", () => {
+    expect(target("https://x.y")).toBe("https://x.y");
+    expect(target("HTTP://x.y")).toBe("HTTP://x.y");
+    expect(target("www.x.y/a")).toBe("https://www.x.y/a");
+  });
+
+  it("opens no other scheme, and nothing relative", () => {
+    for (const shown of ["ftp://x", "file:///c:/x", "mailto:a@b.c", "./a", "javascript:x"]) {
+      expect(target(shown), shown).toBeNull();
+    }
+  });
+
+  it("encodes each character outside 32-126, and opens nothing for text that is not well formed", () => {
+    expect(target("https://de.wikipedia.org/wiki/Straße")).toBe("https://de.wikipedia.org/wiki/Stra%C3%9Fe");
+    expect(target("https://x.y/\ud800")).toBeNull(); // a lone surrogate
+  });
+
+  it("opens nothing over 2083 bytes, the OSC 8 spec's VTE and iTerm2 limit", () => {
+    const of = (bytes: number) => "https://x.y/" + "a".repeat(bytes - "https://x.y/".length);
+    expect(target(of(2083))).toBe(of(2083));
+    expect(target(of(2084))).toBeNull();
+  });
+
+  it("opens nothing with no host, nor a scheme with no //", () => {
+    for (const shown of ["https://", "http://", "https://:80", "HTTPS://", "https:x.y"]) {
+      expect(target(shown), shown).toBeNull();
+    }
+    expect(target("https://[::1]/")).toBe("https://[::1]/");
+  });
+});
+
+describe("urls", () => {
+  // marked's own links in the same text, as written, kept where they open http or https (marked's href gives a www.
+  // address http://), so urls() and a reply's links cannot drift apart
+  const markedLinks = (text: string): string[] => {
+    const out: string[] = [];
+    const walk = (tokens: Token[]) => {
+      for (const t of tokens) {
+        if (t.type === "link" && /^https?:\/\//i.test(t.href)) out.push(t.text);
+        if ("tokens" in t && t.tokens) walk(t.tokens);
+      }
+    };
+    walk(marked.lexer(text));
+    return out;
+  };
+  const found = (text: string) => urls(text).map((u) => text.slice(u.start, u.end));
+
+  it("finds the addresses marked finds, trailing punctuation left out and balanced brackets kept", () => {
+    const cases: [string, string[]][] = [
+      ["see https://example.com/a_(b)). ok", ["https://example.com/a_(b)"]],
+      ["www.foo.com, and http://x.y/z?.", ["www.foo.com", "http://x.y/z"]],
+      ["foohttps://a.b", ["https://a.b"]],
+      ["x.www.foo.com", ["www.foo.com"]],
+      ["http://user@www.x.com", ["http://user@www.x.com"]],
+      ["(https://x.y)", ["https://x.y"]],
+      ['"https://x.y/\'a\'"', ["https://x.y/'a"]],
+      ["a https://a.b and https://c.d/e", ["https://a.b", "https://c.d/e"]],
+      ["the end is https://x.y", ["https://x.y"]],
+    ];
+    for (const [text, want] of cases) {
+      expect(found(text), text).toEqual(want);
+      expect(markedLinks(text), text).toEqual(want);
+    }
+  });
+
+  it("gives each address its place and the address it opens", () => {
+    expect(urls("go to www.x.y/a now")).toEqual([{ start: 6, end: 15, link: "https://www.x.y/a" }]);
+  });
+
+  it("finds none inside an e-mail, ftp, mailto or xmpp token, as marked takes each whole", () => {
+    for (const text of ["help@www.example.org", "ftp://www.example.org", "FTP://www.q.r", "mailto:a@www.b.com",
+      "xmpp:a@www.b.com/r", "a!b@www.c.com", "a@b.c", "www.@x.com"]) {
+      expect(urls(text), text).toEqual([]);
+      expect(markedLinks(text), text).toEqual([]);
+    }
+    expect(found("a.b@c www.d.e")).toEqual(["www.d.e"]);
+    expect(markedLinks("a.b@c www.d.e")).toEqual(["www.d.e"]);
+  });
+
+  it("reads a long line with no address quickly", () => {
+    // Without the e-mail start's lookbehind, a run of letters with no @ is read again from each of its letters: 40,000
+    // took 585 ms and four times as long for each doubling (plan, "The design", scanprobe.mjs), so 200,000 about 15 s.
+    // The fixed scan took 1 ms and 3 ms here.
+    const run = "a".repeat(200_000);
+    for (const text of [run, Array(5).fill(run).join(" ")]) {
+      const start = performance.now();
+      expect(urls(text)).toEqual([]);
+      expect(performance.now() - start, `${text.length} characters`).toBeLessThan(500);
+    }
+  });
+});
+
+describe("linked", () => {
+  it("wraps each line in its own OSC 8 open and close, ended by BEL, an empty line bare", () => {
+    expect(linked("https://x.y", "7-0", "go")).toBe("\u001b]8;id=7-0;https://x.y\u0007go\u001b]8;;\u0007");
+    const one = (s: string) => `\u001b]8;id=1;https://x.y\u0007${s}\u001b]8;;\u0007`;
+    expect(linked("https://x.y", "1", "a\nb")).toBe(`${one("a")}\n${one("b")}`);
+    expect(linked("https://x.y", "1", "a\n\nb")).toBe(`${one("a")}\n\n${one("b")}`);
   });
 });

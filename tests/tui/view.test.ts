@@ -430,3 +430,41 @@ describe("bar", () => {
     expect(barFirst(5, 1, 1, 0)).toBe(0);
   });
 });
+
+// Clickable links plan, Task 2: screen() gives each bare address a link span.
+describe("screen's links", () => {
+  it("gives a bare address a link span over it", () => {
+    expect(screen({ text: "go to https://x.y now" })).toEqual({
+      text: "go to https://x.y now",
+      styles: [{ start: 6, end: 17, link: "https://x.y" }],
+    });
+  });
+
+  it("keeps a line's own spans, the link span after them", () => {
+    expect(screen({ text: "go to https://x.y", styles: [{ start: 0, end: 2, bold: true }] }).styles).toEqual([
+      { start: 0, end: 2, bold: true },
+      { start: 6, end: 17, link: "https://x.y" },
+    ]);
+  });
+
+  it("adds none where a link span is already, an empty one included, so a line screened twice gets none again", () => {
+    const linked: Line = { text: "https://x.y", styles: [{ start: 0, end: 11, link: "https://x.y" }] };
+    expect(screen(linked).styles).toEqual(linked.styles);
+    // markdown's span where it refused a link: the bare pass would find www.example.org in it
+    const refused: Line = { text: "local (file:///www.example.org)", styles: [{ start: 7, end: 30, link: "" }] };
+    expect(screen(refused).styles).toEqual(refused.styles);
+    const l: Line = { text: "a\u0007 see https://x.y", styles: [{ start: 0, end: 1, bold: true }] };
+    expect(screen(screen(l))).toEqual(screen(l));
+  });
+
+  it("places an address after an escaped control character in the escaped text", () => {
+    expect(screen({ text: "a\u0007 https://x.y" })).toEqual({
+      text: "a\\u0007 https://x.y",
+      styles: [{ start: 8, end: 19, link: "https://x.y" }],
+    });
+  });
+
+  it("returns a line with no address as before, with no styles added", () => {
+    expect(screen({ text: "plain", color: "muted" })).toStrictEqual({ text: "plain", color: "muted" });
+  });
+});

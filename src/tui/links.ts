@@ -1,4 +1,7 @@
-// Clickable links (OSC 8): whether the terminal takes them (clickable links plan, Task 1).
+import { Lexer } from "marked";
+
+// Clickable links (OSC 8): whether the terminal takes them (clickable links plan, Task 1), and the addresses in a text
+// (Task 2).
 
 // The terminals Claude Code 2.1.323's own check (`cw`) takes by TERM_PROGRAM or LC_TERMINAL.
 const KNOWN = ["ghostty", "Hyper", "kitty", "alacritty", "iTerm.app", "iTerm2", "WarpTerminal"];
@@ -65,4 +68,69 @@ export function hyperlinks(env: NodeJS.ProcessEnv, tty: boolean, level: number, 
   }
   if (env.LC_TERMINAL && KNOWN.includes(env.LC_TERMINAL)) return true;
   return env.TERM?.includes("kitty") === true;
+}
+
+// The address a link opens, from the text as drawn (clickable links plan, Task 2): http:// or https:// in any letter
+// case, or www. opened as https:// (decision 3); each character outside 32-126 encoded, as the OSC 8 spec asks; null
+// for any other text, for a lone surrogate (which encodeURIComponent throws on), for an address with no host, which
+// marked's link rule lets through (`https://`, `https://:80`), and for one over 2083 bytes, the spec's VTE and iTerm2
+// limit. The link opens the encoded text itself, not URL's rewrite of it; the // check stays, as URL takes `https:x.y`.
+export function target(shown: string): string | null {
+  if (!/^https?:\/\//i.test(shown) && !shown.startsWith("www.")) return null;
+  let link = "";
+  try {
+    for (const c of shown.startsWith("www.") ? `https://${shown}` : shown) {
+      const code = c.codePointAt(0)!;
+      link += code >= 32 && code <= 126 ? c : encodeURIComponent(c);
+    }
+  } catch {
+    return null;
+  }
+  if (!URL.canParse(link)) return null;
+  const url = new URL(link);
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.hostname === "") return null;
+  return link.length > 2083 ? null : link; // all of it 32-126 now, so a character a byte
+}
+
+// Where marked's GFM address rule could start a token: mailto:, xmpp:, http(s):// or ftp://, www., or an e-mail's name,
+// which starts only where a run of name characters starts, so a long run with no @ is read once, not from each of its
+// characters (plan, "The design": 40,000 letters 585 ms without it, 0 ms with it).
+const START = /mailto:|xmpp:|(?:[hH][tT][tT][pP][sS]?|[fF][tT][pP]):\/\/|www\.|(?<![A-Za-z0-9._+-])[A-Za-z0-9._+-]+@/g;
+const { url: URL_RULE, _backpedal: BACKPEDAL } = Lexer.rules.inline.gfm;
+
+// The web addresses in a text, as marked finds them in a reply's text (plan, "The design"): each whole token marked's
+// rule takes, its trailing punctuation dropped as marked's url() drops it unless it is an e-mail, so an e-mail, ftp,
+// mailto or xmpp token holds no address (`help@www.example.org`). Only http, https and www. tokens that target() takes
+// become links; an address inside a word is found, as marked finds it (`foohttps://a.b`).
+export function urls(text: string): { start: number; end: number; link: string }[] {
+  const found: { start: number; end: number; link: string }[] = [];
+  const start = new RegExp(START); // its own lastIndex
+  for (let m = start.exec(text); m; m = start.exec(text)) {
+    const cap = URL_RULE.exec(text.slice(m.index));
+    if (!cap) {
+      start.lastIndex = m.index + 1;
+      continue;
+    }
+    let token = cap[0];
+    if (cap[2] !== "@") {
+      for (let before = ""; before !== token; ) {
+        before = token;
+        token = BACKPEDAL.exec(token)?.[0] ?? "";
+      }
+    }
+    start.lastIndex = m.index + Math.max(1, token.length);
+    const link = cap[2] === "@" || !cap[1] || /^ftp/i.test(cap[1]) ? null : target(token);
+    if (link !== null) found.push({ start: m.index, end: m.index + token.length, link });
+  }
+  return found;
+}
+
+// A link's text in OSC 8, each line in its own open and close so a line break inside it does not lose the link after
+// it (plan, "What Ink does with OSC 8", Surprise 2), ended by BEL, as wrap-ansi reopens one with BEL (Surprise 1); an
+// empty line bare.
+export function linked(url: string, id: string, text: string): string {
+  return text
+    .split("\n")
+    .map((l) => (l === "" ? l : `\u001b]8;id=${id};${url}\u0007${l}\u001b]8;;\u0007`))
+    .join("\n");
 }
