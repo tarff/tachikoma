@@ -515,14 +515,15 @@ export const queue = (ui: UI, fns: Fns) => {
   };
   // `/tasks t3`'s record: the subagent's tool calls and answer in full. A finished one's answer is drawn as markdown, as
   // a reply's text is, under its grey heading, in the text's own colours, laid out for the columns its text has now, as
-  // it has no lead of its own (TUI design pass, Task 16's spec review, the user's choice: "Draw it as markdown").
+  // it has no lead of its own (TUI design pass, Task 16's spec review, the user's choice: "Draw it as markdown"), an
+  // empty line between them (Task 17's captures, the user's choice: "Add an empty line").
   const recordOf = (t: Task): Line[] => {
     if (t.kind === "command") return commandRecord(t);
     const calls = callLines(t.messages, ui.run.options.names);
     const width = textWidth(ui.frame.current.columns, ui.fullNow.current);
     const end =
       t.state === "done"
-        ? [gray("Answer:"), ...markdownLines(t.answer ?? "", width, ui.palette)]
+        ? [gray("Answer:"), { text: "" }, ...markdownLines(t.answer ?? "", width, ui.palette)]
         : [gray(t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)")];
     return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, ...end];
   };

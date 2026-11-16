@@ -1918,7 +1918,7 @@ describe("App's background subagents", () => {
     await type(app, "/tasks t1");
     await until(app, "t1 (find x), done: 1 tool call");
     expect(app.lastFrame()).toContain("● find_files\n  pattern: *.ts\n  ⎿ No files match *.ts"); // name: value lines (TUI design pass, Task 12)
-    expect(app.lastFrame()).toContain("Answer:\nIt is in a.ts");
+    expect(app.lastFrame()).toContain("Answer:\n\nIt is in a.ts"); // an empty line under the heading (Task 17)
     await type(app, "/tasks t9");
     await until(app, "No task t9. /tasks lists them.");
   });
@@ -3625,12 +3625,13 @@ describe("App's replies as markdown", () => {
       await until(app, "npm test");
       const r = rows(app, full);
       const first = r.indexOf("Answer:");
-      expect(r.slice(first, first + 7)).toEqual(["Answer:", "Plan", "", "  • one thing", "  • two", "", "npm test"]);
+      // An empty line between the heading and the answer (Task 17's captures, the user's choice: "Add an empty line").
+      expect(r.slice(first, first + 8)).toEqual(["Answer:", "", "Plan", "", "  • one thing", "  • two", "", "npm test"]);
       const raw = app.lastFrame()!.split("\n");
       expect(raw[first]).toContain("\u001b[38;2;138;138;138mAnswer:"); // the heading muted, as before
-      expect(codes(raw[first + 1]!, "Plan")).toContain(BOLD);
-      expect(codes(raw[first + 1]!, "Plan")).toContain(ACCENT);
-      expect(raw[first + 6]).toContain(BAND);
+      expect(codes(raw[first + 2]!, "Plan")).toContain(BOLD);
+      expect(codes(raw[first + 2]!, "Plan")).toContain(ACCENT);
+      expect(raw[first + 7]).toContain(BAND);
     });
   });
 
@@ -6035,7 +6036,8 @@ describe("App's detail view in full screen", () => {
   it("opens a subagent's record in the view with /tasks t1, putting nothing in the conversation, and prints a mistake as before", async () => {
     const { app } = await record("It is in a.ts");
     const rows = shown(app);
-    expect(rows.slice(0, 4)).toEqual(["t1 (find x), done: 0 tool calls", "Answer:", "It is in a.ts", ""]);
+    // An empty line under the heading (Task 17's captures, "Add an empty line").
+    expect(rows.slice(0, 5)).toEqual(["t1 (find x), done: 0 tool calls", "Answer:", "", "It is in a.ts", ""]);
     expect(rows[20]).toBe(KEYS);
     await press(app, "q");
     expect(app.lastFrame()).not.toContain("t1 (find x), done");
@@ -6044,17 +6046,18 @@ describe("App's detail view in full screen", () => {
     expect(app.lastFrame()).toContain("›");
   });
 
-  // 102 rows: the heading, "Answer:", then line 0. to line 99.; 20 on screen, so the last screenful starts at line 80.
+  // 103 rows: the heading, "Answer:", an empty line (Task 17's captures, "Add an empty line"), then line 0. to line
+  // 99.; 20 on screen, so the last screenful starts at line 80.
   it("moves a row on j, k, Down and Up, to the top on g and Home, to the bottom on G and End, and scrolls as the conversation does", async () => {
     const { app, mouse } = await record(lines(100));
     const top = () => shown(app)[0];
     expect(top()).toBe("t1 (find x), done: 0 tool calls"); // it opens at its top
-    expect(thumb(app)).toEqual([0, 1, 2, 3]); // 20 rows of 102 seen
-    await press(app, "j", "j");
+    expect(thumb(app)).toEqual([0, 1, 2, 3]); // 20 rows of 103 seen
+    await press(app, "j", "j", "j");
     expect(top()).toBe("line 0.");
-    await press(app, "k");
+    await press(app, "k", "k");
     expect(top()).toBe("Answer:");
-    await press(app, DOWN, DOWN);
+    await press(app, DOWN, DOWN, DOWN);
     expect(top()).toBe("line 1.");
     await press(app, UP);
     expect(top()).toBe("line 0.");
@@ -6068,11 +6071,11 @@ describe("App's detail view in full screen", () => {
     await press(app, HOME);
     expect(top()).toBe("t1 (find x), done: 0 tool calls");
     await press(app, PG_DOWN); // half of 20
-    expect(top()).toBe("line 8.");
+    expect(top()).toBe("line 7.");
     await wheel(mouse, "down"); // 3 rows
-    expect(top()).toBe("line 11.");
-    await press(app, SHIFT_UP);
     expect(top()).toBe("line 10.");
+    await press(app, SHIFT_UP);
+    expect(top()).toBe("line 9.");
     await press(app, CTRL_END);
     expect(top()).toBe("line 80.");
     await press(app, CTRL_HOME);
@@ -6081,7 +6084,7 @@ describe("App's detail view in full screen", () => {
     expect(shown(app)[19]).toBe("line 99.");
   });
 
-  // "login" on lines 30, 60 and 90: rows 32, 62 and 92 of 102.
+  // "login" on lines 30, 60 and 90: rows 33, 63 and 93 of 103.
   const logins = () => lines(100, (i) => (i > 0 && i % 30 === 0 ? `the login ${i}.` : `line ${i}.`));
 
   it("searches as the query is typed, in any case, matches in reverse colours, keeps the search on Enter, and goes round with n and N", async () => {
@@ -6160,10 +6163,10 @@ describe("App's detail view in full screen", () => {
   it("scrolls on PgUp, PgDn, Ctrl+Home and Ctrl+End", async () => {
     const { app } = await record(lines(100));
     const top = () => shown(app)[0];
-    await press(app, PG_DOWN, PG_DOWN); // half of 20, twice
-    expect(top()).toBe("line 18.");
+    await press(app, PG_DOWN, PG_DOWN); // half of 20, twice: row 20, line 17. under the heading, Answer: and its gap
+    expect(top()).toBe("line 17.");
     await press(app, PG_UP);
-    expect(top()).toBe("line 8.");
+    expect(top()).toBe("line 7.");
     await press(app, CTRL_END);
     expect(top()).toBe("line 80.");
     await press(app, CTRL_HOME);
@@ -6188,13 +6191,13 @@ describe("App's detail view in full screen", () => {
   it("selects and copies in the view, saying so in the key row's place until a key, and clears the selection when it closes", async () => {
     await inColour(1, async () => {
       const { app, mouse, copies } = await record(lines(100));
-      await pointer(mouse, at("press", 0, 2), at("drag", 98, 3), at("release", 98, 3));
+      await pointer(mouse, at("press", 0, 3), at("drag", 98, 4), at("release", 98, 4)); // under Answer: and its gap
       expect(copies).toEqual(["line 0.\nline 1."]);
       expect(plain(app)[20]).toBe("Copied 15 characters");
-      expect(reversed(app).slice(2, 4)).toEqual(["line 0.", "line 1."]);
+      expect(reversed(app).slice(3, 5)).toEqual(["line 0.", "line 1."]);
       await press(app, "j");
       expect(plain(app)[20]).toBe(KEYS);
-      expect(reversed(app).slice(1, 3)).toEqual(["line 0.", "line 1."]); // keys move the view, not the selection
+      expect(reversed(app).slice(2, 4)).toEqual(["line 0.", "line 1."]); // keys move the view, not the selection
       await pointer(mouse, ...click(2, 0), ...click(2, 0)); // a double-click on "Answer:"
       expect(copies.at(-1)).toBe("Answer");
       await press(app, "q");
@@ -6277,8 +6280,8 @@ describe("App's detail view in full screen", () => {
 
   it("searches from the view's top, not the record's first line, when the view is scrolled down", async () => {
     const { app } = await record(logins());
-    await press(app, PG_DOWN, PG_DOWN, PG_DOWN, PG_DOWN); // row 40, past the first login's row 32
-    expect(shown(app)[0]).toBe("line 38.");
+    await press(app, PG_DOWN, PG_DOWN, PG_DOWN, PG_DOWN); // row 40, past the first login's row 33
+    expect(shown(app)[0]).toBe("line 37.");
     await press(app, "/", "login", "\r");
     expect(shown(app)[0]).toBe("the login 60.");
     expect(shown(app)[20]).toBe('"login": 2 of 3 · n next · N previous');
@@ -6288,7 +6291,7 @@ describe("App's detail view in full screen", () => {
     const { app } = await record(logins());
     await press(app, "/", "line 5.");
     expect(shown(app)[0]).toBe("t1 (find x), done: 0 tool calls");
-    expect(shown(app)[7]).toBe("line 5.");
+    expect(shown(app)[8]).toBe("line 5.");
   });
 
   it("does nothing on a paste while the view is open", async () => {
@@ -6341,14 +6344,14 @@ describe("App's detail view in full screen", () => {
 
   it("wraps the view's lines again on a resize", async () => {
     const { app } = await record(lines(3, long));
-    expect(shown(app)[3]).toBe(long(1));
+    expect(shown(app)[4]).toBe(long(1)); // under the heading, Answer: and its gap
     Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
     app.stdout.emit("resize");
     await tick();
     const rows = shown(app, 60);
-    expect(rows[2]).toMatch(/^said 0\. word/);
-    expect(rows[3]).toMatch(/^word/);
-    expect(rows[4]).toMatch(/^said 1\. word/);
+    expect(rows[3]).toMatch(/^said 0\. word/);
+    expect(rows[4]).toMatch(/^word/);
+    expect(rows[5]).toMatch(/^said 1\. word/);
   });
 
   // A record opened by the queue going on from a listener set up once, at mount: a question's answer (bindAsk), the end
@@ -6365,9 +6368,9 @@ describe("App's detail view in full screen", () => {
   const wrappedAt60 = (app: ReturnType<typeof render>) => {
     const rows = shown(app, 60);
     expect(rows[0]).toBe("t1 (find x), done: 0 tool calls");
-    expect(rows[2]).toMatch(/^said 0\. word/);
-    expect(rows[3]).toMatch(/^word/);
-    expect(rows[4]).toMatch(/^said 1\. word/);
+    expect(rows[3]).toMatch(/^said 0\. word/); // under Answer: and its gap
+    expect(rows[4]).toMatch(/^word/);
+    expect(rows[5]).toMatch(/^said 1\. word/);
   };
 
   it("wraps a record opened after a resize at the new width, when a question's answer lets the queue go on", async () => {
@@ -6464,8 +6467,8 @@ describe("App's detail view in full screen", () => {
 
   it("keeps the search row while a search is typed, not putting the line about a copy in its place", async () => {
     const { app, mouse, copies } = await record(logins());
-    await press(app, "/", "line 1."); // on screen, on row 3: the view stays
-    await pointer(mouse, at("press", 0, 3), at("drag", 98, 3), at("release", 98, 3));
+    await press(app, "/", "line 1."); // on screen, on row 4: the view stays
+    await pointer(mouse, at("press", 0, 4), at("drag", 98, 4), at("release", 98, 4));
     expect(copies).toEqual(["line 1."]);
     expect(shown(app)[20]).toBe("/line 1.");
   });
@@ -6699,7 +6702,7 @@ describe("App's detail view printed out", () => {
       expect(steps.slice(first + 1)).toHaveLength(3);
       const printed = steps[first + 1]!;
       // The long line wrapped at the terminal's 100 columns, not the view's 99 nor renderToString's own 80.
-      const lines = ["t1 (find x), done: 0 tool calls", "Answer:", "one", "", "three", LONG.slice(0, 100), LONG.slice(100), LAST, ""];
+      const lines = ["t1 (find x), done: 0 tool calls", "Answer:", "", "one", "", "three", LONG.slice(0, 100), LONG.slice(100), LAST, ""];
       expect(stripVTControlCharacters(printed)).toBe(lines.join("\n"));
       expect(printed).toContain("\u001b[90mt1 (find x), done: 0 tool calls\u001b[39m"); // the view's colours: its lines are grey
       expect(printed).toContain(`\u001b[90m${LAST}\u001b[39m`);
@@ -6716,7 +6719,7 @@ describe("App's detail view printed out", () => {
     steps.length = 0;
     await key("[");
     const first = steps.indexOf(FIRST_SCREEN);
-    const lines = ["t1 (find x), done: 0 tool calls", "Answer:", "one", "", "three", LONG.slice(0, 60), LONG.slice(60, 120), LONG.slice(120), LAST, ""];
+    const lines = ["t1 (find x), done: 0 tool calls", "Answer:", "", "one", "", "three", LONG.slice(0, 60), LONG.slice(60, 120), LONG.slice(120), LAST, ""];
     expect(stripVTControlCharacters(steps[first + 1]!)).toBe(lines.join("\n"));
   });
 
