@@ -3516,6 +3516,55 @@ describe("App's replies as markdown", () => {
     }
   });
 
+  // Task 16's spec review, the user's choice (2026-11-16, "Draw it as markdown"): `/tasks t1`'s answer is drawn as a
+  // reply's text is, under its grey `Answer:`, laid out for the text width then, the answer having no lead of its own:
+  // in full screen's detail view, and said in classic.
+  const subagent = async (answer: string, full: boolean) => {
+    const worker = new FakeProvider("w", [reply(answer)]);
+    const m = await mount([callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")], { full, worker });
+    await type(m.app, "go");
+    await until(m.app, "done");
+    await type(m.app, "/tasks t1");
+    await until(m.app, "t1 (find x), done: 0 tool calls");
+    return m;
+  };
+
+  it.each([true, false])("draws a subagent's answer as markdown on /tasks t1 under its grey heading (full screen: %s)", async (full) => {
+    await inColour(3, async () => {
+      const { app } = await subagent(MD, full);
+      await until(app, "npm test");
+      const r = rows(app, full);
+      const first = r.indexOf("Answer:");
+      expect(r.slice(first, first + 7)).toEqual(["Answer:", "Plan", "", "  • one thing", "  • two", "", "npm test"]);
+      const raw = app.lastFrame()!.split("\n");
+      expect(raw[first]).toContain("\u001b[38;2;138;138;138mAnswer:"); // the heading muted, as before
+      expect(codes(raw[first + 1]!, "Plan")).toContain(BOLD);
+      expect(codes(raw[first + 1]!, "Plan")).toContain(ACCENT);
+      expect(raw[first + 6]).toContain(BAND);
+    });
+  });
+
+  // The answer's budget is the whole text width: 99 at 100 columns in full screen (the detail view's), 100 in classic.
+  it.each([
+    { full: true, cell: 95, boxed: true },
+    { full: true, cell: 96, boxed: false },
+    { full: false, cell: 96, boxed: true },
+    { full: false, cell: 97, boxed: false },
+  ])("draws a subagent's answer's table as markdown with box lines only where it fits (full: $full, cell $cell)", async ({ full, cell, boxed }) => {
+    const wide = "x".repeat(cell);
+    const { app } = await subagent(`| h |\n|---|\n| ${wide} |`, full);
+    await until(app, "xxxx");
+    const r = rows(app, full);
+    if (boxed) {
+      expect(r).toContain(`│ ${wide} │`);
+      expect(r).toContain(`╰${"─".repeat(cell + 2)}╯`);
+      expect(app.lastFrame()).not.toContain("…");
+    } else {
+      expect(r).toContain("| h |");
+      expect(app.lastFrame()).not.toContain("╭");
+    }
+  });
+
   // Resumed, a reply is drawn as the live one was (fold.ts, conversationLines), at the width given.
   it.each([true, false])("draws a resumed reply as markdown as the live one was drawn (full screen: %s)", async (full) => {
     await inColour(3, async () => {

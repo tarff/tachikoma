@@ -26,6 +26,7 @@ import type { Fns } from "../App.js";
 import { typeOf, unquoted } from "../clipboard.js";
 import { asBlock, callLines, type Line } from "../describe.js";
 import { conversationLines } from "../fold.js";
+import { markdownLines } from "../markdown.js";
 import { offers } from "../menus.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
 import { type Action, stateText } from "../McpList.js";
@@ -512,12 +513,18 @@ export const queue = (ui: UI, fns: Fns) => {
       fns.next();
     }
   };
-  // `/tasks t3`'s record: the subagent's tool calls and answer in full.
+  // `/tasks t3`'s record: the subagent's tool calls and answer in full. A finished one's answer is drawn as markdown, as
+  // a reply's text is, under its grey heading, in the text's own colours, laid out for the columns its text has now, as
+  // it has no lead of its own (TUI design pass, Task 16's spec review, the user's choice: "Draw it as markdown").
   const recordOf = (t: Task): Line[] => {
     if (t.kind === "command") return commandRecord(t);
     const calls = callLines(t.messages, ui.run.options.names);
-    const end = t.state === "done" ? `Answer:\n${t.answer}` : t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)";
-    return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
+    const width = textWidth(ui.frame.current.columns, ui.fullNow.current);
+    const end =
+      t.state === "done"
+        ? [gray("Answer:"), ...markdownLines(t.answer ?? "", width, ui.palette)]
+        : [gray(t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)")];
+    return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, ...end];
   };
   // A command's record (background commands plan, Task 9): once it ended, how, in shell_output's first line; the dropped
   // note when its log took in more than it keeps; then the output kept, read with kept(), which leaves the model's place,
