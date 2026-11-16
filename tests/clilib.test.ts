@@ -1043,7 +1043,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     system: "Saved prompt.",
     tools: o.tools ?? tools,
   });
-  // Setups as setup.test.ts has them (system prompt plan, Task 6).
+  // The box setups as setup.test.ts has them; OFF has git "none", per the system prompt plan's Task 6.
   const OFF: Setup = { sandbox: "off", git: "none" };
   const LIVE_OFF: Setup = { sandbox: "live", network: "off", git: "repo" };
   const LIVE_ON: Setup = { sandbox: "live", network: "on", git: "repo" };

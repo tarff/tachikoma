@@ -969,7 +969,13 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     const [file] = readdirSync(dir).filter((n) => n.endsWith(".jsonl"));
     const version = JSON.parse(readFileSync("package.json", "utf8")).version;
     const lines = readFileSync(path.join(dir, file!), "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    expect(lines.slice(0, 2)).toMatchObject([{ t: "start", lead: "openai:lead", version, print: true, project: proj }, { t: "name", name: "first run" }]);
+    expect(lines.slice(0, 2)).toMatchObject([
+      {
+        t: "start", lead: "openai:lead", version, print: true, project: proj,
+        date: localDate(), setup: expect.objectContaining({ sandbox: "off" }),
+      },
+      { t: "name", name: "first run" },
+    ]);
     const again = await tachiLater("--lead", "openai:lead", "-p", "again", "-c", env);
     expect(again).toMatchObject({ code: 0, stdout: "done\n", stderr: "Resumed: first run.\n" });
     expect(sent[1]!.messages.slice(1)).toEqual([
