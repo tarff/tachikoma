@@ -743,6 +743,35 @@ once (`--exclude tests/tui/external.test.ts`), and a PR on the user's say-so.
 
 ---
 
+## As built
+
+- **Branch:** built on the local branch `clickable-links`, not `links` as "Before you start" says.
+- **Task 1** (d77919a, review fixes fe9e6b1): whether links are on, as planned; the review added
+  tests for NETLIFY, TEAMCITY_VERSION and short VTE versions.
+- **Task 2** (dc9aebe, fixes 1adb252 and 38cb862): an address ends where it cannot run on as
+  drawn, and the text up to the next stop character is read once, not again per address.
+- **Task 3** (fb81f3a, fixes 3225258): as planned; the review added the links-off markdown frame,
+  the line index in ids and the copy guard tests.
+- **Task 4** (a6ae0f1, fixes dc70bcb): a refused picture's address is not linked, and a space in a
+  markdown link's address (`[x](<https://a.b/c d>)`) is encoded as `%20`.
+- **Task 5** (b7bb1f7, fix 3f1730f): the question line's addresses are found once over the whole
+  line and cut into rows; ids `q-<start>`, `qn-<start>` for the grey note, `qw<line>-<start>` for
+  the red lines. The fix added the grey note's test.
+- **Task 6** (README 7e33465, then d591b70 and the `TERM=dumb` fix): the user approved the words.
+  Departures from this plan's draft: "the terminal's link click (Ctrl+click in Windows Terminal)",
+  as macOS terminals use Cmd+click; "The address opened is the one drawn" left out, as decision 7
+  says otherwise; in a reply a bare address is underlined, as marked makes it a link (decision 5
+  and the draft said not). Six limits were measured and added. The user's terminal check
+  (2026-11-17, Windows Terminal and the old console window) passed all seven steps; it found that
+  Windows Terminal opens a plain address itself with links off (d591b70). The whole-branch review
+  found no code problems; it found that `TERM=dumb` turns links off in VS Code's terminal, WezTerm
+  and VTE terminals (chalk's colour level is 0, so supports-hyperlinks says no), as in Claude Code,
+  and the README's sentence now says so. Full suite once: 5,751 passed, 1 failed (`takes
+  --max-tasks only as a whole number from 1`, timed out at 18 s of 15; passed alone in 9.9 s;
+  this branch does not touch it).
+
+---
+
 ## Open questions for the user
 
 None left. The user answered the first round on 2026-11-16 (now decisions 1 and 3-8), and then

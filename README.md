@@ -833,7 +833,9 @@ The look is the same in full screen and classic.
   terminals built on VTE 0.50 or later, such as GNOME Terminal. The old Windows console window,
   and output that is not a terminal, get none. `FORCE_HYPERLINK` set before launch overrides
   that: `0`, `false`, `no` or `off` (any letter case) turns links off, any other value turns them
-  on, and empty is as unset. With `NO_COLOR` or `TERM=dumb`, links still work, without the blue.
+  on, and empty is as unset. With `NO_COLOR`, links still work, without the blue. So they do with
+  `TERM=dumb` in the terminals on Claude Code's list; in VS Code's terminal, WezTerm and VTE
+  terminals, `TERM=dumb` turns them off, as in Claude Code.
   With links off, addresses look as they always have.
 - **Resizing:** in full screen the conversation wraps again at the new width. The start-up box is
   drawn once, for the width at launch: on a narrower screen each of its rows is cut with `…` rather
