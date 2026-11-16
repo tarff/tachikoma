@@ -10,11 +10,20 @@ import { callText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
 import { type Ask, Declined, type Judge, PermissionGate } from "../../src/core/permissions.js";
 import { type Conversation, Session, truncateLeaving, UNSAVED } from "../../src/core/session.js";
+import { setupNote, type Told } from "../../src/core/setup.js";
 import { CANCELLED, INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
 import { type SubagentTask, Tasks } from "../../src/core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
-import { type CompletionRequest, type Message, type Part, type Provider, sentAll, type Turn } from "../../src/core/types.js";
+import {
+  type CompletionRequest,
+  type Message,
+  type Part,
+  type Provider,
+  sentAll,
+  type Setup,
+  type Turn,
+} from "../../src/core/types.js";
 import { type Executor, MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import type { Event, Hook } from "../../src/hooks/config.js";
@@ -3170,5 +3179,95 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(prompt!.prompt_id).toEqual(expect.any(String));
     expect(end!.prompt_id).toBe(prompt!.prompt_id);
     expect("prompt_id" in start!).toBe(false);
+  });
+});
+
+// System prompt plan, Task 7 (decisions 6 and 7): a lead session given a setup tells the model of a new date or setup
+// at the end of its next user message, once; a conversation that says nothing of what was told gets no notes.
+describe("Session, notes to the model", { timeout: 15_000 }, () => {
+  let top: string;
+  beforeAll(async () => {
+    top = await mkdtemp(path.join(tmpdir(), "tachi-notes-"));
+  });
+  afterAll(() => removeTree(top));
+  const OFF: Setup = { sandbox: "off", git: "repo" };
+  const LIVE_ON: Setup = { sandbox: "live", network: "on", git: "repo" };
+  const host = { root: "C:\\proj", platform: "win32" } as const;
+  // A lead session given a setup, its conversation telling `told` and saved in `transcript` when given; `days` the
+  // dates each check of today gives in turn, the last repeating.
+  async function noted(told: Told | undefined, now: Setup, days: string[], turns: Turn[], transcript?: Transcript) {
+    const lead = new FakeProvider("a", turns);
+    const day = () => (days.length > 1 ? days.shift()! : days[0]!);
+    const session = new Session({
+      lead, tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+      setup: { now: () => now, today: day, root: host.root, platform: host.platform },
+    });
+    session.load({
+      id: "s", messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1,
+      ...(told ? { told } : {}), ...(transcript ? { transcript } : {}),
+    });
+    return { session, lead };
+  }
+  const notes = (m: Message) => m.parts.flatMap((p) => (p.type === "text" && p.from === "note" ? [p.text] : []));
+  const hi: Part = { type: "text", text: "hi" };
+  const DATE18: Part = {
+    type: "text",
+    text: "Today's date is now 2026-11-18.",
+    from: "note",
+    note: { date: "2026-11-18" },
+  };
+  const told17: Told = { date: "2026-11-17", setup: OFF };
+
+  it("sends no note when the date and setup are the ones told", async () => {
+    const { session, lead } = await noted(told17, OFF, ["2026-11-17"], [reply("ok")]);
+    await session.send("hi");
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([hi]);
+  });
+
+  it("tells the model of a new date once, at the end of the next message, keeping it out of the prompts", async () => {
+    const { session, lead } = await noted(told17, OFF, ["2026-11-18"], [reply("ok"), reply("ok")]);
+    await session.send("hi");
+    await session.send("again");
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([hi, DATE18]);
+    expect(lead.seen[1]!.at(-1)!.parts).toEqual([{ type: "text", text: "again" }]);
+    expect(session.prompts).toEqual(["hi", "again"]); // the judge never sees a note
+  });
+
+  it("tells a new date and a new setup together, the date first, after the typed words", async () => {
+    const { session, lead } = await noted(told17, LIVE_ON, ["2026-11-18"], [reply("ok")]);
+    await session.send("hi");
+    const last = lead.seen[0]!.at(-1)!;
+    expect(last.parts[0]).toEqual(hi);
+    expect(notes(last)).toEqual(["Today's date is now 2026-11-18.", setupNote(OFF, LIVE_ON, host)]);
+    expect(last.parts.at(-1)).toMatchObject({ from: "note", note: { setup: LIVE_ON } });
+  });
+
+  it("tells of a date that changes during a turn in the results message, after the results", async () => {
+    const turns = [callTool("c1", "echo", { text: "x" }), reply("done")];
+    const { session, lead } = await noted(told17, OFF, ["2026-11-17", "2026-11-18"], turns);
+    await session.send("hi");
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([hi]);
+    const result = { type: "tool_result", callId: "c1", output: "x", isError: false };
+    expect(lead.seen[1]!.at(-1)!.parts).toEqual([result, DATE18]);
+  });
+
+  it("sends no notes for a conversation that says nothing of what was told, however the dates differ", async () => {
+    const { session, lead } = await noted(undefined, LIVE_ON, ["2026-11-18"], [reply("ok")]);
+    await session.send("hi");
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([hi]);
+  });
+
+  it("saves the notes in the message as sent, each with what it tells", async () => {
+    const dir = path.join(top, "sessions", "project");
+    const transcript = new Transcript(path.join(dir, "s.jsonl"), path.join(dir, "s", "pictures"), { inherits: true });
+    const { session, lead } = await noted(told17, LIVE_ON, ["2026-11-18"], [reply("ok")], transcript);
+    await session.send("hi");
+    const sent = lead.seen[0]!.at(-1)!;
+    expect(sent.parts.slice(1)).toMatchObject([{ note: { date: "2026-11-18" } }, { note: { setup: LIVE_ON } }]);
+    const saved = readFileSync(transcript.file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Line);
+    expect(saved.find((l) => l.t === "message")).toMatchObject({ t: "message", message: sent });
   });
 });

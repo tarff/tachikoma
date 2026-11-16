@@ -11,7 +11,7 @@ import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
 import { type Ask, Declined, type PermissionGate, StoppedFirst, visible } from "./permissions.js";
-import type { Told } from "./setup.js";
+import { dueNotes, type Told, toldAfter } from "./setup.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
@@ -27,6 +27,7 @@ import {
   type Picture,
   type Provider,
   sentAll,
+  type Setup,
   type ToolCall,
   type ToolResult,
   type ToolSpec,
@@ -149,6 +150,10 @@ export interface SessionOptions {
   // The MCP servers the launch's first prompt waits for, after SessionStart's hooks (release 8c plan, choice 25): `ready`
   // as Servers gives it; `waitingFor` names those still starting, for the waiting line. The lead's only.
   servers?: Pick<Servers, "ready" | "waitingFor">;
+  // The setup and date the lead is told of (system prompt plan, Tasks 7-9): `now` the launch's setup as found at this
+  // moment (clilib.ts, setupOf), `today` the local date, `root` and `platform` the host's, for the setup note. The
+  // lead's alone: a subagent's session has none, and gets no notes.
+  setup?: { now: () => Setup; today: () => string; root: string; platform: NodeJS.Platform };
 }
 
 // A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
@@ -236,6 +241,9 @@ export class Session {
   // numbered on from it and no number is used twice, as the transcript saves each picture under its number once (release
   // 8c plan, choice 10; release 8a plan, choice 5).
   #lastPicture = 0;
+  // What the model was told, from the loaded conversation and each note pushed since (design, "What the model was
+  // told"); none, no notes (system prompt plan, Task 7).
+  #told: Told | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -279,6 +287,7 @@ export class Session {
     if (c.transcript !== this.#transcript) this.#saidFailed = false;
     this.#transcript = c.transcript;
     this.messages.splice(0, this.messages.length, ...c.messages);
+    this.#told = c.told;
     this.prompts.splice(0, this.prompts.length, ...c.prompts);
     this.asked.clear();
     for (const id of c.asked ?? []) this.asked.add(id);
@@ -525,7 +534,7 @@ export class Session {
     const own: Part[] = [...typed, ...(supplied ?? []), ...prompted, ...this.#waiting()];
     if (!own.length) return;
     // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message.
-    const parts: Part[] = [...this.#hookParts(this.#nextText), ...own];
+    const parts: Part[] = [...this.#hookParts(this.#nextText), ...own, ...this.#notes()];
     // The turn's request, kept for a shortening during the turn: after a first one it is no longer in the history.
     const asked: Message = { role: "user", parts };
     this.#push(asked);
@@ -675,7 +684,7 @@ export class Session {
         kept = true;
         bus.emit("hook-note", keptGoing(id, c.block ?? ""), true);
         const said: Part[] = given.map((text) => ({ type: "text", text: `${FEEDBACK}\n${text}`, from: "hooks" }));
-        this.#push({ role: "user", parts: [...said, ...this.#waiting()] });
+        this.#push({ role: "user", parts: [...said, ...this.#waiting(), ...this.#notes()] });
         when = "during";
         shortened = false;
         continue;
@@ -721,7 +730,10 @@ export class Session {
       } finally {
         signal?.removeEventListener("abort", join);
       }
-      this.#push({ role: "user", parts: [...results, ...round.pictures, ...this.#hookParts(), ...this.#waiting()] });
+      this.#push({
+        role: "user",
+        parts: [...results, ...round.pictures, ...this.#hookParts(), ...this.#waiting(), ...this.#notes()],
+      });
       // The set whenever a search grew it, after the results' line (release 8c plan, Task 6b).
       if (this.opts.mcp && this.opts.mcp.loaded.size !== loaded) {
         this.#transcript?.write({ t: "loaded", names: [...this.opts.mcp.loaded] });
@@ -1264,11 +1276,20 @@ export class Session {
     return (this.opts.inbox?.() ?? []).map((text) => ({ type: "text", text, from: "tasks" }));
   }
 
+  // The notes due for the next user message, at its end (decision 6): none without a setup or a conversation that says
+  // what was told (system prompt plan, Task 7).
+  #notes(): Part[] {
+    const s = this.opts.setup;
+    if (!s || !this.#told) return [];
+    return dueNotes(this.#told, s.now(), s.today(), { root: s.root, platform: s.platform });
+  }
+
   // The line is written before the event, so every message is on disk before anything else sees it (release 8a plan,
   // choice 4). A failed write stops saving and never the turn (transcript.ts).
   #push(message: Message): void {
     for (const p of message.parts) if (p.type === "image") this.#lastPicture = Math.max(this.#lastPicture, p.id);
     this.messages.push(message);
+    if (this.#told) this.#told = toldAfter(this.#told, message.parts);
     this.#transcript?.write({ t: "message", message });
     this.opts.bus.emit("message", message);
     this.#saving();

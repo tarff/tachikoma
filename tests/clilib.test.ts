@@ -41,6 +41,7 @@ import {
   mcpLines,
   networkNoted,
   newSaved,
+  type Opened,
   openSaved,
   prose,
   protectionOf,
@@ -60,6 +61,7 @@ import {
   WindowSessions,
 } from "../src/clilib.js";
 import { type Ended, Session } from "../src/core/session.js";
+import { setupNote } from "../src/core/setup.js";
 import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "../src/tools/commands.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 import { callTool, FakeProvider, removeTree, reply, standInRun, tempContext, usage } from "./helpers.js";
@@ -1352,6 +1354,71 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(recorded.conversation.told).toEqual(told("recorded"));
       expect(told("legacy")).toEqual({ setup: { sandbox: "off" } });
       expect(open("legacy").conversation.told).toEqual(told("legacy"));
+    });
+
+    // System prompt plan, Task 7: a resumed conversation's first request, by a lead session as cli.tsx makes it, given
+    // the launch's setup `now` and today's date; the notes it sent.
+    const TODAY = "2026-11-17";
+    const host = { root: "C:\\proj", platform: "win32" } as const;
+    const sendAfter = async (o: Opened, now: Setup, today = TODAY) => {
+      const lead = new FakeProvider("a", [reply("ok")]);
+      const session = new Session({
+        lead, tools: [], system: o.conversation.system, ctx: await tempContext(), bus: new Bus(),
+        setup: { now: () => now, today: () => today, root: host.root, platform: host.platform },
+      });
+      session.load(o.conversation);
+      await session.send("next");
+      return lead.seen[0]!.at(-1)!.parts.flatMap((p) => (p.type === "text" && p.from === "note" ? [p.text] : []));
+    };
+    // A session saved with this change, its start line recording today's date and `setup`.
+    const savedOn = (id: string, setup: Setup) =>
+      saved(dir, id, chat({ ...start(id), box: setup.sandbox !== "off", date: TODAY, setup }));
+    const inBox = { setup: LIVE_ON, full: "Box prompt." };
+
+    it("tells a conversation resumed under another setup of it in its next request, until one has", async () => {
+      const file = savedOn("moved", OFF);
+      open("moved", { prompt: inBox }).release(); // closed without a prompt
+      const again = open("moved", { prompt: inBox });
+      expect(lines(file).filter((l) => l.t === "system")).toHaveLength(1);
+      expect(await sendAfter(again, LIVE_ON)).toEqual([setupNote(OFF, LIVE_ON, host)]);
+      again.release();
+      // Told once sent: the note's message is saved, as the session wrote it through the conversation's transcript.
+      expect(await sendAfter(open("moved", { prompt: inBox }), LIVE_ON)).toEqual([]);
+    });
+
+    it("sends no setup note to a conversation resumed under its first setup again", async () => {
+      const file = savedOn("back", OFF);
+      open("back", { prompt: inBox }).release();
+      const back = open("back", { prompt: { setup: OFF, full: "Host prompt." } });
+      expect(lines(file).filter((l) => l.t === "system")).toHaveLength(2);
+      expect(back.lines.map((l) => l.text)).toEqual(["Resumed: hi.", `${SANDBOX_CHANGED}.`]);
+      expect(await sendAfter(back, OFF)).toEqual([]);
+    });
+
+    it("tells a conversation resumed a day later of the date", async () => {
+      savedOn("later", OFF);
+      const later = await sendAfter(open("later", { prompt: SAVED }), OFF, "2026-11-18");
+      expect(later).toEqual(["Today's date is now 2026-11-18."]);
+    });
+
+    it("tells a conversation saved before this change of the date, and of the setup as far as known", async () => {
+      const date = "Today's date is now 2026-11-17."; // never told
+      saved(dir, "notedoff", chat({ ...start("notedoff"), box: false }));
+      expect(await sendAfter(open("notedoff", { prompt: SAVED }), OFF)).toEqual([date]);
+      saved(dir, "notedbox", chat({ ...start("notedbox"), box: true }));
+      saved(dir, "notedhost", chat({ ...start("notedhost"), box: true }));
+      const live: Setup = { sandbox: "live", network: "off", git: "none" };
+      expect(await sendAfter(open("notedbox", { prompt: { setup: live, full: "Box prompt." } }), live)).toEqual([
+        date,
+        "This session was resumed, and its earlier sandbox setup was not recorded. The sandbox is now a live link to " +
+          "the project. The project is not a git repository. Shell commands cannot reach the web now.",
+      ]);
+      expect(await sendAfter(open("notedhost", { prompt: { setup: OFF, full: "Host prompt." } }), OFF)).toEqual([
+        date,
+        "This session was resumed under another setup. Commands now run with PowerShell in C:\\proj; earlier they " +
+          "ran with bash in /work. The project is not a git repository. Shell commands can reach the web now. " +
+          "Earlier replies about the setup were right at the time.",
+      ]);
     });
 
     // Release 8a final review (user, 2026-11-07: "Becomes normal"): a -p run opened in the window leaves no mark when

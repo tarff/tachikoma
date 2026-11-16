@@ -778,6 +778,9 @@ const { session, pictures } = leadSession({
   // prompt waits for (choice 25).
   mcp: mcpTools(servers, bus, approveOf(servers)),
   servers,
+  // The setup and date as found at each message, for the notes that tell the model of a change (system prompt plan,
+  // Task 7); the host's folder and platform name its shell in the setup note.
+  setup: { now: setupNow, today: () => localDate(), root, platform: process.platform },
 });
 // SessionStart's source, by how the launch opened the conversation (release 8b plan, Task 10): a copy opened as another
 // window holds the session is still a resume, as -c or -r asked for one.
