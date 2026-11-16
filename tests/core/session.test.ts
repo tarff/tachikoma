@@ -3270,4 +3270,40 @@ describe("Session, notes to the model", { timeout: 15_000 }, () => {
       .map((l) => JSON.parse(l) as Line);
     expect(saved.find((l) => l.t === "message")).toMatchObject({ t: "message", message: sent });
   });
+
+  // Task 7's code review: git's lookup can throw, and a throw while the results message is built would leave calls
+  // with no results.
+  it("sends a message with no notes when the setup cannot be read, the notes going with the next one", async () => {
+    let reads = 0;
+    const now = () => {
+      if (reads++ === 0) throw new Error("EACCES");
+      return OFF;
+    };
+    const lead = new FakeProvider("a", [reply("ok"), reply("ok")]);
+    const session = new Session({
+      lead, tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+      setup: { now, today: () => "2026-11-18", root: host.root, platform: host.platform },
+    });
+    session.load({
+      id: "s", messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1, told: told17,
+    });
+    await session.send("hi");
+    await session.send("again");
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([hi]);
+    expect(lead.seen[1]!.at(-1)!.parts).toEqual([{ type: "text", text: "again" }, DATE18]);
+  });
+
+  // A resume counts a cut-off reply's calls as not run only when its results message holds just the results
+  // (transcript.ts, cutOff), so a note waits for the next turn's first message.
+  it("puts no note in a cut-off reply's results message, the note going with the next turn", async () => {
+    const cut = { ...callTool("c1", "echo", { text: "x" }), cutOff: { kind: "max_tokens" as const, detail: "limit" } };
+    const { session } = await noted(told17, OFF, ["2026-11-17", "2026-11-18"], [cut, reply("ok")]);
+    await session.send("hi");
+    const results = session.messages.at(-1)!;
+    expect(results.parts).toHaveLength(1);
+    expect(results.parts[0]).toMatchObject({ type: "tool_result", callId: "c1", isError: true });
+    await session.send("again");
+    // Stored apart from the results message, though the provider sends the two together.
+    expect(session.messages.at(-2)!.parts).toEqual([{ type: "text", text: "again" }, DATE18]);
+  });
 });
