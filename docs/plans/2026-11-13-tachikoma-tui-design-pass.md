@@ -767,3 +767,25 @@ Colours: `B` #4278de, `S` #284ea0, `L` #8cb4f5, `W` #ebf0f8, `P` #191e2d, `D` #3
   `link-test.mjs`) and becomes its own task. Known limits: a wrapped quote line shows `│` on its
   first row only; list numbers are not padded (`9.` and `10.`); named HTML entities show raw
   (`&amp;`), numbered ones decoded, as marked gives them.
+- **Task 16** (299e3f3, fixes d0b2330, 020b4d3, f6ffe45, 4352d90, 20ae358 and 9bec1fc): replies
+  as markdown. `replyLines` (describe.ts) draws a reply's text with `markdownLines` at
+  `textWidth(columns, full) - 2`, the first line taking the accent `● `, later ones two spaces in
+  their text (a list's or quote's own lead after them); resumed replies alike (`conversationLines`
+  takes the width). Outside the plan's Files, to pass the width of that moment: App.tsx (from
+  `ui.frame`/`ui.fullNow`, as the listener belongs to the first render), app/queue.ts (`/resume`)
+  and cli.tsx (`-c`/`-r`, the start-up box's width). The user chose (2026-11-16): "Keep the
+  spaces" (a copy of a reply gives its `● ` and two-space lead, as drawn); "New line" (a lone `\r`
+  in a reply is a line break, as marked reads it; Ctrl+O still shows `␍`); "Band from the text" (a
+  code block's band starts where its code starts, after the reply's lead and any list's or
+  quote's: `bandFrom` on a line, drawn in both modes; your messages' band is the whole row); "Draw
+  it as markdown" (`/tasks t3`'s answer, at the text width of that moment, in the terminal's own
+  colours under the grey `Answer:`; it was all grey). Builder's call: a reply opening with a table
+  or code block takes `● ` on that row. From the review: a band line's tabs are drawn in classic as
+  the spaces to their stop, counted from the band's start (as Task 7's tinted lines), and the text
+  keeps its tabs, so a copy does; they had been dropped into the lead, or reached the terminal raw
+  and spilled past the edge (your messages' band lines gain the same first-row spaces in
+  classic). Ctrl+O shows no reply text and is unchanged. Known limits: marked's lexer takes time growing with the square of a paragraph full of unmatched `*` (the reviewer's
+  timing: 12,000 characters 0.9 s, 24,000 3.9 s; replies under 10,000 under 0.3 s), on each reply
+  drawn, at `-c` and at each `/tasks t3`; on a terminal a few columns wide (3 for top-level code, 7
+  in a list) a code band's start is past the row, and the modes differ (full screen blank, classic
+  past the edge); cli.tsx's width wiring is not under test, as Task 13's.
