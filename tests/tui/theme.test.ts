@@ -36,6 +36,15 @@ describe("look", () => {
   it("reads the theme apart from the colour depth", () => {
     expect(look({ theme: "light" }, {}, 0)).toEqual({ light: true, color: false, full: false });
   });
+
+  // Clickable links plan, Task 1: links where hyperlinks() (links.ts) says the terminal takes them, no field otherwise.
+  it("has links where the terminal takes them, and no links field where it does not", () => {
+    expect(look({}, { WT_SESSION: "x" }, 3, true)).toEqual({ light: false, color: true, full: true, links: true });
+    expect(look({}, { FORCE_HYPERLINK: "1" }, 3)).toEqual({ light: false, color: true, full: true, links: true });
+    expect(look({}, { WT_SESSION: "x", NO_COLOR: "1" }, 3, true).links).toBe(true); // no colour, still links
+    const none = [look({}, { WT_SESSION: "x" }, 3), look({}, { WT_SESSION: "x" }, 3, false), look({}, {}, 3, true)];
+    for (const shown of none) expect("links" in shown).toBe(false);
+  });
 });
 
 describe("themeOf", () => {
@@ -44,6 +53,11 @@ describe("themeOf", () => {
     const shown = look({ theme: "light" }, { NO_COLOR: "" }, 3);
     expect(themeOf({ theme: "light" }, { NO_COLOR: "" }, 3)).toEqual({ look: shown, palette: palette(shown) });
     expect(themeOf({}, { NO_COLOR: "1" }, 3)).toEqual({ look: { light: false, color: false, full: false }, palette: palette({ light: false, color: false, full: false }) });
+  });
+
+  it("passes whether the output is a TTY on to the look (clickable links plan, Task 1)", () => {
+    expect(themeOf({}, { WT_SESSION: "x" }, 3, true).look.links).toBe(true);
+    expect("links" in themeOf({}, { WT_SESSION: "x" }, 3).look).toBe(false);
   });
 });
 

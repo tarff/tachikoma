@@ -213,7 +213,10 @@ async function drawAlone(settings: Settings, draw: (bindings: Bindings, close: (
   restoreOnExit(screen, () => ink?.unmount());
   const bindings = keysNow();
   if (fullPossible(process.env, process.stdout.isTTY === true)) screen.setSecond(true);
-  ink = render(<ThemeContext value={themeOf(settings, process.env, chalk.level)}>{draw(bindings, () => ink?.unmount())}</ThemeContext>, { exitOnCtrlC: false });
+  const theme = themeOf(settings, process.env, chalk.level, process.stdout.isTTY === true);
+  ink = render(<ThemeContext value={theme}>{draw(bindings, () => ink?.unmount())}</ThemeContext>, {
+    exitOnCtrlC: false,
+  });
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   await exited;
@@ -887,7 +890,12 @@ if (parsed.print !== undefined) {
   };
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();
   // The look from the launch's settings (TUI design pass, Task 1), the colour depth as Ink's own check gives it.
-  const { look: shown, palette: colours } = themeOf(loaded.settings, process.env, chalk.level);
+  const { look: shown, palette: colours } = themeOf(
+    loaded.settings,
+    process.env,
+    chalk.level,
+    process.stdout.isTTY === true,
+  );
   // Before the first frame, which shows it, in the start-up box and the App. In the box a read that fails (Docker
   // unreachable) is no branch, so it cannot end the launch; the tools say what failed when used (release 7 plan, Task 14's
   // review).

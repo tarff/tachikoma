@@ -1,9 +1,10 @@
 import stringWidth from "string-width";
 import { visible } from "../core/permissions.js";
 import { segmenter } from "./editor.js";
+import { urls } from "./links.js";
 import type { TaskRow } from "./TaskPanel.js";
 import type { TodoRow } from "./TodoList.js";
-import { wrap } from "./view.js";
+import { columnsAt, wrap } from "./view.js";
 
 // The prompt as the screen shows it (release 3 design, "Multi-line"): rows of at most `width`
 // columns, wrapped at the column, not at a word, and a new row at each line break. Control characters
@@ -126,6 +127,7 @@ export interface FrameOut {
   pickerRows: number;
   questionFits: boolean; // the question's line leaves the conversation its one row
   asked: string[]; // the rows of the question's line drawn: its short line's, when it does not fit and can move
+  askedLinks: { start: number; end: number; link: string; id: string }[][]; // each row's links (rowLinks, below)
   warned: string[]; // the red lines drawn above it, a row each, the last saying how many more when they do not all fit
   noted: boolean; // its grey line drawn, a row above any red lines, when there is a row for it
   viewHeight: number; // the conversation's rows, in full screen
@@ -139,6 +141,32 @@ function fewest(lines: string[], room: number): string[] {
   if (room === 0) return [];
   if (room === 1) return [`${lines.length} dangers`];
   return [...lines.slice(0, room - 1), `…and ${lines.length - room + 1} more dangers`];
+}
+
+// The links on each row of a question's line wrapped at `width` (clickable links plan, Task 5): each address urls()
+// finds in the whole line, cut to the rows it is drawn over, by offsets into each row's drawn text, where a tab is the
+// spaces to its stop (view.ts, wrap). Its id is `q-<its start in the line>`, made before it is cut, so an address
+// wrapped over two rows is one link on both, where a row's own offsets start at 0 (second review, finding 4).
+function rowLinks(text: string, rows: { start: number; end: number }[], width: number) {
+  const found = urls(text);
+  return rows.map((r) => {
+    const at: number[] = []; // where each place in the row's part of the line is in its drawn text
+    let drawn = 0;
+    let col = 0;
+    for (const { segment, index } of segmenter.segment(text.slice(r.start, r.end))) {
+      for (let k = 0; k < segment.length; k++) at[index + k] = drawn + k;
+      const w = columnsAt(segment, col, width);
+      drawn += segment === "\t" ? w : segment.length;
+      col += w;
+    }
+    at[r.end - r.start] = drawn;
+    return found.flatMap((u) => {
+      const from = Math.max(u.start, r.start);
+      const to = Math.min(u.end, r.end);
+      if (from >= to) return [];
+      return [{ start: at[from - r.start]!, end: at[to - r.start]!, link: u.link, id: `q-${u.start}` }];
+    });
+  });
 }
 
 // The frame's rows. The prompt's space (release 3 design): the live part stays a row shorter than the terminal, since at
@@ -223,7 +251,9 @@ function frameWithoutLines(i: FrameIn): FrameOut {
     (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);
   const questionFits = i.askedText === null || i.rows - 1 - live(box + note + linesOf(i.askedText).length + Math.min(1, reds.length)) >= 1; // as viewHeight, below
-  const asked = linesOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
+  const line = questionFits || i.askedShort === null ? i.askedText : i.askedShort;
+  const wrapped = line === null ? [] : wrap(line, i.columns - 4, false);
+  const asked = wrapped.map((r) => r.text);
   const noted = note === 1 && i.rows - 1 - live(box + asked.length + Math.min(1, reds.length)) - 1 >= 1 ? 1 : 0; // 1: the conversation's least row
   const warned = fewest(reds, Math.max(0, i.rows - 1 - live(box + noted + asked.length) - 1));
   const viewHeight = Math.max(1, i.rows - 1 - live(box + noted + warned.length + asked.length));
@@ -242,6 +272,7 @@ function frameWithoutLines(i: FrameIn): FrameOut {
     pickerRows,
     questionFits,
     asked,
+    askedLinks: line === null ? [] : rowLinks(line, wrapped, i.columns - 4),
     warned,
     noted: noted === 1,
     viewHeight,

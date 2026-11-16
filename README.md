@@ -820,6 +820,23 @@ The look is the same in full screen and classic.
   and the plain Tachikoma.
 - **`NO_COLOR`,** set to anything but empty, turns colour off: no band, the plain Tachikoma, and
   the context bar's fill shown by `█` and `░` alone. Bold and dim text stay.
+- **Links:** in a terminal that supports them, every web address on screen is drawn in blue and
+  opens with the terminal's link click (Ctrl+click in Windows Terminal). That covers addresses
+  starting `http://`, `https://` or `www.` (opened as `https://www.…`), in replies, your messages,
+  tool output, notices, the detail view and the permission question, in full screen and classic.
+  A markdown link opens from its text and from its address in brackets, both to the address in
+  brackets, even when the text is itself another address. In a reply a bare address is underlined
+  too, as markdown makes it a link; elsewhere it is blue only. A copy gives the text alone.
+  `file:`, `mailto:` and other addresses are never links. Links are on in Windows Terminal,
+  iTerm2, Ghostty, kitty, Alacritty, Hyper, Warp, JetBrains' terminal and tmux 3.4 or later, the
+  list Claude Code uses; on Linux and macOS also in VS Code's terminal 1.72 or later, WezTerm and
+  terminals built on VTE 0.50 or later, such as GNOME Terminal. The old Windows console window,
+  and output that is not a terminal, get none. `FORCE_HYPERLINK` set before launch overrides
+  that: `0`, `false`, `no` or `off` (any letter case) turns links off, any other value turns them
+  on, and empty is as unset. With `NO_COLOR`, links still work, without the blue. So they do with
+  `TERM=dumb` in the terminals on Claude Code's list; in VS Code's terminal, WezTerm and VTE
+  terminals, `TERM=dumb` turns them off, as in Claude Code.
+  With links off, addresses look as they always have.
 - **Resizing:** in full screen the conversation wraps again at the new width. The start-up box is
   drawn once, for the width at launch: on a narrower screen each of its rows is cut with `…` rather
   than wrapped, as tool rows are, and copying a cut row gives the whole row; wider again, it shows
@@ -839,7 +856,9 @@ tool output and notices are never read as markdown: they show as written.
   - numbered lists with their numbers;
   - quotes after a grey `│ `;
   - links with their text underlined and, when it differs from the text, the address after it in
-    grey brackets;
+    grey brackets. Where the terminal supports links (see
+    [How the screen looks](#how-the-screen-looks)), the text and the address are blue and open
+    with a click, and the brackets stay grey;
   - code blocks on the grey band, in one colour with no highlighting, without their fences or
     language;
   - rules as a grey line across.
@@ -2442,6 +2461,19 @@ it says so.
 - **A long paragraph full of unmatched `*` is slow to draw:** in a test, 12,000 characters took
   0.9 s and 24,000 took 3.9 s, each time it is drawn: when the reply arrives, at `-c` or `-r`, and
   at each `/tasks t3` for a subagent's answer. A reply under 10,000 characters took under 0.3 s.
+- **VS Code's terminal and WezTerm on Windows get no links,** as in Claude Code, whose check this
+  is; `FORCE_HYPERLINK=1` turns them on.
+- **An address inside inline code looks no different with links on,** as inline code is already
+  blue; it opens all the same.
+- **An address followed straight away by `}`, `]` or `|`** takes that mark into the link, so it
+  opens with the mark on the end (`https://a.b/c}`). With a space between, or inside `()` or
+  quotes, it does not.
+- **In classic, an address in a row cut short with `…`** ends in a blue `…` that does not open.
+- **`&amp;` in a markdown link's address opens as written,** not as `&`.
+- **A table too wide for the screen is shown as written,** and there a `www.` address inside a
+  refused link (such as `[x](file:///www.a.b)`) still opens.
+- **In Windows Terminal an address still opens with Ctrl+click when links are off**
+  (`FORCE_HYPERLINK=0`): the terminal finds addresses in plain text itself. It isn't blue.
 
 ### Hooks' limits
 

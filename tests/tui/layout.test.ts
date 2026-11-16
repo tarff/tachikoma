@@ -133,6 +133,7 @@ describe("frame", () => {
       pickerRows: 0,
       questionFits: true,
       asked: [],
+      askedLinks: [],
       warned: [],
       noted: false,
       viewHeight: 14, // with the prompt, its two lines, the hint and the status line, 19 rows
@@ -402,6 +403,40 @@ describe("frame", () => {
       expect(wrap(three, 76, false)).toHaveLength(3);
       expect(frame({ ...asked, rows: 7, askedText: three })).toMatchObject({ questionFits: false, asked: [short], viewHeight: 2 });
       expect(frame({ ...asked, rows: 8, askedText: three })).toMatchObject({ questionFits: true, asked: { length: 3 }, viewHeight: 1 });
+    });
+
+    // Clickable links plan, Task 5: each row's links, by offsets into the row's drawn text, the id an address's start
+    // in the whole line, so an address wrapped over two rows is one link on both (second review, finding 4).
+    it("gives each row of the question's line its links, a wrapped address the same id on both rows", () => {
+      const one = "Allow open https://x.y/a? [y/n] · Esc to decline";
+      expect(frame({ ...asked, askedText: one }).askedLinks).toEqual([
+        [{ start: 11, end: 24, link: "https://x.y/a", id: "q-11" }],
+      ]);
+      // At 20 columns inside the box the address starts at the first row's last column and goes on to the next row.
+      const link = "https://example.com/x";
+      const visit = `s asks you to open ${link} in your browser: Sign there. Open it? [y/n] · Esc to decline`;
+      const start = visit.indexOf("https");
+      const narrow = frame({ ...asked, columns: 24, askedText: visit });
+      expect(narrow.asked.slice(0, 2)).toEqual(["s asks you to open h", "ttps://example.com/x"]);
+      expect(narrow.askedLinks).toEqual([
+        [{ start: 19, end: 20, link, id: `q-${start}` }],
+        [{ start: 0, end: 20, link, id: `q-${start}` }],
+        ...narrow.asked.slice(2).map(() => []),
+      ]);
+      expect(start).not.toBe(0);
+      // A tab before the address is drawn as the spaces to its stop, which the row's offsets count; the id stays the
+      // line's own offset.
+      const tabbed = frame({ ...asked, askedText: "Allow\topen https://x.y? [y/n]" });
+      expect(tabbed.asked).toEqual(["Allow   open https://x.y? [y/n]"]);
+      expect(tabbed.askedLinks).toEqual([[{ start: 13, end: 24, link: "https://x.y", id: "q-11" }]]);
+      // No address: an empty list for each row; no question's line (classic mode): none.
+      expect(frame({ ...asked, askedText: "x".repeat(100) }).askedLinks).toEqual([[], []]);
+      expect(frame({ ...asked, full: false, askedText: null, askedShort: null }).askedLinks).toEqual([]);
+      // A line too long to fit draws its short one, whose links they are.
+      const brief = "Allow open https://s.t (shown above)? [y/n]";
+      const moved = frame({ ...asked, askedText: `Allow open https://l.m ${"word ".repeat(400)}`, askedShort: brief });
+      expect(moved).toMatchObject({ questionFits: false, asked: [brief] });
+      expect(moved.askedLinks).toEqual([[{ start: 11, end: 22, link: "https://s.t", id: "q-11" }]]);
     });
   });
 
