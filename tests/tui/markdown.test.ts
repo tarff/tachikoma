@@ -375,19 +375,55 @@ describe("markdownLines, what it shows", () => {
     expect(lines[0]!.text).toBe("╭─────────┬─────╮");
   });
 
+  // With no colour, inline code keeps its backticks and a code block its fences (Task 17's captures, the user's choice,
+  // 2026-11-16: "Keep backticks"); the rest is the same text.
   it("draws with no colour: the same text, bold, italic, underline and strikethrough kept, no colour anywhere", () => {
     const none = palette(NONE);
     const md = "# H\n\n**b** *i* `c` [l](u) ~~s~~\n\n> q\n\n---\n\n```\nk\n```\n\n| a |\n|---|\n| 1 |";
     const lines = markdownLines(md, 20, none);
-    expect(texts(lines)).toEqual(texts(markdownLines(md, 20, P)));
+    const coloured = texts(markdownLines(md, 20, P));
+    const k = coloured.indexOf("k");
+    expect(texts(lines)).toEqual([...coloured.slice(0, k), "```", "k", "```", ...coloured.slice(k + 1)].map((t) => (t === "b i c l (u) s" ? "b i `c` l (u) s" : t)));
     for (const l of lines) for (const s of l.styles ?? []) expect(s.color === undefined && s.bg === undefined).toBe(true);
     expect(lines[0]!.styles).toEqual([{ start: 0, end: 1, bold: true }]);
     expect(lines[2]!.styles).toEqual([
       { start: 0, end: 1, bold: true },
       { start: 2, end: 3, italic: true },
-      { start: 6, end: 7, underline: true },
-      { start: 12, end: 13, strike: true },
+      { start: 8, end: 9, underline: true },
+      { start: 14, end: 15, strike: true },
     ]);
     expect(lines.find((l) => l.text === "k")!.band).toBe(true); // the band is drawn as plain rows without colour (theme.ts)
+  });
+
+  // Task 17's captures, the user's choice (2026-11-16, "Keep backticks"): where there is no colour to draw inline code
+  // in, it keeps its backticks as written; where there is no band to draw a code block on (below full colour), it is
+  // drawn between fence lines, its opening line as written and its fence again to close it, or ``` for an indented
+  // block, so two blocks cannot run together. With the band, as before.
+  it("marks code with its backticks and fences where there is no colour or band to draw it with", () => {
+    const none = palette(NONE);
+    const named = palette({ light: false, color: true, full: false });
+    expect(markdownLines("run `npm test` now, or ``a`b``", 80, none)).toEqual([{ text: "run `npm test` now, or ``a`b``" }]);
+    expect(markdownLines("run `npm test` now", 80, named)).toEqual([{ text: "run npm test now", styles: [{ start: 4, end: 12, color: "blue" }] }]);
+    for (const p of [none, named]) {
+      expect(markdownLines("```go\nx := 1\n```\n```\ny\n```", 80, p)).toEqual([
+        { text: "```go" },
+        { text: "x := 1", band: true },
+        { text: "```" },
+        { text: "```" },
+        { text: "y", band: true },
+        { text: "```" },
+      ]);
+      // Its opening line as written.
+      expect(texts(markdownLines("~~~~ sh\nls\n~~~~", 80, p))).toEqual(["~~~~ sh", "ls", "~~~~"]);
+      expect(texts(markdownLines("    indented", 80, p))).toEqual(["```", "indented", "```"]);
+      expect(markdownLines("- item\n\n  ```\n  code\n  ```", 80, p)).toEqual([
+        { text: "  • item", indent: 4 },
+        { text: "" },
+        { text: "    ```", indent: 4 },
+        { text: "    code", band: true, bandFrom: 4, indent: 4 },
+        { text: "    ```", indent: 4 },
+      ]);
+    }
+    expect(texts(markdownLines("```go\nx\n```", 80, P))).toEqual(["x"]); // with the band: no fences
   });
 });

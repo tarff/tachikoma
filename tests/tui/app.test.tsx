@@ -63,7 +63,7 @@ import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { startBox } from "../../src/tui/startup.js";
-import { look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
+import { type Look, look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
 import { textWidth, wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, standInRun, tempContext, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
@@ -3514,6 +3514,35 @@ describe("App's replies as markdown", () => {
       expect(r).toContain("  |---|");
       expect(app.lastFrame()).not.toContain("╭");
     }
+  });
+
+  // Task 17's captures, the user's choice (2026-11-16, "Keep backticks"): with no colour, inline code keeps its
+  // backticks and a code block its fences, and a copy gives them; with 16 colours, no band, the block has its fences
+  // and inline code its colour, without backticks.
+  const CODE = "Run `npm test`:\n\n```sh\nnpm test\n```";
+  it("marks code with backticks and fences as markdown where there is no colour, a copy giving them", async () => {
+    const shown: Look = { light: false, color: false, full: false };
+    const { app, mouse, copies } = await mount([reply(CODE)], { full: true, theme: { look: shown, palette: palette(shown) } });
+    await type(app, "go");
+    await until(app, "npm test");
+    const r = rows(app, true);
+    const first = r.indexOf("● Run `npm test`:");
+    const drawn = ["● Run `npm test`:", "", "  ```sh", "  npm test", "  ```"];
+    expect(r.slice(first, first + 5)).toEqual(drawn);
+    await pointer(mouse, at("press", 0, first), at("drag", 98, first + 4), at("release", 98, first + 4));
+    expect(copies).toEqual([drawn.join("\n")]);
+  });
+
+  it("draws a code block with its fences and inline code in its colour as markdown with 16 colours", async () => {
+    await inColour(1, async () => {
+      const { app } = await mount([reply(CODE)], { theme: NAMED });
+      await type(app, "go");
+      await until(app, "```sh");
+      const r = rows(app);
+      const first = r.indexOf("● Run npm test:");
+      expect(r.slice(first, first + 5)).toEqual(["● Run npm test:", "", "  ```sh", "  npm test", "  ```"]);
+      expect(app.lastFrame()!.split("\n")[first]).toContain("\u001b[34mnpm test"); // blue, the accent's named colour
+    });
   });
 
   // Task 17's captures, the user's choice (2026-11-16, "Fix it"): a word ending exactly at the edge leaves the next

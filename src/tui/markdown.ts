@@ -51,7 +51,12 @@ function inline(tokens: readonly Token[], palette: Palette, oneLine: boolean, ru
     } else if (t.type === "escape") add(k.text ?? t.raw);
     else if (t.type === "strong") over({ bold: true }, () => inline(k.tokens ?? [], palette, oneLine, run));
     else if (t.type === "em") over({ italic: true }, () => inline(k.tokens ?? [], palette, oneLine, run));
-    else if (t.type === "codespan") over({ color: palette.accent }, () => add(k.text ?? ""));
+    else if (t.type === "codespan") {
+      // With no colour to draw it in, as written, its backticks kept (Task 17's captures, the user's choice: "Keep
+      // backticks").
+      if (palette.accent === undefined) add(t.raw);
+      else over({ color: palette.accent }, () => add(k.text ?? ""));
+    }
     else if (t.type === "del") over({ strike: true }, () => inline(k.tokens ?? [], palette, oneLine, run)); // "Struck through"
     else if (t.type === "br") add("\n");
     else if (t.type === "link") {
@@ -202,7 +207,13 @@ function blocks(tokens: readonly Token[], width: number, palette: Palette, inIte
       out.push(...rows(run));
     } else if (t.type === "code") {
       // On the band, in the text's own colour, no highlighting (choice B); the fences and language are not part of its text.
-      out.push(...(t as Tokens.Code).text.split("\n").map((text) => ({ text: visible(text, { tabs: true }), band: true as const })));
+      // Where there is no band to draw it on (below full colour), between fence lines, so two blocks cannot run
+      // together: its opening line as written and its fence to close it, or ``` for an indented block (Task 17's
+      // captures, the user's choice: "Keep backticks").
+      const code = (t as Tokens.Code).text.split("\n").map((text) => ({ text: visible(text, { tabs: true }), band: true as const }));
+      const opening = /^ {0,3}((`{3,}|~{3,}).*)$/.exec(t.raw.split("\n", 1)[0]!);
+      const fence = (text: string): Line => ({ text: visible(text.trim(), { tabs: true }) });
+      out.push(...(palette.band === undefined ? [fence(opening?.[1] ?? "```"), ...code, fence(opening?.[2] ?? "```")] : code));
     } else if (t.type === "hr") {
       const text = "─".repeat(Math.max(1, width));
       out.push({ text, ...withStyles(styled(0, text.length, { color: palette.muted })), oneLine: true });
