@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { boxProtection, dropOnExit, keptForReview, type Network, sandboxReady, sandboxStart } from "../src/clilib.js";
 import { projectFile } from "../src/core/datadir.js";
 import { openSession, sessionsDir } from "../src/core/sessions.js";
+import { localDate } from "../src/core/setup.js";
 import { readTranscript } from "../src/core/transcript.js";
 import { onPath } from "../src/exec/env.js";
 import { shellFor } from "../src/exec/local.js";
@@ -905,6 +906,23 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     expect(tools[3]!.description).toMatch(new RegExp(`^Run a command with ${shellFor().name} in the project root and return its output\\. `));
   });
 
+  // System prompt plan, Task 2: the launch's prompt has today's date and the git line found in the project.
+  it("with -p, tells the lead today's date and that the project is a git repository", async () => {
+    const { proj, data } = place();
+    mkdirSync(path.join(proj, ".git"));
+    writeFileSync(path.join(proj, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const { url, sent } = await standIn();
+    const before = localDate();
+    const r = await tachiLater("-p", "hi", where(proj, data, url));
+    const days = [before, localDate()]; // a run across midnight takes either
+    expect(r.code).toBe(0);
+    const system = String(sent[0]!.messages[0]!.content);
+    expect(days.some((d) => system.includes(`\nToday's date is ${d}.\n`))).toBe(true);
+    expect(system).toContain("\nThe project is a git repository.\n");
+    const curl = process.platform === "win32" ? "curl.exe" : "curl";
+    expect(system).toContain(`shell commands can fetch web pages, such as with ${curl}.`);
+  });
+
   // Release 8a plan, Task 13 (user, 2026-11-06: "Show the line, send anyway"): a summary for the /autocompact size that
   // fails, the request then sent as it is and answered, fails no -p run. The first reply reports a million prompt tokens,
   // so the next request is over the settings file's size; the summary request is refused; the window is not known.
@@ -1598,8 +1616,6 @@ describe("live link's launch, with a stand-in Docker", () => {
     const started = r.started!;
     expect(started.lines).toEqual([`Sandbox: live link on ${r.root}, network off, limits 4g, 4 CPUs, 1024 processes.`]);
     expect([started.root, started.workspace.root]).toEqual(["/work", "/work"]);
-    expect(started.system).toContain("The project root is /work.");
-    expect(started.system).toContain("Shell commands run with bash on linux.");
     expect(started.subagentSystem).toContain("The project root is /work.");
     expect(started.gate).toEqual({ root: "/work", home: "/tmp", shell: "bash" });
   });

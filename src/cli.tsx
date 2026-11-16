@@ -47,6 +47,7 @@ import {
   sandboxReady,
   sandboxStart,
   screenMode,
+  setupOf,
   type Started,
   stopSoon,
   systemAgain,
@@ -62,9 +63,10 @@ import { type Reached, readInstructions } from "./core/instructions.js";
 import { type Ask, PermissionGate, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { type Row, sessionsDir, sweep } from "./core/sessions.js";
+import { localDate } from "./core/setup.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
-import { errorText, type Message, type Provider } from "./core/types.js";
+import { errorText, type Message, type Provider, type Setup } from "./core/types.js";
 import { LocalExecutor, LocalWorkspace, shellFor } from "./exec/local.js";
 import { Hooks } from "./hooks/hooks.js";
 import { pathsFor } from "./hooks/tools.js";
@@ -629,7 +631,14 @@ if (ready) {
   if (!interactive) for (const line of box.lines) console.error(line);
 }
 const where = box ?? { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root) };
-const first = box?.system ?? systemPrompt(root);
+// The launch's setup and date (system prompt plan, Tasks 1-2): the prompt is built with them, and the start line and
+// a resume's compare record them (Tasks 5-6). The lead's prompt is built where its commands run, /work in the box.
+const setupNow = () => setupOf(root, sandbox, options.network);
+const launchSetup = setupNow();
+const today = localDate();
+const leadPrompt = (date: string, setup: Setup, leadId: string) =>
+  systemPrompt({ root: where.root, date, setup, lead: leadId });
+const first = leadPrompt(today, launchSetup, lead.id);
 const system = [first, instructions.text].filter(Boolean).join("\n\n");
 // The MCP servers, made once the sandbox has started, and started once the bus has its listeners (release 8c plan, Task
 // 9). They work in the project's own folder, as they run outside the box until a later release (design, "Starting and

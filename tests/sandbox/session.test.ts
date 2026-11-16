@@ -6,7 +6,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, type TestContext, vi } from "vitest";
 import { sandboxReady, sandboxStart, type Started } from "../../src/clilib.js";
 import { PermissionGate } from "../../src/core/permissions.js";
+import { systemPrompt } from "../../src/core/prompt.js";
 import { Session } from "../../src/core/session.js";
+import { localDate } from "../../src/core/setup.js";
 import { Tasks } from "../../src/core/tasks.js";
 import type { CompletionRequest, Turn } from "../../src/core/types.js";
 import { onPath } from "../../src/exec/env.js";
@@ -108,7 +110,11 @@ function headless(started: Started, lead: FakeProvider, judge: FakeProvider) {
   // The box's shell tool, made as cli.tsx makes it over a task list (background commands plan, Task 5).
   const tasks = new Tasks({ bus, max: 8, worker: () => lead, system: started.subagentSystem, tools: [], ctx });
   const tools = [...TOOLS, ...shellTools(tasks, { shell: "bash", headless: true })];
-  const session: Session = new Session({ lead, tools, system: started.system, ctx, bus });
+  // The lead's prompt as cli.tsx builds it in the box (system prompt plan, Task 2): only its root and shell lines are
+  // checked here, so the setup is given, not found.
+  const setup = { sandbox: "live", network: "off", git: "repo" } as const;
+  const system = systemPrompt({ root, date: localDate(), setup, lead: lead.id });
+  const session: Session = new Session({ lead, tools, system, ctx, bus });
   return session;
 }
 

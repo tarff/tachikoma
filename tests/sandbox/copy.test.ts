@@ -6,7 +6,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, type TestContext, vi } from "vitest";
 import { sandboxReady, sandboxStart, type Started } from "../../src/clilib.js";
 import { PermissionGate } from "../../src/core/permissions.js";
+import { systemPrompt } from "../../src/core/prompt.js";
 import { Session } from "../../src/core/session.js";
+import { localDate } from "../../src/core/setup.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { onPath } from "../../src/exec/env.js";
 import { gitSettings } from "../../src/safety/gitconfig.js";
@@ -100,7 +102,10 @@ describe("a session in the box with copy mode, in real Docker", { timeout: 0 }, 
     // The box's shell tool, made as cli.tsx makes it over a task list (background commands plan, Task 5).
     const tasks = new Tasks({ bus, max: 8, worker: () => lead, system: started.subagentSystem, tools: [], ctx: on });
     const tools = [...TOOLS, ...shellTools(tasks, { shell: "bash", headless: true })];
-    await new Session({ lead, tools, system: started.system, ctx: on, bus }).send("make a.txt", AbortSignal.timeout(600_000));
+    // The lead's prompt as cli.tsx builds it in copy mode's box (system prompt plan, Task 2).
+    const setup = { sandbox: "copy", network: "off", git: "copy" } as const;
+    const system = systemPrompt({ root, date: localDate(), setup, lead: lead.id });
+    await new Session({ lead, tools, system, ctx: on, bus }).send("make a.txt", AbortSignal.timeout(600_000));
     const folder = path.join(w.data, "copies", session);
     expect(readFileSync(path.join(folder, "work", "a.txt"), "utf8")).toBe("hi\n");
     expect(readdirSync(w.root)).toEqual(["notes.txt"]);

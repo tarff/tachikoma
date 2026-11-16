@@ -8,7 +8,7 @@ import { privateDir } from "./auth/private.js";
 import type { Bus } from "./core/bus.js";
 import { type Instructions, type Reached, readInstructions, type Where } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
-import { subagentPrompt, systemPrompt } from "./core/prompt.js";
+import { subagentPrompt } from "./core/prompt.js";
 import { type Conversation, type Ended, Session, type SessionOptions } from "./core/session.js";
 import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
 import type { CommandTask, Tasks } from "./core/tasks.js";
@@ -457,7 +457,6 @@ export interface Started {
   root: string;
   executor: Executor;
   workspace: BoxWorkspace;
-  system: string;
   subagentSystem: string;
   gate: { root: string; home: string; shell: Shell };
   protection: Protection;
@@ -609,7 +608,6 @@ export async function sandboxStart(
     root: BOX_ROOT,
     executor: opts.network === "off" ? networkNoted(box) : box,
     workspace: new BoxWorkspace(box.id, run, BOX_ROOT, box.state),
-    system: systemPrompt(BOX_ROOT, "linux", "bash"),
     subagentSystem: subagentPrompt(BOX_ROOT),
     gate: { root: BOX_ROOT, home: BOX_HOME, shell: shellOf("box") },
     protection: boxProtection(root, protectionOf(ready.git)),
