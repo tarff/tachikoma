@@ -964,7 +964,9 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     const { url, sent } = await standIn();
     const { proj, data, dir } = place();
     const env = { cwd: proj, TACHI_DATA_DIR: data, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url };
+    const before = localDate();
     const first = await tachiLater("--lead", "openai:lead", "-p", "hi", "-n", "first run", env);
+    const days = [before, localDate()]; // a run across midnight takes either
     expect(first).toMatchObject({ code: 0, stdout: "done\n", stderr: "" });
     const [file] = readdirSync(dir).filter((n) => n.endsWith(".jsonl"));
     const version = JSON.parse(readFileSync("package.json", "utf8")).version;
@@ -972,10 +974,11 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     expect(lines.slice(0, 2)).toMatchObject([
       {
         t: "start", lead: "openai:lead", version, print: true, project: proj,
-        date: localDate(), setup: expect.objectContaining({ sandbox: "off" }),
+        setup: expect.objectContaining({ sandbox: "off" }),
       },
       { t: "name", name: "first run" },
     ]);
+    expect(days).toContain(lines[0].date);
     const again = await tachiLater("--lead", "openai:lead", "-p", "again", "-c", env);
     expect(again).toMatchObject({ code: 0, stdout: "done\n", stderr: "Resumed: first run.\n" });
     expect(sent[1]!.messages.slice(1)).toEqual([
