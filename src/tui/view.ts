@@ -134,6 +134,10 @@ function starts(text: string, width: number, edges: number[] = []): number[] {
 // Printed; TUI design pass, Task 7's review).
 export const firstRowEnd = (text: string, width: number): number => starts(text, width)[1] ?? text.length;
 
+// Where each row of one line, with no line breaks, starts at `width` columns, the first at 0: classic mode breaks a
+// band line with tabs there itself, so its rows are full screen's (Conversation.tsx, Printed; PR 21's review).
+export const rowStartsAt = (text: string, width: number): number[] => starts(text, width);
+
 // What a row of text[start, end) shows: the text itself, with each tab as spaces to its stop, cut at `width`; a space
 // ending the row unseen past its edge (starts(), Task 17's captures) is not drawn.
 function draw(text: string, start: number, end: number, width: number): string {

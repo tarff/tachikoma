@@ -355,6 +355,27 @@ describe("Printed", () => {
       expect(plain(banded.slice(0, banded.indexOf("\u001b[48;2;42;42;42m")))).toBe("  "); // the lead plain, the tab on the band
     }));
 
+  // PR 21's review: a band line's tabs on its later wrapped rows too are printed as the spaces to their stop, counted
+  // from their row's start, and each row starts where full screen's does, so the digits after a tab go to a row of
+  // their own and do not run past the edge Ink measured. The text keeps its tabs.
+  it("prints a band line's tabs on every wrapped row as full screen draws them", () =>
+    coloured(() => {
+      const cases: [Line, number][] = [
+        [{ text: "1234567890 x\t01234567", band: true }, 12],
+        [{ text: "  1234567890 x\t01234567", band: true, bandFrom: 2, indent: 2 }, 14],
+        [{ text: "ab\tcd 1234567890 x\t0123", band: true }, 12],
+      ];
+      for (const look of [undefined, { light: false, color: false, full: false }]) {
+        for (const [line, columns] of cases) {
+          const shown = print(line, columns, look);
+          expect(shown.map((r) => plain(r).trimEnd())).toEqual(fullRows(line, columns).map((r) => r.trimEnd()));
+          for (const r of shown) expect(plain(r).length).toBeLessThanOrEqual(columns);
+          expect(shown.join("")).not.toContain("\t");
+        }
+      }
+      expect(print(cases[0]![0], 12).map((r) => plain(r).trimEnd())).toEqual(["1234567890 x", "", "01234567"]);
+    }));
+
   // Task 17's captures, the user's choice (2026-11-16, "Fix it"): a word that ends exactly at the row's edge, the space
   // after it in no row's room, leaves the next row starting under the text, as full screen draws it, not a column
   // further in: prose, a reply's line, a list item, a quote, your message's band line.

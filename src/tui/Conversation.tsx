@@ -5,7 +5,7 @@ import { segmenter } from "./editor.js";
 import type { Found } from "./find.js";
 import { drawn, ordered } from "./select.js";
 import { ThemeContext } from "./theme.js";
-import { bar, columnsAt, columnsOf, edgeBroken, edgeSpaces, firstRowEnd, inner, type Pos, type Row, type Rows } from "./view.js";
+import { bar, columnsAt, columnsOf, edgeBroken, edgeSpaces, firstRowEnd, inner, type Pos, type Row, type Rows, rowStartsAt } from "./view.js";
 
 // The conversation in full screen (release 5 design, "The screen", "Scrolling"): `height` rows from `first`, each in its
 // line's colour, then blank rows, so what is drawn under it stays at the bottom of the screen; a view held past the
@@ -210,9 +210,23 @@ export function Printed({ line, columns }: { line: Line; columns: number }) {
   // space (Task 17's captures, the user's choice, 2026-11-16: "Fix it"). The text keeps the space, so a copy has it.
   const edges = (from: number, to: number, width?: number): ReadonlySet<number> =>
     new Set(width === undefined || l.oneLine ? [] : edgeSpaces(l.text.slice(from, to), width).map((e) => e + from));
+  // A band line with tabs is broken into rows here, where full screen breaks it (view.ts, rowStartsAt), each later row
+  // after a line break handed to Ink (none after a space already handed as one), and every tab is its spaces counted
+  // from its own row's start: Ink, wrapping the spaces itself, broke a later row's tab otherwise, and a raw tab ran the
+  // row past the edge it measured (PR 21's review). `rowAt`: where each later row starts.
+  const rowsAt = (from: number, to: number, width: number): ReadonlySet<number> => {
+    const out = new Set<number>();
+    let at = from;
+    for (const line of l.text.slice(from, to).split("\n")) {
+      for (const s of rowStartsAt(line, width).slice(1)) out.add(at + s);
+      at += line.length + 1;
+    }
+    return out;
+  };
   const chars = (from: number, to: number, width?: number) => {
     const tabs = width !== undefined && (look.color || l.band === true) && l.text.slice(from, to).includes("\t");
     const breaks = edges(from, to, width);
+    const rowAt = tabs && l.band ? rowsAt(from, to, width!) : null;
     const out: { offset: number; text: string; inverse: boolean; spaces?: string }[] = [];
     let col = 0;
     let end = to; // where the first row of the line the character is on ends
@@ -230,9 +244,12 @@ export function Printed({ line, columns }: { line: Line; columns: number }) {
         const next = l.text.indexOf("\n", at);
         end = at + firstRowEnd(l.text.slice(at, next === -1 ? to : Math.min(next, to)), width);
         col = 0;
+      } else if (rowAt?.has(at)) {
+        if (!breaks.has(at - 1)) out.push({ offset: at, text: "\n", inverse: false });
+        col = 0;
       }
       const w = columnsAt(segment, col, width);
-      const spaces = segment === "\t" && at < end ? " ".repeat(w) : undefined;
+      const spaces = segment === "\t" && (at < end || rowAt !== null) ? " ".repeat(w) : undefined;
       out.push({ offset: at, text: spaces !== undefined && l.band ? spaces : segment, inverse: false, ...(spaces !== undefined ? { spaces } : {}) });
       col += w;
     }
