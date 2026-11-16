@@ -746,6 +746,15 @@ describe("setupOf", () => {
     expect(setupOf(d, "off", "off").git).toBe("repo");
   });
 
+  // System prompt plan, Task 1's code review: only a git folder outside the project gives "outside".
+  it("finds live link's git when the project's .git names a git folder inside it", () => {
+    const d = folder("inside");
+    mkdirSync(path.join(d, ".realgit"), { recursive: true });
+    writeFileSync(path.join(d, ".realgit", "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(path.join(d, ".git"), "gitdir: .realgit\n");
+    expect(setupOf(d, "live", "off").git).toBe("repo");
+  });
+
   it("always gives copy mode's own repository", () => {
     expect(setupOf(repo(folder("copied")), "copy", "off").git).toBe("copy");
   });
