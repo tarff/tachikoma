@@ -10,7 +10,7 @@ import { callText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
 import { type Ask, Declined, type Judge, PermissionGate } from "../../src/core/permissions.js";
 import { type Conversation, Session, truncateLeaving, UNSAVED } from "../../src/core/session.js";
-import { setupNote, type Told } from "../../src/core/setup.js";
+import { localDate, setupNote, type Told } from "../../src/core/setup.js";
 import { CANCELLED, INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
 import { type SubagentTask, Tasks } from "../../src/core/tasks.js";
@@ -3305,5 +3305,21 @@ describe("Session, notes to the model", { timeout: 15_000 }, () => {
     await session.send("again");
     // Stored apart from the results message, though the provider sends the two together.
     expect(session.messages.at(-2)!.parts).toEqual([{ type: "text", text: "again" }, DATE18]);
+  });
+
+  // System prompt plan, Task 8: /clear's prompt built with today's date and the setup as found now, both given back
+  // for the new conversation's start line; a session given no setup gives the local date alone.
+  it("builds the fresh prompt with today's date and the setup now, and gives them back", async () => {
+    const session = new Session({
+      lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+      systemNow: async (date, setup) => `built ${date} ${setup?.sandbox}`,
+      setup: { now: () => LIVE_ON, today: () => "2026-11-18", root: host.root, platform: host.platform },
+    });
+    const built = { system: "built 2026-11-18 live", date: "2026-11-18", setup: LIVE_ON };
+    expect(await session.freshSystem()).toEqual(built);
+    const plain = new Session({
+      lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+    });
+    expect(await plain.freshSystem()).toEqual({ system: "t", date: localDate() });
   });
 });

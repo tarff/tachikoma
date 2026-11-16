@@ -11,7 +11,7 @@ import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/perm
 import { subagentPrompt } from "./core/prompt.js";
 import { type Conversation, type Ended, Session, type SessionOptions } from "./core/session.js";
 import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
-import { localDate, sameSetup } from "./core/setup.js";
+import { sameSetup } from "./core/setup.js";
 import type { CommandTask, Tasks } from "./core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "./core/transcript.js";
 import { errorText, madeUnder, type Message, type Setup, type ToolSpec } from "./core/types.js";
@@ -1024,11 +1024,11 @@ export class WindowSessions {
     return now;
   }
 
-  // /clear's session: a new one under a fresh id, as the launch starts one, under the launch's setup until Task 8 of
-  // the system prompt plan gives it the fresh prompt's.
-  fresh(lead: string, system: string): Opened {
-    const begin = { id: randomUUID(), ...this.start, lead, print: false, system };
-    return newSaved(this.dir, { ...begin, date: localDate(), setup: this.prompt.setup });
+  // /clear's session: a new one under a fresh id, as the launch starts one, its start line recording the fresh prompt's
+  // date and setup, or the window's setup when the session found none (system prompt plan, Task 8).
+  fresh(lead: string, fresh: { system: string; date: string; setup?: Setup }): Opened {
+    const begin = { id: randomUUID(), ...this.start, lead, print: false, system: fresh.system };
+    return newSaved(this.dir, { ...begin, date: fresh.date, setup: fresh.setup ?? this.prompt.setup });
   }
 
   // /resume's pick, opened as the launch opens it, a copy when another window holds it. `lead` is given the session's
@@ -1061,11 +1061,16 @@ export class WindowSessions {
 // A shortening's system prompt (release 8a plan, choice 3): the launch's own first part, and the instruction files read
 // again. A file outside the project goes in only when the launch's question allowed it; one not asked about then is left
 // out without asking (user, 2026-11-06: "Re-read, reuse launch's answer"). `asked` holds the launch's answer for each
-// path it asked about, or is "all" in never mode, where the launch read them without asking.
-export function systemAgain(first: string, where: Where, asked: ReadonlyMap<string, boolean> | "all"): () => Promise<string> {
-  return async () => {
+// path it asked about, or is "all" in never mode, where the launch read them without asking. The lead's first lines are
+// built again with that day's date and the setup as found then (system prompt plan, Task 8; design, "The date").
+export function systemAgain(
+  first: (date: string, setup?: Setup) => string,
+  where: Where,
+  asked: ReadonlyMap<string, boolean> | "all",
+): (date: string, setup?: Setup) => Promise<string> {
+  return async (date, setup) => {
     const again = await readInstructions(where, async (reached) => asked === "all" || reached.every((r) => asked.get(r.path) === true));
-    return [first, again.text].filter(Boolean).join("\n\n");
+    return [first(date, setup), again.text].filter(Boolean).join("\n\n");
   };
 }
 

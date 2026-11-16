@@ -10879,6 +10879,11 @@ describe("App's sessions", () => {
     expect(session.id).not.toBe(old);
     expect(free(old)).toBe(true); // carry-over note b
     expect(free(session.id)).toBe(false);
+    // The new session's start line records the fresh prompt's date, and the window's setup when the session finds
+    // none (system prompt plan, Task 8).
+    const first = JSON.parse(readFileSync(fileOf(session.id), "utf8").split("\n")[0]!);
+    expect(first.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(first.setup).toEqual({ sandbox: "off", git: "none" });
     await type(app, "second");
     await waitFor(() => lead.asked.length === 2);
     expect(lead.asked[1]!.messages).toEqual([typed("second")]);

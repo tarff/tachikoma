@@ -11,7 +11,7 @@ import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
 import { type Ask, Declined, type PermissionGate, StoppedFirst, visible } from "./permissions.js";
-import { dueNotes, type Told, toldAfter } from "./setup.js";
+import { dueNotes, localDate, type Told, toldAfter } from "./setup.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
@@ -116,8 +116,9 @@ export interface SessionOptions {
   fallback?: Provider; // retries a turn the lead refused; chosen by the user, never by default
   tools: Tool[];
   system: string; // the starting value: Session.system is the conversation's (release 8a plan, choice 3)
-  // The system prompt built afresh, the instruction files read again, for a shortening (release 8a plan, choice 3).
-  systemNow?: () => Promise<string>;
+  // The system prompt built afresh, the instruction files read again, for a shortening (release 8a plan, choice 3),
+  // with the date and setup it is built under (system prompt plan, Task 8).
+  systemNow?: (date: string, setup?: Setup) => Promise<string>;
   id?: string; // the session's, as its transcript is named: a subagent's is its own, t1 and so on
   // Where each message is saved as it joins the history (release 8a design, "Saving sessions"); none, nothing is saved.
   transcript?: Transcript;
@@ -319,10 +320,14 @@ export class Session {
     this.#saving(); // a write made before the load, such as launch's start line or mend
   }
 
-  // The system prompt built afresh, for /clear (release 8a plan, Task 7): the instruction files read again, or without
-  // systemNow the starting one.
-  freshSystem(): Promise<string> {
-    return this.opts.systemNow?.() ?? Promise.resolve(this.opts.system);
+  // The system prompt built afresh, for /clear and a shortening (release 8a plan, Task 7; system prompt plan, Task 8):
+  // with today's date and the setup as found now, the instruction files read again, or without systemNow the starting
+  // one. Its date and setup go on the line that begins the new conversation.
+  async freshSystem(): Promise<{ system: string; date: string; setup?: Setup }> {
+    const date = this.opts.setup?.today() ?? localDate();
+    const setup = this.opts.setup?.now();
+    const system = this.opts.systemNow ? await this.opts.systemNow(date, setup) : this.opts.system;
+    return setup ? { system, date, setup } : { system, date };
   }
 
   // Hooks' text for the model to go with the next request, at the start of the next user message: SessionStart's (release
@@ -976,7 +981,7 @@ export class Session {
     // The new history goes with a system prompt built afresh, both in one line, so the shortening is saved whole or not
     // at all (choices 3 and 4). A line that cannot be written changes nothing, though the hooks above have run (a known
     // limit, Task 13).
-    const system = await this.freshSystem();
+    const { system } = await this.freshSystem();
     if (signal?.aborted) return { problem: CANCELLED }; // a stop while the files were read changes nothing either
     t.write({ t: "shortened", system, message });
     if (t.failed !== null) {

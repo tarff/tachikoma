@@ -1401,6 +1401,15 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(later).toEqual(["Today's date is now 2026-11-18."]);
     });
 
+    // System prompt plan, Task 8: /clear's prompt is built with that day's date, which its start line records, so the
+    // new conversation's first request needs no date note.
+    it("sends no date note after a /clear on a later day, the new prompt having the date", async () => {
+      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, SAVED);
+      const fresh = w.fresh("fake:a", { system: "Fresh prompt of 2026-11-18.", date: "2026-11-18" });
+      onTestFinished(fresh.release);
+      expect(await sendAfter(fresh, OFF, "2026-11-18")).toEqual([]);
+    });
+
     it("tells a conversation saved before this change of the date, and of the setup as far as known", async () => {
       const date = "Today's date is now 2026-11-17."; // never told
       saved(dir, "notedoff", chat({ ...start("notedoff"), box: false }));
@@ -1621,16 +1630,17 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     });
     expect(launch.text).toContain("allowed words");
     writeFileSync(path.join(root, "CLAUDE.md"), "second words\n@../outside/allowed.md\n");
-    const again = systemAgain("The base.", where, asked);
-    let text = await again();
-    expect(text.startsWith("The base.\n\n")).toBe(true);
+    const again = systemAgain((date) => `The base of ${date}.`, where, asked);
+    let text = await again("2026-11-18");
+    expect(text.startsWith("The base of 2026-11-18.\n\n")).toBe(true);
     expect(text).toContain("second words");
     expect(text).toContain("allowed words");
     writeFileSync(path.join(root, "CLAUDE.md"), "third words\n@../outside/new.md\n");
-    text = await again();
+    text = await again("2026-11-18");
     expect(text).toContain("third words");
     expect(text).not.toContain("new words");
-    expect(await systemAgain("The base.", where, "all")()).toContain("new words"); // never mode reads them, as at launch
+    const all = systemAgain(() => "The base.", where, "all");
+    expect(await all("2026-11-18")).toContain("new words"); // never mode reads them, as at launch
   });
 
   describe("newSaved", () => {
@@ -1683,7 +1693,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       saved(dir, "w2", lost("w2"));
       const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, SAVED, opened("w2"));
       onTestFinished(() => w.release());
-      const next = w.fresh("fake:b", "Fresh prompt.");
+      const next = w.fresh("fake:b", { system: "Fresh prompt.", date: "2026-11-18", setup: LIVE_ON });
       w.switched(next);
       expect(w.lost()).toEqual([]);
       expect(marked("w2")).toBe(false);
@@ -1691,8 +1701,10 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(lock).not.toBeNull();
       lock!.release();
       expect(openSession(dir, next.conversation.id)).toBeNull(); // the new one's held
+      // The fresh prompt's date and setup, not the window's (system prompt plan, Task 8).
       const fresh = { t: "start", project: top, lead: "fake:b", print: false, system: "Fresh prompt.", tools };
-      expect(lines(next.conversation.transcript!.file)).toMatchObject([fresh]);
+      const recorded = { date: "2026-11-18", setup: LIVE_ON, box: true };
+      expect(lines(next.conversation.transcript!.file)).toMatchObject([{ ...fresh, ...recorded }]);
     });
 
     it("opens /resume's pick under the launch's sandbox setting and prompt, as the launch opens one", () => {
@@ -1704,9 +1716,9 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       onTestFinished(next.release);
       expect(next.conversation.system).toBe("Box prompt.");
       expect(lines(file).at(-1)).toMatchObject({ t: "system", system: "Box prompt.", box: true, setup: LIVE_OFF });
-      const fresh = w.fresh("fake:a", "Fresh prompt.");
+      const fresh = w.fresh("fake:a", { system: "Fresh prompt.", date: "2026-11-18" }); // no setup: the window's
       onTestFinished(fresh.release);
-      const first = { t: "start", system: "Fresh prompt.", box: true, setup: LIVE_OFF };
+      const first = { t: "start", system: "Fresh prompt.", date: "2026-11-18", box: true, setup: LIVE_OFF };
       expect(lines(fresh.conversation.transcript!.file)[0]).toMatchObject(first);
     });
 

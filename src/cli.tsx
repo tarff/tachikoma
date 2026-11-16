@@ -766,7 +766,14 @@ const { session, pictures } = leadSession({
   fallback,
   tools,
   system,
-  systemNow: systemAgain(first, instructionsAt, mode === "never" ? "all" : asked), // a shortening's and /clear's prompt (release 8a plan, choice 3)
+  // A shortening's and /clear's prompt (release 8a plan, choice 3), built with that day's date and the setup as found
+  // then (system prompt plan, Task 8). The lead leading then picks the maker lines (decision 1); `session` is read only
+  // when a prompt is built, after it is made.
+  systemNow: systemAgain(
+    (date, setup = setupNow()) => leadPrompt(date, setup, session.lead.id),
+    instructionsAt,
+    mode === "never" ? "all" : asked,
+  ),
   ctx: { root: where.root, executor, workspace, gate },
   bus,
   inbox: () => [...windowSessions.lost(), ...tasks.take()],
