@@ -884,7 +884,7 @@ export function resumed(
   const { read, transcript } = s;
   if (o.name) transcript.write({ t: "name", name: o.name });
   if (o.lead !== read.lead) transcript.write({ t: "lead", lead: o.lead });
-  const rebuilt = read.box !== o.prompt.box;
+  const rebuilt = (read.setup.sandbox !== "off") !== o.prompt.box;
   if (rebuilt) transcript.write({ t: "system", system: o.prompt.full, box: o.prompt.box });
   if (o.interactive && read.print) transcript.write({ t: "interactive" });
   const system = rebuilt ? o.prompt.full : read.system;
