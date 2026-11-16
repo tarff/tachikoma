@@ -3,6 +3,7 @@ import { type ReactNode, useContext } from "react";
 import type { Line, Span } from "./describe.js";
 import { segmenter } from "./editor.js";
 import type { Found } from "./find.js";
+import { linked } from "./links.js";
 import { drawn, ordered } from "./select.js";
 import { ThemeContext } from "./theme.js";
 import { bar, columnsAt, columnsOf, edgeBroken, edgeSpaces, firstRowEnd, inner, type Pos, type Row, type Rows, rowStartsAt } from "./view.js";
@@ -82,7 +83,8 @@ export function Conversation({
 // mark on any of its text, drawn as its text. Its characters are drawn and found as select.ts's placeAt finds them
 // (select.ts, drawn). In two parts: what is drawn before column `bandAt` and what is drawn from it, a band from a
 // column drawn in a box of each (Task 16's spec review), so a row with one is never null; with none the first part is
-// empty.
+// empty. Its links' ids are its kept line's, the same on each of its rows, and the "…" that cuts it is no link
+// (clickable links plan, Task 3).
 function marked(rows: Rows, r: Row, marks: [Pos, Pos][], bandAt = 0): [ReactNode[], ReactNode[]] | null {
   const inside = marks.flatMap((m) => {
     const [from, to] = ordered(...m);
@@ -97,17 +99,23 @@ function marked(rows: Rows, r: Row, marks: [Pos, Pos][], bandAt = 0): [ReactNode
     text: c.text,
     // The "…" stands for all it cuts, which a mark reaches into or not.
     inverse: inside.some(({ a, b }) => (c.cut ? b > c.offset : c.offset >= a && c.offset < b)),
+    cut: c.cut,
   }));
   const spaces = r.indent ?? 0;
   const before = Math.min(spaces, bandAt); // the indent's spaces before the column
   return [
-    [...(before ? [" ".repeat(before)] : []), ...runs(chars.filter((c) => c.col < bandAt), r.styles)],
-    [...(spaces > before ? [" ".repeat(spaces - before)] : []), ...runs(chars.filter((c) => c.col >= bandAt), r.styles)],
+    [...(before ? [" ".repeat(before)] : []), ...runs(chars.filter((c) => c.col < bandAt), r.styles, r.line)],
+    [
+      ...(spaces > before ? [" ".repeat(spaces - before)] : []),
+      ...runs(chars.filter((c) => c.col >= bandAt), r.styles, r.line),
+    ],
   ];
 }
 
-type Style = Omit<Span, "start" | "end">;
-const STYLE = ["color", "bg", "bold", "italic", "dim", "underline", "strike"] as const;
+// `id`: a link's, `<key>-<the start of the span giving it its link>`, digits and - only, so never the : or ; OSC 8
+// keeps for itself (clickable links plan, Task 3).
+type Style = Omit<Span, "start" | "end"> & { id?: string };
+const STYLE = ["color", "bg", "bold", "italic", "dim", "underline", "strike", "link"] as const;
 
 // Characters in runs of one style and one reverse colouring: a run with neither as its text, a reversed one as a Text in
 // reverse, a styled one as a Run. A character's style is the spans' over it, a later span's fields over an earlier one's,
@@ -116,7 +124,14 @@ const STYLE = ["color", "bg", "bold", "italic", "dim", "underline", "strike"] as
 // character change: a line with a span for each of thousands of lines, a long edit's preview, is drawn in time that grows
 // with its length (Task 7's review).
 // A character's `spaces`, a tab's in classic mode (Printed), is drawn in its place where its style has a background.
-function runs(chars: Iterable<{ offset: number; text: string; inverse: boolean; spaces?: string }>, spans: readonly Span[] = []): ReactNode[] {
+// A link's id is made from `key` and its span's start, and two runs join only where both match; a `cut` character, the
+// "…" full screen cuts a one-line entry with (select.ts, drawn), stands inside no link, its other styles kept
+// (clickable links plan, Task 3; the review's finding 2).
+function runs(
+  chars: Iterable<{ offset: number; text: string; inverse: boolean; spaces?: string; cut?: boolean }>,
+  spans: readonly Span[] = [],
+  key = 0,
+): ReactNode[] {
   const parts: { text: string; style: Style; inverse: boolean }[] = [];
   const order = spans.map((_, i) => i).sort((a, b) => spans[a]!.start - spans[b]!.start);
   let next = 0; // the first in `order` not yet reached
@@ -130,12 +145,17 @@ function runs(chars: Iterable<{ offset: number; text: string; inverse: boolean; 
     if (reached || over.length < open.length) {
       open = reached ? over.sort((a, b) => a - b) : over;
       style = {};
-      for (const i of open) for (const k of STYLE) if (spans[i]![k] !== undefined) Object.assign(style, { [k]: spans[i]![k] });
+      for (const i of open) {
+        for (const k of STYLE) if (spans[i]![k] !== undefined) Object.assign(style, { [k]: spans[i]![k] });
+        if (spans[i]!.link !== undefined) style.id = `${key}-${spans[i]!.start}`;
+      }
     }
-    const text = c.spaces !== undefined && style.bg !== undefined ? c.spaces : c.text;
+    const own: Style = c.cut && style.link !== undefined ? { ...style, link: undefined, id: undefined } : style;
+    const text = c.spaces !== undefined && own.bg !== undefined ? c.spaces : c.text;
     const last = parts.at(-1);
-    if (last && last.inverse === c.inverse && STYLE.every((k) => last.style[k] === style[k])) last.text += text;
-    else parts.push({ text, style, inverse: c.inverse });
+    const same = last && last.inverse === c.inverse && last.style.id === own.id;
+    if (same && STYLE.every((k) => last.style[k] === own[k])) last.text += text;
+    else parts.push({ text, style: own, inverse: c.inverse });
   }
   return parts.map((p, k) =>
     STYLE.some((s) => p.style[s] !== undefined) ? (
@@ -154,12 +174,15 @@ function runs(chars: Iterable<{ offset: number; text: string; inverse: boolean; 
 
 // A styled run, over its line's colour. Without colour (theme.ts, Look) its colour and background are dropped, and bold,
 // italic, dim, underline and strikethrough kept (Task 2; Task 15). `inverse`: the selection's or a search match's reverse,
-// over the style.
+// over the style. With links on, a run with a link is drawn inside one, each of its lines in its own open and close
+// (links.ts, linked), and with colour in the accent blue over any colour of its own (clickable links plan, Task 3;
+// decision 5); a link of "" is markdown's refused one, drawn as no link.
 function Run({ style, inverse, children }: { style: Style; inverse: boolean; children: string }) {
-  const { look } = useContext(ThemeContext);
+  const { look, palette } = useContext(ThemeContext);
+  const link = look.links && style.link ? style.link : undefined;
   return (
     <Text
-      color={look.color ? style.color : undefined}
+      color={look.color ? (link ? palette.accent : style.color) : undefined}
       backgroundColor={look.color ? style.bg : undefined}
       bold={style.bold}
       italic={style.italic}
@@ -168,7 +191,7 @@ function Run({ style, inverse, children }: { style: Style; inverse: boolean; chi
       strikethrough={style.strike}
       inverse={inverse}
     >
-      {children}
+      {link ? linked(link, style.id!, children) : children}
     </Text>
   );
 }
@@ -189,8 +212,9 @@ function Band({ width, children }: { width: number; children: ReactNode }) {
 // wraps, so its later rows, wrapped or after a line break, start under the rest (choice P3), as view.ts wraps it in full
 // screen; a band line on the band colour from its `bandFrom` column to the screen's width. A line with none of these
 // prints as it did before, but an empty one is a space, as an empty Text takes no row and a gap or a band line must
-// take one (Task 2's review).
-export function Printed({ line, columns }: { line: Line; columns: number }) {
+// take one (Task 2's review). `at`: the said line's id (App.tsx), which its links' ids start with, the same on each row
+// Ink's wrap-ansi reopens a link on (clickable links plan, Task 3).
+export function Printed({ line, columns, at = 0 }: { line: Line; columns: number; at?: number }) {
   const { look, palette } = useContext(ThemeContext);
   const l = line.text ? line : { ...line, text: " " };
   const n = l.oneLine ? 0 : (l.indent ?? 0);
@@ -258,7 +282,7 @@ export function Printed({ line, columns }: { line: Line; columns: number }) {
   const text = (from: number, to: number, width?: number) => (
     <Text color={l.color && palette[l.color]} wrap={l.oneLine ? "truncate-end" : "wrap"}>
       {l.styles || bandTabs(from, to, width)
-        ? runs(chars(from, to, width), l.styles)
+        ? runs(chars(from, to, width), l.styles, at)
         : width === undefined || l.oneLine
           ? l.text.slice(from, to)
           : edgeBroken(l.text.slice(from, to), width)}

@@ -865,7 +865,7 @@ export function App(props: AppProps) {
         />
       ) : (
         <Static items={ui.printUpTo.current === null ? ui.lines : ui.lines.slice(0, ui.printUpTo.current)}>
-          {(l) => <Printed key={l.id} line={l} columns={ui.columns} />}
+          {(l) => <Printed key={l.id} line={l} columns={ui.columns} at={l.id} />}
         </Static>
       )}
       {ui.form ? (

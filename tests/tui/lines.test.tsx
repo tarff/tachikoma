@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { Static } from "ink";
+import { Box, Static } from "ink";
 import { render } from "ink-testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ToolOutcome } from "../../src/core/bus.js";
@@ -8,7 +8,15 @@ import type { CommandTask, Task } from "../../src/core/tasks.js";
 import { names } from "../../src/tui/app/constants.js";
 import { Printed } from "../../src/tui/Conversation.js";
 import type { Message } from "../../src/core/types.js";
-import { callRow, describe as describeMessage, gapped, type Line, notice, resultRow } from "../../src/tui/describe.js";
+import {
+  callRow,
+  describe as describeMessage,
+  gapped,
+  type Line,
+  notice,
+  resultRow,
+  screen,
+} from "../../src/tui/describe.js";
 import { taskRows } from "../../src/tui/TaskPanel.js";
 import { type Colour, type Look, palette, ThemeContext } from "../../src/tui/theme.js";
 import { Rows, textWidth } from "../../src/tui/view.js";
@@ -422,6 +430,107 @@ describe("Printed", () => {
       expect(within(shown[0]!, "31", "39")).toBe("- line 0");
       expect(within(shown[299]!, "32", "39")).toBe("- line 299");
       expect(reads).toBeLessThan(20 * (text.length + n));
+    }));
+});
+
+// Clickable links plan, Task 3: classic mode prints a link span as an OSC 8 link, its id the said line's (`at`) and the
+// address's start; Ink's wrap-ansi reopens it on each row it wraps to. chalk at level 3, as above. A line with no lead
+// wraps at the box it is in, here one `columns` wide, as the App's are at the terminal's width.
+describe("Printed's links", () => {
+  const mounted: ReturnType<typeof render>[] = [];
+  afterEach(() => {
+    for (const app of mounted.splice(0)) app.unmount();
+  });
+  const CLOSE = "\u001b]8;;\u0007";
+  const plain = (s: string) => s.replace(/\u001b\[[\d;]*m/g, "").replace(/\u001b\]8;[^\u0007]*\u0007/g, "");
+  const within = (row: string, open: string, close: string) =>
+    [...row.matchAll(new RegExp(`\\u001b\\[${open}m(.*?)\\u001b\\[${close}m`, "g"))].map((m) => plain(m[1]!)).join("");
+  const linksIn = (row: string) =>
+    [...row.matchAll(/\u001b\]8;id=([^;]*);([^\u0007]*)\u0007(.*?)\u001b\]8;;\u0007/g)].map((m) => ({
+      id: m[1],
+      url: m[2],
+      text: plain(m[3]!),
+    }));
+  const opens = (row: string) => linksIn(row).map(({ id, url }) => ({ id, url })); // without the text inside
+  const rowsOf = (shown: string[]) => shown.map((r) => plain(r).trimEnd());
+  const BLUE = "38;2;66;120;222"; // #4278de, the accent in both looks (theme.ts)
+  const ON: Look = { light: false, color: true, full: true, links: true };
+  const OFF: Look = { light: false, color: true, full: true };
+  const print = (line: Line, columns: number, look: Look, at?: number) => {
+    const app = render(
+      <ThemeContext value={{ look, palette: palette(look) }}>
+        <Box width={columns}>
+          <Printed line={line} columns={columns} {...(at === undefined ? {} : { at })} />
+        </Box>
+      </ThemeContext>,
+    );
+    mounted.push(app);
+    return app.lastFrame()!.split("\n");
+  };
+  const coloured = <T,>(run: () => T): T => {
+    const level = chalk.level;
+    chalk.level = 3;
+    try {
+      return run();
+    } finally {
+      chalk.level = level;
+    }
+  };
+
+  it("prints a wrapped address with an open of the line's id on each row, and a close, the text after it outside", () =>
+    coloured(() => {
+      const address = `https://example.com/${"a".repeat(27)}`; // 47 characters: 3 rows at 20 columns
+      const line = screen({ text: `${address} after` });
+      const shown = print(line, 20, ON, 7);
+      expect(rowsOf(shown)).toEqual(["https://example.com/", "a".repeat(20), `${"a".repeat(7)} after`]);
+      for (const row of shown) expect(opens(row)).toEqual([{ id: "7-0", url: address }]);
+      expect(shown.flatMap(linksIn).map((l) => l.text).join("")).toBe(address);
+      expect(plain(shown[2]!.slice(shown[2]!.lastIndexOf(CLOSE))).trimEnd()).toBe(" after");
+      expect(within(shown[0]!, BLUE, "39")).toBe("https://example.com/");
+      // Links off: the frame of the line with no span at all, as today.
+      expect(print(line, 20, OFF, 7)).toEqual(print({ text: line.text }, 20, OFF, 7));
+    }));
+
+  it("links both rows of a link's text broken at a space at the row's edge (edgeSpaces)", () =>
+    coloured(() => {
+      const line: Line = {
+        text: "aaaaaaaaaa bbb",
+        styles: [
+          { start: 0, end: 14, underline: true },
+          { start: 0, end: 14, link: "https://x.y" },
+        ],
+      };
+      const shown = print(line, 10, ON);
+      expect(rowsOf(shown)).toEqual(["aaaaaaaaaa", "bbb"]);
+      expect(shown.map(linksIn)).toEqual([
+        [{ id: "0-0", url: "https://x.y", text: "aaaaaaaaaa" }],
+        [{ id: "0-0", url: "https://x.y", text: "bbb" }],
+      ]);
+    }));
+
+  it("links each row of an address on a band line with a tab, broken into rows here (rowsAt)", () =>
+    coloured(() => {
+      const line = screen({ text: "\thttps://example.com/abc", band: true });
+      const shown = print(line, 12, ON);
+      // The address goes to a row of its own after the tab, then is cut across two, as full screen draws it.
+      const full = new Rows(12);
+      full.add([line]);
+      expect(rowsOf(shown)).toEqual(Array.from({ length: full.total }, (_, i) => full.row(i).text.trimEnd()));
+      expect(rowsOf(shown)).toEqual(["", "https://exam", "ple.com/abc"]);
+      expect(linksIn(shown[0]!)).toEqual([]);
+      for (const row of shown.slice(1)) expect(opens(row)).toEqual([{ id: "0-1", url: "https://example.com/abc" }]);
+      expect(shown.flatMap(linksIn).map((l) => l.text).join("")).toBe("https://example.com/abc");
+    }));
+
+  // The review's finding 2, in classic: Ink cuts the line itself (cli-truncate), which puts the … after the link's
+  // close, in the run's style, as any styled run cut there is: so blue but not linked.
+  it("prints a cut one-line entry's … after its link's close, in the run's blue", () =>
+    coloured(() => {
+      const shown = print(screen({ text: "x https://example.com/a", oneLine: true }), 10, ON);
+      expect(plain(shown[0]!)).toBe("x https:/…");
+      expect(linksIn(shown[0]!)).toEqual([{ id: "0-2", url: "https://example.com/a", text: "https:/" }]);
+      expect(shown[0]!.slice(shown[0]!.lastIndexOf(CLOSE))).toContain("…");
+      expect(within(shown[0]!, BLUE, "39")).toBe("https:/…");
     }));
 });
 
