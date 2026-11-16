@@ -14,8 +14,8 @@ import { bar, columnsAt, columnsOf, edgeBroken, edgeSpaces, firstRowEnd, inner, 
 // last row counts the lines that came in (choice 5). Each row is a Box one row tall, as an empty Text takes no row. The
 // selection shows in reverse colours on the text only, never on the bar's column (release 5 design, "Selecting"), and so
 // do the detail view's search matches, `found` (DetailView.tsx; plan, choice 12). `bottom` is the key bound to
-// scroll:bottom, which the count names (release 6 plan, Task 6), if any. A band row is on the band colour to the bar's
-// column (TUI design pass, Task 2).
+// scroll:bottom, which the count names (release 6 plan, Task 6), if any. A band row is on the band colour from its
+// line's `bandFrom` column, its start where none, to the bar's column (TUI design pass, Task 2; Task 16).
 export function Conversation({
   rows,
   first,
@@ -187,8 +187,9 @@ function Band({ width, children }: { width: number; children: ReactNode }) {
 // A line as classic mode prints it, `columns` the screen's width (Task 2): in runs of its spans' styles; an indented one
 // in a row box, its lead (the first `indent` characters) in a box of its own and the rest in a box beside it that
 // wraps, so its later rows, wrapped or after a line break, start under the rest (choice P3), as view.ts wraps it in full
-// screen; a band line on the band colour the screen's width. A line with none of these prints as it did before, but an
-// empty one is a space, as an empty Text takes no row and a gap or a band line must take one (Task 2's review).
+// screen; a band line on the band colour from its `bandFrom` column to the screen's width. A line with none of these
+// prints as it did before, but an empty one is a space, as an empty Text takes no row and a gap or a band line must
+// take one (Task 2's review).
 export function Printed({ line, columns }: { line: Line; columns: number }) {
   const { look, palette } = useContext(ThemeContext);
   const l = line.text ? line : { ...line, text: " " };

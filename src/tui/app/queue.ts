@@ -32,6 +32,7 @@ import { type Draft, joined, trimmed } from "../pictures.js";
 import { type Action, stateText } from "../McpList.js";
 import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
+import type { Palette } from "../theme.js";
 import { FOLLOWING, textWidth } from "../view.js";
 import {
   characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, listed, names, NOT_GONE, reviewUnopened, SESSION_WORDS, SHORTEN_WORDS,
@@ -136,7 +137,7 @@ export const queue = (ui: UI, fns: Fns) => {
       // commands plan, Task 9); the list, stopping and mistakes print.
       if (command === "/tasks") {
         const t = fns.recordToOpen(text);
-        return t ? fns.openDetail(fns.recordOf(t)) : fns.say(...fns.tasksCommand(words));
+        return t ? fns.openDetail(fns.recordOf(t), recordPrinted(t)) : fns.say(...fns.tasksCommand(words));
       }
       if (command === "/lead" && !listing) return await leadTo(words.join(" "));
       // The window's saved sessions (release 8a plan, Task 7). A name is the rest of the first line as typed, and so is
@@ -516,17 +517,22 @@ export const queue = (ui: UI, fns: Fns) => {
   // `/tasks t3`'s record: the subagent's tool calls and answer in full. A finished one's answer is drawn as markdown, as
   // a reply's text is, under its grey heading, in the text's own colours, laid out for the columns its text has now, as
   // it has no lead of its own (TUI design pass, Task 16's spec review, the user's choice: "Draw it as markdown"), an
-  // empty line between them (Task 17's captures, the user's choice: "Add an empty line").
-  const recordOf = (t: Task): Line[] => {
+  // empty line between them (Task 17's captures, the user's choice: "Add an empty line"). `palette`: the colours the
+  // answer is laid out for, `[`'s print-out's having no accent or band (recordPrinted).
+  const recordOf = (t: Task, palette: Palette = ui.palette): Line[] => {
     if (t.kind === "command") return commandRecord(t);
     const calls = callLines(t.messages, ui.run.options.names);
     const width = textWidth(ui.frame.current.columns, ui.fullNow.current);
     const end =
       t.state === "done"
-        ? [gray("Answer:"), { text: "" }, ...markdownLines(t.answer ?? "", width, ui.palette)]
+        ? [gray("Answer:"), { text: "" }, ...markdownLines(t.answer ?? "", width, palette)]
         : [gray(t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)")];
     return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, ...end];
   };
+  // The record as `[` prints it (handover.tsx, printOut), which draws each line's text and colour only: its answer laid
+  // out as with no colour, inline code keeping its backticks and a code block its fence lines, at the same width (the
+  // whole PR's review, the user's choice, 2026-11-16: "Keep the marks").
+  const recordPrinted = (t: Task): Line[] => recordOf(t, { ...ui.palette, accent: undefined, band: undefined });
   // A command's record (background commands plan, Task 9): once it ended, how, in shell_output's first line; the dropped
   // note when its log took in more than it keeps; then the output kept, read with kept(), which leaves the model's place,
   // so shell_output still gives it all (choice 31, the user's).

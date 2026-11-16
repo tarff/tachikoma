@@ -6735,6 +6735,25 @@ describe("App's detail view printed out", () => {
     });
   });
 
+  // The whole PR's review, the user's choice (2026-11-16, "Keep the marks"): the print-out draws no styles or band, so
+  // its answer is laid out as without colour, code keeping its backticks and fences; the view keeps them drawn.
+  it("prints an answer's code with its backticks and fence lines, which the view in colour leaves out", async () => {
+    const answer = "Run `npm test` first:\n\n```sh\nnpm test\nnpm run build\n```";
+    const p = await onTerminal(new FakeProvider("a", [callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")]), {
+      worker: new FakeProvider("w", [reply(answer)]),
+    });
+    await p.key("go", "\r");
+    await waitFor(() => p.session.messages.at(-1)?.role === "assistant");
+    await p.key("/tasks t1", "\r");
+    await waitFor(() => text(p.steps).includes("t1 (find x), done: 0 tool calls"));
+    expect(text(p.steps)).toContain("Run npm test first:");
+    expect(text(p.steps)).not.toContain("```");
+    p.steps.length = 0;
+    await p.key("[");
+    const printed = stripVTControlCharacters(p.steps[p.steps.indexOf(FIRST_SCREEN) + 1]!);
+    expect(printed).toContain("Answer:\n\nRun `npm test` first:\n\n```sh\nnpm test\nnpm run build\n```\n");
+  });
+
   it("prints the view at the terminal's width after a resize", async () => {
     const { steps, key, terminal } = await record();
     terminal.columns = 60;

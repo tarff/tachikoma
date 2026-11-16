@@ -851,8 +851,9 @@ tool output and notices are never read as markdown: they show as written.
   its backticks, and the bold, italic, underlined and struck text keep their style.
 - **Tables** are drawn in a rounded grey box, with a line under the header row and each column
   aligned as the markdown says, when they fit the width at the moment the reply is drawn. A wider
-  one is left as its raw text. A later resize cuts a drawn table's rows, and a rule's, with `…`
-  rather than wrapping them, as the start-up box's are; the rest of the reply wraps again.
+  one is left as its raw text. A later resize, or `/screen` from classic, which is a column
+  narrower, cuts a drawn table's rows, and a rule's, with `…` rather than wrapping them, as the
+  start-up box's are; the rest of the reply wraps again.
 - **Copying gives what is drawn:** `**hello**` copies as `hello`, and a table with its borders.
   The reply's `● ` and the two spaces before its later lines are copied too.
 - **`/export` writes the raw markdown,** as the model wrote it, and `/export` alone copies the
@@ -2434,8 +2435,8 @@ it says so.
   are drawn out of place.
 - **A quote line too long for the screen** shows its `│` on its first row only.
 - **List numbers are not padded,** so the text of item `9.` and item `10.` does not line up.
-- **Named HTML entities show as written** (`&amp;`); numbered ones (`&#38;`) show as their
-  character.
+- **Named HTML entities show as written** (`&amp;`); numbered ones (`&#60;`) show as their
+  character, except `&#38;`, which shows as `&amp;`.
 - **A long paragraph full of unmatched `*` is slow to draw:** in a test, 12,000 characters took
   0.9 s and 24,000 took 3.9 s, each time it is drawn: when the reply arrives, at `-c` or `-r`, and
   at each `/tasks t3` for a subagent's answer. A reply under 10,000 characters took under 0.3 s.

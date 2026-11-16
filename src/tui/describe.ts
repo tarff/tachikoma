@@ -32,9 +32,9 @@ export interface Line {
   color?: Role; // looked up in the palette where the line is drawn (TUI design pass, Task 13)
   oneLine?: boolean; // shown on one line, cut to the screen's width (App.tsx)
   fold?: Fold; // a folded tool row, or a row of one opened, which a click opens or closes (release 8c plan, Task 15)
-  // TUI design pass, Task 2: the spans' styles; the whole row on the band colour; later rows (wrapped, or after a line
-  // break) starting `indent` columns in, under the rest of the first row, the first `indent` characters its lead (choice
-  // P3); the line starts a block (Task 3).
+  // TUI design pass, Task 2: the spans' styles; the row on the band colour, from `bandFrom` on; later rows (wrapped, or
+  // after a line break) starting `indent` columns in, under the rest of the first row, the first `indent` characters
+  // its lead (choice P3); the line starts a block (Task 3).
   styles?: Span[];
   band?: true;
   // The band starting this many columns in, the columns before it plain: on the first row the line's lead, on the
