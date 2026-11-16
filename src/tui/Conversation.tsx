@@ -5,7 +5,7 @@ import { segmenter } from "./editor.js";
 import type { Found } from "./find.js";
 import { drawn, ordered } from "./select.js";
 import { ThemeContext } from "./theme.js";
-import { bar, columnsAt, columnsOf, edgeSpaces, firstRowEnd, inner, type Pos, type Row, type Rows } from "./view.js";
+import { bar, columnsAt, columnsOf, edgeBroken, edgeSpaces, firstRowEnd, inner, type Pos, type Row, type Rows } from "./view.js";
 
 // The conversation in full screen (release 5 design, "The screen", "Scrolling"): `height` rows from `first`, each in its
 // line's colour, then blank rows, so what is drawn under it stays at the bottom of the screen; a view held past the
@@ -239,19 +239,13 @@ export function Printed({ line, columns }: { line: Line; columns: number }) {
   };
   const text = (from: number, to: number, width?: number) => (
     <Text color={l.color && palette[l.color]} wrap={l.oneLine ? "truncate-end" : "wrap"}>
-      {l.styles || bandTabs(from, to, width) ? runs(chars(from, to, width), l.styles) : broken(from, to, edges(from, to, width))}
+      {l.styles || bandTabs(from, to, width)
+        ? runs(chars(from, to, width), l.styles)
+        : width === undefined || l.oneLine
+          ? l.text.slice(from, to)
+          : edgeBroken(l.text.slice(from, to), width)}
     </Text>
   );
-  // text[from, to) with a line break in place of each of `breaks`.
-  const broken = (from: number, to: number, breaks: ReadonlySet<number>) => {
-    let s = "";
-    let at = from;
-    for (const e of [...breaks].sort((a, b) => a - b)) {
-      s += `${l.text.slice(at, e)}\n`;
-      at = e + 1;
-    }
-    return s + l.text.slice(at, to);
-  };
   // A band from a column (Task 16's spec review, "Band from the text"): the characters in the columns before it plain,
   // in a box that wide, and the rest on the band in a box beside it, which wraps, so its later rows start at the
   // column, as full screen's start at the indent the line has there. The split stops before the first character at or

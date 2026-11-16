@@ -5839,8 +5839,9 @@ describe("App's questions in full screen", () => {
     expect(rows).toHaveLength(23);
     expect(rows[0]).toBe(`┌ run (${fits.length} characters)`);
     expect(rows[1]).toMatch(/^run: echo word/);
-    // Two rows at the 36 columns inside the box, the space that does not fit the first starting the second.
-    expect(app.lastFrame()!.split("\n").slice(18, 22)).toEqual([boxTop(40), boxed("Allow run (shown above)? [y/n] · Esc", 40), boxed(" to decline", 40), boxFoot(40)]);
+    // Two rows at the 36 columns inside the box, the space that does not fit the first ending it unseen, so the second
+    // starts under the text (Task 17's captures; the user, "Fix them too").
+    expect(app.lastFrame()!.split("\n").slice(18, 22)).toEqual([boxTop(40), boxed("Allow run (shown above)? [y/n] · Esc", 40), boxed("to decline", 40), boxFoot(40)]);
     Object.defineProperty(app.stdout, "columns", { value: 100, configurable: true });
     app.stdout.emit("resize");
     await tick();
@@ -5876,6 +5877,29 @@ describe("App's question box", () => {
     expect(rows.slice(19, 22)).toEqual([boxTop(), boxed("Allow run: ls? [y/n] · Esc to decline"), boxFoot()]);
     await press(app, "y");
     expect(await answer).toBe(true);
+  });
+
+  // Task 17's captures, the user's choice (2026-11-16, "Fix them too"): in classic too, a row of the box's grey line,
+  // red lines or question after a word ending at its edge starts under the text, not with the space.
+  it("starts a box row after a word ending at the edge under the text in classic mode", async () => {
+    const { app, ask } = await mount([]);
+    wide(app, 40);
+    await tick();
+    const danger = `Danger: ${"x".repeat(28)} end`; // "Danger: " and the x's fill the 36 columns inside the box
+    void ask("run (shown above)", undefined, undefined, false, [danger], `${"a".repeat(36)} note`);
+    await until(app, "[y/n]");
+    const rows = rowsOf(app);
+    const top = rows.indexOf(boxTop(40));
+    expect(rows.slice(top, top + 8)).toEqual([
+      boxTop(40),
+      boxed("a".repeat(36), 40),
+      boxed("note", 40),
+      boxed(`Danger: ${"x".repeat(28)}`, 40),
+      boxed("end", 40),
+      boxed("Allow run (shown above)? [y/n] · Esc", 40),
+      boxed("to decline", 40),
+      boxFoot(40),
+    ]);
   });
 
   it("draws the red lines and the grey line in the box, above the question's line", async () => {

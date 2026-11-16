@@ -54,7 +54,7 @@ import { TaskPanel, taskRows } from "./TaskPanel.js";
 import type { Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { ToolLine } from "./ToolLine.js";
-import { first as firstRow, FOLLOWING, textWidth, unseenBelow } from "./view.js";
+import { edgeBroken, first as firstRow, FOLLOWING, textWidth, unseenBelow } from "./view.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 export interface AppProps {
@@ -940,18 +940,21 @@ export function App(props: AppProps) {
               ))}
             </>
           ) : (
+            // In classic Ink wraps these lines itself, each in the 4 columns less: a space ending a row at the edge is
+            // handed to it as a line break, so the next row starts under the text, as full screen's rows (view.ts,
+            // edgeBroken; Task 17's captures, the user's choice: "Fix them too").
             <>
               {ui.question.note !== undefined && (
                 <Text color={ui.palette.muted} wrap={ui.question.oneRow ? "truncate-end" : "wrap"}>
-                  {ui.question.note}
+                  {ui.question.oneRow ? ui.question.note : edgeBroken(ui.question.note, ui.columns - 4)}
                 </Text>
               )}
               {ui.question.warnings.map((w, i) => (
                 <Text key={i} color={ui.palette.error}>
-                  {w}
+                  {edgeBroken(w, ui.columns - 4)}
                 </Text>
               ))}
-              <Text color={ui.palette.warning}>{allow(ui.question.text, ui.question.plain)}</Text>
+              <Text color={ui.palette.warning}>{edgeBroken(allow(ui.question.text, ui.question.plain), ui.columns - 4)}</Text>
             </>
           )}
         </Box>

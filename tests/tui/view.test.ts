@@ -17,8 +17,10 @@ describe("wrap", () => {
   });
 
   it("breaks where Ink's own wrapping does in classic mode (wrap-ansi with hard: true, trim: false)", () => {
-    expect(texts(wrap("the quickX brown", 10, false))).toEqual(["the quickX", " brown"]); // a space that does not fit starts the next row
-    expect(texts(wrap("the quick  brown", 10, false))).toEqual(["the quick ", " brown"]);
+    // A space that does not fit ends its row unseen, the next row starting under the text, where wrap-ansi starts it
+    // with the space: the question box's and the review screen's rows too (Task 17; the user, "Fix them too").
+    expect(texts(wrap("the quickX brown", 10, false))).toEqual(["the quickX", "brown"]);
+    expect(texts(wrap("the quick  brown", 10, false))).toEqual(["the quick ", "brown"]);
     expect(texts(wrap("ab cdefghijklmn", 10, false))).toEqual(["ab cdefghi", "jklmn"]); // a long word starts on the row it is on...
     expect(texts(wrap("abcdefgh cdefghijklmnopqrst", 10, false))).toEqual(["abcdefgh ", "cdefghijkl", "mnopqrst"]); // ...unless that saves a row
     expect(texts(wrap("ab 日本語テキスト", 5, false))).toEqual(["ab ", "日本", "語テ", "キス", "ト"]);
@@ -26,7 +28,7 @@ describe("wrap", () => {
 
   // Task 17's captures, the user's choice (2026-11-16, "Fix it"): a conversation line's space with no room, after a
   // word ending at the edge, ends its row unseen, so the next row starts under the text; classic hands Ink a line break
-  // in its place (edgeSpaces). A space the line ends with breaks as wrap() does; wrap() itself is unchanged.
+  // in its place (edgeSpaces). A space the line ends with breaks as before.
   it("ends a conversation line's row with a space at the edge unseen, the next row under the text", () => {
     const rows = new Rows(10);
     rows.add([{ text: "the quickX brown" }, { text: "the quick  brown" }, { text: "the quickX " }]);
@@ -140,14 +142,7 @@ describe("Rows", () => {
     rows.add(all.slice(0, 400));
     rows.add(all.slice(400));
     expect(all.filter((l) => wrap(l.text, 30, l.oneLine ?? false).length > 1).length).toBeGreaterThan(1000 / 3); // a third or more wrap, so the rows are tested
-    // Each line's rows as a Rows of its own counts them: a conversation line's space at the edge ends its row unseen,
-    // where wrap() starts the next row with it (Task 17's captures, "Fix it").
-    const alone = (l: Line) => {
-      const one = new Rows(30);
-      one.add([l]);
-      return one.total;
-    };
-    expect(rows.total).toBe(all.reduce((n, l) => n + alone(l), 0));
+    expect(rows.total).toBe(all.reduce((n, l) => n + wrap(l.text, 30, l.oneLine ?? false).length, 0));
     for (let i = 0; i < rows.total; i++) {
       const r = rows.row(i);
       expect(rows.rowOf({ line: r.line, offset: r.start })).toBe(i);
