@@ -464,6 +464,28 @@ describe("screen's links", () => {
     });
   });
 
+  // Task 2's code review: an address ends where screen() draws an escape, and at JSON's quotes.
+  it("ends an address at a one-line entry's line break, drawn as ⏎", () => {
+    expect(screen({ text: "fetch https://x.y\nfoo", oneLine: true }).styles).toEqual([
+      { start: 6, end: 17, link: "https://x.y" },
+    ]);
+  });
+
+  it("gives each address in a tool row's JSON input its own link, ending at its quote", () => {
+    const text = '● web_fetch {"url":"https://x.y/a","alt":"https://c.d/e\\nmore"}';
+    const at = (s: string) => text.indexOf(s);
+    expect(screen({ text, oneLine: true }).styles).toEqual([
+      { start: at("https://x.y/a"), end: at("https://x.y/a") + 13, link: "https://x.y/a" },
+      { start: at("https://c.d/e"), end: at("https://c.d/e") + 13, link: "https://c.d/e" },
+    ]);
+  });
+
+  it("ends an address at a colour code escaped after it in prose", () => {
+    const shown = screen({ text: "\u001b[34mhttps://x.y\u001b[0m done" });
+    expect(shown.text).toBe("\\u001b[34mhttps://x.y\\u001b[0m done");
+    expect(shown.styles).toEqual([{ start: 10, end: 21, link: "https://x.y" }]);
+  });
+
   it("returns a line with no address as before, with no styles added", () => {
     expect(screen({ text: "plain", color: "muted" })).toStrictEqual({ text: "plain", color: "muted" });
   });

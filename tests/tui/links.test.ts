@@ -156,6 +156,14 @@ describe("urls", () => {
     }
   });
 
+  it("ends an address at a character it cannot hold as drawn: angle brackets, quotes, backquotes", () => {
+    // Task 2's code review: marked's rule runs on over them, which in plain text opened the wrong page
+    expect(found("<https://x.y>")).toEqual(["https://x.y"]);
+    expect(found("<https://x.y/a>.")).toEqual(["https://x.y/a"]);
+    expect(found('"https://x.y/a","b"')).toEqual(["https://x.y/a"]);
+    expect(found("`https://x.y`")).toEqual(["https://x.y"]);
+  });
+
   it("gives each address its place and the address it opens", () => {
     expect(urls("go to www.x.y/a now")).toEqual([{ start: 6, end: 15, link: "https://www.x.y/a" }]);
   });

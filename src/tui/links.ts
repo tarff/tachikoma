@@ -98,10 +98,19 @@ export function target(shown: string): string | null {
 const START = /mailto:|xmpp:|(?:[hH][tT][tT][pP][sS]?|[fF][tT][pP]):\/\/|www\.|(?<![A-Za-z0-9._+-])[A-Za-z0-9._+-]+@/g;
 const { url: URL_RULE, _backpedal: BACKPEDAL } = Lexer.rules.inline.gfm;
 
+// Where an address ends as drawn, though marked's rule runs on (Task 2's code review): `\` starts visible()'s \uXXXX
+// escapes (a colour code's ESC) and JSON's own \n; `"` ends a JSON string, as in a tool row's input; `<` and `>` hold
+// an <address> in plain text; ` ends inline code written in plain text; ⏎ ␍ ⇥ are visible()'s line break, carriage
+// return and a one-line entry's tab. `{}|^` and `]` are left out: `|` is in some real addresses, and the others are
+// rare or refused by target().
+const STOP = /[\\"<>`⏎␍⇥]/;
+
 // The web addresses in a text, as marked finds them in a reply's text (plan, "The design"): each whole token marked's
 // rule takes, its trailing punctuation dropped as marked's url() drops it unless it is an e-mail, so an e-mail, ftp,
 // mailto or xmpp token holds no address (`help@www.example.org`). Only http, https and www. tokens that target() takes
-// become links; an address inside a word is found, as marked finds it (`foohttps://a.b`).
+// become links; an address inside a word is found, as marked finds it (`foohttps://a.b`). It differs from marked only
+// in ending an address at a STOP character, the search going on from there; that matters only in plain text, as a
+// reply's own links are spanned by markdown.ts first.
 export function urls(text: string): { start: number; end: number; link: string }[] {
   const found: { start: number; end: number; link: string }[] = [];
   const start = new RegExp(START); // its own lastIndex
@@ -113,6 +122,8 @@ export function urls(text: string): { start: number; end: number; link: string }
     }
     let token = cap[0];
     if (cap[2] !== "@") {
+      const cut = token.search(STOP);
+      if (cut >= 0) token = token.slice(0, cut);
       for (let before = ""; before !== token; ) {
         before = token;
         token = BACKPEDAL.exec(token)?.[0] ?? "";
