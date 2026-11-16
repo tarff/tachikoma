@@ -736,7 +736,8 @@ import { gitLine } from "./prompt.js";
 import type { Git, Part, Setup } from "./types.js";
 
 // What a saved line says of the setup: a Setup, or, on a line written before the setup was recorded, its `box` alone
-// (design, "Sessions saved before this change"): "off", or "on" with the sandbox's kind, network and git not known.
+// (design, "Sessions saved before this change"): "off", with git not known, or "on", with the sandbox's kind, network
+// and git not known.
 export type Known = Setup | { sandbox: "off" | "on" };
 // What the model was told (design, "What the model was told"): the date, if it was ever told one, and the setup.
 export interface Told {
@@ -746,7 +747,8 @@ export interface Told {
 
 const GITS: readonly unknown[] = ["repo", "none", "outside", "copy"] satisfies Git[];
 
-// A setup as a saved line or note holds it; anything else is not one, so a damaged value tells nothing.
+// A setup as a saved line or note holds it: a known git and "off", or "live" or "copy" with a network of "on" or "off"
+// (extra keys are not checked, as nothing reads them), so a damaged value tells nothing.
 export function isSetup(v: unknown): v is Setup {
   const s = (v ?? {}) as Record<string, unknown>;
   if (!GITS.includes(s.git)) return false;
@@ -831,10 +833,12 @@ export function toldAfter(told: Told, parts: readonly object[]): Told {
 
 // A date note, which a shortening leaves out of what it copies, as the new prompt has today's date (design, third
 // review, finding 1; system prompt plan, decision 8).
-export const isDateNote = (p: Part): boolean => p.type === "text" && p.from === "note" && p.note !== undefined && "date" in p.note;
+export const isDateNote = (p: Part): boolean =>
+  p.type === "text" && p.from === "note" && typeof p.note === "object" && p.note !== null && "date" in p.note;
 
 // A setup note, which a shortening carries into its summary request (system prompt plan, decision 13).
-export const isSetupNote = (p: Part): boolean => p.type === "text" && p.from === "note" && p.note !== undefined && "setup" in p.note;
+export const isSetupNote = (p: Part): boolean =>
+  p.type === "text" && p.from === "note" && typeof p.note === "object" && p.note !== null && "setup" in p.note;
 ```
 
 Keep the imports at the top of the file. Split long lines at 120 columns. Check the import order does not make a cycle:
