@@ -804,8 +804,8 @@ export class Redirected extends Error {}
 //   copy of the init). Such a hop is that request: with sign-in it gets the headers too, and its status is heard. Only
 //   that request's own chain counts, never a lasting list of places, so any other call to that path, a sign-in
 //   request's among them, is not a hop.
-// `answered` hears each status the server's own address or a hop answered to a POST of one request the model or the
-// user make, a tools/call, resources/read or prompts/get (ASKED), a hop judged by the same body; never a list, an
+// `answered` hears each status the server's own address or a hop answered to a POST of one request, a tools/call,
+// resources/read or prompts/get (ASKED), whoever asks, a hop judged by the same body; never a list, an
 // initialize, a notification, a GET for the event stream or a DELETE ending the session: a server may refuse those
 // whatever the headers, and each new connection, asking again, would start another refresh (Task 11's review and
 // re-check). `redirected` hears each redirect refused.

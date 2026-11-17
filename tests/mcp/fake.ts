@@ -47,7 +47,7 @@ export interface FakeOptions {
   // Over HTTP: the status a GET for the event stream is answered with in place of 405, held until the first tools/call
   // comes, so it reaches a ready connection (Task 11's review).
   getStatus?: number;
-  gate?: string; // the file whose existence the unlisted wait tool waits for, looked for every 20 ms
+  gate?: string; // the file whose existence the unlisted wait tool and `denyMethod` wait for, looked for every 20 ms
   tools?: object[]; // its tools/list, in place of its own tools (Task 5's names and schemas)
   added?: object[]; // what change adds, before the others, in place of "added"
   results?: Record<string, object>; // a call to a tool named here is answered with this result (Task 6's answers)

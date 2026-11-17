@@ -611,7 +611,7 @@ describe("a remote server's headersHelper, and its redirects", () => {
   // with a redirect within the origin, as the library's fetchWithinOrigin passes it on; any other call is not.
   it.each([true, false])("connectionFetch, signing in %s, takes a request's own hops alone as it", async (signs) => {
     const { dir, log } = await setup();
-    // Each POST past the slash's 307 answered 200: the tool call sent, a request whose status is heard, has no session.
+    // Each POST past the slash's 307 is answered 200, as a tool call (whose status is heard) has no session.
     const fake = await httpFake(dir, { log, slash: true, status: 200 });
     const url = new URL(fake.url);
     const statuses: number[] = [];
@@ -640,6 +640,39 @@ describe("a remote server's headersHelper, and its redirects", () => {
       ["/mcp", key], ["/mcp/", key], ["/mcp/", null], ["/mcp/", null], ["/mcp", key], ["/mcp/", key],
     ]);
     expect(statuses).toEqual([307, 200, 307, 200]);
+  });
+
+  // Task 11's re-check: only one request of a tools/call, resources/read or prompts/get is heard, so no list,
+  // initialize, notification, reply or batch the server refuses starts a refresh.
+  it("connectionFetch hears a tool call, a resource read and a prompt alone", async () => {
+    const { dir } = await setup();
+    const fake = await httpFake(dir, { status: 403 });
+    const url = new URL(fake.url);
+    const heard: string[] = [];
+    let now = "";
+    const answered = () => heard.push(now);
+    const send = connectionFetch({ url, endpoint: () => undefined, headers: {}, signs: false, answered });
+    const rpc = (m: object) => ({ jsonrpc: "2.0", ...m });
+    const call = { name: "echo", arguments: {} };
+    const bodies: Record<string, unknown> = {
+      "an initialize": rpc({ id: 1, method: "initialize", params: {} }),
+      "a tools/list": rpc({ id: 2, method: "tools/list" }),
+      "a notification": rpc({ method: "notifications/initialized" }),
+      "a tools/call without an id": rpc({ method: "tools/call", params: call }),
+      "a reply": rpc({ id: "fake-1", result: {} }),
+      "a batch of one tools/call": [rpc({ id: 3, method: "tools/call", params: call })],
+      "a tools/call": rpc({ id: 4, method: "tools/call", params: call }),
+      "a resources/read": rpc({ id: 5, method: "resources/read", params: { uri: "note://a" } }),
+      "a prompts/get": rpc({ id: 6, method: "prompts/get", params: { name: "greet" } }),
+    };
+    const headers = { "content-type": "application/json" };
+    for (const [name, m] of Object.entries(bodies)) {
+      now = name;
+      const answer = await send(url, { method: "POST", headers, body: JSON.stringify(m) });
+      await answer.text();
+      expect(answer.status).toBe(403);
+    }
+    expect(heard).toEqual(["a tools/call", "a resources/read", "a prompts/get"]);
   });
 
   // Decision 22: a stop that comes while the helper runs kills it, and the start goes no further.
