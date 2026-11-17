@@ -31,9 +31,9 @@ export interface ServerConfig {
   // git pull that changes its command cannot start it unasked, while a variable's new value asks nothing, and no value
   // is kept.
   written: string;
-  // The command and arguments, or the address and headers, as written, ${VAR} unfilled, which the project's question
-  // shows, so a key filled in from the environment never reaches the screen (release 8c plan, choice 48); of the headers,
-  // only the variables they read (choice 64).
+  // The command and arguments, or the address, headers and headersHelper, as written, ${VAR} unfilled, which the
+  // project's question shows, so a key filled in from the environment never reaches the screen (release 8c plan, choice
+  // 48); of the headers, only the variables they read (choice 64).
   asWritten:
     | { command: string; args: string[] }
     | { url: string; headers: Record<string, string>; headersHelper?: string };
@@ -77,8 +77,8 @@ const MAX_TIMER_MS = 2_147_483_647;
 const MIN_TIMEOUT_MS = 1_000;
 const TIMEOUT = `a whole number of milliseconds no more than ${MAX_TIMER_MS.toLocaleString("en-US")}, such as 600000`;
 
-// Each server's own fields, by kind; a field of the other kind is Claude Code's too and does nothing for this server, so
-// it is passed over without a line. Any other name is not a server field, and is ignored with one.
+// Each server's own fields, by kind; a field of the other kind is a server field too and does nothing for this server,
+// so it is passed over without a line. Any other name is not a server field, and is ignored with one.
 const OWN = { stdio: ["command", "args", "env", "host"], remote: ["url", "headers", "oauth", "headersHelper"] };
 
 // Thrown with a left-out line's words after the server's place; "; it was left out" ends each.
@@ -232,8 +232,8 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
 }
 
 // A field of the wrong type, its value named by its type, as it may hold a key (typeOf); badValue shows the value, for the
-// short fields that carry none: type, timeout, alwaysLoad, trusted, trustedTools and oauth.callbackPort. `got` says what
-// text of the right type is wrong with, for an address.
+// short fields that carry none: type, timeout, alwaysLoad, trusted, trustedTools, host and oauth.callbackPort. `got`
+// says what text of the right type is wrong with, for an address.
 const bad = (field: string, what: string, value: unknown, got = typeOf(value)) => new Left(`: ${quoted(field)} must be ${what} (got ${got})`);
 const NOT_ADDRESS = "text that is not an address";
 // Values Node refuses when the server starts, in an error that quotes them, and one may be a key: a header value with a
