@@ -1339,7 +1339,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     // What the model was told goes with the conversation, for the notes (Task 7): the start line's date and setup and
     // each note since, or for an older session its sandbox setting alone.
     it("gives the conversation what the model was told, as the transcript reads it", () => {
-      const text = "Today's date is now 2026-11-18.";
+      const text = "This note is from Tachikoma, not the user: today's date is now 2026-11-18.";
       const note = { type: "text", text, from: "note", note: { date: "2026-11-18" } };
       const noted = { t: "message", at, message: { role: "user", parts: [{ type: "text", text: "hi" }, note] } };
       const told = (id: string) => {
@@ -1398,7 +1398,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     it("tells a conversation resumed a day later of the date", async () => {
       savedOn("later", OFF);
       const later = await sendAfter(open("later", { prompt: SAVED }), OFF, "2026-11-18");
-      expect(later).toEqual(["Today's date is now 2026-11-18."]);
+      expect(later).toEqual(["This note is from Tachikoma, not the user: today's date is now 2026-11-18."]);
     });
 
     // System prompt plan, Task 8: /clear's prompt is built with that day's date, which its start line records, so the
@@ -1411,7 +1411,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     });
 
     it("tells a conversation saved before this change of the date, and of the setup as far as known", async () => {
-      const date = "Today's date is now 2026-11-17."; // never told
+      const date = "This note is from Tachikoma, not the user: today's date is now 2026-11-17."; // never told
       saved(dir, "notedoff", chat({ ...start("notedoff"), box: false }));
       expect(await sendAfter(open("notedoff", { prompt: SAVED }), OFF)).toEqual([date]);
       saved(dir, "notedbox", chat({ ...start("notedbox"), box: true }));
@@ -1419,14 +1419,16 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       const live: Setup = { sandbox: "live", network: "off", git: "none" };
       expect(await sendAfter(open("notedbox", { prompt: { setup: live, full: "Box prompt." } }), live)).toEqual([
         date,
-        "This session was resumed, and its earlier sandbox setup was not recorded. The sandbox is now a live link to " +
+        "This note is from Tachikoma, not the user: this session was resumed, its earlier sandbox setup was not " +
+          "recorded, and the system prompt was replaced with one for this setup. The sandbox is now a live link to " +
           "the project. The project is not a git repository. Shell commands cannot reach the web now.",
       ]);
       expect(await sendAfter(open("notedhost", { prompt: { setup: OFF, full: "Host prompt." } }), OFF)).toEqual([
         date,
-        "This session was resumed under another setup. Commands now run with PowerShell in C:\\proj; earlier they " +
+        "This note is from Tachikoma, not the user: this session was resumed under another setup, and the system " +
+          "prompt was replaced with one for this setup. Commands now run with PowerShell in C:\\proj; earlier they " +
           "ran with bash in /work. The project is not a git repository. Shell commands can reach the web now. " +
-          "Earlier replies about the setup were right at the time.",
+          "Earlier replies about the setup were right under the system prompt they were made with.",
       ]);
     });
 

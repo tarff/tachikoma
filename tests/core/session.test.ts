@@ -1934,7 +1934,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const { session, transcript } = await resumed(lead, told17, OFF, "2026-11-18");
     await session.send(big);
     expect(lead.seen[0]!.messages.at(-1)!.parts.at(-1)).toMatchObject({ from: "note", note: { date: "2026-11-18" } });
-    expect(texts(session.messages[0]!).join("")).not.toContain("Today's date is now");
+    expect(texts(session.messages[0]!).join("")).not.toContain("today's date is now");
     expect(shortenedLine(transcript)).toMatchObject({ date: "2026-11-18" });
     expect(lead.seen[2]!.messages.flatMap(noteParts)).toEqual([]);
   });
@@ -3352,7 +3352,7 @@ describe("Session, notes to the model", { timeout: 15_000 }, () => {
   const hi: Part = { type: "text", text: "hi" };
   const DATE18: Part = {
     type: "text",
-    text: "Today's date is now 2026-11-18.",
+    text: "This note is from Tachikoma, not the user: today's date is now 2026-11-18.",
     from: "note",
     note: { date: "2026-11-18" },
   };
@@ -3378,7 +3378,10 @@ describe("Session, notes to the model", { timeout: 15_000 }, () => {
     await session.send("hi");
     const last = lead.seen[0]!.at(-1)!;
     expect(last.parts[0]).toEqual(hi);
-    expect(notes(last)).toEqual(["Today's date is now 2026-11-18.", setupNote(OFF, LIVE_ON, host)]);
+    expect(notes(last)).toEqual([
+      "This note is from Tachikoma, not the user: today's date is now 2026-11-18.",
+      setupNote(OFF, LIVE_ON, host),
+    ]);
     expect(last.parts.at(-1)).toMatchObject({ from: "note", note: { setup: LIVE_ON } });
   });
 

@@ -1355,6 +1355,9 @@ What changed from the plan while building, for the later tasks and the reviewers
   leaving a reply's tool calls without results (Task 7, 9d22935); a shortening's setup note is built from the same
   setup reading as its fresh prompt (Task 9, 7928cdd).
 - **/export** leaves no blank lines at the start of a block after a note (the user's choice, d40ff36).
+- **The notes now open "This note is from Tachikoma, not the user:"** and the setup note says the system prompt was
+  replaced, after the Task 10 terminal check, where gpt-6.1-sol, asked whether its earlier answer was wrong, said yes,
+  trusting the new system prompt over the note (the user's choice).
 - **Known limits,** not fixed, as rare cases become known limits by the standing rule:
   - a session saved by a future Tachikoma with Setup or Git values this version does not know is refused (its start
     line fails `isSetup`), and `tachi -c` opens the next-newest session;

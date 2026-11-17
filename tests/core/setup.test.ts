@@ -25,8 +25,10 @@ const LIVE_ON: Setup = { sandbox: "live", network: "on", git: "repo" };
 const COPY_OFF: Setup = { sandbox: "copy", network: "off", git: "copy" };
 const COPY_ON: Setup = { sandbox: "copy", network: "on", git: "copy" };
 const HOST = { root: "C:\\proj", platform: "win32" as const };
-const OPEN = "This session was resumed under another setup.";
-const CLOSE = "Earlier replies about the setup were right at the time.";
+const OPEN =
+  "This note is from Tachikoma, not the user: this session was resumed under another setup, and the system prompt " +
+  "was replaced with one for this setup.";
+const CLOSE = "Earlier replies about the setup were right under the system prompt they were made with.";
 const TO_BOX = "Commands now run with bash in /work; earlier they ran with PowerShell in C:\\proj.";
 const TO_HOST = "Commands now run with PowerShell in C:\\proj; earlier they ran with bash in /work.";
 const COPY = "The sandbox is now a copy of the project.";
@@ -37,7 +39,9 @@ const REPO = "The project is a git repository.";
 const WEB_ON = "Shell commands can reach the web now; earlier they could not.";
 const WEB_OFF = "Shell commands cannot reach the web now; earlier they could.";
 const note = (...said: string[]) => [OPEN, ...said].join(" ");
-const UNRECORDED = "This session was resumed, and its earlier sandbox setup was not recorded.";
+const UNRECORDED =
+  "This note is from Tachikoma, not the user: this session was resumed, its earlier sandbox setup was not recorded, " +
+  "and the system prompt was replaced with one for this setup.";
 const unrecorded = (...said: string[]) => [UNRECORDED, ...said].join(" ");
 
 describe("setupNote", () => {
@@ -76,9 +80,11 @@ describe("setupNote", () => {
 
   it("gives the design's example word for word", () => {
     expect(setupNote(LIVE_OFF, COPY_ON, HOST)).toBe(
-      "This session was resumed under another setup. The sandbox is now a copy of the project. The project is a git " +
+      "This note is from Tachikoma, not the user: this session was resumed under another setup, and the system " +
+        "prompt was replaced with one for this setup. The sandbox is now a copy of the project. The project is a git " +
         "repository made for this sandbox copy; its one commit holds the project as copied. Shell commands can " +
-        "reach the web now; earlier they could not. Earlier replies about the setup were right at the time.",
+        "reach the web now; earlier they could not. Earlier replies about the setup were right under the system " +
+        "prompt they were made with.",
     );
   });
 
@@ -116,7 +122,12 @@ describe("setupNote", () => {
 });
 
 describe("dueNotes and toldAfter", () => {
-  const date = (d: string) => ({ type: "text", text: `Today's date is now ${d}.`, from: "note", note: { date: d } });
+  const date = (d: string) => ({
+    type: "text",
+    text: `This note is from Tachikoma, not the user: today's date is now ${d}.`,
+    from: "note",
+    note: { date: d },
+  });
   it("gives the date note first, then the setup note, only when each is due", () => {
     expect(dueNotes({ date: "2026-11-17", setup: OFF }, OFF, "2026-11-17", HOST)).toEqual([]);
     expect(dueNotes({ date: "2026-11-17", setup: OFF }, OFF, "2026-11-18", HOST)).toEqual([date("2026-11-18")]);

@@ -448,13 +448,15 @@ describe("the fresh prompt and the notes", () => {
   const LIVE_ON = { sandbox: "live", network: "on", git: "repo" } as const;
   const setupNote = {
     type: "text",
-    text: "This session was resumed under another setup.",
+    text:
+      "This note is from Tachikoma, not the user: this session was resumed under another setup, and the system " +
+      "prompt was replaced with one for this setup.",
     from: "note",
     note: { setup: LIVE_ON },
   } as const;
   const dateNote = {
     type: "text",
-    text: "Today's date is now 2026-11-18.",
+    text: "This note is from Tachikoma, not the user: today's date is now 2026-11-18.",
     from: "note",
     note: { date: "2026-11-18" },
   } as const;
@@ -541,6 +543,6 @@ describe("the fresh prompt and the notes", () => {
       { type: "text", text: `\n\n${ROUND}${callText(c1, "A")}` },
     ];
     expect(done).toEqual({ messages: [{ role: "user", parts }], summary: "S" });
-    expect(JSON.stringify(done)).not.toContain("Today's date is now");
+    expect(JSON.stringify(done)).not.toContain("today's date is now");
   });
 });

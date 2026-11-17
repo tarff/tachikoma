@@ -163,8 +163,8 @@ start and system lines, src/core/transcript.ts:44), and their prompts hold no da
   note says what the setup is now, claiming nothing about before (below). Resumed with no sandbox, the note says the
   sandbox is now off, as today's setting is known to differ.
 
-- **A later day:** "Today's date is now 2026-11-18." on the first message whose local date differs from the last date
-  the model was told.
+- **A later day:** "This note is from Tachikoma, not the user: today's date is now 2026-11-18." on the first message
+  whose local date differs from the last date the model was told.
 - **Another setup** (fixes e3c4e7d1): the setup is the sandbox setting (off, live link, copy) and, in the sandbox, its
   network (review finding 1: today a resume compares only whether the sandbox is on, src/clilib.ts:872, so a
   network-only change kept the old prompt). A resume under another setup still writes this launch's system prompt and
@@ -178,17 +178,22 @@ start and system lines, src/core/transcript.ts:44), and their prompts hold no da
   3. Git, when the git line differs: the new git line.
   4. The web, when whether shell commands can reach it differs (with no sandbox they can): "Shell commands can reach
      the web now; earlier they could not." or "Shell commands cannot reach the web now; earlier they could."
-  - It opens "This session was resumed under another setup." and closes "Earlier replies about the setup were right
-    at the time."
+  - It opens "This note is from Tachikoma, not the user: this session was resumed under another setup, and the system
+    prompt was replaced with one for this setup." and closes "Earlier replies about the setup were right under the
+    system prompt they were made with."
   - From a session saved before this change, with `box` true, an unknown earlier fact is said without its "earlier"
     half ("Shell commands cannot reach the web now."), and the note closes only if a known fact differs. Resumed in
-    the sandbox, it opens "This session was resumed, and its earlier sandbox setup was not recorded." instead (Task
-    3's code review; the user's choice); resumed with no sandbox, it keeps the opening above.
+    the sandbox, it opens "This note is from Tachikoma, not the user: this session was resumed, its earlier sandbox
+    setup was not recorded, and the system prompt was replaced with one for this setup." instead (Task 3's code
+    review; the user's choice); resumed with no sandbox, it keeps the opening above.
 
-  For example, live link with the network off resumed as a copy with the network on: "This session was resumed under
-  another setup. The sandbox is now a copy of the project. The project is a git repository made for this sandbox copy;
-  its one commit holds the project as copied. Shell commands can reach the web now; earlier they could not. Earlier
-  replies about the setup were right at the time."
+  For example, live link with the network off resumed as a copy with the network on: "This note is from Tachikoma, not
+  the user: this session was resumed under another setup, and the system prompt was replaced with one for this setup.
+  The sandbox is now a copy of the project. The project is a git repository made for this sandbox copy; its one commit
+  holds the project as copied. Shell commands can reach the web now; earlier they could not. Earlier replies about the
+  setup were right under the system prompt they were made with."
+
+  Reworded after the Task 10 terminal check (the user's choice, 2026-11-17): a model took the note as the user's claim.
 
 Both kinds can come on one message, the date note first. Tests: each direction of each change; a compound change (the
 example); a resume, a close without a prompt, and a second resume, which still sends the note; a second resume back

@@ -658,7 +658,7 @@ describe("transcript", { timeout: 15_000 }, () => {
     // Task 3's shapes: what a note says is not read back, only the date or setup it holds.
     const dateNote = (date: string): Part => ({
       type: "text",
-      text: `Today's date is now ${date}.`,
+      text: `This note is from Tachikoma, not the user: today's date is now ${date}.`,
       from: "note",
       note: { date },
     });

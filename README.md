@@ -650,11 +650,13 @@ everything the model read, cannot be committed by mistake.
   line only at the launch that changed the setup. A project that has become a git repository, or
   stopped being one, keeps its saved prompt.
 - **The model is told what changed:** on the first message whose local date differs from the last
-  one it was told, as in a session reopened the next day, `Today's date is now <date>.`; after a
-  resume under another setup, one note naming what changed, for example `This session was resumed
-  under another setup. The sandbox is now a copy of the project. The project is a git repository
-  made for this sandbox copy; its one commit holds the project as copied. Shell commands can reach
-  the web now; earlier they could not. Earlier replies about the setup were right at the time.`
+  one it was told, as in a session reopened the next day, `This note is from Tachikoma, not the
+  user: today's date is now <date>.`; after a resume under another setup, one note naming what
+  changed, for example `This note is from Tachikoma, not the user: this session was resumed under
+  another setup, and the system prompt was replaced with one for this setup. The sandbox is now a
+  copy of the project. The project is a git repository made for this sandbox copy; its one commit
+  holds the project as copied. Shell commands can reach the web now; earlier they could not. Earlier
+  replies about the setup were right under the system prompt they were made with.`
   Neither shows in the conversation on screen; `/export` writes them under `Notes:`.
 - **What does not come back:** the mode, the sandbox and the network, which come from this launch's
   flags and settings, so resuming never brings back `auto` or `never` unasked; in copy mode the box

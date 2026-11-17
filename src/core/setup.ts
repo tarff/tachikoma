@@ -47,7 +47,8 @@ const reaches = (s: Known): boolean | undefined =>
 // (`box` alone) is said without its "earlier" half, and the note closes only when a known fact differs. Such a session
 // resumed in the sandbox opens saying its earlier sandbox setup was not recorded (Task 3's code review; the user's
 // choice). `host` is the project folder as typed and the host's platform, whose shell the shell line names (choice 1);
-// /work and bash are the box's (clilib.ts, BOX_ROOT; release 7 plan, choice 19).
+// /work and bash are the box's (clilib.ts, BOX_ROOT; release 7 plan, choice 19). Reworded after the Task 10 terminal
+// check (the user's choice).
 export function setupNote(
   before: Known,
   now: Setup,
@@ -90,17 +91,22 @@ export function setupNote(
         : "Shell commands cannot reach the web now; earlier they could.",
     );
   }
-  const close = known ? ["Earlier replies about the setup were right at the time."] : [];
+  const close = known
+    ? ["Earlier replies about the setup were right under the system prompt they were made with."]
+    : [];
   const open =
     before.sandbox === "on" && now.sandbox !== "off"
-      ? "This session was resumed, and its earlier sandbox setup was not recorded."
-      : "This session was resumed under another setup.";
+      ? "This note is from Tachikoma, not the user: this session was resumed, its earlier sandbox setup was not " +
+        "recorded, and the system prompt was replaced with one for this setup."
+      : "This note is from Tachikoma, not the user: this session was resumed under another setup, and the system " +
+        "prompt was replaced with one for this setup.";
   return [open, ...said, ...close].join(" ");
 }
 
 // The notes due for the next user message (design, "Notes to the model"): the date note when today differs from the
 // date last told, or none was, then the setup note when the setup differs; each a part tagged "note", holding what it
-// tells, so a saved message records what the model was told (toldAfter).
+// tells, so a saved message records what the model was told (toldAfter). The date note reworded after the Task 10
+// terminal check (the user's choice).
 export function dueNotes(
   told: Told,
   now: Setup,
@@ -109,7 +115,8 @@ export function dueNotes(
 ): Part[] {
   const notes: Part[] = [];
   if (told.date !== today) {
-    notes.push({ type: "text", text: `Today's date is now ${today}.`, from: "note", note: { date: today } });
+    const said = `This note is from Tachikoma, not the user: today's date is now ${today}.`;
+    notes.push({ type: "text", text: said, from: "note", note: { date: today } });
   }
   const text = setupNote(told.setup, now, host);
   if (text) notes.push({ type: "text", text, from: "note", note: { setup: now } });

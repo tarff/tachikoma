@@ -67,7 +67,7 @@ describe("describe", () => {
   it("draws nothing for a note, in a prompt or in a results message", () => {
     const note = {
       type: "text",
-      text: "Today's date is now 2026-11-18.",
+      text: "This note is from Tachikoma, not the user: today's date is now 2026-11-18.",
       from: "note",
       note: { date: "2026-11-18" },
     } as const;
