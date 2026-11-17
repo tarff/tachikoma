@@ -1358,12 +1358,16 @@ What changed from the plan while building, for the later tasks and the reviewers
 - **The notes now open "This note is from Tachikoma, not the user:"** and the setup note says the system prompt was
   replaced, after the Task 10 terminal check, where gpt-6.1-sol, asked whether its earlier answer was wrong, said yes,
   trusting the new system prompt over the note (the user's choice).
+- **Unreadable or broken git metadata (PR #23's review):** a `.git` that cannot be read (EACCES and the like) made
+  gitBranch's stat throw, which, with no sandbox, stopped the launch, `/clear` and each shortening, and dropped a due
+  date note; gitBranch now gives no branch there and looks no higher, and setupOf guards each of its reads, so it never
+  throws on a file-system error, unreadable metadata counting as git "none" (no new Git value). Live link said "repo"
+  for any `.git` not naming an outside git folder, even a file git refuses; it now says "repo" only when gitBranch
+  reads that `.git`'s HEAD, and finds the `.git` following a link, so one leading nowhere is "none" rather than a
+  repository above the project.
 - **Known limits,** not fixed, as rare cases become known limits by the standing rule:
   - a session saved by a future Tachikoma with Setup or Git values this version does not know is refused (its start
     line fails `isSetup`), and `tachi -c` opens the next-newest session;
-  - freshSystem's setup read is unguarded: a throw fails only that `/clear` or shortening, but in `-p` it is uncaught
-    and skips SessionEnd. If it is ever guarded, guard gitBranch (src/tui/git.ts, its statSync outside the try), not
-    freshSystem;
   - a resume after a downgrade and an upgrade shows the SETUP_UNKNOWN line;
   - a torn system line in the middle of a file keeps thinking made under the wrong prompt (as before this work);
   - the `-p` path where a summary is accepted is untested;

@@ -758,6 +758,24 @@ describe("setupOf", () => {
     expect(setupOf(d, "live", "off").git).toBe("repo");
   });
 
+  // PR #23's review: a `.git` file git refuses ("invalid gitfile format") is no repository in live link, as it is
+  // with no sandbox.
+  it("finds no repository when the project's .git is a file git would refuse", () => {
+    const d = folder("malformed");
+    writeFileSync(path.join(d, ".git"), "not a gitfile\n");
+    expect(setupOf(d, "live", "off").git).toBe("none");
+    expect(setupOf(d, "off", "off").git).toBe("none");
+  });
+
+  // PR #23's review: a `.git` link leading nowhere is not the project's own repository, and live link does not take
+  // the one above it instead.
+  it("finds no repository in live link when the project's .git is a link leading nowhere", () => {
+    repo(folder("dangling"));
+    const d = folder("dangling", "project");
+    symlinkSync(path.join(top, "dangling", "missing"), path.join(d, ".git"), "junction");
+    expect(setupOf(d, "live", "off").git).toBe("none");
+  });
+
   it("always gives copy mode's own repository", () => {
     expect(setupOf(repo(folder("copied")), "copy", "off").git).toBe("copy");
   });

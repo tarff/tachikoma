@@ -9,7 +9,14 @@ import path from "node:path";
 export function gitBranch(root: string): string | null {
   for (let dir = path.resolve(root); ; dir = path.dirname(dir)) {
     const dotGit = path.join(dir, ".git");
-    const st = statSync(dotGit, { throwIfNoEntry: false });
+    // throwIfNoEntry hides only a missing `.git`: one that cannot be read otherwise (EACCES, ELOOP) is unreadable, so
+    // no branch, and the folders above are not looked in (PR #23's review: a throw here stopped the launch).
+    let st;
+    try {
+      st = statSync(dotGit, { throwIfNoEntry: false });
+    } catch {
+      return null;
+    }
     if (st) {
       try {
         // A worktree's or submodule's .git is a file naming the repository: "gitdir: <path>".

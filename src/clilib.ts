@@ -1,6 +1,6 @@
 import type { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, renameSync, statSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -494,11 +494,20 @@ export function boxBranch(name: string | null): string | undefined {
 export function setupOf(root: string, sandbox: Sandbox, network: Network): Setup {
   if (sandbox === "off") return { sandbox, git: gitBranch(root) === null ? "none" : "repo" };
   if (sandbox === "copy") return { sandbox, network, git: "copy" };
-  const git = !lstatSync(path.join(root, ".git"), { throwIfNoEntry: false })
-    ? "none"
-    : gitFolderOutside(root)
-      ? "outside"
-      : "repo";
+  // PR #23's review: a `.git` that cannot be read, or that git would refuse (such as a file not naming a git folder),
+  // is no repository, as with no sandbox. It is found as gitBranch finds it, following a link, so a link leading
+  // nowhere is none too, and gitBranch then reads only this `.git`, never one above. No file-system error throws here:
+  // each read is guarded, and a `.git` the check for an outside git folder cannot read is taken as not outside.
+  const safe = <T>(read: () => T, failed: T): T => {
+    try {
+      return read();
+    } catch {
+      return failed;
+    }
+  };
+  const own = safe(() => statSync(path.join(root, ".git"), { throwIfNoEntry: false }), undefined);
+  const outside = own && safe(() => gitFolderOutside(root), false);
+  const git = !own ? "none" : outside ? "outside" : gitBranch(root) !== null ? "repo" : "none";
   return { sandbox, network, git };
 }
 

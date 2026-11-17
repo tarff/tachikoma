@@ -1303,9 +1303,9 @@ export class Session {
   #notes(): Part[] {
     const s = this.opts.setup;
     if (!s || !this.#told) return [];
-    // A setup that cannot be read (git's lookup can throw) sends no notes rather than breaking the message: the results
-    // message's parts are already taken by then. The notes stay due for the next message, as only #push changes what
-    // was told (Task 7's code review).
+    // A setup that cannot be read (a `now` that throws; setupOf no longer does on a file-system error, PR #23's review)
+    // sends no notes rather than breaking the message: the results message's parts are already taken by then. The notes
+    // stay due for the next message, as only #push changes what was told (Task 7's code review).
     try {
       return dueNotes(this.#told, s.now(), s.today(), { root: s.root, platform: s.platform });
     } catch {
