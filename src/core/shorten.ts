@@ -44,7 +44,8 @@ export interface Shortening {
   // go under.
   next: string;
   // A setup note still due (design, "What the model was told"): after the summary's instructions, and last in the new
-  // history's message.
+  // history's message. Within shorten(), the summary requests' copy may instead hold the kept request's note, which is
+  // no longer due (system prompt plan, decision 13).
   note?: Part;
   messages: Message[];
   // during: the message that started this turn, as the session holds it (after a shortening it is no longer in
@@ -92,7 +93,7 @@ export async function shorten(s: Shortening, when: When): Promise<{ messages: Me
   // The setup note the summary is written knowing: the session's, or at the start of a turn the one in the request
   // kept whole, which the part summarised leaves out and which, sent with it, is no longer due (system prompt plan,
   // decision 13).
-  const told = s.note ?? (when === "start" ? prompt!.find(isSetupNote) : undefined);
+  const summaryNote = s.note ?? (when === "start" ? prompt!.find(isSetupNote) : undefined);
   try {
     // What is kept is checked alone first, so no summary is paid for that could not be used: a prompt that does not fit on
     // its own ends the shortening, and a round that does not fit with it goes into the summary from the start.
@@ -103,7 +104,7 @@ export async function shorten(s: Shortening, when: When): Promise<{ messages: Me
     if (kept !== undefined && !(await fit(s, newHistory({ prompt, round: kept, note: s.note })))) options.shift();
     const files = await recentFiles(s);
     for (const { part, round } of options) {
-      const summary = await summarise(told ? { ...s, note: told } : s, part);
+      const summary = await summarise(summaryNote ? { ...s, note: summaryNote } : s, part);
       // The summary must fit the space the next request has, and is checked before it is used (design, "Carried over").
       const message = newHistory({ summary, prompt, round, files, note: s.note });
       if (await fit(s, message)) return { messages: [message], summary };

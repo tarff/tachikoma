@@ -931,8 +931,13 @@ export class Session {
     const fresh = await this.freshSystem();
     if (signal?.aborted) return { problem: CANCELLED };
     // A setup note still due goes with the summary request and the new history; a date note does not, as the new prompt
-    // has today's date (design, "What the model was told").
-    const note = this.#notes().find(isSetupNote);
+    // has today's date (design, "What the model was told"). It is found from the reading of the setup and date that
+    // the prompt was built from, so the two agree, and no second reading can fail and lose it (Task 9's code review).
+    const st = this.opts.setup;
+    const note =
+      st && this.#told && fresh.setup
+        ? dueNotes(this.#told, fresh.setup, fresh.date, { root: st.root, platform: st.platform }).find(isSetupNote)
+        : undefined;
     const tools = this.#specs(); // the same offer as the request it is made for (release 8c plan, choice 9)
     const s: Shortening = {
       lead,

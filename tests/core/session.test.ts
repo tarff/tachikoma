@@ -1137,6 +1137,17 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const dir = path.join(own, "data", "sessions", "project");
     return new Transcript(path.join(dir, "s.jsonl"), path.join(dir, "s", "pictures"));
   }
+  // A transcript whose write of the `shortened` line fails, as `write` records a failure: without throwing.
+  class FailsThere extends Transcript {
+    #broken: string | null = null;
+    override get failed(): string | null {
+      return this.#broken ?? super.failed;
+    }
+    override write(line: Parameters<Transcript["write"]>[0]): void {
+      if (line.t === "shortened") this.#broken = "the disk is full";
+      else super.write(line);
+    }
+  }
   // A lead that counts requests exactly, each count from `counts` in turn: a number, or "stop", which stops the turn
   // there, as Ctrl-C would, and rejects as the SDK does.
   function counting(lead: Lead, stop: AbortController, counts: (number | "stop")[]) {
@@ -1255,17 +1266,6 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   });
 
   it("changes nothing when saving first fails at the shortened line, and ends the turn with the line", async () => {
-    // A transcript whose write of the `shortened` line fails, as `write` records a failure: without throwing.
-    class FailsThere extends Transcript {
-      #broken: string | null = null;
-      override get failed(): string | null {
-        return this.#broken ?? super.failed;
-      }
-      override write(line: Parameters<Transcript["write"]>[0]): void {
-        if (line.t === "shortened") this.#broken = "the disk is full";
-        else super.write(line);
-      }
-    }
     const t = saving();
     const transcript = new FailsThere(t.file, t.pictures, { inherits: true });
     const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), summaryOf("Many x.")], 1_000_000);
@@ -1720,19 +1720,19 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     ]);
   });
 
-  // Task 11's code review: the line is said once the shortening is saved, so a stop while the instruction files are read
-  // again, which saves nothing, says nothing.
-  it("does not say SessionStart's text was left out when the shortening is then stopped", async () => {
-    const stop = new AbortController();
-    const systemNow = async () => {
-      stop.abort();
-      return "t, read again";
-    };
+  // Task 11's code review: the line is said once the shortening is saved, so a shortened line that then cannot be
+  // written, which saves nothing, says nothing. Nothing is waited for between deciding the text is left out and the
+  // write, so a stop cannot land there; this is the one way left to decide it and save nothing.
+  it("does not say SessionStart's text was left out when the shortened line then cannot be written", async () => {
+    const t = saving();
+    const transcript = new FailsThere(t.file, t.pictures, { inherits: true });
     const lead = new Lead("fake:a", [measured("noted"), summaryOf("Many x.")], 700);
-    const { session, notes, transcript } = await setup(lead, { systemNow }, [{ event: "SessionStart", names: ["compact"], stdout: "y".repeat(1000) }]);
+    const said: Said[] = [{ event: "SessionStart", names: ["compact"], stdout: "y".repeat(1000) }];
+    const { session, notes } = await setup(lead, { transcript }, said);
     await session.send(big);
-    expect(await session.compact("", stop.signal)).toBe(CANCELLED);
-    expect([notes, session.messages.length, savedLines(transcript).some((l) => l.t === "shortened")]).toEqual([[], 2, false]);
+    const before = structuredClone(session.messages);
+    expect(await session.compact("")).toBe(UNSAVED);
+    expect([notes, session.messages, session.system]).toEqual([[], before, "t"]);
   });
 
   // The user's choice, 2026-11-09 ("Pre/Post only"): SessionStart is about the user's session, so a subagent's shortening
@@ -1864,22 +1864,57 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(session.messages[1]).toEqual(typed("next"));
   });
 
-  it("takes the setup note from the request kept on a shortening of the first message after a resume", async () => {
-    const turns = [new TooLong("prompt is too long"), summaryOf("S."), reply("done"), reply("ok")];
-    const lead = new Lead("fake:a", turns, 1_000_000);
-    const { session, transcript } = await resumed(lead, told17, LIVE_ON, "2026-11-17");
-    await session.send(big);
+  // Task 9's code review: the note comes from the reading of the setup the prompt was built from, so a setup that
+  // cannot be read a second time cannot lose it.
+  it("sends a setup note due on /compact when the setup cannot be read again once the prompt is built", async () => {
+    let reads = 0;
+    const now = () => {
+      if (reads++) throw new Error("git could not be read");
+      return LIVE_ON;
+    };
+    const lead = new Lead("fake:a", [summaryOf("S.")], 1_000_000);
+    const more = { setup: { now, today: () => "2026-11-17", ...host } };
+    const { session, transcript } = await resumed(lead, told17, LIVE_ON, "2026-11-17", more);
+    expect(await session.compact("")).toBeUndefined();
     const note = noteOf(OFF, LIVE_ON);
-    expect(lead.seen[0]!.messages.at(-1)!.parts).toEqual([{ type: "text", text: big }, note]);
-    expect(lead.seen[1]!.messages.at(-1)!.parts.slice(-2)).toEqual([instructions, note]);
-    expect(noteParts(session.messages[0]!)).toEqual([note]);
+    expect(lead.seen[0]!.messages.at(-1)!.parts.slice(-2)).toEqual([instructions, note]);
+    expect(session.messages[0]!.parts.at(-1)).toEqual(note);
     expect(shortenedLine(transcript)).toMatchObject({ setup: LIVE_ON });
-    // The request after the summary: the new history alone, the note in it once.
-    expect(lead.seen[2]!.messages).toEqual([session.messages[0]]);
-    expect(lead.seen[2]!.messages.flatMap(noteParts)).toEqual([note]);
-    await session.send("next");
-    expect(session.messages[2]).toEqual(typed("next"));
   });
+
+  // Either trigger at the start of the turn: the lead's "too long" answer, or, for a lead that counts (Anthropic's),
+  // the size check before the first request, which shortens before any request is sent (Task 9's reviews).
+  it.each(["a too-long answer", "the size check before the request"] as const)(
+    "takes the setup note from the request kept on a shortening of the first message after a resume, by %s",
+    async (by) => {
+      const early = by === "the size check before the request";
+      const note = noteOf(OFF, LIVE_ON);
+      // The first request, which the counting lead's window is one short of; the new history, about 500 characters
+      // shorter, fits it.
+      const asked: Message = { role: "user", parts: [{ type: "text", text: big }, note] };
+      const first: Message[] = [typed(big), { role: "assistant", parts: reply("noted").parts }, asked];
+      const after = [summaryOf("S."), reply("done"), reply("ok")];
+      const lead = early
+        ? Object.assign(new Lead("fake:a", after, characters("t", first, [echo.spec]) - 1), {
+            countTokens: async (req: CompletionRequest) => characters(req.system, req.messages, req.tools),
+          })
+        : new Lead("fake:a", [new TooLong("prompt is too long"), ...after], 1_000_000);
+      const { session, transcript } = await resumed(lead, told17, LIVE_ON, "2026-11-17");
+      await session.send(big);
+      // The summary request's place: first when the size check shortened, so no request went before it.
+      const at = early ? 0 : 1;
+      expect(lead.seen).toHaveLength(at + 2);
+      if (!early) expect(lead.seen[0]!.messages.at(-1)).toEqual(asked);
+      expect(lead.seen[at]!.messages.at(-1)!.parts.slice(-2)).toEqual([instructions, note]);
+      expect(noteParts(session.messages[0]!)).toEqual([note]);
+      expect(shortenedLine(transcript)).toMatchObject({ setup: LIVE_ON });
+      // The request after the summary: the new history alone, the note in it once.
+      expect(lead.seen[at + 1]!.messages).toEqual([session.messages[0]]);
+      expect(lead.seen[at + 1]!.messages.flatMap(noteParts)).toEqual([note]);
+      await session.send("next");
+      expect(session.messages[2]).toEqual(typed("next"));
+    },
+  );
 
   it("builds a shortening's prompt with today's date after a date change, sending no date note", async () => {
     const built: string[] = [];
