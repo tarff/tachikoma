@@ -159,6 +159,10 @@ describe("answersFor", { timeout: 15_000 }, () => {
     const { data, root } = folders();
     const answers = answersFor(root, data);
     answers.set("sanity", A, true, "host");
+    for (const a of [answers, answersFor(root, data)]) {
+      expect(a.get("sanity", A, "box live network on")).toBeUndefined(); // a host yes is no answer for the box
+      expect(a.get("sanity", A)).toBeUndefined(); // nor for none
+    }
     answers.set("sanity", A, false, "box copy network off");
     answers.set("figma", A, true, "helper");
     for (const a of [answers, answersFor(root, data)]) {

@@ -33,7 +33,7 @@ function parse(line: string): Line | undefined {
 }
 
 // Each name's answers by setup, "" for none, which is also what a line saved by 8c has. 8c ran every server on this
-// computer, so a `host` lookup with no `host` answer takes the one for none; a `host` answer given since wins over it.
+// computer, so a `host` lookup with no `host` answer takes the one for none; any `host` answer wins over it.
 // Shared by answersFor and launchAnswers; a reset forgets every setup of a name (choice 2 (b)).
 function keeper(): Answers {
   const answers = new Map<string, Map<string, Answer>>();
