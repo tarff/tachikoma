@@ -63,7 +63,7 @@ export function program(command: string, env: NodeJS.ProcessEnv): string | undef
 
 // Runs one hook on the user's machine, never in the box, in `cwd`, the real project folder, which CLAUDE_PROJECT_DIR
 // names under Claude Code's name, with the commands' environment (commandEnv), so it never sees the API keys (release
-// 8b plan, choice 3). A headersHelper runs here too, in a folder of its own, with `projectDir` for CLAUDE_PROJECT_DIR
+// 8b plan, choice 3). A headersHelper runs here too, in the folder given, with `projectDir` for CLAUDE_PROJECT_DIR
 // (8c-2a plan, decision 13). Its input is written whole to its stdin, which is then closed (choice 4); without one, as
 // for a headersHelper, the stdin is closed with nothing written. At `limit` seconds it is killed with all it started; a
 // stop kills it the same way and rejects with Cancelled, as a command does (local.ts).

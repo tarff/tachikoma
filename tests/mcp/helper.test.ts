@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -90,8 +90,37 @@ describe("runHelper", () => {
     helper.mode("bad");
     expect(await run()).toEqual({ reason });
     helper.mode("ok");
-    helper.give({ "X-Key": 5 });
-    expect(await run()).toEqual({ reason });
+    for (const headers of ["null", '{"X-Key": 5}', '{"X-Key": {"a": "b"}}']) {
+      writeFileSync(helper.headersFile, headers);
+      expect([headers, await run()]).toEqual([headers, { reason }]);
+    }
+  }, 15_000);
+
+  // Windows PowerShell 5.1's `Set-Content -Encoding UTF8` starts a file with one.
+  it("takes output that starts with a byte order mark", async () => {
+    const { helper, run } = await setup();
+    writeFileSync(helper.headersFile, `${String.fromCharCode(0xfeff)}{"X-Key": "k1"}`);
+    expect(await run()).toEqual({ headers: { "X-Key": "k1" } });
+  }, 15_000);
+
+  it("closes the helper's stdin with nothing written to it", async () => {
+    const { helper, run } = await setup();
+    helper.mode("stdin");
+    helper.give({ "X-Key": "k1" });
+    expect(await run()).toEqual({ headers: { "X-Key": "k1" } });
+    expect(helper.runs()).toMatchObject([{ stdin: 0 }]);
+  }, 15_000);
+
+  it("runs from a folder whose path holds a single quote", async () => {
+    const { dir } = await setup();
+    const quoted = path.join(dir, "O'Neil");
+    mkdirSync(quoted);
+    const helper = fakeHelper(quoted);
+    helper.give({ "X-Key": "k1" });
+    const ran = await runHelper(helper.command, {
+      name: "x", url: "https://example.com/mcp", cwd: quoted, root: quoted, env: process.env, project: false,
+    });
+    expect(ran).toEqual({ headers: { "X-Key": "k1" } });
   }, 15_000);
 
   it("says the code of the error when the helper cannot start", async () => {
@@ -103,16 +132,22 @@ describe("runHelper", () => {
   it("refuses a header name HTTP does not take, and a value with a line break", async () => {
     const { helper, run } = await setup();
     helper.give({ "Bad Name": "x" });
-    expect(await run()).toEqual({ reason: 'it gave "Bad Name", which is not a header name' });
+    expect(await run()).toEqual({ reason: "it gave a name that is not a header name" });
+    // The user's choice at Task 9's review: the name is not quoted, as a helper gone wrong may have put a secret in it.
+    helper.give({ "Authorization: Bearer sk-fake-secret-1": "x" });
+    expect(await run()).toEqual({ reason: "it gave a name that is not a header name" });
     helper.give({ "X-Key": "k1\r\nX-Other: k2" });
     expect(await run()).toEqual({ reason: 'it gave the header "X-Key" a value with a line break or NUL' });
   }, 15_000);
 
-  // The test's own 500 ms, so it does not wait the real 10 s.
+  // The test's own limit, so it does not wait the real 10 s, but long enough that the helper has recorded its run when
+  // it is killed: Git Bash and Node took 106-135 ms to get that far (15 starts, measured 2026-11-17), and 5 s is the
+  // time run.test.ts's readPid allows a Node start under load.
   it("ends a helper still running at its limit, and says the limit", async () => {
     const { helper, run } = await setup();
     helper.mode("slow");
-    expect(await run({ limitMs: 500 })).toEqual({ reason: "it did not finish within 0.5 s" });
+    expect(await run({ limitMs: 5000 })).toEqual({ reason: "it did not finish within 5 s" });
+    expect(helper.runs()).toHaveLength(1);
     await allEnded(helper.runs());
   }, 15_000);
 

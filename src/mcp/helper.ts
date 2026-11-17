@@ -11,6 +11,8 @@ const CREDENTIAL = /TOKEN|SECRET|PASSWORD|KEY|AUTH/i;
 // An HTTP header name: a token (RFC 9110, section 5.6.2; decision 15).
 const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
+const BOM = String.fromCharCode(0xfeff);
+
 // A name from the helper's output, quoted as config.ts quotes one, its control characters shown as escapes.
 const quoted = (name: string) => visible(JSON.stringify(name));
 
@@ -57,10 +59,14 @@ export async function runHelper(
   if (ran.failed === "time") return { reason: `it did not finish within ${seconds} s` };
   if (ran.signal) return { reason: `it was ended by signal ${ran.signal}` };
   if (ran.code !== 0) return { reason: `it exited with code ${ran.code}` };
-  const headers = parsed(ran.stdout);
+  // One leading byte order mark is let through: Windows PowerShell 5.1's `Set-Content -Encoding UTF8` writes one, so a
+  // helper that prints such a file would otherwise be refused (Task 9's review).
+  const headers = parsed(ran.stdout.startsWith(BOM) ? ran.stdout.slice(1) : ran.stdout);
   if (!textMap(headers)) return { reason: "it printed something other than a JSON object of text values" };
   for (const [name, value] of Object.entries(headers)) {
-    if (!TOKEN.test(name)) return { reason: `it gave ${quoted(name)}, which is not a header name` };
+    // Not the name itself, which a helper that went wrong may have filled with a secret (the user's choice, Task 9's
+    // review).
+    if (!TOKEN.test(name)) return { reason: "it gave a name that is not a header name" };
     if (/[\r\n\0]/.test(value)) {
       return { reason: `it gave the header ${quoted(name)} a value with a line break or NUL` };
     }

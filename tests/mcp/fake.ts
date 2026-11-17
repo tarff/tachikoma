@@ -397,15 +397,16 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
 // A remote entry's headersHelper (8c-2a plan, Task 9): a Node script in `dir`, the test's own folder. Each run adds to
 // `runs()` its process id, its working folder, CLAUDE_CODE_MCP_SERVER_NAME and _URL (`name`, `url`), CLAUDE_PROJECT_DIR
 // (`project`) and its variables' names, then prints `headersFile`, which `give` writes, unless `mode` says otherwise:
-// "fail" exits 3 after printing a made-up secret on its error output, "bad" prints a list, "slow" never ends. `hold()`
-// makes the runs after it wait, looking every 20 ms, until `go()`, then do as the mode said. `command` starts it in the
-// shell hooks use: Git Bash or sh, or Windows PowerShell when there is no Git Bash (hooks/run.ts, shellOf).
+// "fail" exits 3 after printing a made-up secret on its error output, "bad" prints a list, "slow" never ends, "stdin"
+// reads its stdin to the end first and records only then, with the bytes it got as `stdin`. `hold()` makes the runs
+// after it wait, looking every 20 ms, until `go()`, then do as the mode said. `command` starts it in the shell hooks
+// use: Git Bash or sh, or Windows PowerShell when there is no Git Bash (hooks/run.ts, shellOf).
 const HELPER = String.raw`
 const fs = require("node:fs");
 const env = process.env;
 const run = { pid: process.pid, cwd: process.cwd(), name: env.CLAUDE_CODE_MCP_SERVER_NAME ?? null,
   url: env.CLAUDE_CODE_MCP_SERVER_URL ?? null, project: env.CLAUDE_PROJECT_DIR ?? null, names: Object.keys(env) };
-fs.appendFileSync(O.runs, JSON.stringify(run) + "\n");
+const record = (more) => fs.appendFileSync(O.runs, JSON.stringify({ ...run, ...more }) + "\n");
 const act = (mode) => {
   if (mode === "fail") return process.stderr.write("no token today sk-fake-secret-1\n", () => process.exit(3));
   if (mode === "bad") return process.stdout.write("[]\n");
@@ -416,10 +417,20 @@ const act = (mode) => {
   }
   process.stdout.write(fs.readFileSync(O.headers));
 };
-act(fs.readFileSync(O.mode, "utf8"));
+const mode = fs.readFileSync(O.mode, "utf8");
+if (mode === "stdin") {
+  let stdin = 0;
+  process.stdin.on("data", (d) => (stdin += d.length)).on("end", () => {
+    record({ stdin });
+    act("ok");
+  });
+} else {
+  record({});
+  act(mode);
+}
 `;
 
-export type HelperMode = "ok" | "fail" | "bad" | "slow";
+export type HelperMode = "ok" | "fail" | "bad" | "slow" | "stdin";
 
 export function fakeHelper(dir: string) {
   const n = ++made;
@@ -434,9 +445,12 @@ export function fakeHelper(dir: string) {
     writeFileSync(files.mode, m);
   };
   mode("ok");
-  const line = `'${process.execPath}' '${script}'`;
+  // Each path in single quotes, a quote in it written as each shell takes one: '' for PowerShell, '\'' for sh and bash.
+  const powershell = process.platform === "win32" && !gitBash();
+  const q = (s: string) => `'${s.replaceAll("'", powershell ? "''" : "'\\''")}'`;
+  const line = `${q(process.execPath)} ${q(script)}`;
   return {
-    command: process.platform === "win32" && !gitBash() ? `& ${line}` : line,
+    command: powershell ? `& ${line}` : line,
     runs: () => readLog(files.runs),
     give: (headers: object) => writeFileSync(files.headers, JSON.stringify(headers)),
     mode,
