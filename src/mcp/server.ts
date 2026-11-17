@@ -543,7 +543,8 @@ export class Server {
   // still running after the 300 ms has its group killed in the box first (design, "Stop"); a kill that fails is kept in
   // the name's record (decision 24). With `exit`, its `docker exec` is ended at once, as removing the box ends the
   // server (decision 6). The `docker exec` is ended alone, never with killTree: it has no tree of its own to take, and
-  // on Windows taskkill /T blocks for 2-4 s (src/sandbox/docker.ts, choice 125), which would hold every exit.
+  // on Windows taskkill /T blocks for 2-4 s (src/sandbox/docker.ts, choice 125), which would hold every exit. It gets
+  // SIGKILL, as killTree sends, since a client that catches SIGTERM would have the library's close wait 2 s twice.
   #close(conn: Conn, exit = false): Promise<void> {
     conn.closed ??= Promise.resolve().then(async () => {
       const closing = conn.client.close().catch(() => {});
@@ -558,7 +559,7 @@ export class Server {
           if (reason !== undefined) this.#unstopped.push({ group: boxed.group, reason });
         }
         if (alive(child)) {
-          if (boxed) child.kill();
+          if (boxed) child.kill("SIGKILL");
           else killTree(child);
         }
       }
