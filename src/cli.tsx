@@ -47,6 +47,7 @@ import {
   sandboxReady,
   sandboxStart,
   screenMode,
+  setupOf,
   type Started,
   stopSoon,
   systemAgain,
@@ -62,9 +63,10 @@ import { type Reached, readInstructions } from "./core/instructions.js";
 import { type Ask, PermissionGate, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { type Row, sessionsDir, sweep } from "./core/sessions.js";
+import { localDate } from "./core/setup.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
-import { errorText, type Message, type Provider } from "./core/types.js";
+import { errorText, type Message, type Provider, type Setup } from "./core/types.js";
 import { LocalExecutor, LocalWorkspace, shellFor } from "./exec/local.js";
 import { Hooks } from "./hooks/hooks.js";
 import { pathsFor } from "./hooks/tools.js";
@@ -629,7 +631,14 @@ if (ready) {
   if (!interactive) for (const line of box.lines) console.error(line);
 }
 const where = box ?? { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root) };
-const first = box?.system ?? systemPrompt(root);
+// The launch's setup and date (system prompt plan, Tasks 1-2): the prompt is built with them, and the start line and
+// a resume's compare record them (Tasks 5-6). The lead's prompt is built where its commands run, /work in the box.
+const setupNow = () => setupOf(root, sandbox, options.network);
+const launchSetup = setupNow();
+const today = localDate();
+const leadPrompt = (date: string, setup: Setup, leadId: string) =>
+  systemPrompt({ root: where.root, date, setup, lead: leadId });
+const first = leadPrompt(today, launchSetup, lead.id);
 const system = [first, instructions.text].filter(Boolean).join("\n\n");
 // The MCP servers, made once the sandbox has started, and started once the bus has its listeners (release 8c plan, Task
 // 9). They work in the project's own folder, as they run outside the box until a later release (design, "Starting and
@@ -722,24 +731,49 @@ const tools = [
 // opened above, or its copy. Its lines are said before the conversation is loaded, and the error log's rows carry its id.
 const specs = tools.map((t) => t.spec);
 const name = parsed.name?.trim() || undefined;
+// The launch's prompt and the setup it was built under, which a resume compares with the saved one's (system prompt
+// plan, Task 6).
+const launchPrompt = { setup: launchSetup, full: system };
 const opened = saved
-  ? resumed(saved, { tools: specs, lead: lead.id, ...(name ? { name } : {}), prompt: { box: box !== undefined, full: system }, interactive })
+  ? resumed(saved, { tools: specs, lead: lead.id, ...(name ? { name } : {}), prompt: launchPrompt, interactive })
   : newSaved(
       sessions,
-      { id: sessionId, project: root, lead: lead.id, version: VERSION, print: !interactive, system, box: box !== undefined, tools: specs },
+      {
+        id: sessionId,
+        project: root,
+        lead: lead.id,
+        version: VERSION,
+        print: !interactive,
+        system,
+        date: today,
+        setup: launchSetup,
+        tools: specs,
+      },
       name,
     );
 const said = [...opened.lines, ...(leadLine ? [{ text: leadLine }] : [])].map((l) => ({ ...l, text: visible(l.text) }));
 // The subagents a crash cut short, and the background commands that had not ended (background commands plan, choice 15),
 // reach the model with its next request, as waiting answers do (release 8a design, "Resuming"), and are marked reported
 // once handed out: the window's session's, which /clear, /resume and /branch switch (release 8a plan, Task 7).
-const windowSessions = new WindowSessions(sessions, { project: root, version: VERSION, tools: specs }, { box: box !== undefined, full: system }, opened);
+const windowSessions = new WindowSessions(
+  sessions,
+  { project: root, version: VERSION, tools: specs },
+  launchPrompt,
+  opened,
+);
 const { session, pictures } = leadSession({
   lead,
   fallback,
   tools,
   system,
-  systemNow: systemAgain(first, instructionsAt, mode === "never" ? "all" : asked), // a shortening's and /clear's prompt (release 8a plan, choice 3)
+  // A shortening's and /clear's prompt (release 8a plan, choice 3), built with that day's date and the setup as found
+  // then (system prompt plan, Task 8). The lead leading then picks the maker lines (decision 1); `session` is read only
+  // when a prompt is built, after it is made.
+  systemNow: systemAgain(
+    (date, setup = setupNow()) => leadPrompt(date, setup, session.lead.id),
+    instructionsAt,
+    mode === "never" ? "all" : asked,
+  ),
   ctx: { root: where.root, executor, workspace, gate },
   bus,
   inbox: () => [...windowSessions.lost(), ...tasks.take()],
@@ -751,6 +785,9 @@ const { session, pictures } = leadSession({
   // prompt waits for (choice 25).
   mcp: mcpTools(servers, bus, approveOf(servers)),
   servers,
+  // The setup and date as found at each message, for the notes that tell the model of a change (system prompt plan,
+  // Task 7); the host's folder and platform name its shell in the setup note.
+  setup: { now: setupNow, today: () => localDate(), root, platform: process.platform },
 });
 // SessionStart's source, by how the launch opened the conversation (release 8b plan, Task 10): a copy opened as another
 // window holds the session is still a resume, as -c or -r asked for one.

@@ -4,9 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, type TestContext, vi } from "vitest";
-import { sandboxReady, sandboxStart, type Started } from "../../src/clilib.js";
+import { sandboxReady, sandboxStart, setupOf, type Started } from "../../src/clilib.js";
 import { PermissionGate } from "../../src/core/permissions.js";
+import { systemPrompt } from "../../src/core/prompt.js";
 import { Session } from "../../src/core/session.js";
+import { localDate } from "../../src/core/setup.js";
 import { Tasks } from "../../src/core/tasks.js";
 import type { CompletionRequest, Turn } from "../../src/core/types.js";
 import { onPath } from "../../src/exec/env.js";
@@ -94,8 +96,8 @@ async function launch(ctx: TestContext, w: ReturnType<typeof world>): Promise<St
 }
 
 // The session cli.tsx makes for -p in auto mode: the gate headless, the judge a FakeProvider that allows, and the tools,
-// prompt and context the launch gave.
-function headless(started: Started, lead: FakeProvider, judge: FakeProvider) {
+// prompt and context the launch gave. `host` is the host's project folder the box mounts.
+function headless(started: Started, host: string, lead: FakeProvider, judge: FakeProvider) {
   const bus = new Bus();
   const gate = new PermissionGate("auto", async () => false, "Not allowed in -p mode, where nobody can approve it", {
     ...started.gate,
@@ -108,7 +110,11 @@ function headless(started: Started, lead: FakeProvider, judge: FakeProvider) {
   // The box's shell tool, made as cli.tsx makes it over a task list (background commands plan, Task 5).
   const tasks = new Tasks({ bus, max: 8, worker: () => lead, system: started.subagentSystem, tools: [], ctx });
   const tools = [...TOOLS, ...shellTools(tasks, { shell: "bash", headless: true })];
-  const session: Session = new Session({ lead, tools, system: started.system, ctx, bus });
+  // The lead's prompt as cli.tsx builds it in the box (system prompt plan, Task 2), so the setup is found the real way,
+  // from the host's project folder of a real box's session.
+  const setup = setupOf(host, "live", "off");
+  const system = systemPrompt({ root, date: localDate(), setup, lead: lead.id });
+  const session: Session = new Session({ lead, tools, system, ctx, bus });
   return session;
 }
 
@@ -124,7 +130,8 @@ describe("a session in the box with live link, in real Docker", { timeout: 0 }, 
     execFileSync(onPath("git", w.env)!, ["init", "-q"], { cwd: w.root, env: w.env, windowsHide: true });
     const started = await launch(ctx, w);
     const lead = new Recording("lead", [callTool("c1", "shell", { command: "echo hi > a.txt" }), reply("done")]);
-    await headless(started, lead, new FakeProvider("judge", [allow()])).send("make a.txt", AbortSignal.timeout(600_000));
+    const session = headless(started, w.root, lead, new FakeProvider("judge", [allow()]));
+    await session.send("make a.txt", AbortSignal.timeout(600_000));
     expect(readFileSync(path.join(w.root, "a.txt"), "utf8")).toBe("hi\n");
     expect(lead.systems[0]).toContain("The project root is /work.");
     expect(lead.systems[0]).toContain("Shell commands run with bash on linux.");
@@ -137,7 +144,7 @@ describe("a session in the box with live link, in real Docker", { timeout: 0 }, 
     onTestFinished(() => removeTree(w.dir));
     const started = await launch(ctx, w);
     const lead = new FakeProvider("lead", [callTool("c1", "shell", { command: "curl -sS http://example.invalid/" }), reply("done")]);
-    const session = headless(started, lead, new FakeProvider("judge", [allow()]));
+    const session = headless(started, w.root, lead, new FakeProvider("judge", [allow()]));
     await session.send("fetch it", AbortSignal.timeout(600_000));
     const result = session.messages.flatMap((m) => m.parts).find((p) => p.type === "tool_result");
     expect(result).toMatchObject({ isError: true });

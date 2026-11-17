@@ -10,11 +10,20 @@ import { callText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
 import { type Ask, Declined, type Judge, PermissionGate } from "../../src/core/permissions.js";
 import { type Conversation, Session, truncateLeaving, UNSAVED } from "../../src/core/session.js";
-import { CANCELLED, INSTRUCTIONS } from "../../src/core/shorten.js";
+import { localDate, setupNote, type Told } from "../../src/core/setup.js";
+import { CANCELLED, INSTRUCTIONS, STILL_TOO_BIG } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
 import { type SubagentTask, Tasks } from "../../src/core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
-import { type CompletionRequest, type Message, type Part, type Provider, sentAll, type Turn } from "../../src/core/types.js";
+import {
+  type CompletionRequest,
+  type Message,
+  type Part,
+  type Provider,
+  sentAll,
+  type Setup,
+  type Turn,
+} from "../../src/core/types.js";
 import { type Executor, MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import type { Event, Hook } from "../../src/hooks/config.js";
@@ -1128,6 +1137,17 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const dir = path.join(own, "data", "sessions", "project");
     return new Transcript(path.join(dir, "s.jsonl"), path.join(dir, "s", "pictures"));
   }
+  // A transcript whose write of the `shortened` line fails, as `write` records a failure: without throwing.
+  class FailsThere extends Transcript {
+    #broken: string | null = null;
+    override get failed(): string | null {
+      return this.#broken ?? super.failed;
+    }
+    override write(line: Parameters<Transcript["write"]>[0]): void {
+      if (line.t === "shortened") this.#broken = "the disk is full";
+      else super.write(line);
+    }
+  }
   // A lead that counts requests exactly, each count from `counts` in turn: a number, or "stop", which stops the turn
   // there, as Ctrl-C would, and rejects as the SDK does.
   function counting(lead: Lead, stop: AbortController, counts: (number | "stop")[]) {
@@ -1246,17 +1266,6 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   });
 
   it("changes nothing when saving first fails at the shortened line, and ends the turn with the line", async () => {
-    // A transcript whose write of the `shortened` line fails, as `write` records a failure: without throwing.
-    class FailsThere extends Transcript {
-      #broken: string | null = null;
-      override get failed(): string | null {
-        return this.#broken ?? super.failed;
-      }
-      override write(line: Parameters<Transcript["write"]>[0]): void {
-        if (line.t === "shortened") this.#broken = "the disk is full";
-        else super.write(line);
-      }
-    }
     const t = saving();
     const transcript = new FailsThere(t.file, t.pictures, { inherits: true });
     const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), summaryOf("Many x.")], 1_000_000);
@@ -1527,7 +1536,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     ]);
   });
 
-  // PR #10's review: a stop while the instruction files are read again, after the summary came, saves and changes nothing.
+  // PR #10's review: a stop while the instruction files are read again, now before the summary request (system prompt
+  // plan, Task 9, decision 9), saves and changes nothing.
   it("changes nothing when /compact is stopped while the instruction files are read again", async () => {
     const stop = new AbortController();
     const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
@@ -1678,7 +1688,9 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // Task 11's code review: a stop while a hook around the shortening runs changes nothing, as any stop during one.
   it.each(["PreCompact", "PostCompact", "SessionStart"] as const)("changes nothing when /compact is stopped while its %s hook runs", async (event) => {
     const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
-    let reread = 0; // the shortening ends at the stop, so the instruction files are not read again for it
+    // The instruction files are read again after PreCompact (system prompt plan, Task 9, decision 9), so once for a
+    // stop at a hook after it; the shortening ends at the stop all the same.
+    let reread = 0;
     const systemNow = async () => (reread++, "t, read again");
     const { session, errors, notes, summaries, transcript, inputs } = await setup(lead, { systemNow }, [{ event, code: "never" }]);
     await session.send(big);
@@ -1690,7 +1702,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     }
     stop.abort();
     expect(await compacted).toBe(CANCELLED);
-    expect([session.messages.length, session.system, summaries, errors, notes, reread]).toEqual([2, "t", [], [], [], 0]);
+    const after = [session.messages.length, session.system, summaries, errors, notes, reread];
+    expect(after).toEqual([2, "t", [], [], [], event === "PreCompact" ? 0 : 1]);
     expect(lead.seen.length).toBe(event === "PreCompact" ? 1 : 2); // the summary request is sent only after PreCompact
     expect(savedLines(transcript).some((l) => l.t === "shortened")).toBe(false);
   });
@@ -1707,19 +1720,19 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     ]);
   });
 
-  // Task 11's code review: the line is said once the shortening is saved, so a stop while the instruction files are read
-  // again, which saves nothing, says nothing.
-  it("does not say SessionStart's text was left out when the shortening is then stopped", async () => {
-    const stop = new AbortController();
-    const systemNow = async () => {
-      stop.abort();
-      return "t, read again";
-    };
+  // Task 11's code review: the line is said once the shortening is saved, so a shortened line that then cannot be
+  // written, which saves nothing, says nothing. Nothing is waited for between deciding the text is left out and the
+  // write, so a stop cannot land there; this is the one way left to decide it and save nothing.
+  it("does not say SessionStart's text was left out when the shortened line then cannot be written", async () => {
+    const t = saving();
+    const transcript = new FailsThere(t.file, t.pictures, { inherits: true });
     const lead = new Lead("fake:a", [measured("noted"), summaryOf("Many x.")], 700);
-    const { session, notes, transcript } = await setup(lead, { systemNow }, [{ event: "SessionStart", names: ["compact"], stdout: "y".repeat(1000) }]);
+    const said: Said[] = [{ event: "SessionStart", names: ["compact"], stdout: "y".repeat(1000) }];
+    const { session, notes } = await setup(lead, { transcript }, said);
     await session.send(big);
-    expect(await session.compact("", stop.signal)).toBe(CANCELLED);
-    expect([notes, session.messages.length, savedLines(transcript).some((l) => l.t === "shortened")]).toEqual([[], 2, false]);
+    const before = structuredClone(session.messages);
+    expect(await session.compact("")).toBe(UNSAVED);
+    expect([notes, session.messages, session.system]).toEqual([[], before, "t"]);
   });
 
   // The user's choice, 2026-11-09 ("Pre/Post only"): SessionStart is about the user's session, so a subagent's shortening
@@ -1809,6 +1822,142 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(notes).toEqual([LEFT_OUT]);
     expect(savedLines(transcript).find((l) => l.t === "shortened")).toEqual({ t: "shortened", at: expect.any(String), system: "t, read again", message });
     expect([errors, texts(session.messages.at(-1)!)]).toEqual([[], ["done"]]);
+  });
+
+  // System prompt plan, Task 9 (decisions 8, 9 and 13; design, "What the model was told"): a shortening's fresh prompt,
+  // built before the summary, is the one measured and saved, with that day's date and the setup now; a setup note still
+  // due goes into the summary request and the new history, and is told once saved; a date note is left out.
+  const OFF: Setup = { sandbox: "off", git: "repo" };
+  const LIVE_ON: Setup = { sandbox: "live", network: "on", git: "repo" };
+  const host = { root: "C:\\proj", platform: "win32" } as const;
+  const told17: Told = { date: "2026-11-17", setup: OFF };
+  const noteOf = (before: Setup, now: Setup): Part => ({
+    type: "text",
+    text: setupNote(before, now, host)!,
+    from: "note",
+    note: { setup: now },
+  });
+  const noteParts = (m: Message) => m.parts.filter((p) => p.type === "text" && p.from === "note");
+  const instructions: Part = { type: "text", text: INSTRUCTIONS };
+  // A session given a setup that finds `now` and `today`, its loaded conversation one exchange telling `told`, saved in
+  // the transcript setup() made.
+  type More = Parameters<typeof setup>[1];
+  async function resumed(lead: Provider, told: Told, now: Setup, today: string, more: More = {}) {
+    const made = await setup(lead, { setup: { now: () => now, today: () => today, ...host }, ...more });
+    const messages: Message[] = [typed(big), { role: "assistant", parts: reply("noted").parts }];
+    const { transcript } = made;
+    const saved = { prompts: [], calls: [], nextPicture: 1, nextTask: 1 };
+    made.session.load({ id: "s", messages, system: "t", transcript, ...saved, told });
+    return made;
+  }
+  const shortenedLine = (t: Transcript) => savedLines(t).find((l) => l.t === "shortened");
+
+  it("sends a setup note due on /compact straight after a resume, in the summary request and history", async () => {
+    const lead = new Lead("fake:a", [summaryOf("S."), reply("ok")], 1_000_000);
+    const { session, transcript } = await resumed(lead, told17, LIVE_ON, "2026-11-17");
+    expect(await session.compact("")).toBeUndefined();
+    const note = noteOf(OFF, LIVE_ON);
+    expect(lead.seen[0]!.messages.at(-1)!.parts.slice(-2)).toEqual([instructions, note]);
+    expect(session.messages[0]!.parts.at(-1)).toEqual(note);
+    expect(shortenedLine(transcript)).toMatchObject({ date: "2026-11-17", setup: LIVE_ON });
+    await session.send("next");
+    expect(session.messages[1]).toEqual(typed("next"));
+  });
+
+  // Task 9's code review: the note comes from the reading of the setup the prompt was built from, so a setup that
+  // cannot be read a second time cannot lose it.
+  it("sends a setup note due on /compact when the setup cannot be read again once the prompt is built", async () => {
+    let reads = 0;
+    const now = () => {
+      if (reads++) throw new Error("git could not be read");
+      return LIVE_ON;
+    };
+    const lead = new Lead("fake:a", [summaryOf("S.")], 1_000_000);
+    const more = { setup: { now, today: () => "2026-11-17", ...host } };
+    const { session, transcript } = await resumed(lead, told17, LIVE_ON, "2026-11-17", more);
+    expect(await session.compact("")).toBeUndefined();
+    const note = noteOf(OFF, LIVE_ON);
+    expect(lead.seen[0]!.messages.at(-1)!.parts.slice(-2)).toEqual([instructions, note]);
+    expect(session.messages[0]!.parts.at(-1)).toEqual(note);
+    expect(shortenedLine(transcript)).toMatchObject({ setup: LIVE_ON });
+  });
+
+  // Either trigger at the start of the turn: the lead's "too long" answer, or, for a lead that counts (Anthropic's),
+  // the size check before the first request, which shortens before any request is sent (Task 9's reviews).
+  it.each(["a too-long answer", "the size check before the request"] as const)(
+    "takes the setup note from the request kept on a shortening of the first message after a resume, by %s",
+    async (by) => {
+      const early = by === "the size check before the request";
+      const note = noteOf(OFF, LIVE_ON);
+      // The first request, which the counting lead's window is one short of; the new history, about 500 characters
+      // shorter, fits it.
+      const asked: Message = { role: "user", parts: [{ type: "text", text: big }, note] };
+      const first: Message[] = [typed(big), { role: "assistant", parts: reply("noted").parts }, asked];
+      const after = [summaryOf("S."), reply("done"), reply("ok")];
+      const lead = early
+        ? Object.assign(new Lead("fake:a", after, characters("t", first, [echo.spec]) - 1), {
+            countTokens: async (req: CompletionRequest) => characters(req.system, req.messages, req.tools),
+          })
+        : new Lead("fake:a", [new TooLong("prompt is too long"), ...after], 1_000_000);
+      const { session, transcript } = await resumed(lead, told17, LIVE_ON, "2026-11-17");
+      await session.send(big);
+      // The summary request's place: first when the size check shortened, so no request went before it.
+      const at = early ? 0 : 1;
+      expect(lead.seen).toHaveLength(at + 2);
+      if (!early) expect(lead.seen[0]!.messages.at(-1)).toEqual(asked);
+      expect(lead.seen[at]!.messages.at(-1)!.parts.slice(-2)).toEqual([instructions, note]);
+      expect(noteParts(session.messages[0]!)).toEqual([note]);
+      expect(shortenedLine(transcript)).toMatchObject({ setup: LIVE_ON });
+      // The request after the summary: the new history alone, the note in it once.
+      expect(lead.seen[at + 1]!.messages).toEqual([session.messages[0]]);
+      expect(lead.seen[at + 1]!.messages.flatMap(noteParts)).toEqual([note]);
+      await session.send("next");
+      expect(session.messages[2]).toEqual(typed("next"));
+    },
+  );
+
+  it("builds a shortening's prompt with today's date after a date change, sending no date note", async () => {
+    const built: string[] = [];
+    const systemNow = async (date: string) => (built.push(date), "t, read again");
+    const lead = new Lead("fake:a", [summaryOf("S."), reply("ok")], 1_000_000);
+    const { session, transcript } = await resumed(lead, told17, OFF, "2026-11-18", { systemNow });
+    expect(await session.compact("")).toBeUndefined();
+    expect(built).toEqual(["2026-11-18"]);
+    expect(shortenedLine(transcript)).toMatchObject({ date: "2026-11-18", setup: OFF });
+    expect(lead.seen[0]!.messages.flatMap(noteParts)).toEqual([]);
+    await session.send("next");
+    expect(session.messages[1]).toEqual(typed("next"));
+  });
+
+  it("leaves the date note out of the request kept on an automatic shortening across midnight", async () => {
+    const lead = new Lead("fake:a", [new TooLong("prompt is too long"), summaryOf("S."), reply("done")], 1_000_000);
+    const { session, transcript } = await resumed(lead, told17, OFF, "2026-11-18");
+    await session.send(big);
+    expect(lead.seen[0]!.messages.at(-1)!.parts.at(-1)).toMatchObject({ from: "note", note: { date: "2026-11-18" } });
+    expect(texts(session.messages[0]!).join("")).not.toContain("today's date is now");
+    expect(shortenedLine(transcript)).toMatchObject({ date: "2026-11-18" });
+    expect(lead.seen[2]!.messages.flatMap(noteParts)).toEqual([]);
+  });
+
+  it("fails a shortening that fits under the old prompt, not the fresh one and the note, which stays due", async () => {
+    // A loaded conversation has no ratio yet, so the lead counts.
+    const count = async (req: CompletionRequest) => characters(req.system, req.messages, req.tools);
+    const counts = (lead: Lead) => Object.assign(lead, { countTokens: count });
+    const note = noteOf(OFF, LIVE_ON);
+    const control = await resumed(counts(new Lead("fake:a", [summaryOf("S.")], 2_000)), told17, LIVE_ON, "2026-11-17");
+    expect(await control.session.compact("")).toBeUndefined();
+    const lead = counts(new Lead("fake:a", [summaryOf("S."), reply("ok")], 2_000));
+    const systemNow = async () => `t${"y".repeat(2_000)}`;
+    const { session, transcript } = await resumed(lead, told17, LIVE_ON, "2026-11-17", { systemNow });
+    // The summary's message with the note fits under the old prompt.
+    const summary = "This conversation was shortened. A summary of everything before this point:\n\nS.";
+    const message: Message = { role: "user", parts: [{ type: "text", text: summary }, note] };
+    expect(characters("t", [message], [echo.spec])).toBeLessThanOrEqual(2_000);
+    expect(await session.compact("")).toBe(STILL_TOO_BIG);
+    expect(session.system).toBe("t");
+    await session.send("next");
+    expect(session.messages.at(-2)!.parts.at(-1)).toEqual(note);
+    expect(shortenedLine(transcript)).toBeUndefined(); // the file is written once the next message is
   });
 });
 
@@ -3170,5 +3319,155 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(prompt!.prompt_id).toEqual(expect.any(String));
     expect(end!.prompt_id).toBe(prompt!.prompt_id);
     expect("prompt_id" in start!).toBe(false);
+  });
+});
+
+// System prompt plan, Task 7 (decisions 6 and 7): a lead session given a setup tells the model of a new date or setup
+// at the end of its next user message, once; a conversation that says nothing of what was told gets no notes.
+describe("Session, notes to the model", { timeout: 15_000 }, () => {
+  let top: string;
+  beforeAll(async () => {
+    top = await mkdtemp(path.join(tmpdir(), "tachi-notes-"));
+  });
+  afterAll(() => removeTree(top));
+  const OFF: Setup = { sandbox: "off", git: "repo" };
+  const LIVE_ON: Setup = { sandbox: "live", network: "on", git: "repo" };
+  const host = { root: "C:\\proj", platform: "win32" } as const;
+  // A lead session given a setup, its conversation telling `told` and saved in `transcript` when given; `days` the
+  // dates each check of today gives in turn, the last repeating.
+  async function noted(told: Told | undefined, now: Setup, days: string[], turns: Turn[], transcript?: Transcript) {
+    const lead = new FakeProvider("a", turns);
+    const day = () => (days.length > 1 ? days.shift()! : days[0]!);
+    const session = new Session({
+      lead, tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+      setup: { now: () => now, today: day, root: host.root, platform: host.platform },
+    });
+    session.load({
+      id: "s", messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1,
+      ...(told ? { told } : {}), ...(transcript ? { transcript } : {}),
+    });
+    return { session, lead };
+  }
+  const notes = (m: Message) => m.parts.flatMap((p) => (p.type === "text" && p.from === "note" ? [p.text] : []));
+  const hi: Part = { type: "text", text: "hi" };
+  const DATE18: Part = {
+    type: "text",
+    text: "This note is from Tachikoma, not the user: today's date is now 2026-11-18.",
+    from: "note",
+    note: { date: "2026-11-18" },
+  };
+  const told17: Told = { date: "2026-11-17", setup: OFF };
+
+  it("sends no note when the date and setup are the ones told", async () => {
+    const { session, lead } = await noted(told17, OFF, ["2026-11-17"], [reply("ok")]);
+    await session.send("hi");
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([hi]);
+  });
+
+  it("tells the model of a new date once, at the end of the next message, keeping it out of the prompts", async () => {
+    const { session, lead } = await noted(told17, OFF, ["2026-11-18"], [reply("ok"), reply("ok")]);
+    await session.send("hi");
+    await session.send("again");
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([hi, DATE18]);
+    expect(lead.seen[1]!.at(-1)!.parts).toEqual([{ type: "text", text: "again" }]);
+    expect(session.prompts).toEqual(["hi", "again"]); // the judge never sees a note
+  });
+
+  it("tells a new date and a new setup together, the date first, after the typed words", async () => {
+    const { session, lead } = await noted(told17, LIVE_ON, ["2026-11-18"], [reply("ok")]);
+    await session.send("hi");
+    const last = lead.seen[0]!.at(-1)!;
+    expect(last.parts[0]).toEqual(hi);
+    expect(notes(last)).toEqual([
+      "This note is from Tachikoma, not the user: today's date is now 2026-11-18.",
+      setupNote(OFF, LIVE_ON, host),
+    ]);
+    expect(last.parts.at(-1)).toMatchObject({ from: "note", note: { setup: LIVE_ON } });
+  });
+
+  it("tells of a date that changes during a turn in the results message, after the results", async () => {
+    const turns = [callTool("c1", "echo", { text: "x" }), reply("done")];
+    const { session, lead } = await noted(told17, OFF, ["2026-11-17", "2026-11-18"], turns);
+    await session.send("hi");
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([hi]);
+    const result = { type: "tool_result", callId: "c1", output: "x", isError: false };
+    expect(lead.seen[1]!.at(-1)!.parts).toEqual([result, DATE18]);
+  });
+
+  it("sends no notes for a conversation that says nothing of what was told, however the dates differ", async () => {
+    const { session, lead } = await noted(undefined, LIVE_ON, ["2026-11-18"], [reply("ok")]);
+    await session.send("hi");
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([hi]);
+  });
+
+  it("saves the notes in the message as sent, each with what it tells", async () => {
+    const dir = path.join(top, "sessions", "project");
+    const transcript = new Transcript(path.join(dir, "s.jsonl"), path.join(dir, "s", "pictures"), { inherits: true });
+    const { session, lead } = await noted(told17, LIVE_ON, ["2026-11-18"], [reply("ok")], transcript);
+    await session.send("hi");
+    const sent = lead.seen[0]!.at(-1)!;
+    expect(sent.parts.slice(1)).toMatchObject([{ note: { date: "2026-11-18" } }, { note: { setup: LIVE_ON } }]);
+    const saved = readFileSync(transcript.file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Line);
+    expect(saved.find((l) => l.t === "message")).toMatchObject({ t: "message", message: sent });
+  });
+
+  // Task 7's code review: git's lookup can throw, and a throw while the results message is built would leave calls
+  // with no results.
+  it("sends a message with no notes when the setup cannot be read, the notes going with the next one", async () => {
+    let reads = 0;
+    const now = () => {
+      if (reads++ === 0) throw new Error("EACCES");
+      return OFF;
+    };
+    const lead = new FakeProvider("a", [reply("ok"), reply("ok")]);
+    const session = new Session({
+      lead, tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+      setup: { now, today: () => "2026-11-18", root: host.root, platform: host.platform },
+    });
+    session.load({
+      id: "s", messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1, told: told17,
+    });
+    await session.send("hi");
+    await session.send("again");
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([hi]);
+    expect(lead.seen[1]!.at(-1)!.parts).toEqual([{ type: "text", text: "again" }, DATE18]);
+  });
+
+  // A resume counts a cut-off reply's calls as not run only when its results message holds just the results
+  // (transcript.ts, cutOff), so a note waits for the next turn's first message.
+  it("puts no note in a cut-off reply's results message, the note going with the next turn", async () => {
+    const cut = { ...callTool("c1", "echo", { text: "x" }), cutOff: { kind: "max_tokens" as const, detail: "limit" } };
+    const { session } = await noted(told17, OFF, ["2026-11-17", "2026-11-18"], [cut, reply("ok")]);
+    await session.send("hi");
+    const results = session.messages.at(-1)!;
+    expect(results.parts).toHaveLength(1);
+    expect(results.parts[0]).toMatchObject({ type: "tool_result", callId: "c1", isError: true });
+    await session.send("again");
+    // Stored apart from the results message, though the provider sends the two together.
+    expect(session.messages.at(-2)!.parts).toEqual([{ type: "text", text: "again" }, DATE18]);
+  });
+
+  // System prompt plan, Task 8: /clear's prompt built with today's date and the setup as found now, both given back
+  // for the new conversation's start line; a session given no setup gives the local date alone.
+  it("builds the fresh prompt with today's date and the setup now, and gives them back", async () => {
+    const session = new Session({
+      lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+      systemNow: async (date, setup) => `built ${date} ${setup?.sandbox}`,
+      setup: { now: () => LIVE_ON, today: () => "2026-11-18", root: host.root, platform: host.platform },
+    });
+    const built = { system: "built 2026-11-18 live", date: "2026-11-18", setup: LIVE_ON };
+    expect(await session.freshSystem()).toEqual(built);
+    const plain = new Session({
+      lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+    });
+    const before = localDate();
+    const fresh = await plain.freshSystem();
+    const days = [before, localDate()]; // a run across midnight takes either
+    expect(fresh.system).toBe("t");
+    expect(days).toContain(fresh.date);
+    expect("setup" in fresh).toBe(false);
   });
 });

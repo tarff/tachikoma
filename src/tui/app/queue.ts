@@ -757,11 +757,12 @@ export const queue = (ui: UI, fns: Fns) => {
   };
   // /clear: a new session, with the same lead and mode, its system prompt built afresh (design, "Resuming").
   const startFresh = async () => {
-    const system = await ui.session.freshSystem();
-    await switchTo(ui.saved.fresh(ui.session.lead.id, system), [gray("Started a new session; the last one is kept (tachi --resume lists it).")], {
-      end: "clear",
-      start: "clear",
-    });
+    const fresh = await ui.session.freshSystem();
+    await switchTo(
+      ui.saved.fresh(ui.session.lead.id, fresh),
+      [gray("Started a new session; the last one is kept (tachi --resume lists it).")],
+      { end: "clear", start: "clear" },
+    );
   };
   // /resume: the folder's other saved sessions, in the list `tachi -r` shows (choice 14). True when it opened, holding the
   // queue until a pick or Esc, as the model list does.

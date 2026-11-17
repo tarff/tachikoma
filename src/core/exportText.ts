@@ -11,7 +11,9 @@ export const callText = (c: ToolCall, result: string | undefined) =>
 // it, and one saved before replies kept their lead with the lead leading now. The notes the session added for the lead
 // (a background subagent's answer, failure or stop, and a crash's "answer was lost" line) go where they arrived, as the
 // lead got them, under "Subagents:" (user, 2026-11-06), though the scrollback shows them only as "t3 finished"
-// (describe.ts). Results have no heading of their own, being under their calls, each found in the message right after
+// (describe.ts). The notes of a changed date or setup go where they arrived too, under "Notes:", as they changed what
+// the model knew, though the scrollback leaves them out (system prompt plan, choice 3). Results have no heading of
+// their own, being under their calls, each found in the message right after
 // its reply, as a provider may give a call an earlier turn's id. Blocks are separated by a blank line, and every line
 // ends with LF alone, a message's own CRLF or CR included.
 export function exportText(messages: Message[], lead: string): string {
@@ -27,10 +29,16 @@ export function exportText(messages: Message[], lead: string): string {
       // are left out, as the scrollback leaves them out (describe.ts).
       if (p.type === "tool_result" || ((p.type === "image" || p.type === "text") && p.from === "server")) continue;
       const note = p.type === "text" && p.from === "tasks";
+      const told = p.type === "text" && p.from === "note";
       // A hook's text for the model is shown as those notes are, under its own first line, `<Event> hook:` (release 8b
       // plan, Task 8).
       const hook = p.type === "text" && p.from === "hooks" ? /^(.*)\n([^]*)$/.exec(p.text) : null;
-      const heading = hook ? hook[1]! : note ? "Subagents:" : m.role === "user" ? "You:" : `Tachikoma (${m.lead ?? lead}):`;
+      const heading = hook ? hook[1]! : note ? "Subagents:" : told ? "Notes:"
+        : m.role === "user" ? "You:" : `Tachikoma (${m.lead ?? lead}):`;
+      // A shortening's layout puts "\n\n" before a section, and after a note that text opens a new block, so its line
+      // breaks there are dropped (the user's choice, Task 9's code review). Only after a note: the session puts notes
+      // at a message's end, so text after one is the layout's, and other text that opens a block keeps its line breaks.
+      const afterNote = block?.heading === "Notes:" && heading !== "Notes:";
       if (block?.heading !== heading) {
         blocks.push((block = { heading, lines: [] }));
         picture = false;
@@ -38,7 +46,8 @@ export function exportText(messages: Message[], lead: string): string {
       // The user's text and pictures are one prompt, as the scrollback shows it: two pictures next to each other get a
       // space between, as the blanks between them were left out of the message (describe.ts).
       if (p.type === "text" || p.type === "image") {
-        const text = p.type === "image" ? `${picture ? " " : ""}${marker(p.id)}` : hook ? hook[2]! : p.text;
+        const text = p.type === "image" ? `${picture ? " " : ""}${marker(p.id)}`
+          : hook ? hook[2]! : afterNote ? p.text.replace(/^[\r\n]+/, "") : p.text;
         picture = p.type === "image";
         if (heading === "You:" && block.lines.length) block.lines[block.lines.length - 1] += text;
         else block.lines.push(text);

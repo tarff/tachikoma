@@ -61,6 +61,23 @@ describe("describe", () => {
       { text: "  ⎿ [Image #2]", color: "muted", oneLine: true },
     ]);
   });
+
+  // System prompt plan, Task 4: a note of a changed date or setup is for the model, as a hook's text is, so a message
+  // carrying one draws as it would without it.
+  it("draws nothing for a note, in a prompt or in a results message", () => {
+    const note = {
+      type: "text",
+      text: "This note is from Tachikoma, not the user: today's date is now 2026-11-18.",
+      from: "note",
+      note: { date: "2026-11-18" },
+    } as const;
+    const hi = { type: "text", text: "hi" } as const;
+    const result = { type: "tool_result", callId: "c1", output: "ran", isError: false } as const;
+    expect(lines({ role: "user", parts: [hi, note] }, P, W)).toEqual(lines({ role: "user", parts: [hi] }, P, W));
+    expect(lines({ role: "user", parts: [result, note] }, P, W)).toEqual(
+      lines({ role: "user", parts: [result] }, P, W),
+    );
+  });
 });
 
 // TUI design pass, Task 7 (audit 2): an edit's preview in colour, a write's never; the text unchanged.

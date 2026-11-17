@@ -9,9 +9,10 @@ import { Bus } from "../src/core/bus.js";
 import { projectFile } from "../src/core/datadir.js";
 import { readInstructions } from "../src/core/instructions.js";
 import { PermissionGate, visible } from "../src/core/permissions.js";
-import { listSessions, openSession, sessionsDir } from "../src/core/sessions.js";
+import { listSessions, openSession, sessionPaths, sessionsDir } from "../src/core/sessions.js";
 import { Tasks } from "../src/core/tasks.js";
-import type { Message, ToolSpec, Turn } from "../src/core/types.js";
+import { readTranscript } from "../src/core/transcript.js";
+import type { Message, Setup, ToolSpec, Turn } from "../src/core/types.js";
 import type { ExecResult, Executor } from "../src/exec/executor.js";
 import { CommandLog } from "../src/exec/log.js";
 import type { Hook } from "../src/hooks/config.js";
@@ -40,6 +41,7 @@ import {
   mcpLines,
   networkNoted,
   newSaved,
+  type Opened,
   openSaved,
   prose,
   protectionOf,
@@ -49,6 +51,7 @@ import {
   screenMode,
   scrollSpeed,
   serverQuestion,
+  setupOf,
   statusSegments,
   stopSoon,
   turnAnswer,
@@ -58,6 +61,7 @@ import {
   WindowSessions,
 } from "../src/clilib.js";
 import { type Ended, Session } from "../src/core/session.js";
+import { setupNote } from "../src/core/setup.js";
 import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "../src/tools/commands.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 import { callTool, FakeProvider, removeTree, reply, standInRun, tempContext, usage } from "./helpers.js";
@@ -698,6 +702,85 @@ describe("gitBashLine", () => {
   });
 });
 
+// System prompt plan, Task 1 (decision 3): git as found where the model's commands run, from the files alone.
+describe("setupOf", () => {
+  let top: string;
+  beforeAll(() => {
+    top = mkdtempSync(path.join(tmpdir(), "tachi-setup-"));
+  });
+  afterAll(() => removeTree(top));
+  const folder = (...names: string[]) => {
+    const d = path.join(top, ...names);
+    mkdirSync(d, { recursive: true });
+    return d;
+  };
+  const repo = (d: string) => {
+    mkdirSync(path.join(d, ".git"), { recursive: true });
+    writeFileSync(path.join(d, ".git", "HEAD"), "ref: refs/heads/main\n");
+    return d;
+  };
+
+  it("finds no repository in a plain folder, in each mode", () => {
+    const d = folder("plain");
+    expect(setupOf(d, "off", "on")).toEqual({ sandbox: "off", git: "none" });
+    expect(setupOf(d, "live", "off")).toEqual({ sandbox: "live", network: "off", git: "none" });
+    expect(setupOf(d, "copy", "on")).toEqual({ sandbox: "copy", network: "on", git: "copy" });
+  });
+
+  it("finds the project's own repository with no sandbox and in live link", () => {
+    const d = repo(folder("own"));
+    expect(setupOf(d, "off", "off")).toEqual({ sandbox: "off", git: "repo" });
+    expect(setupOf(d, "live", "on")).toEqual({ sandbox: "live", network: "on", git: "repo" });
+  });
+
+  // Only the project folder is mounted at /work, so a repository above it is not in the box.
+  it("finds a repository above the project with no sandbox, but not in live link", () => {
+    const d = folder("above", "sub");
+    repo(path.join(top, "above"));
+    expect(setupOf(d, "off", "off").git).toBe("repo");
+    expect(setupOf(d, "live", "off").git).toBe("none");
+  });
+
+  it("says live link's git does not work when the project's .git names a git folder outside it", () => {
+    const outside = repo(folder("elsewhere"));
+    const d = folder("worktree");
+    writeFileSync(path.join(d, ".git"), `gitdir: ${path.join(outside, ".git")}\n`);
+    expect(setupOf(d, "live", "off").git).toBe("outside");
+    expect(setupOf(d, "off", "off").git).toBe("repo");
+  });
+
+  // System prompt plan, Task 1's code review: only a git folder outside the project gives "outside".
+  it("finds live link's git when the project's .git names a git folder inside it", () => {
+    const d = folder("inside");
+    mkdirSync(path.join(d, ".realgit"), { recursive: true });
+    writeFileSync(path.join(d, ".realgit", "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(path.join(d, ".git"), "gitdir: .realgit\n");
+    expect(setupOf(d, "live", "off").git).toBe("repo");
+  });
+
+  // PR #23's review: a `.git` file git refuses ("invalid gitfile format") is no repository in live link, as it is
+  // with no sandbox.
+  it("finds no repository when the project's .git is a file git would refuse", () => {
+    const d = folder("malformed");
+    writeFileSync(path.join(d, ".git"), "not a gitfile\n");
+    expect(setupOf(d, "live", "off").git).toBe("none");
+    expect(setupOf(d, "off", "off").git).toBe("none");
+  });
+
+  // PR #23's review: a `.git` link leading nowhere is not the project's own repository, and live link does not take
+  // the one above it instead.
+  it("finds no repository in live link when the project's .git is a link leading nowhere", () => {
+    repo(folder("dangling"));
+    const d = folder("dangling", "project");
+    symlinkSync(path.join(top, "dangling", "missing"), path.join(d, ".git"), "junction");
+    expect(setupOf(d, "live", "off").git).toBe("none");
+  });
+
+  it("always gives copy mode's own repository", () => {
+    expect(setupOf(repo(folder("copied")), "copy", "off").git).toBe("copy");
+  });
+});
+
 describe("scrollSpeed", () => {
   it("is 3 rows a notch unless given", () => {
     expect(scrollSpeed(undefined, {})).toBe(3);
@@ -980,8 +1063,13 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     system: "Saved prompt.",
     tools: o.tools ?? tools,
   });
+  // The box setups as setup.test.ts has them; OFF has git "none", per the system prompt plan's Task 6.
+  const OFF: Setup = { sandbox: "off", git: "none" };
+  const LIVE_OFF: Setup = { sandbox: "live", network: "off", git: "repo" };
+  const LIVE_ON: Setup = { sandbox: "live", network: "on", git: "repo" };
+  const COPY_ON: Setup = { sandbox: "copy", network: "on", git: "copy" };
   // This launch's system prompt when it is the one the sessions were saved under: the same sandbox setting.
-  const SAVED = { box: false, full: "Saved prompt." };
+  const SAVED = { setup: OFF, full: "Saved prompt." };
   const prompt = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
   const said = (text: string, native?: Message["native"]): Message => ({ role: "assistant", parts: [{ type: "text", text }], ...(native ? { native } : {}) });
   const message = (m: Message) => ({ t: "message", at, message: m });
@@ -1060,7 +1148,13 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     const other: ToolSpec[] = [{ name: "write_file", description: "Writes a file.", inputSchema: { type: "object" } }];
     // Opened, and made this window's under `as` tools, lead `lead` and system prompt `prompt`, in the window unless
     // `interactive` says not; let go once the case ends, as the process's exit would.
-    type As = { fork?: boolean; as?: ToolSpec[]; lead?: string; prompt?: { box: boolean; full: string }; interactive?: boolean };
+    type As = {
+      fork?: boolean;
+      as?: ToolSpec[];
+      lead?: string;
+      prompt?: { setup: Setup; full: string };
+      interactive?: boolean;
+    };
     const open = (id: string, o: As = {}) => {
       const s = openSaved(dir, id, { fork: o.fork ?? false });
       if ("problem" in s) throw new Error(s.problem);
@@ -1175,13 +1269,13 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     it("gives a session saved under another sandbox setting this launch's system prompt, saving it, and says so once", () => {
       const file = saved(dir, "boxed", [start("boxed"), message(prompt("hi")), message(said("Done.", native))]);
       saved(dir, "unthought", [start("unthought"), message(prompt("hi")), message(said("Done."))]);
-      const box = { box: true, full: "Box prompt.\n\nRules, read again." };
+      const box = { setup: LIVE_OFF, full: "Box prompt.\n\nRules, read again." };
       const changed = "The sandbox setting has changed since this session was saved, so the model is told this launch's shell and project folder";
       const b = open("boxed", { prompt: box, as: other }); // the box's shell tool is another
       expect(b.conversation.system).toBe(box.full);
       expect(b.conversation.messages).toEqual([prompt("hi"), said("Done.")]);
       expect(b.lines.map((l) => l.text)).toEqual(["Resumed: hi.", `${changed}, and its earlier replies are sent without their thinking.`]);
-      expect(lines(file).at(-1)).toMatchObject({ t: "system", system: box.full, box: true });
+      expect(lines(file).at(-1)).toMatchObject({ t: "system", system: box.full, box: true, setup: LIVE_OFF });
       // As the session's first request under the box's tools writes them (choice 46), then its reply.
       b.conversation.transcript!.write({ t: "tools", tools: other });
       b.conversation.transcript!.write({ t: "message", message: prompt("again") });
@@ -1189,19 +1283,171 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       b.release();
       // In the box again, its prompt worded otherwise, the folder typed in other letters for one: nothing more is written
       // or said, the tools line neither, and only the first reply goes without its thinking.
-      const again = open("boxed", { prompt: { box: true, full: "Box prompt for C:\\OTHER\\CASE." }, as: other });
+      const again = open("boxed", { prompt: { setup: LIVE_OFF, full: "Box prompt for C:\\OTHER\\CASE." }, as: other });
       expect(again.conversation.system).toBe(box.full);
       expect(again.conversation.messages).toEqual([prompt("hi"), said("Done."), prompt("again"), said("Done again.", native)]);
       expect(again.lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
       again.release();
       expect(lines(file).filter((l) => l.t === "system")).toHaveLength(1);
       // The same setting as saved, its prompt worded otherwise, keeps the saved prompt; a reply without thinking loses none.
-      const same = open("unthought", { prompt: { box: false, full: "Other words." } });
+      const same = open("unthought", { prompt: { setup: OFF, full: "Other words." } });
       expect(same.conversation.system).toBe("Saved prompt.");
       same.release();
       const plain = open("unthought", { prompt: box });
       expect(plain.lines.map((l) => l.text)).toEqual(["Resumed: hi.", `${changed}.`]);
       expect(plain.conversation.system).toBe(box.full);
+    });
+
+    // System prompt plan, Task 6 (choice 2 (c)): the whole setup is compared, the box's mode and network included, git
+    // not (decision 12); a change the sandbox setting's line does not fit says the setup changed.
+    const SETUP_CHANGED =
+      "The sandbox's setup has changed since this session was saved, so the model is told this launch's setup";
+    const SETUP_UNKNOWN =
+      "This session was saved before Tachikoma recorded the sandbox's mode and network, so the model is told this " +
+      "launch's setup";
+    const SANDBOX_CHANGED =
+      "The sandbox setting has changed since this session was saved, so the model is told this launch's shell and " +
+      "project folder";
+    const chat = (first: object) => [first, message(prompt("hi")), message(said("Done."))];
+
+    it("rebuilds the prompt of a session saved under another network or mode, saying the setup changed, once", () => {
+      const cases: [string, Setup, Setup][] = [
+        ["network", LIVE_OFF, LIVE_ON],
+        ["mode", LIVE_ON, COPY_ON],
+      ];
+      for (const [id, was, now] of cases) {
+        const file = saved(dir, id, chat({ ...start(id), box: true, setup: was }));
+        const p = { setup: now, full: `Box prompt, ${id}.` };
+        const o = open(id, { prompt: p });
+        expect(o.conversation.system).toBe(p.full);
+        expect(o.lines.map((l) => l.text)).toEqual(["Resumed: hi.", `${SETUP_CHANGED}.`]);
+        expect(lines(file).at(-1)).toMatchObject({ t: "system", system: p.full, box: true, setup: now });
+        o.release();
+        const again = open(id, { prompt: p });
+        expect(again.lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+        again.release();
+        expect(lines(file).filter((l) => l.t === "system")).toHaveLength(1);
+      }
+    });
+
+    it("rebuilds the prompt of a session saved in the sandbox before the setup was recorded, saying why", () => {
+      const inBox = saved(dir, "oldbox", chat({ ...start("oldbox"), box: true }));
+      saved(dir, "oldhost", chat({ ...start("oldhost"), box: true }));
+      const o = open("oldbox", { prompt: { setup: LIVE_OFF, full: "Box prompt." } });
+      expect(o.conversation.system).toBe("Box prompt.");
+      expect(o.lines.map((l) => l.text)).toEqual(["Resumed: hi.", `${SETUP_UNKNOWN}.`]);
+      expect(lines(inBox).at(-1)).toMatchObject({ t: "system", system: "Box prompt.", box: true, setup: LIVE_OFF });
+      // Opened with no sandbox: the sandbox setting's line.
+      const host = open("oldhost", { prompt: { setup: OFF, full: "Host prompt." } });
+      expect(host.conversation.system).toBe("Host prompt.");
+      expect(host.lines.map((l) => l.text)).toEqual(["Resumed: hi.", `${SANDBOX_CHANGED}.`]);
+    });
+
+    it("keeps the prompt of a session saved with no sandbox before the setup was recorded, opened with none", () => {
+      for (const [id, first] of [["oldoff", { ...start("oldoff"), box: false }], ["nobox", start("nobox")]] as const) {
+        const file = saved(dir, id, chat(first));
+        const o = open(id, { prompt: { setup: OFF, full: "Other words." } });
+        expect(o.conversation.system).toBe("Saved prompt.");
+        expect(o.lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+        o.release();
+        expect(lines(file).filter((l) => l.t === "system")).toHaveLength(0);
+      }
+    });
+
+    // What the model was told goes with the conversation, for the notes (Task 7): the start line's date and setup and
+    // each note since, or for an older session its sandbox setting alone.
+    it("gives the conversation what the model was told, as the transcript reads it", () => {
+      const text = "This note is from Tachikoma, not the user: today's date is now 2026-11-18.";
+      const note = { type: "text", text, from: "note", note: { date: "2026-11-18" } };
+      const noted = { t: "message", at, message: { role: "user", parts: [{ type: "text", text: "hi" }, note] } };
+      const told = (id: string) => {
+        const r = readTranscript(sessionPaths(dir, id).file, sessionPaths(dir, id).pictures);
+        if ("problem" in r) throw new Error(r.problem);
+        return r.told;
+      };
+      saved(dir, "recorded", [{ ...start("recorded"), box: true, date: "2026-11-17", setup: LIVE_OFF }, noted]);
+      saved(dir, "legacy", chat(start("legacy")));
+      expect(told("recorded")).toEqual({ date: "2026-11-18", setup: LIVE_OFF });
+      const recorded = open("recorded", { prompt: { setup: LIVE_OFF, full: "Box." } });
+      expect(recorded.conversation.told).toEqual(told("recorded"));
+      expect(told("legacy")).toEqual({ setup: { sandbox: "off" } });
+      expect(open("legacy").conversation.told).toEqual(told("legacy"));
+    });
+
+    // System prompt plan, Task 7: a resumed conversation's first request, by a lead session as cli.tsx makes it, given
+    // the launch's setup `now` and today's date; the notes it sent.
+    const TODAY = "2026-11-17";
+    const host = { root: "C:\\proj", platform: "win32" } as const;
+    const sendAfter = async (o: Opened, now: Setup, today = TODAY) => {
+      const lead = new FakeProvider("a", [reply("ok")]);
+      const session = new Session({
+        lead, tools: [], system: o.conversation.system, ctx: await tempContext(), bus: new Bus(),
+        setup: { now: () => now, today: () => today, root: host.root, platform: host.platform },
+      });
+      session.load(o.conversation);
+      await session.send("next");
+      return lead.seen[0]!.at(-1)!.parts.flatMap((p) => (p.type === "text" && p.from === "note" ? [p.text] : []));
+    };
+    // A session saved with this change, its start line recording today's date and `setup`.
+    const savedOn = (id: string, setup: Setup) =>
+      saved(dir, id, chat({ ...start(id), box: setup.sandbox !== "off", date: TODAY, setup }));
+    const inBox = { setup: LIVE_ON, full: "Box prompt." };
+
+    it("tells a conversation resumed under another setup of it in its next request, until one has", async () => {
+      const file = savedOn("moved", OFF);
+      open("moved", { prompt: inBox }).release(); // closed without a prompt
+      const again = open("moved", { prompt: inBox });
+      expect(lines(file).filter((l) => l.t === "system")).toHaveLength(1);
+      expect(await sendAfter(again, LIVE_ON)).toEqual([setupNote(OFF, LIVE_ON, host)]);
+      again.release();
+      // Told once sent: the note's message is saved, as the session wrote it through the conversation's transcript.
+      expect(await sendAfter(open("moved", { prompt: inBox }), LIVE_ON)).toEqual([]);
+    });
+
+    it("sends no setup note to a conversation resumed under its first setup again", async () => {
+      const file = savedOn("back", OFF);
+      open("back", { prompt: inBox }).release();
+      const back = open("back", { prompt: { setup: OFF, full: "Host prompt." } });
+      expect(lines(file).filter((l) => l.t === "system")).toHaveLength(2);
+      expect(back.lines.map((l) => l.text)).toEqual(["Resumed: hi.", `${SANDBOX_CHANGED}.`]);
+      expect(await sendAfter(back, OFF)).toEqual([]);
+    });
+
+    it("tells a conversation resumed a day later of the date", async () => {
+      savedOn("later", OFF);
+      const later = await sendAfter(open("later", { prompt: SAVED }), OFF, "2026-11-18");
+      expect(later).toEqual(["This note is from Tachikoma, not the user: today's date is now 2026-11-18."]);
+    });
+
+    // System prompt plan, Task 8: /clear's prompt is built with that day's date, which its start line records, so the
+    // new conversation's first request needs no date note.
+    it("sends no date note after a /clear on a later day, the new prompt having the date", async () => {
+      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, SAVED);
+      const fresh = w.fresh("fake:a", { system: "Fresh prompt of 2026-11-18.", date: "2026-11-18" });
+      onTestFinished(fresh.release);
+      expect(await sendAfter(fresh, OFF, "2026-11-18")).toEqual([]);
+    });
+
+    it("tells a conversation saved before this change of the date, and of the setup as far as known", async () => {
+      const date = "This note is from Tachikoma, not the user: today's date is now 2026-11-17."; // never told
+      saved(dir, "notedoff", chat({ ...start("notedoff"), box: false }));
+      expect(await sendAfter(open("notedoff", { prompt: SAVED }), OFF)).toEqual([date]);
+      saved(dir, "notedbox", chat({ ...start("notedbox"), box: true }));
+      saved(dir, "notedhost", chat({ ...start("notedhost"), box: true }));
+      const live: Setup = { sandbox: "live", network: "off", git: "none" };
+      expect(await sendAfter(open("notedbox", { prompt: { setup: live, full: "Box prompt." } }), live)).toEqual([
+        date,
+        "This note is from Tachikoma, not the user: this session was resumed, its earlier sandbox setup was not " +
+          "recorded, and the system prompt was replaced with one for this setup. The sandbox is now a live link to " +
+          "the project. The project is not a git repository. Shell commands cannot reach the web now.",
+      ]);
+      expect(await sendAfter(open("notedhost", { prompt: { setup: OFF, full: "Host prompt." } }), OFF)).toEqual([
+        date,
+        "This note is from Tachikoma, not the user: this session was resumed under another setup, and the system " +
+          "prompt was replaced with one for this setup. Commands now run with PowerShell in C:\\proj; earlier they " +
+          "ran with bash in /work. The project is not a git repository. Shell commands can reach the web now. " +
+          "Earlier replies about the setup were right under the system prompt they were made with.",
+      ]);
     });
 
     // Release 8a final review (user, 2026-11-07: "Becomes normal"): a -p run opened in the window leaves no mark when
@@ -1404,38 +1650,39 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     });
     expect(launch.text).toContain("allowed words");
     writeFileSync(path.join(root, "CLAUDE.md"), "second words\n@../outside/allowed.md\n");
-    const again = systemAgain("The base.", where, asked);
-    let text = await again();
-    expect(text.startsWith("The base.\n\n")).toBe(true);
+    const again = systemAgain((date) => `The base of ${date}.`, where, asked);
+    let text = await again("2026-11-18");
+    expect(text.startsWith("The base of 2026-11-18.\n\n")).toBe(true);
     expect(text).toContain("second words");
     expect(text).toContain("allowed words");
     writeFileSync(path.join(root, "CLAUDE.md"), "third words\n@../outside/new.md\n");
-    text = await again();
+    text = await again("2026-11-18");
     expect(text).toContain("third words");
     expect(text).not.toContain("new words");
-    expect(await systemAgain("The base.", where, "all")()).toContain("new words"); // never mode reads them, as at launch
+    const all = systemAgain(() => "The base.", where, "all");
+    expect(await all("2026-11-18")).toContain("new words"); // never mode reads them, as at launch
   });
 
   describe("newSaved", () => {
-    const begin = { project: "p", lead: "fake:a", version: "0.8.0", system: "New prompt.", box: false, tools };
+    const begin = { project: "p", lead: "fake:a", version: "0.8.0", system: "New prompt.", tools };
+    const recorded = { date: "2026-11-17", setup: OFF }; // system prompt plan, Task 6
 
     it("writes the start line and the name, then takes the lock", () => {
-      const o = newSaved(dir, { ...begin, id: "fresh", print: true }, "my name");
+      const o = newSaved(dir, { ...begin, ...recorded, id: "fresh", print: true }, "my name");
       onTestFinished(o.release);
       expect(o.conversation).toMatchObject({ id: "fresh", system: "New prompt.", messages: [], prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+      expect(o.conversation.told).toEqual(recorded);
       expect(o.conversation.transcript!.failed).toBeNull();
       const lines = read(path.join(dir, "fresh.jsonl")).trim().split("\n").map((l) => JSON.parse(l));
-      expect(lines).toMatchObject([
-        { t: "start", v: 1, id: "fresh", lead: "fake:a", print: true, system: "New prompt.", box: false, tools },
-        { t: "name", name: "my name" },
-      ]);
+      const first = { t: "start", v: 1, id: "fresh", lead: "fake:a", print: true, system: "New prompt.", box: false };
+      expect(lines).toMatchObject([{ ...first, ...recorded, tools }, { t: "name", name: "my name" }]);
       expect(read(path.join(dir, "fresh.lock"))).toBe(String(process.pid));
     });
 
     it("goes on unsaved, taking no lock, when a file stands where the sessions folder should be", () => {
       const blocked = path.join(folder(), "sessions");
       writeFileSync(blocked, "not a folder");
-      const o = newSaved(blocked, { ...begin, id: "fresh", print: false });
+      const o = newSaved(blocked, { ...begin, ...recorded, id: "fresh", print: false });
       expect(o.conversation.transcript!.failed).not.toBeNull();
       expect(read(blocked)).toBe("not a folder");
     });
@@ -1466,7 +1713,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       saved(dir, "w2", lost("w2"));
       const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, SAVED, opened("w2"));
       onTestFinished(() => w.release());
-      const next = w.fresh("fake:b", "Fresh prompt.");
+      const next = w.fresh("fake:b", { system: "Fresh prompt.", date: "2026-11-18", setup: LIVE_ON });
       w.switched(next);
       expect(w.lost()).toEqual([]);
       expect(marked("w2")).toBe(false);
@@ -1474,21 +1721,25 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(lock).not.toBeNull();
       lock!.release();
       expect(openSession(dir, next.conversation.id)).toBeNull(); // the new one's held
+      // The fresh prompt's date and setup, not the window's (system prompt plan, Task 8).
       const fresh = { t: "start", project: top, lead: "fake:b", print: false, system: "Fresh prompt.", tools };
-      expect(lines(next.conversation.transcript!.file)).toMatchObject([fresh]);
+      const recorded = { date: "2026-11-18", setup: LIVE_ON, box: true };
+      expect(lines(next.conversation.transcript!.file)).toMatchObject([{ ...fresh, ...recorded }]);
     });
 
     it("opens /resume's pick under the launch's sandbox setting and prompt, as the launch opens one", () => {
       const file = saved(dir, "w4", talk("w4", "one"));
-      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, { box: true, full: "Box prompt." });
+      const boxed = { setup: LIVE_OFF, full: "Box prompt." };
+      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, boxed);
       const next = w.resume("w4", (saved) => saved);
       if ("problem" in next) throw new Error(next.problem);
       onTestFinished(next.release);
       expect(next.conversation.system).toBe("Box prompt.");
-      expect(lines(file).at(-1)).toMatchObject({ t: "system", system: "Box prompt.", box: true });
-      const fresh = w.fresh("fake:a", "Fresh prompt.");
+      expect(lines(file).at(-1)).toMatchObject({ t: "system", system: "Box prompt.", box: true, setup: LIVE_OFF });
+      const fresh = w.fresh("fake:a", { system: "Fresh prompt.", date: "2026-11-18" }); // no setup: the window's
       onTestFinished(fresh.release);
-      expect(lines(fresh.conversation.transcript!.file)[0]).toMatchObject({ t: "start", system: "Fresh prompt.", box: true });
+      const first = { t: "start", system: "Fresh prompt.", date: "2026-11-18", box: true, setup: LIVE_OFF };
+      expect(lines(fresh.conversation.transcript!.file)[0]).toMatchObject(first);
     });
 
     it("branches a copy of a session under its name, leaving the original as it was", () => {

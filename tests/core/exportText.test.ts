@@ -5,6 +5,7 @@ import type { Message } from "../../src/core/types.js";
 // Release 8a plan, Task 8 (choice 27).
 describe("exportText", () => {
   const png = { type: "image", mediaType: "image/png", data: Buffer.from("png") } as const;
+  const DATE18 = "This note is from Tachikoma, not the user: today's date is now 2026-11-18.";
 
   it("writes a turn with a call, its result and a picture's marker: a heading per message, each call's input as JSON", () => {
     const messages: Message[] = [
@@ -135,6 +136,40 @@ describe("exportText", () => {
         "looked odd",
         "",
       ].join("\n"),
+    );
+  });
+
+  // System prompt plan, choice 3 (b): a note of a changed date or setup changed what the model knew, so it is shown
+  // where it arrived, under its own heading, `Notes:`.
+  it("puts a note of a changed date or setup where it arrived, under Notes:", () => {
+    const messages: Message[] = [
+      {
+        role: "user",
+        parts: [
+          { type: "text", text: "hi" },
+          { type: "text", text: DATE18, from: "note", note: { date: "2026-11-18" } },
+        ],
+      },
+      { role: "assistant", parts: [{ type: "text", text: "ok" }] },
+    ];
+    expect(exportText(messages, "fake:a")).toBe(`You:\nhi\n\nNotes:\n${DATE18}\n\nTachikoma (fake:a):\nok\n`);
+  });
+
+  // The user's choice, Task 9's code review: a shortening's layout puts "\n\n" before a section, so after a note that
+  // text opens a new "You:" block with blank lines at its start, which /export drops.
+  it("drops the blank lines at the start of a block that follows a note", () => {
+    const messages: Message[] = [
+      {
+        role: "user",
+        parts: [
+          { type: "text", text: "now this" },
+          { type: "text", text: DATE18, from: "note", note: { date: "2026-11-18" } },
+          { type: "text", text: "\n\nThe files:\n--- a.txt ---" },
+        ],
+      },
+    ];
+    expect(exportText(messages, "fake:a")).toBe(
+      `You:\nnow this\n\nNotes:\n${DATE18}\n\nYou:\nThe files:\n--- a.txt ---\n`,
     );
   });
 

@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
 import { type Line, readOutline, readTranscript, Transcript, wholeLines } from "../../src/core/transcript.js";
-import type { Message } from "../../src/core/types.js";
+import type { Message, Part, Setup } from "../../src/core/types.js";
 import { removeTree } from "../helpers.js";
 
 // Release 8a plan, Task 3. The sessions folder is inside a fresh temporary folder, as privateDir needs (plan, "Rules for
@@ -633,18 +633,130 @@ describe("transcript", { timeout: 15_000 }, () => {
     t.write(start);
     t.write({ t: "message", message: prompt("one") });
     t.write({ t: "message", message: thought("under the first") });
-    expect(read(p).box).toBe(false); // a start line without the setting: off
+    expect(read(p).setup).toEqual({ sandbox: "off" }); // a start line without the setting: off
     t.write({ t: "system", system: "In the box.", box: true });
     t.write({ t: "message", message: prompt("two") });
     t.write({ t: "message", message: thought("under the box's") });
     const r = read(p);
-    expect(r).toMatchObject({ system: "In the box.", box: true });
+    expect(r).toMatchObject({ system: "In the box.", setup: { sandbox: "on" } });
     const box = r.withTools(start.tools, "In the box.");
     expect(box.dropped).toBe(true);
     expect(box.messages.map((m) => m.native !== undefined)).toEqual([false, false, false, true]);
     expect(r.withTools(start.tools, start.system).dropped).toBe(true);
     // The reply under the box's prompt comes after it, so the first one's is left out too (Task 6b's quality review).
     expect(r.withTools(start.tools, start.system).messages.map((m) => m.native !== undefined)).toEqual([false, false, false, false]);
+  });
+
+  // System prompt plan, Task 5 (decision 4; design, "What the model was told", "Sessions saved before this change"):
+  // the setup the prompt was built under, and the date and setup the model was told, from the start line, the system
+  // line, a shortening and the notes. `start` is a legacy start line, with no date or setup.
+  describe("the setup and the date", () => {
+    const OFF: Setup = { sandbox: "off", git: "repo" };
+    const LIVE_OFF: Setup = { sandbox: "live", network: "off", git: "repo" };
+    const COPY_ON: Setup = { sandbox: "copy", network: "on", git: "copy" };
+    const recorded = { ...start, box: false, date: "2026-11-17", setup: OFF };
+    // Task 3's shapes: what a note says is not read back, only the date or setup it holds.
+    const dateNote = (date: string): Part => ({
+      type: "text",
+      text: `This note is from Tachikoma, not the user: today's date is now ${date}.`,
+      from: "note",
+      note: { date },
+    });
+    const setupNote = (setup: Setup): Part => ({ type: "text", text: "Another setup.", from: "note", note: { setup } });
+    const told = (...notes: Part[]): Message => ({ role: "user", parts: [{ type: "text", text: "go on" }, ...notes] });
+    const raw = (file: string, line: object) =>
+      appendFileSync(file, `${JSON.stringify({ at: "2026-11-17T00:00:00.000Z", ...line })}\n`);
+
+    it("reads a start line's setup as the prompt's, and its date and setup as what the model was told", async () => {
+      const p = place();
+      new Transcript(p.file, p.pictures).write(recorded);
+      const r = read(p);
+      expect([r.setup, r.told]).toEqual([OFF, { date: "2026-11-17", setup: OFF }]);
+    });
+
+    it("reads an older start line's box alone as the setup, with no date told", async () => {
+      for (const [line, sandbox] of [
+        [start, "off"],
+        [{ ...start, box: false }, "off"],
+        [{ ...start, box: true }, "on"],
+      ] as const) {
+        const p = place();
+        new Transcript(p.file, p.pictures).write(line);
+        const r = read(p);
+        expect([r.setup, r.told]).toEqual([{ sandbox }, { setup: { sandbox } }]);
+      }
+    });
+
+    it("takes a system line's setup as the prompt's, telling the model nothing by it", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(recorded);
+      t.write({ t: "system", system: "Box.", box: true, setup: LIVE_OFF });
+      let r = read(p);
+      expect([r.system, r.setup, r.told]).toEqual(["Box.", LIVE_OFF, { date: "2026-11-17", setup: OFF }]);
+      t.write({ t: "system", system: "Box again.", box: true }); // an older Tachikoma's system line
+      r = read(p);
+      expect([r.system, r.setup]).toEqual(["Box again.", { sandbox: "on" }]);
+      expect(r.told).toEqual({ date: "2026-11-17", setup: OFF });
+    });
+
+    it("moves what the model was told with each note a message holds, a later note winning", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(recorded);
+      t.write({ t: "message", message: told(dateNote("2026-11-18"), setupNote(LIVE_OFF)) });
+      expect(read(p).told).toEqual({ date: "2026-11-18", setup: LIVE_OFF });
+      t.write({ t: "message", message: said("Done.") });
+      t.write({ t: "message", message: told(setupNote(COPY_ON)) });
+      const r = read(p);
+      // The prompt's setup stays the start line's.
+      expect([r.setup, r.told]).toEqual([OFF, { date: "2026-11-18", setup: COPY_ON }]);
+    });
+
+    it("begins what the model was told again at a shortening, its notes before it not counting", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(recorded);
+      t.write({ t: "message", message: told(dateNote("2026-11-19"), setupNote(LIVE_OFF)) });
+      t.write({ t: "shortened", system: "New.", date: "2026-11-18", setup: COPY_ON, message: prompt("summary") });
+      let r = read(p);
+      expect([r.system, r.setup, r.told]).toEqual(["New.", COPY_ON, { date: "2026-11-18", setup: COPY_ON }]);
+      t.write({ t: "message", message: said("Done.") });
+      t.write({ t: "message", message: told(dateNote("2026-11-20")) });
+      expect(read(p).told).toEqual({ date: "2026-11-20", setup: COPY_ON });
+      // The shortening's own message can hold a setup note (Task 9).
+      t.write({ t: "shortened", system: "Newer.", date: "2026-11-20", setup: COPY_ON, message: told(setupNote(OFF)) });
+      r = read(p);
+      expect([r.setup, r.told]).toEqual([COPY_ON, { date: "2026-11-20", setup: OFF }]);
+    });
+
+    it("tells no date after an older shortened line, keeping the prompt's setup from before it", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(recorded);
+      t.write({ t: "system", system: "Box.", box: true, setup: LIVE_OFF });
+      t.write({ t: "message", message: told(dateNote("2026-11-18"), setupNote(COPY_ON)) });
+      expect(read(p).told).toEqual({ date: "2026-11-18", setup: COPY_ON });
+      t.write({ t: "shortened", system: "New.", message: prompt("summary") });
+      const r = read(p);
+      // The notes before it stop counting: the model is told the prompt's setup, not the note's.
+      expect([r.system, r.setup, r.told]).toEqual(["New.", LIVE_OFF, { setup: LIVE_OFF }]);
+    });
+
+    it("skips a line with a damaged setup or date as damaged, and refuses a start line with one", async () => {
+      const p = place();
+      new Transcript(p.file, p.pictures).write(recorded);
+      raw(p.file, { t: "system", system: "Box.", box: true, setup: { sandbox: "box" } });
+      raw(p.file, { t: "shortened", system: "New.", date: 5, message: prompt("summary") });
+      const r = read(p);
+      expect([r.damaged, r.system, r.setup, r.told]).toEqual([2, "Be brief.", OFF, { date: "2026-11-17", setup: OFF }]);
+      const words = (file: string) => `${file} could not be read as a session (its first line is missing or damaged).`;
+      for (const bad of [{ date: 5 }, { setup: { sandbox: "off" } }]) {
+        const q = place();
+        raw(q.file, { ...recorded, ...bad });
+        expect(readTranscript(q.file, q.pictures)).toEqual({ problem: words(q.file) });
+      }
+    });
   });
 
   // Release 8a final review (user, 2026-11-07: "Becomes normal"): a -p run opened in the window is a session as any other.

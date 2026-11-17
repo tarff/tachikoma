@@ -1,6 +1,7 @@
 import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { privateDir } from "../auth/private.js";
+import { isSetup, type Known, type Told, toldAfter } from "./setup.js";
 import {
   errorText,
   type Image,
@@ -9,6 +10,7 @@ import {
   type Message,
   marker,
   type Part,
+  type Setup,
   type ToolCall,
   type ToolResult,
   type ToolSpec,
@@ -28,6 +30,9 @@ export type SavedMessage = Omit<Message, "parts"> & { parts: (Exclude<Part, Imag
 // in it and the start line, whether the sandbox was on, absent in a line written before it was recorded (off);
 // `interactive`: a -p run opened in the window, a session as any other from then on (release 8a final review, user,
 // 2026-11-07).
+// `date` and `setup` on the start and shortened lines are those the prompt was built with, `setup` on the system line
+// that of a resume's rewritten prompt, `box` kept for older Tachikomas; absent on lines written before them (system
+// prompt plan, Task 5, decision 4).
 // `M` is the message as given to `write`, its pictures' data in it; the file holds SavedMessage. A shortening is one
 // line, so it is saved whole or not at all.
 export type Line<M = SavedMessage> =
@@ -42,15 +47,17 @@ export type Line<M = SavedMessage> =
       print: boolean;
       system: string;
       box?: boolean;
+      date?: string;
+      setup?: Setup;
       tools: ToolSpec[];
     }
   | { t: "message"; at: string; message: M }
   | { t: "lead"; at: string; lead: string }
   | { t: "tools"; at: string; tools: ToolSpec[] }
-  | { t: "system"; at: string; system: string; box: boolean }
+  | { t: "system"; at: string; system: string; box: boolean; setup?: Setup }
   | { t: "interactive"; at: string }
   | { t: "name"; at: string; name: string }
-  | { t: "shortened"; at: string; system: string; message: M }
+  | { t: "shortened"; at: string; system: string; date?: string; setup?: Setup; message: M }
   | { t: "subagent"; at: string; id: string; description: string; file: string }
   | { t: "ended"; at: string; state: "failed" | "stopped" | "lost" }
   // A PreToolUse hook's rewrite of the call `id` of the reply before it, in Tachikoma's fields, written before the call
@@ -173,7 +180,9 @@ export interface Read {
   nextTask: number; // choice 4
   tools: ToolSpec[]; // the tools the history was last saved under: the last start or tools line
   print: boolean; // a -p run not opened in the window since, as the session list reads it (readOutline)
-  box: boolean; // whether the sandbox was on: the last start or system line's setting
+  // An older Tachikoma's shortened line has no setup, and leaves the one before it (system prompt plan, decision 10).
+  setup: Known; // the prompt's: the last start, system or shortened line's
+  told: Told; // what the model was told: the start or last shortened line's date and setup, then each note since
   loaded: string[]; // the MCP tools loaded through tool_search: the last loaded line's, kept by a shortening (release 8c plan, choice 41)
   asked: string[]; // the calls the user was asked about, from the whole file (release 8c plan, Task 15)
   // The history for a launch with these tools and system prompt: an Anthropic reply keeps its own content only when the
@@ -219,7 +228,12 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     const start = rows[0];
     if (start?.t !== "start") return { problem: `${file} could not be read as a session (its first line is missing or damaged).` };
     let { system, lead, tools, print } = start;
-    let box = start.box === true;
+    // The setup a line records, or on an older line its `box` alone (design, "Sessions saved before this change").
+    const known = (l: { box?: boolean; setup?: Setup }): Known => l.setup ?? { sandbox: l.box === true ? "on" : "off" };
+    let setup = known(start);
+    // A resume's system line tells the model nothing by itself, as the replies before it were made under the old prompt
+    // (design, "What the model was told"); a shortening's prompt begins again.
+    let told: Told = start.date === undefined ? { setup } : { date: start.date, setup };
     let name: string | undefined;
     let loaded: string[] = [];
     // A call's mark goes with a later message's call of its id, as a provider may use an id again (release 8c plan, Task 15).
@@ -253,13 +267,20 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     }
     for (const l of lines) {
       if (l.t === "tools") tools = l.tools;
-      if (l.t === "system") ({ system, box } = l);
+      if (l.t === "system") {
+        system = l.system;
+        setup = known(l);
+      }
       if (l.t === "interactive") print = false;
       if (l.t === "message") history.push({ m: l.message, tools, system });
+      if (l.t === "message") told = toldAfter(told, l.message.parts);
       // The history starts at the last whole shortening, as Claude Code resumes "the last compaction's summary".
       if (l.t === "shortened") {
         system = l.system;
         history = [{ m: l.message, tools, system }];
+        // Its message can carry a due setup note (system prompt plan, Task 9), as the session reads it.
+        setup = l.setup ?? setup;
+        told = toldAfter(l.date === undefined ? { setup } : { date: l.date, setup }, l.message.parts);
       }
       if (l.t === "lead") lead = l.lead;
       if (l.t === "name") name = l.name;
@@ -306,7 +327,8 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       nextTask,
       tools,
       print,
-      box,
+      setup,
+      told,
       loaded,
       asked: [...asked],
       withTools,
@@ -379,18 +401,22 @@ const isMessage = (m: unknown): m is SavedMessage => {
 function valid(l: unknown): l is Line {
   const r = (l ?? {}) as Record<string, unknown>;
   const strings = (...keys: string[]) => keys.every((k) => typeof r[k] === "string");
+  // The date and setup a start or shortened line may hold, and a system line's setup (system prompt plan, Task 5).
+  const date = r.date === undefined || typeof r.date === "string";
+  const setup = r.setup === undefined || isSetup(r.setup);
   if (!strings("at")) return false;
   if (r.t === "start") {
     const box = r.box === undefined || typeof r.box === "boolean";
-    return r.v === 1 && strings("id", "project", "lead", "version", "system") && typeof r.print === "boolean" && box && Array.isArray(r.tools);
+    const fields = strings("id", "project", "lead", "version", "system") && typeof r.print === "boolean";
+    return r.v === 1 && fields && box && date && setup && Array.isArray(r.tools);
   }
   if (r.t === "message") return isMessage(r.message);
   if (r.t === "lead") return strings("lead");
   if (r.t === "tools") return Array.isArray(r.tools);
-  if (r.t === "system") return strings("system") && typeof r.box === "boolean";
+  if (r.t === "system") return strings("system") && typeof r.box === "boolean" && setup;
   if (r.t === "interactive") return true;
   if (r.t === "name") return strings("name");
-  if (r.t === "shortened") return strings("system") && isMessage(r.message);
+  if (r.t === "shortened") return strings("system") && date && setup && isMessage(r.message);
   if (r.t === "subagent") return strings("id", "description", "file");
   if (r.t === "ended") return r.state === "failed" || r.state === "stopped" || r.state === "lost";
   if (r.t === "rewritten") return strings("id") && typeof r.input === "object" && r.input !== null && !Array.isArray(r.input);

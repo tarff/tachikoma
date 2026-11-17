@@ -11,6 +11,7 @@ import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
 import { type Ask, Declined, type PermissionGate, StoppedFirst, visible } from "./permissions.js";
+import { dueNotes, isSetupNote, localDate, type Told, toldAfter } from "./setup.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
@@ -26,6 +27,7 @@ import {
   type Picture,
   type Provider,
   sentAll,
+  type Setup,
   type ToolCall,
   type ToolResult,
   type ToolSpec,
@@ -114,8 +116,9 @@ export interface SessionOptions {
   fallback?: Provider; // retries a turn the lead refused; chosen by the user, never by default
   tools: Tool[];
   system: string; // the starting value: Session.system is the conversation's (release 8a plan, choice 3)
-  // The system prompt built afresh, the instruction files read again, for a shortening (release 8a plan, choice 3).
-  systemNow?: () => Promise<string>;
+  // The system prompt built afresh, the instruction files read again, for a shortening (release 8a plan, choice 3),
+  // with the date and setup it is built under (system prompt plan, Task 8).
+  systemNow?: (date: string, setup?: Setup) => Promise<string>;
   id?: string; // the session's, as its transcript is named: a subagent's is its own, t1 and so on
   // Where each message is saved as it joins the history (release 8a design, "Saving sessions"); none, nothing is saved.
   transcript?: Transcript;
@@ -148,6 +151,10 @@ export interface SessionOptions {
   // The MCP servers the launch's first prompt waits for, after SessionStart's hooks (release 8c plan, choice 25): `ready`
   // as Servers gives it; `waitingFor` names those still starting, for the waiting line. The lead's only.
   servers?: Pick<Servers, "ready" | "waitingFor">;
+  // The setup and date the lead is told of (system prompt plan, Tasks 7-9): `now` the launch's setup as found at this
+  // moment (clilib.ts, setupOf), `today` the local date, `root` and `platform` the host's, for the setup note. The
+  // lead's alone: a subagent's session has none, and gets no notes.
+  setup?: { now: () => Setup; today: () => string; root: string; platform: NodeJS.Platform };
 }
 
 // A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
@@ -167,6 +174,7 @@ export interface Conversation {
   loaded?: string[];
   tools?: ToolSpec[];
   asked?: string[]; // the calls the user was asked about, read back from the transcript (release 8c plan, Task 15)
+  told?: Told; // what the model was told, for the notes (system prompt plan, Task 7); none, no notes
 }
 
 export class Session {
@@ -234,6 +242,9 @@ export class Session {
   // numbered on from it and no number is used twice, as the transcript saves each picture under its number once (release
   // 8c plan, choice 10; release 8a plan, choice 5).
   #lastPicture = 0;
+  // What the model was told, from the loaded conversation and each note pushed since (design, "What the model was
+  // told"); none, no notes (system prompt plan, Task 7).
+  #told: Told | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -277,6 +288,7 @@ export class Session {
     if (c.transcript !== this.#transcript) this.#saidFailed = false;
     this.#transcript = c.transcript;
     this.messages.splice(0, this.messages.length, ...c.messages);
+    this.#told = c.told;
     this.prompts.splice(0, this.prompts.length, ...c.prompts);
     this.asked.clear();
     for (const id of c.asked ?? []) this.asked.add(id);
@@ -308,10 +320,14 @@ export class Session {
     this.#saving(); // a write made before the load, such as launch's start line or mend
   }
 
-  // The system prompt built afresh, for /clear (release 8a plan, Task 7): the instruction files read again, or without
-  // systemNow the starting one.
-  freshSystem(): Promise<string> {
-    return this.opts.systemNow?.() ?? Promise.resolve(this.opts.system);
+  // The system prompt built afresh, for /clear and a shortening (release 8a plan, Task 7; system prompt plan, Task 8):
+  // with today's date and the setup as found now, the instruction files read again, or without systemNow the starting
+  // one. Its date and setup go on the line that begins the new conversation.
+  async freshSystem(): Promise<{ system: string; date: string; setup?: Setup }> {
+    const date = this.opts.setup?.today() ?? localDate();
+    const setup = this.opts.setup?.now();
+    const system = this.opts.systemNow ? await this.opts.systemNow(date, setup) : this.opts.system;
+    return setup ? { system, date, setup } : { system, date };
   }
 
   // Hooks' text for the model to go with the next request, at the start of the next user message: SessionStart's (release
@@ -523,7 +539,7 @@ export class Session {
     const own: Part[] = [...typed, ...(supplied ?? []), ...prompted, ...this.#waiting()];
     if (!own.length) return;
     // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message.
-    const parts: Part[] = [...this.#hookParts(this.#nextText), ...own];
+    const parts: Part[] = [...this.#hookParts(this.#nextText), ...own, ...this.#notes()];
     // The turn's request, kept for a shortening during the turn: after a first one it is no longer in the history.
     const asked: Message = { role: "user", parts };
     this.#push(asked);
@@ -673,7 +689,7 @@ export class Session {
         kept = true;
         bus.emit("hook-note", keptGoing(id, c.block ?? ""), true);
         const said: Part[] = given.map((text) => ({ type: "text", text: `${FEEDBACK}\n${text}`, from: "hooks" }));
-        this.#push({ role: "user", parts: [...said, ...this.#waiting()] });
+        this.#push({ role: "user", parts: [...said, ...this.#waiting(), ...this.#notes()] });
         when = "during";
         shortened = false;
         continue;
@@ -719,7 +735,10 @@ export class Session {
       } finally {
         signal?.removeEventListener("abort", join);
       }
-      this.#push({ role: "user", parts: [...results, ...round.pictures, ...this.#hookParts(), ...this.#waiting()] });
+      this.#push({
+        role: "user",
+        parts: [...results, ...round.pictures, ...this.#hookParts(), ...this.#waiting(), ...this.#notes()],
+      });
       // The set whenever a search grew it, after the results' line (release 8c plan, Task 6b).
       if (this.opts.mcp && this.opts.mcp.loaded.size !== loaded) {
         this.#transcript?.write({ t: "loaded", names: [...this.opts.mcp.loaded] });
@@ -907,10 +926,24 @@ export class Session {
       instructions = c.instructions;
     }
     const focused = [focus, ...instructions].filter(Boolean).join("\n\n");
+    // The new history's prompt, built now so every size check measures the request as it will go (system prompt plan,
+    // Task 9, decision 9); a stop while the files are read changes nothing.
+    const fresh = await this.freshSystem();
+    if (signal?.aborted) return { problem: CANCELLED };
+    // A setup note still due goes with the summary request and the new history; a date note does not, as the new prompt
+    // has today's date (design, "What the model was told"). It is found from the reading of the setup and date that
+    // the prompt was built from, so the two agree, and no second reading can fail and lose it (Task 9's code review).
+    const st = this.opts.setup;
+    const note =
+      st && this.#told && fresh.setup
+        ? dueNotes(this.#told, fresh.setup, fresh.date, { root: st.root, platform: st.platform }).find(isSetupNote)
+        : undefined;
     const tools = this.#specs(); // the same offer as the request it is made for (release 8c plan, choice 9)
     const s: Shortening = {
       lead,
       system: this.system,
+      next: fresh.system,
+      ...(note ? { note } : {}),
       // Its summary requests replay the history, so their thinking goes as the request's would (Task 6b's quality review).
       messages: this.#kept(tools),
       ...(asked ? { asked } : {}),
@@ -933,7 +966,8 @@ export class Session {
     // 2026-11-09, finding 2). SessionStart's text joins the new history's one message, first, as it goes first in the
     // next request's message (Task 8), so it is saved with the shortening and goes with the very next request, never
     // through the queue for the next request. shorten() checked the message against the window without it, and a turn
-    // shortens once a request, so it is checked again with the text; one that no longer fits is left out, with its line,
+    // shortens once a request, so it is checked again with the text, under the fresh prompt as shorten()'s checks are
+    // (fit; system prompt plan, Task 9); one that no longer fits is left out, with its line,
     // never cut, as no part of a hook's text is safe to drop (second round, finding 2). A subagent's shortening fires
     // PostCompact alone: SessionStart is about the user's session (the user's choice, 2026-11-09: "Pre/Post only").
     // `leftOut`: the line is said once the shortening is saved, so one that is then stopped or cannot be written says
@@ -959,18 +993,20 @@ export class Session {
         else leftOut = true;
       }
     }
-    // The new history goes with a system prompt built afresh, both in one line, so the shortening is saved whole or not
-    // at all (choices 3 and 4). A line that cannot be written changes nothing, though the hooks above have run (a known
-    // limit, Task 13).
-    const system = await this.freshSystem();
-    if (signal?.aborted) return { problem: CANCELLED }; // a stop while the files were read changes nothing either
-    t.write({ t: "shortened", system, message });
+    // The new history goes with the system prompt built afresh above, both in one line with that prompt's date and
+    // setup, so the shortening is saved whole or not at all (choices 3 and 4; system prompt plan, Task 9). A line that
+    // cannot be written changes nothing, though the hooks above have run (a known limit, Task 13).
+    const built = fresh.setup ? { date: fresh.date, setup: fresh.setup } : {};
+    t.write({ t: "shortened", system: fresh.system, message, ...built });
     if (t.failed !== null) {
       this.#saving();
       return "unsaved";
     }
-    this.system = system;
+    this.system = fresh.system;
     this.messages.splice(0, this.messages.length, message);
+    // What the model was told is now the new prompt's date and setup, then the setup note in the message (design, "What
+    // the model was told"), as a resume reads it from the line (transcript.ts).
+    if (this.#told && fresh.setup) this.#told = toldAfter({ date: fresh.date, setup: fresh.setup }, message.parts);
     if (leftOut) bus.emit("hook-note", LEFT_OUT);
     bus.emit("shortened", r.summary);
     return "done";
@@ -1262,11 +1298,27 @@ export class Session {
     return (this.opts.inbox?.() ?? []).map((text) => ({ type: "text", text, from: "tasks" }));
   }
 
+  // The notes due for the next user message, at its end (decision 6): none without a setup or a conversation that says
+  // what was told (system prompt plan, Task 7).
+  #notes(): Part[] {
+    const s = this.opts.setup;
+    if (!s || !this.#told) return [];
+    // A setup that cannot be read (a `now` that throws; setupOf no longer does on a file-system error, PR #23's review)
+    // sends no notes rather than breaking the message: the results message's parts are already taken by then. The notes
+    // stay due for the next message, as only #push changes what was told (Task 7's code review).
+    try {
+      return dueNotes(this.#told, s.now(), s.today(), { root: s.root, platform: s.platform });
+    } catch {
+      return [];
+    }
+  }
+
   // The line is written before the event, so every message is on disk before anything else sees it (release 8a plan,
   // choice 4). A failed write stops saving and never the turn (transcript.ts).
   #push(message: Message): void {
     for (const p of message.parts) if (p.type === "image") this.#lastPicture = Math.max(this.#lastPicture, p.id);
     this.messages.push(message);
+    if (this.#told) this.#told = toldAfter(this.#told, message.parts);
     this.#transcript?.write({ t: "message", message });
     this.opts.bus.emit("message", message);
     this.#saving();

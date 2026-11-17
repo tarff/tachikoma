@@ -34,7 +34,7 @@ import { listSessions, openSession } from "../../src/core/sessions.js";
 import { INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
 import { readTranscript, sessionPaths, Transcript } from "../../src/core/transcript.js";
-import type { CompletionRequest, Message, Provider, Turn } from "../../src/core/types.js";
+import type { CompletionRequest, Message, Provider, Setup, Turn } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { shellTools } from "../../src/tools/commands.js";
@@ -132,7 +132,14 @@ const sharedHome = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
 // or /branch runs, into one folder of this file's own, two levels inside a fresh temp folder, removed at the end.
 const unsavedTop = mkdtempSync(path.join(tmpdir(), "tachi-app-data-"));
 afterAll(() => removeTree(unsavedTop));
-const unsaved = () => new WindowSessions(path.join(unsavedTop, "data", "sessions"), { project: "", version: "test", tools: [] }, { box: false, full: "" });
+// The setup the window's sessions record: no sandbox, no git (system prompt plan, Task 6).
+const OFF: Setup = { sandbox: "off", git: "none" };
+const unsaved = () =>
+  new WindowSessions(
+    path.join(unsavedTop, "data", "sessions"),
+    { project: "", version: "test", tools: [] },
+    { setup: OFF, full: "" },
+  );
 
 // The lead's tools as cli.tsx makes them: the shell tool, made over the task list, keeps its place after edit_file
 // (background commands plan, Task 5).
@@ -231,8 +238,9 @@ async function mount(
   const pictures = opts.pictures ?? new Pictures();
   const tools = [...leadTools(tasks), delegateTool(tasks, { headless: false })];
   const start = { project: ctx.root, version: "test", tools: tools.map((t) => t.spec) };
-  const opened = opts.save ? newSaved(sessions, { id: randomUUID(), ...start, lead: lead.id, print: false, system: "t", box: false }) : undefined;
-  const windowSessions = new WindowSessions(sessions, start, { box: false, full: "t" }, opened);
+  const begin = { ...start, lead: lead.id, print: false, system: "t", date: "2026-11-17", setup: OFF };
+  const opened = opts.save ? newSaved(sessions, { id: randomUUID(), ...begin }) : undefined;
+  const windowSessions = new WindowSessions(sessions, start, { setup: OFF, full: "t" }, opened);
   const mcp = opts.mcp && { project: [], ...opts.mcp(bus) };
   if (mcp) onTestFinished(() => mcp.servers.stopAll());
   if (mcp && hooks) mcp.servers.forms.useHooks(hooks); // as cli.tsx gives the servers' forms the hooks (release 8c plan, Task 12)
@@ -10871,6 +10879,11 @@ describe("App's sessions", () => {
     expect(session.id).not.toBe(old);
     expect(free(old)).toBe(true); // carry-over note b
     expect(free(session.id)).toBe(false);
+    // The new session's start line records the fresh prompt's date, and the window's setup when the session finds
+    // none (system prompt plan, Task 8).
+    const first = JSON.parse(readFileSync(fileOf(session.id), "utf8").split("\n")[0]!);
+    expect(first.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(first.setup).toEqual({ sandbox: "off", git: "none" });
     await type(app, "second");
     await waitFor(() => lead.asked.length === 2);
     expect(lead.asked[1]!.messages).toEqual([typed("second")]);
