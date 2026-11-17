@@ -6,7 +6,7 @@ import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/mes
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { projectFile, SETTINGS } from "../../src/core/datadir.js";
 import { running } from "../../src/exec/local.js";
-import { type Answers, answersFor } from "../../src/mcp/answers.js";
+import { type Answers, answersFor, launchAnswers } from "../../src/mcp/answers.js";
 import { type McpBox, unstoppedLine } from "../../src/mcp/box.js";
 import { readServers, type ServerConfig } from "../../src/mcp/config.js";
 import { NotReached } from "../../src/mcp/server.js";
@@ -753,6 +753,24 @@ describe("Servers: a box server's stop that failed", () => {
     expect(stateOf(servers, "s")?.is).toBe("ready");
     expect(fake.started()).toHaveLength(2);
   });
+
+  // 8c-2a plan, Task 6: a host copy is given the box too, so it can try the record's kill again before it starts.
+  it("blocks a live edit's host copy while the box copy's kill fails, starting it here once it works", async () => {
+    const { fake, a, make, kills, logs } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    fake.kills.push(BOOM, BOOM); // A's stop, then the host copy's retry
+    expect(servers.set([{ ...a, host: true }]).restarted).toEqual(["s"]);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(kills()).toBe(2);
+    expect(initializes(logs.get("s")!)).toBe(1); // the box copy's only
+    await servers.restart("s");
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(fake.order().slice(-1)).toEqual(["kill"]);
+    expect(fake.started()).toHaveLength(1);
+    expect(initializes(logs.get("s")!)).toBe(2);
+  });
 });
 
 describe("Servers: a project's servers and the network", () => {
@@ -829,13 +847,90 @@ describe("Servers: a project's servers and the network", () => {
     expect(servers.list().map((s) => s.state.is)).toEqual(["ready", "you said no"]);
   });
 
-  it("starts no server with the sandbox's network off, every one off", async () => {
-    const { config, make } = await setup();
-    const servers = make([await config("u"), await config("p", {}, { where: "project", written: "w" })], { network: "off" });
+});
+
+// 8c-2a plan, Task 6 (design, "Where a local server runs"; choice 3): with the sandbox on, a local server runs in the
+// box, through the stand-in Docker, unless the user's entry says "host", and the box's network decides what starts.
+describe("Servers: where each server runs", () => {
+  // The stand-in box, a copy, and Servers on it with the box's network as given; the servers are stopped before the
+  // stand-in's are killed, then the folder is removed (setup's, after this).
+  async function placed(network: "on" | "off") {
+    const s = await setup();
+    const fake = standinBox(s.dir, { kind: "copy" });
+    const made: Servers[] = [];
+    onTestFinished(async () => {
+      await Promise.all(made.map((servers) => servers.stopAll()));
+      fake.killAll();
+    });
+    const make = (configs: ServerConfig[], answers?: () => Answers) => {
+      const servers = s.make(configs, { network, box: fake.box, ...(answers && { answers }) });
+      made.push(servers);
+      return servers;
+    };
+    const remote = (url: string): ServerConfig => ({
+      ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
+      entry: { kind: "http", url, headers: {} },
+      asWritten: { url, headers: {} },
+    });
+    return { ...s, fake, make, remote };
+  }
+  const boxNetworks = (servers: Servers) => every(servers).map((o) => `${o.server} ${o.boxNetwork}`);
+
+  it("starts a box server through the stand-in with the network off, keeping host and remote ones off", async () => {
+    const { config, fake, make, remote, logs } = await placed("off");
+    const b = await config("b", { tools: [plain] });
+    const servers = make([b, await config("h", {}, { host: true }), remote("https://127.0.0.1:9/mcp")]);
     servers.startAll();
     expect(await servers.ready()).toBe(true);
-    expect(servers.list().map((s) => s.state)).toEqual([{ is: "off" }, { is: "off" }]);
-    expect(every(servers)).toEqual([]);
+    expect(servers.list().map((s) => [s.name, s.state.is])).toEqual([["b", "ready"], ["h", "off"], ["r", "off"]]);
+    expect(fake.started()).toHaveLength(1);
+    expect(initializes(logs.get("h")!)).toBe(0);
+    expect(boxNetworks(servers)).toEqual(["b off"]);
+  });
+
+  it("starts every server with the network on, the box one in the box, and marks only its tools", async () => {
+    const { dir, config, fake, make, remote, logs } = await placed("on");
+    const http = await httpFake(dir, { tools: [tool("echo")] });
+    const b = await config("b", { tools: [plain] });
+    const servers = make([b, await config("h", { tools: [plain] }, { host: true }), remote(http.url)]);
+    servers.startAll();
+    expect(await servers.ready()).toBe(true);
+    expect(servers.list().map((s) => [s.name, s.state.is])).toEqual([["b", "ready"], ["h", "ready"], ["r", "ready"]]);
+    expect(fake.started()).toHaveLength(1); // the box server only; the host one ran on this computer
+    expect(initializes(logs.get("h")!)).toBe(1);
+    expect(boxNetworks(servers)).toEqual(["b on", "h undefined", "r undefined"]);
+  });
+
+  it("reads a project's box server's answer for box copy network off, and waits for a yes without one", async () => {
+    const { config, fake, make } = await placed("off");
+    const answers = launchAnswers();
+    answers.set("p", "w1", true); // an 8c yes counts for host only
+    answers.set("p", "w1", true, "box live network off");
+    answers.set("q", "w2", true, "box copy network off");
+    const p = { where: "project" as const };
+    const configs = [await config("p", {}, { ...p, written: "w1" }), await config("q", {}, { ...p, written: "w2" })];
+    const servers = make(configs, () => answers);
+    servers.startAll();
+    expect(await servers.ready()).toBe(true);
+    expect(servers.list().map((s) => [s.name, s.state.is])).toEqual([["p", "waiting for your yes"], ["q", "ready"]]);
+    expect([servers.answered("p"), servers.answered("q")]).toEqual([false, true]);
+    expect(fake.started()).toHaveLength(1);
+  });
+
+  it("restarts a box server on this computer at a live edit adding host, with no second start in the box", async () => {
+    const { config, fake, make, logs } = await placed("on");
+    const b = await config("s", { tools: [plain] });
+    const servers = make([b]);
+    servers.startAll();
+    await servers.ready();
+    expect(fake.started()).toHaveLength(1);
+    expect(every(servers).map((o) => o.boxNetwork)).toEqual(["on"]);
+    expect(servers.set([{ ...b, host: true }]).restarted).toEqual(["s"]);
+    expect(await servers.ready()).toBe(true);
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(fake.started()).toHaveLength(1);
+    expect(initializes(logs.get("s")!)).toBe(2); // once in the box, then once here
+    expect(every(servers).map((o) => o.boxNetwork)).toEqual([undefined]);
   });
 });
 

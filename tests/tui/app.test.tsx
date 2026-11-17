@@ -66,7 +66,7 @@ import { startBox } from "../../src/tui/startup.js";
 import { type Look, look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
 import { textWidth, wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, standInRun, tempContext, texts, usage } from "../helpers.js";
-import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
+import { type FakeOptions, fakeServer, httpFake, readLog, signInFake, standinBox } from "../mcp/fake.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 // How long a test waits for the settings watcher: fs.watch reported each of 400 writes within 5 ms on this machine
@@ -12646,7 +12646,10 @@ describe("App's MCP", () => {
       ) =>
       (bus: Bus) => {
         const { answers = launchAnswers, network = "none", ...signIn } = opts;
-        const s = new Servers(configs, { root: dir, env: process.env, bus, answers, network, lead: () => "fake:a", ...signIn });
+        const box = network === "none" ? {} : { box: standinBox(dir).box }; // a stand-in sandbox's (8c-2a plan, Task 6)
+        const s = new Servers(configs, {
+          root: dir, env: process.env, bus, answers, network, ...box, lead: () => "fake:a", ...signIn,
+        });
         made.push(s);
         return { servers: s };
       };
@@ -12725,7 +12728,8 @@ describe("App's MCP", () => {
 
   it("shows a server the sandbox's network keeps off, its name escaped, and the rows Task 11 reaches", async () => {
     const { config, servers } = await mcpSetup();
-    const { app } = await mount([], { mcp: servers([await config("far\u0007")], { network: "off" }) });
+    const far = await config("far\u0007", {}, { host: true }); // on this computer, so the network keeps it off
+    const { app } = await mount([], { mcp: servers([far], { network: "off" }) });
     await type(app, "/mcp");
     await shows(app, `${HEADING}\nfar\\u0007 · off: the sandbox's network is off`);
     // Its row's words; Task 11's tests below reach the state on a real server.

@@ -1981,15 +1981,17 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     expect(readdirSync(r.copies)).toEqual([]);
   });
 
-  // Release 8c plan, Task 9 (design, "Starting and stopping servers"): with the box's network off no server starts, as it
-  // would run on the user's machine with the web open; the line says so once. The server's program is not on the empty
-  // PATH either, so a start would fail with a line of its own.
+  // Release 8c plan, Task 9 (design, "Starting and stopping servers"): with the box's network off a server on the
+  // user's machine does not start, as it would run with the web open; the line says so once (8c-2a plan, Task 6, choice
+  // 3). The server's program is not on the empty PATH either, so a start would fail with a line of its own.
   it("says once that the MCP servers are off with the sandbox's network off, and starts none", async () => {
-    const settings = JSON.stringify({ mcpServers: { tv: { command: "node", args: ["server.js"] }, sanity: { command: "npx" } } });
+    const tv = { command: "node", args: ["server.js"], host: true };
+    const settings = JSON.stringify({ mcpServers: { tv, sanity: { command: "npx", host: true } } });
     const r = await copyRun("ok", false, homeWith(settings));
     expect(r.code).toBe(0);
     const off =
-      "note: MCP servers are off: the sandbox's network is off, and servers run outside the box until a later release. Start with --network on to use them.";
+      'note: MCP servers marked "host" and remote servers are off: the sandbox\'s network is off, and outside the ' +
+      "box nothing keeps them off the web. Start with --network on to use them.";
     expect(r.stderr.split("\n").filter((l) => l.includes("MCP"))).toEqual([off]);
   });
 });

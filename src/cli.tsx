@@ -80,6 +80,7 @@ import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
 import { boxCheck, dropIfNothing, reviewCommand } from "./sandbox/copies.js";
+import { docker } from "./sandbox/docker.js";
 import { sandboxCommand } from "./sandbox/image.js";
 import { ignoresCase } from "./sandbox/mounts.js";
 import { copyLock } from "./sandbox/snapshot.js";
@@ -581,8 +582,8 @@ const instructions = await readInstructions(instructionsAt, async (reached) => {
   return yes;
 });
 // The MCP servers, the user's entry winning a name both files give (release 8c design, "A project's servers"). The
-// sandbox's network is "none" with the sandbox off; with it on and its network off, no server starts (design, "Starting
-// and stopping servers").
+// sandbox's network is "none" with the sandbox off; with it on and its network off, only the servers in the box start
+// (8c-2a plan, Task 6).
 const mcpConfigs = mergeServers(loaded.settings.mcpServers ?? [], projectServers);
 const mcpNetwork = sandbox === "off" ? "none" : options.network;
 // The project's answers (choice 24), read once, when a project's server needs one; readPrivate's note that it made the
@@ -641,8 +642,10 @@ const leadPrompt = (date: string, setup: Setup, leadId: string) =>
 const first = leadPrompt(today, launchSetup, lead.id);
 const system = [first, instructions.text].filter(Boolean).join("\n\n");
 // The MCP servers, made once the sandbox has started, and started once the bus has its listeners (release 8c plan, Task
-// 9). They work in the project's own folder, as they run outside the box until a later release (design, "Starting and
-// stopping servers").
+// 9). With the sandbox on they are given its box, where its local servers start, unless marked "host" (8c-2a plan, Task
+// 6); a server on this computer works in the project's own folder.
+const mcpBox =
+  box && sandbox !== "off" ? { id: box.box.id, kind: sandbox, state: box.box.state, run: docker } : undefined;
 const servers = new Servers(mcpConfigs, {
   root,
   env: process.env,
@@ -650,6 +653,7 @@ const servers = new Servers(mcpConfigs, {
   answers: projectAnswers,
   unread: launchOnly,
   network: mcpNetwork,
+  ...(mcpBox && { box: mcpBox }),
   // Read only when a line is said, from startAll on, once the session below exists.
   lead: () => session.lead.id,
   // The remote servers' sign-ins, kept in the data folder (release 8c plan, Task 11); readPrivate's note that it made the

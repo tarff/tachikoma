@@ -162,7 +162,8 @@ export class Server {
   // has its own OAuth client (Task 11), unless its entry has an Authorization header of its own, in any letter case, which
   // is never signed in, so its 401 says to look at its key (choice 55); without it, as in most tests, a 401 is an answer
   // like any other. `onForm` answers the server's forms (Task 12); without it, as in most tests, each is declined.
-  // `box`: the session's box, for a local server that runs in it (8c-2a plan, Task 4). `unstopped`: its name's stops
+  // `box`: the session's box, in which a local server runs unless its entry says host (8c-2a plan, Tasks 4 and 6); any
+  // server given it uses it to try its name's failed stops again. `unstopped`: its name's stops
   // that failed in the box, a list `Servers` owns and gives every copy of the name, or else this server's own
   // (decision 24).
   constructor(
@@ -391,9 +392,11 @@ export class Server {
 
   // Each of the name's failed stops, tried again (decision 24): confirmed when the box is known to run nothing
   // (BoxState.stopped) or the kill now runs in the box, and then forgotten; otherwise kept with the new reason. Gives
-  // the latest retry's reason while any is left. The box is the one every copy of the name is given (Servers).
+  // the latest retry's reason while any is left. The box is the one every copy of the name is given (Servers). A copy
+  // given no box cannot prove a stop, so its record stands, as it is, and nothing starts (8c-2a plan, Task 6).
   async #retryStops(): Promise<string | undefined> {
-    const box = this.#box!;
+    const box = this.#box;
+    if (!box) return this.#unstopped.at(-1)?.reason;
     const stopped = await box.state.stopped(); // one answer for the whole box
     for (const stop of [...this.#unstopped]) {
       const reason = stopped ? undefined : await killInBox(box.run, box.id, stop.group);
@@ -429,7 +432,8 @@ export class Server {
   #transport(): Transport | string {
     const entry = this.config.entry;
     if (entry.kind === "stdio") {
-      if (this.#box) return this.#inBox(this.#box, entry);
+      // A host entry is given the box too, for its name's retries only (8c-2a plan, Task 6; place.ts, placeOf).
+      if (this.#box && !this.config.host) return this.#inBox(this.#box, entry);
       const program = mcpProgram(entry.command, this.#env);
       if (program === null) return `${visible(entry.command)} was not found on PATH`;
       const env = { ...commandEnv(this.#env), CLAUDE_PROJECT_DIR: this.#root, ...entry.env } as Record<string, string>;

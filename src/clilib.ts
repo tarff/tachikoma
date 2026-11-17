@@ -735,17 +735,20 @@ export async function askServers(
 }
 
 // The launch's MCP lines, said once the bus has its listeners (release 8c plan, Task 9; "Lines this plan adds"): with the
-// sandbox's network off, once, that every server is off; in -p, each project server without a yes in the window, one
-// answered no included, which is skipped (design, "A project's servers"; Task 9's spec review).
+// box's network off, once, that the host and remote servers are off (8c-2a plan, Task 6, choice 3); then in -p, each
+// project server without a yes in the window, one answered no included, which is skipped (design, "A project's
+// servers"; Task 9's spec review).
 export function mcpLines(servers: Servers, opts: { print: boolean }): string[] {
   const list = servers.list();
-  if (list.some((s) => s.state.is === "off")) {
-    return ["MCP servers are off: the sandbox's network is off, and servers run outside the box until a later release. Start with --network on to use them."];
-  }
-  if (!opts.print) return [];
-  return list
+  const line =
+    'MCP servers marked "host" and remote servers are off: the sandbox\'s network is off, and outside the box ' +
+    "nothing keeps them off the web. Start with --network on to use them.";
+  const off = list.some((s) => s.state.is === "off") ? [line] : [];
+  if (!opts.print) return off;
+  const skipped = list
     .filter((s) => s.where === "project" && (s.state.is === "waiting for your yes" || s.state.is === "you said no"))
     .map((s) => `MCP server ${visible(s.name)} from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.`);
+  return [...off, ...skipped];
 }
 
 // With -p nobody can approve them, so they are left out, and stderr names them.

@@ -20,7 +20,7 @@ import { Server } from "../../src/mcp/server.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
 import { killInBox, killLine } from "../../src/sandbox/executor.js";
 import { removeTree } from "../helpers.js";
-import { type FakeOptions, fakeServer, standinBox } from "./fake.js";
+import { type FakeOptions, fakeServer, readLog, standinBox } from "./fake.js";
 
 const NUL = String.fromCharCode(0);
 
@@ -408,5 +408,24 @@ describe("a box server's stop that failed", () => {
     await server.start();
     expect(server.state).toEqual(blocked("no docker program is on PATH any more"));
     expect(fake.started()).toHaveLength(1);
+  });
+
+  // 8c-2a plan, Task 6: Servers gives the box to every copy with the sandbox on, a host one's too, so its retries can
+  // run; one given records and no box cannot prove them, so it stays blocked, starting nothing, and never throws.
+  it("runs a host entry given the box on this computer, and starts none with records but no box", async () => {
+    const { dir, fake, make, script } = await setup();
+    const host = make({ ...local([await script()]), host: true });
+    await host.start();
+    expect(host.state.is).toBe("ready");
+    expect(JSON.parse(textOf(await host.callTool("whoami", {}, {}))).project).toBe(dir);
+    expect(fake.started()).toEqual([]);
+    const log = path.join(dir, "unboxed.jsonl");
+    const unstopped = [{ group: "/tmp/tachikoma-g", reason: "Error: boom" }];
+    const opts = { root: dir, env: process.env, onChange: () => {}, unstopped };
+    const unboxed = new Server(local([await script({ log })]), opts);
+    await unboxed.start();
+    expect(unboxed.state).toEqual(blocked("Error: boom"));
+    expect(readLog(log)).toEqual([]);
+    expect(fake.calls).toEqual([]);
   });
 });

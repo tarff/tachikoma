@@ -65,6 +65,7 @@ import { setupNote } from "../src/core/setup.js";
 import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "../src/tools/commands.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 import { callTool, FakeProvider, removeTree, reply, standInRun, tempContext, usage } from "./helpers.js";
+import { standinBox } from "./mcp/fake.js";
 
 describe("the instruction files on screen", () => {
   const home = path.resolve("/home/me");
@@ -129,8 +130,13 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
   }) satisfies ServerConfig;
   const local = (name: string, args: string[] = [], where: ServerConfig["where"] = "project", env: Record<string, string> = {}) =>
     server(name, { kind: "stdio", command: "npx", args, env }, where);
-  const servers = (configs: ServerConfig[], network: "on" | "off" | "none", answers: () => Answers) =>
-    new Servers(configs, { root: tmpdir(), env: {}, bus: new Bus(), answers, network, lead: () => "fake:a" });
+  // With the sandbox on, the stand-in box, in which nothing starts here (8c-2a plan, Task 6).
+  const servers = (configs: ServerConfig[], network: "on" | "off" | "none", answers: () => Answers) => {
+    const box = network === "none" ? {} : { box: standinBox(tmpdir()).box };
+    return new Servers(configs, {
+      root: tmpdir(), env: {}, bus: new Bus(), answers, network, ...box, lead: () => "fake:a",
+    });
+  };
   const none = (): Answers => ({ get: () => undefined, set: () => {}, reset: () => {} });
 
   it("asks about a project's local server with its command and arguments, and a remote one at its address, escaped", () => {
@@ -230,17 +236,26 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
   });
 
   // In -p every project server without a yes, one answered no included (the plan's line, Task 9's spec review).
-  it("says once that the sandbox's network keeps every server off, and in -p names each project server without a yes", () => {
-    const configs = [local("mine", [], "user"), local("yes"), local("no"), local("new")];
-    expect(mcpLines(servers(configs, "off", none), { print: true })).toEqual([
-      "MCP servers are off: the sandbox's network is off, and servers run outside the box until a later release. Start with --network on to use them.",
-    ]);
+  // 8c-2a plan, Task 6 (choice 3): with the network off, the line once for the host and remote servers it keeps off,
+  // then in -p the skip lines, as the project's servers now run in the box.
+  it("says once that host and remote servers are off, and in -p names each project server without a yes", () => {
+    const off =
+      'MCP servers marked "host" and remote servers are off: the sandbox\'s network is off, and outside the box ' +
+      "nothing keeps them off the web. Start with --network on to use them.";
+    const skipped = (name: string) =>
+      `MCP server ${name} from .mcp.json was skipped: -p starts only the project's servers ` +
+      "you said yes to in the window.";
+    const mine = { ...local("mine", [], "user"), host: true as const };
+    const far = server("far", { kind: "http", url: "https://mcp.example.com/mcp", headers: {} }, "user");
+    const configs = [mine, far, local("yes"), local("no"), local("new")];
     const given = (): Answers => ({ get: (name) => ({ yes: true, no: false })[name], set: () => {}, reset: () => {} });
-    expect(mcpLines(servers(configs, "none", given), { print: true })).toEqual([
-      "MCP server no from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.",
-      "MCP server new from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.",
-    ]);
+    expect(mcpLines(servers(configs, "off", given), { print: true })).toEqual([off, skipped("no"), skipped("new")]);
+    expect(mcpLines(servers(configs, "off", given), { print: false })).toEqual([off]);
+    expect(mcpLines(servers([far], "off", given), { print: true })).toEqual([off]);
+    expect(mcpLines(servers(configs, "none", given), { print: true })).toEqual([skipped("no"), skipped("new")]);
+    // Nothing in the window when nothing is off, and no line with no servers.
     expect(mcpLines(servers(configs, "none", given), { print: false })).toEqual([]);
+    expect(mcpLines(servers(configs.slice(2), "off", given), { print: false })).toEqual([]);
     expect(mcpLines(servers([], "off", none), { print: true })).toEqual([]);
   });
 });

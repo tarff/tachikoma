@@ -24,7 +24,7 @@ import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
 import { defineTool } from "../../src/tools/tool.js";
 import { Bus, callTool, collectErrors, reply, removeTree } from "../helpers.js";
-import { type FakeOptions, fakeServer, readLog } from "./fake.js";
+import { type FakeOptions, fakeServer, readLog, standinBox } from "./fake.js";
 
 // Release 8c plan, Task 6b: tool search, against the fake servers of fake.ts and a stand-in model. Every request the model
 // is sent is the stand-in's; none reaches a provider.
@@ -165,13 +165,19 @@ describe("tool_search: what a request carries", () => {
     const t = await setup();
     const answers = () => ({ get: (name: string) => (name === "no" ? false : undefined), set: () => {}, reset: () => {} });
     const project = { where: "project" as const, written: "w" };
-    const configs = [await t.local("a"), await t.local("wait", {}, project), await t.local("no", {}, project)];
+    // The user's server runs on this computer, so the box's network off keeps it off (8c-2a plan, Task 6).
+    const configs = [
+      await t.local("a", {}, { host: true }), await t.local("wait", {}, project), await t.local("no", {}, project),
+    ];
     for (const [network, which] of [["off", configs], ["none", configs.slice(1)]] as const) {
-      const servers = new Servers(which, { root: t.dir, env: process.env, bus: t.bus, answers, network, lead: () => "fake:a" });
+      const box = network === "off" ? { box: standinBox(t.dir).box } : {}; // nothing starts in it
+      const servers = new Servers(which, {
+        root: t.dir, env: process.env, bus: t.bus, answers, network, ...box, lead: () => "fake:a",
+      });
       servers.startAll();
       expect(await servers.ready()).toBe(true);
       expect(servers.list().map((s) => s.state.is)).toEqual(
-        network === "off" ? ["off", "off", "off"] : ["waiting for your yes", "you said no"],
+        network === "off" ? ["off", "waiting for your yes", "you said no"] : ["waiting for your yes", "you said no"],
       );
       const { session, model } = t.session(servers, [reply("ok")]);
       await session.send("go");
