@@ -1339,3 +1339,29 @@ sessions"` (its `-p` shortening test). Types pass.
 ## As built
 
 What changed from the plan while building, for the later tasks and the reviewers. (Filled in during the build.)
+
+- **The box's web line names python3 or node:** the box's image has no curl, so the sandbox prompt names
+  `python3 or node` as the fetcher; the host keeps `curl.exe` or `curl` (Task 2's code review, 6c8f5f3).
+- **An older session resumed in the sandbox** opens its setup note with "This session was resumed, and its earlier
+  sandbox setup was not recorded." (Task 3's code review, the user's choice; f2355b4).
+- **Decision 13** (a shortening at the start of a turn carries the setup note into the summary request) was added in the
+  fourth design review and built in Task 9 (b00ded5).
+- **tests/sandbox/session.test.ts and tests/sandbox/copy.test.ts** were missing from the plan's file lists; they were
+  updated for the new prompt lines (62c6e89), then for the box's web line (6c8f5f3) and a comment (51fad3c).
+- **Task 9's test recipe could not work:** it used the measured-ratio trigger, which a resume cannot reach, as `load()`
+  resets the sizes. The test runs both real triggers instead: a "too long" answer, and the size check by count
+  (7928cdd).
+- **Two fixes beyond the plan:** `#notes()` is guarded, so a setup that cannot be read sends no notes rather than
+  leaving a reply's tool calls without results (Task 7, 9d22935); a shortening's setup note is built from the same
+  setup reading as its fresh prompt (Task 9, 7928cdd).
+- **/export** leaves no blank lines at the start of a block after a note (the user's choice, d40ff36).
+- **Known limits,** not fixed, as rare cases become known limits by the standing rule:
+  - a session saved by a future Tachikoma with Setup or Git values this version does not know is refused (its start
+    line fails `isSetup`), and `tachi -c` opens the next-newest session;
+  - freshSystem's setup read is unguarded: a throw fails only that `/clear` or shortening, but in `-p` it is uncaught
+    and skips SessionEnd. If it is ever guarded, guard gitBranch (src/tui/git.ts, its statSync outside the try), not
+    freshSystem;
+  - a resume after a downgrade and an upgrade shows the SETUP_UNKNOWN line;
+  - a torn system line in the middle of a file keeps thinking made under the wrong prompt (as before this work);
+  - the `-p` path where a summary is accepted is untested;
+  - after a shortening between turns, the notes sit before the typed words, which is fine for the model.
