@@ -694,6 +694,15 @@ describe("Servers: starting, waiting and stopping", () => {
 describe("Servers: a box server's stop that failed", () => {
   const BOOM = { code: 1, out: "", err: "Error: boom\n" };
   const BLOCKED = { is: "failed", reason: unstoppedLine("Error: boom") };
+  const WORKED = { code: 0, out: "", err: "" };
+  // A kill in the box held until the test answers it; answered as worked when the test ends, if it has not been, so the
+  // cleanup's stops, registered before it and so run after it, are not left waiting.
+  const held = () => {
+    let answer!: (got: typeof BOOM) => void;
+    const kill = new Promise<typeof BOOM>((resolve) => (answer = resolve));
+    onTestFinished(() => answer(WORKED));
+    return { kill, answer };
+  };
   // The stand-in box, and a stubborn server in it, which keeps running when its input closes; each live edit gives its
   // entry a new variable, so the edit restarts it. The servers are stopped before the stand-in's are killed, then the
   // folder is removed (setup's, after this).
@@ -755,6 +764,47 @@ describe("Servers: a box server's stop that failed", () => {
     await servers.restart("s");
     expect(stateOf(servers, "s")?.is).toBe("ready");
     expect(fake.started()).toHaveLength(2);
+  });
+
+  // The PR review (2026-11-18): an entry added back by a later edit while its removed copy's kill in the box still
+  // runs waits for that kill, which may yet fail and be kept, so the two never run at once.
+  it("holds an entry added back while its removed copy's kill runs, blocking it when that kill fails", async () => {
+    const { fake, a, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const hold = held();
+    fake.kills.push(hold.kill, BOOM); // A's stop, held; then the new copy's retry
+    expect(servers.set([]).removed).toEqual(["s"]);
+    await vi.waitFor(() => expect(kills()).toBe(1), WAIT);
+    expect(servers.set([a]).added).toEqual(["s"]);
+    hold.answer(BOOM);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(kills()).toBe(2);
+    expect(fake.started()).toHaveLength(1);
+  });
+
+  // The same, the held kill working: the copy starts once it has, with nothing left to try again. "t", added beside it,
+  // starts at once, so by its ready "s" has been held. The held answer stands in for the kill, so A's server is left
+  // running for the cleanup's killAll.
+  it("starts an entry added back while its removed copy's kill runs once that kill works", async () => {
+    const { fake, a, config, make, kills } = await boxed();
+    const t = await config("t");
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const hold = held();
+    fake.kills.push(hold.kill);
+    expect(servers.set([]).removed).toEqual(["s"]);
+    await vi.waitFor(() => expect(kills()).toBe(1), WAIT);
+    expect(servers.set([a, t]).added).toEqual(["s", "t"]);
+    await vi.waitFor(() => expect(stateOf(servers, "t")?.is).toBe("ready"), WAIT);
+    expect(stateOf(servers, "s")?.is).toBe("starting");
+    expect(fake.started()).toHaveLength(2); // A's and t's
+    hold.answer(WORKED);
+    await vi.waitFor(() => expect(stateOf(servers, "s")?.is).toBe("ready"), WAIT);
+    expect(fake.started()).toHaveLength(3);
+    expect(kills()).toBe(1);
   });
 
   // 8c-2a plan, Task 6: a host copy is given the box too, so it can try the record's kill again before it starts.

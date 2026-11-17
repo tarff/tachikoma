@@ -570,14 +570,15 @@ export interface Start {
 // (`calls`) and answers it. `inspect` is answered as running, or, with `gone`, failing with those words, as Docker
 // answers for a box that is not there; `inspects` queues answers given before that, one given as a promise held until
 // it settles. The kill in the box (killLine) kills the server of the start whose group it names, with everything it
-// started, and exits 0, unless `kills` queues an answer, given in its place. `started()` gives each start; `order()`
+// started, and exits 0, unless `kills` queues an answer, given in its place, one given as a promise held until it
+// settles. `started()` gives each start; `order()`
 // the calls and starts as they came, each call by its verb and the kill as "kill". `killAll()`, in a test's cleanup
 // once its servers are stopped and before its folder is removed, kills those still running, as a stop with `exit`, or
 // one whose kill in the box failed, ends only the stand-in.
 export function standinBox(dir: string, opts: { kind?: "live" | "copy"; gone?: string } = {}) {
   const record = path.join(dir, `docker-${++made}.jsonl`);
   const calls: string[][] = [];
-  const kills: Answer[] = [];
+  const kills: (Answer | Promise<Answer>)[] = [];
   const inspects: (Answer | Promise<Answer>)[] = [];
   const started = (): Start[] => {
     const lines = readLog(record);

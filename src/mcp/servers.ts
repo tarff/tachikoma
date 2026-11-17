@@ -96,6 +96,9 @@ export class Servers {
   // of it, so a record outlives live edits, a removal and the entry added back. A list is never replaced, as a copy
   // still stopping may yet add to it; one emptied by the retries stays, holding nothing.
   readonly #unstopped = new Map<string, Unstopped[]>();
+  // Each name's stops in the box still running, given to every copy of it the same way, so a copy added back by a
+  // later edit waits for its old copy's (decision 24, as built; the PR review, 2026-11-18).
+  readonly #pendingStops = new Map<string, Set<Promise<void>>>();
   #slots: Slot[];
   #answers: Answers | null | undefined; // null: they could not be read, and none were given in their place; undefined: not read yet
   #unreadable: string | undefined; // why, until it is said
@@ -462,10 +465,12 @@ export class Servers {
     }
     let unstopped = this.#unstopped.get(config.name);
     if (!unstopped) this.#unstopped.set(config.name, (unstopped = []));
+    let pendingStops = this.#pendingStops.get(config.name);
+    if (!pendingStops) this.#pendingStops.set(config.name, (pendingStops = new Set()));
     const server = new Server(config, {
       root: this.#root, env: this.#env, auth: this.#auth, startMs: this.#startMs, onChange: () => this.#changed(slot, server),
       onForm: (form, ctx) => this.forms.answer(slot.config.name, form, ctx),
-      ...(this.#sandbox && { box: this.#box! }), unstopped,
+      ...(this.#sandbox && { box: this.#box! }), unstopped, pendingStops,
       ...(helperRuns(config, this.#sandbox) && {
         helper: { cwd: config.where === "user" ? this.#settingsDir : this.#root, project: config.where === "project" },
       }),

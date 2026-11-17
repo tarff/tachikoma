@@ -181,6 +181,7 @@ export class Server {
   readonly #calls = new Set<{ owner?: Owner }>(); // the calls running, each with the subagent that made it, if one did
   readonly #box: McpBox | undefined;
   readonly #unstopped: Unstopped[];
+  readonly #pendingStops: Set<Promise<void>>; // its name's stops in the box still running (#close)
   #stops = 0; // how many stops have come, so a start that waited can tell one came meanwhile (#connect)
   readonly #helper: { cwd: string; project: boolean } | undefined;
   #helping: AbortController | undefined; // the latest start's helper, which a stop kills
@@ -195,13 +196,15 @@ export class Server {
   // without it, as in most tests, each is declined.
   // `box`: the session's box, in which a local server runs unless its entry says host (8c-2a plan, Tasks 4 and 6); any
   // server given it uses it to try its name's failed stops again. `unstopped`: its name's stops that failed in the box,
-  // a list `Servers` owns and gives every copy of the name, or else this server's own (decision 24). `helper`: given
-  // when the entry's headersHelper runs, the folder it runs in and whether it is the project's (Servers; Task 10).
+  // a list `Servers` owns and gives every copy of the name, or else this server's own (decision 24). `pendingStops`:
+  // its name's stops in the box still running, a set given so too (decision 24, as built). `helper`: given when the
+  // entry's headersHelper runs, the folder it runs in and whether it is the project's (Servers; Task 10).
   constructor(
     config: ServerConfig,
     opts: {
       root: string; env: NodeJS.ProcessEnv; auth?: AuthStore; onChange(): void; onForm?: FormHandler; startMs?: number;
-      box?: McpBox; unstopped?: Unstopped[]; helper?: { cwd: string; project: boolean };
+      box?: McpBox; unstopped?: Unstopped[]; pendingStops?: Set<Promise<void>>;
+      helper?: { cwd: string; project: boolean };
     },
   ) {
     this.config = config;
@@ -212,6 +215,7 @@ export class Server {
     this.#startMs = opts.startMs ?? START_MS;
     this.#box = opts.box;
     this.#unstopped = opts.unstopped ?? [];
+    this.#pendingStops = opts.pendingStops ?? new Set();
     this.#helper = opts.helper;
     const entry = config.entry;
     const signs = opts.auth && entry.kind !== "stdio" && (opts.helper || !hasAuthorization(entry.headers));
@@ -381,6 +385,13 @@ export class Server {
     // starts, as its copy may still run there. Only then is there a wait, so a start with none connects as before. A
     // stop or a newer start during that wait leaves this start going no further, the state theirs, as there is no
     // connection yet for the stop to close (Task 4's spec review).
+    // Before the retries, the name's stops in the box still running are waited for, as one may yet fail and be kept:
+    // an entry removed by one live edit and added back by a later one would otherwise start beside its old copy
+    // (decision 24, as built; the PR review, 2026-11-18). A stop or a newer start meanwhile holds here too.
+    if (this.#pendingStops.size) {
+      await Promise.all(this.#pendingStops);
+      if (this.#stops !== stops || this.#connection !== connection) return false;
+    }
     if (this.#unstopped.length) {
       const left = await this.#retryStops();
       if (this.#stops !== stops || this.#connection !== connection) return false;
@@ -736,8 +747,11 @@ export class Server {
   // server (decision 6). The `docker exec` is ended alone, never with killTree: it has no tree of its own to take, and
   // on Windows taskkill /T blocks for 2-4 s (src/sandbox/docker.ts, choice 125), which would hold every exit. It gets
   // SIGKILL, as killTree sends, since a client that catches SIGTERM would have the library's close wait 2 s twice.
+  // A box server's whole close, the 300 ms included, is one of its name's pending stops until any failed kill is
+  // recorded, so a start of the name waits for it (#connect; decision 24, as built).
   #close(conn: Conn, exit = false): Promise<void> {
-    conn.closed ??= Promise.resolve().then(async () => {
+    if (conn.closed) return conn.closed;
+    conn.closed = Promise.resolve().then(async () => {
       const closing = conn.client.close().catch(() => {});
       const child = conn.local?.child;
       const boxed = conn.local instanceof BoxStdio ? conn.local : undefined;
@@ -757,6 +771,11 @@ export class Server {
       await closing;
       this.#retiring.delete(conn);
     });
+    if (conn.local instanceof BoxStdio) {
+      const closed = conn.closed;
+      this.#pendingStops.add(closed);
+      void closed.then(() => this.#pendingStops.delete(closed));
+    }
     return conn.closed;
   }
 

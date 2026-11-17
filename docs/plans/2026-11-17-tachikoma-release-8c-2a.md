@@ -237,6 +237,9 @@ Each is marked in its task. The user approves them with the plan.
    - The exit is unchanged (decision 6): removing the box ends every copy.
    - A box removed outside Tachikoma is not confirmed by (c). Its servers stay blocked, but such a box is already
      `broken` for the shell tools and refuses a start with `the box stopped` (decision 7), so nothing more is lost.
+   - As built (the PR review, 2026-11-18): a start also waits for its name's stops in the box still pending, from
+     the stop's first moment to its kill's answer, before the retries. An entry removed by one live edit and added
+     back by a later one had started at once beside its old copy, whose kill could then fail.
 
    Task 4.
 25. **Retiring connections are kept until they close** (the plan review's finding 2). Each connection a refresh
