@@ -11,7 +11,8 @@ import { own } from "./tools.js";
 // says it never started, or was killed at its time limit; Task 3 (answer.ts) reads the rest. `limit` is the limit in
 // force, kept with "time", and `signal` what ended a hook that left no exit code, both for the failure's line. An
 // mcp_tool hook's (callHook) has two more: "call", its server could not be called, and "error", an error answer, each
-// with its `reason`, the words why or the answer's text.
+// with its `reason`, the words why or the answer's text. A failed start keeps the whole error, `startError`, for a
+// hook's line, and its code alone, `startCode`, for a headersHelper's, which shows no more (8c-2a plan, decision 28).
 export interface Ran {
   code: number | null;
   stdout: string;
@@ -19,6 +20,7 @@ export interface Ran {
   ms: number;
   failed?: "start" | "time" | "call" | "error";
   startError?: string;
+  startCode?: string;
   limit?: number;
   signal?: string;
   reason?: string;
@@ -29,11 +31,14 @@ export function closeOf(code: number | null, signal: NodeJS.Signals | null): Pic
   return code === null && signal ? { code, signal } : { code };
 }
 
+// The parts of a hook that say how it is started; a headersHelper gives only `command` (8c-2a plan, decision 13).
+type HookCommand = Pick<Hook, "command" | "args" | "shell">;
+
 // How a hook is started, as Claude Code starts it (release 8b design, "Running a hook"). With `args`, the command
 // itself, without a shell, on every system; on Windows a .cmd or .bat cannot be started so (a known limit). Otherwise on
 // Windows Git Bash, unless the hook asks for PowerShell or there is none (release 8b plan, choices 1 and 2), and then
 // Windows PowerShell as the shell tool starts it; elsewhere sh, or bash when the hook asks for it.
-export function shellOf(hook: Hook): { file: string; args: string[] } | { exec: true } {
+export function shellOf(hook: HookCommand): { file: string; args: string[] } | { exec: true } {
   if (hook.args) return { exec: true };
   if (process.platform === "win32") {
     const bash = hook.shell === "powershell" ? null : gitBash();
@@ -58,17 +63,25 @@ export function program(command: string, env: NodeJS.ProcessEnv): string | undef
 
 // Runs one hook on the user's machine, never in the box, in `cwd`, the real project folder, which CLAUDE_PROJECT_DIR
 // names under Claude Code's name, with the commands' environment (commandEnv), so it never sees the API keys (release
-// 8b plan, choice 3). Its input is written whole to its stdin, which is then closed (choice 4). At `limit` seconds it is
-// killed with all it started; a stop kills it the same way and rejects with Cancelled, as a command does (local.ts).
-export function runHook(hook: Hook, input: object, opts: { cwd: string; env: NodeJS.ProcessEnv; limit: number; signal?: AbortSignal }): Promise<Ran> {
+// 8b plan, choice 3). A headersHelper runs here too, in a folder of its own, with `projectDir` for CLAUDE_PROJECT_DIR
+// (8c-2a plan, decision 13). Its input is written whole to its stdin, which is then closed (choice 4); without one, as
+// for a headersHelper, the stdin is closed with nothing written. At `limit` seconds it is killed with all it started; a
+// stop kills it the same way and rejects with Cancelled, as a command does (local.ts).
+export function runHook(
+  hook: HookCommand,
+  input: object | undefined,
+  opts: { cwd: string; projectDir?: string; env: NodeJS.ProcessEnv; limit: number; signal?: AbortSignal },
+): Promise<Ran> {
   if (opts.signal?.aborted) return Promise.reject(new Error("Cancelled"));
   const start = Date.now();
   const ms = () => Date.now() - start;
-  const env = { ...commandEnv(opts.env), CLAUDE_PROJECT_DIR: opts.cwd };
+  const env = { ...commandEnv(opts.env), CLAUDE_PROJECT_DIR: opts.projectDir ?? opts.cwd };
   const how = shellOf(hook);
   const [command, args] = "exec" in how ? [hook.command, hook.args!] : [how.file, how.args];
   const file = program(command, env);
-  if (file === undefined) return Promise.resolve({ code: null, stdout: "", stderr: "", ms: ms(), failed: "start", startError: "not found on PATH" });
+  const notStarted = (startError: string, startCode: string | undefined): Ran =>
+    ({ code: null, stdout: "", stderr: "", ms: ms(), failed: "start", startError, startCode });
+  if (file === undefined) return Promise.resolve(notStarted("not found on PATH", "ENOENT"));
   return new Promise((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams;
     try {
@@ -76,7 +89,7 @@ export function runHook(hook: Hook, input: object, opts: { cwd: string; env: Nod
     } catch (err) {
       // spawn throws at once for what it cannot take at all: a null byte in the command or its args, or on Windows a
       // .cmd or .bat given by its full path, which Node will not start without a shell (EINVAL, seen in its test).
-      resolve({ code: null, stdout: "", stderr: "", ms: ms(), failed: "start", startError: errorText(err) });
+      resolve(notStarted(errorText(err), codeOf(err)));
       return;
     }
     running.add(child);
@@ -115,15 +128,18 @@ export function runHook(hook: Hook, input: object, opts: { cwd: string; env: Nod
     opts.signal?.addEventListener("abort", onAbort, { once: true });
     child.on("error", (err) => {
       done();
-      resolve(ran({ failed: "start", startError: errorText(err) }));
+      resolve(ran({ failed: "start", startError: errorText(err), startCode: codeOf(err) }));
     });
     child.on("close", onClose);
     // A hook may exit without reading its input, which makes this write fail (EPIPE, or EOF on Windows, seen in its
     // test); that is the hook's choice, and unheard the error would end Tachikoma.
     child.stdin.on("error", () => {});
-    child.stdin.end(JSON.stringify(input));
+    child.stdin.end(input && JSON.stringify(input));
   });
 }
+
+// A Node error's code, such as ENOENT.
+const codeOf = (err: unknown) => (err as NodeJS.ErrnoException).code;
 
 // Runs one mcp_tool hook (release 8c plan, Task 8; design, "Hooks"): `call.tool` on the server `call.server`, straight
 // through `servers`, never the session's tool path, so no tool hook fires for it and nobody is asked (design, finding

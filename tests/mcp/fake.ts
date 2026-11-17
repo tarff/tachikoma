@@ -1,14 +1,14 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { onTestFinished } from "vitest";
-import { system32 } from "../../src/exec/env.js";
+import { gitBash, system32 } from "../../src/exec/env.js";
 import type { McpBox } from "../../src/mcp/box.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
 import { BoxState } from "../../src/sandbox/executor.js";
@@ -391,6 +391,61 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
           back.search = new URLSearchParams({ ...params, state: authorize.searchParams.get("state")! }).toString();
           await fetch(back);
         })().catch(() => {}),
+  };
+}
+
+// A remote entry's headersHelper (8c-2a plan, Task 9): a Node script in `dir`, the test's own folder. Each run adds to
+// `runs()` its process id, its working folder, CLAUDE_CODE_MCP_SERVER_NAME and _URL (`name`, `url`), CLAUDE_PROJECT_DIR
+// (`project`) and its variables' names, then prints `headersFile`, which `give` writes, unless `mode` says otherwise:
+// "fail" exits 3 after printing a made-up secret on its error output, "bad" prints a list, "slow" never ends. `hold()`
+// makes the runs after it wait, looking every 20 ms, until `go()`, then do as the mode said. `command` starts it in the
+// shell hooks use: Git Bash or sh, or Windows PowerShell when there is no Git Bash (hooks/run.ts, shellOf).
+const HELPER = String.raw`
+const fs = require("node:fs");
+const env = process.env;
+const run = { pid: process.pid, cwd: process.cwd(), name: env.CLAUDE_CODE_MCP_SERVER_NAME ?? null,
+  url: env.CLAUDE_CODE_MCP_SERVER_URL ?? null, project: env.CLAUDE_PROJECT_DIR ?? null, names: Object.keys(env) };
+fs.appendFileSync(O.runs, JSON.stringify(run) + "\n");
+const act = (mode) => {
+  if (mode === "fail") return process.stderr.write("no token today sk-fake-secret-1\n", () => process.exit(3));
+  if (mode === "bad") return process.stdout.write("[]\n");
+  if (mode === "slow") return setInterval(() => {}, 1000);
+  if (mode.startsWith("wait ")) {
+    const poll = () => (fs.existsSync(O.go) ? act(mode.slice(5)) : setTimeout(poll, 20));
+    return poll();
+  }
+  process.stdout.write(fs.readFileSync(O.headers));
+};
+act(fs.readFileSync(O.mode, "utf8"));
+`;
+
+export type HelperMode = "ok" | "fail" | "bad" | "slow";
+
+export function fakeHelper(dir: string) {
+  const n = ++made;
+  const at = (ext: string) => path.join(dir, `helper-${n}.${ext}`);
+  const files = { runs: at("runs.jsonl"), headers: at("json"), mode: at("mode"), go: at("go") };
+  const script = at("cjs");
+  writeFileSync(script, `const O = ${JSON.stringify(files)};\n${HELPER}`);
+  writeFileSync(files.headers, "{}");
+  let current: HelperMode = "ok";
+  const mode = (m: HelperMode) => {
+    current = m;
+    writeFileSync(files.mode, m);
+  };
+  mode("ok");
+  const line = `'${process.execPath}' '${script}'`;
+  return {
+    command: process.platform === "win32" && !gitBash() ? `& ${line}` : line,
+    runs: () => readLog(files.runs),
+    give: (headers: object) => writeFileSync(files.headers, JSON.stringify(headers)),
+    mode,
+    hold: () => {
+      rmSync(files.go, { force: true });
+      writeFileSync(files.mode, `wait ${current}`);
+    },
+    go: () => writeFileSync(files.go, ""),
+    headersFile: files.headers,
   };
 }
 
