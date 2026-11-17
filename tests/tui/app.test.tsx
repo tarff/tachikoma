@@ -12808,9 +12808,9 @@ describe("App's MCP", () => {
     const { app, mcp } = await mount([], { mcp: servers([c], { answers: () => answersFor(dir, data) }) });
     await soon(() => expect(states(mcp!.servers)).toEqual(["proj ready"]));
     await type(app, "/mcp");
-    await shows(app, `${HEADING}\nproj (project) · 10 tools`);
+    await shows(app, `${HEADING}\nproj (project) · 11 tools`);
     await press(app, "\r");
-    await shows(app, "proj (project) · 10 tools\nReconnect\nShow tools\nReset my answer\n");
+    await shows(app, "proj (project) · 11 tools\nReconnect\nShow tools\nReset my answer\n");
     await press(app, DOWN, DOWN, "\r");
     await shows(app, "Your answer for proj was reset; Tachikoma asks again at the next launch.");
     expect(app.lastFrame()).not.toContain(HEADING);

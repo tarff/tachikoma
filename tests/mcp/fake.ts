@@ -1,12 +1,17 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { onTestFinished } from "vitest";
+import { system32 } from "../../src/exec/env.js";
+import type { McpBox } from "../../src/mcp/box.js";
+import type { DockerRun } from "../../src/sandbox/docker.js";
+import { BoxState } from "../../src/sandbox/executor.js";
 
 // Fake MCP servers for the tests (release 8c plan, Task 4): a Node script speaking MCP's JSON-RPC by hand, so no server
 // package is needed and nothing of the user's is started. Over stdio it reads one message per line and writes one per
@@ -37,11 +42,13 @@ export interface FakeOptions {
   // Its prompts (Task 13): each listed without its messages, which prompts/get sends with each {argument} in a text
   // filled in, or answered an error with `fails` as its message.
   prompts?: { name: string; description?: string; arguments?: object[]; messages?: object[]; fails?: string }[];
+  show?: string[]; // variables whoami also tells, under `env` (8c-2a plan, Task 4)
 }
 
 // Its tools: echo says `text` back; error answers isError; picture answers a 1x1 PNG; structured answers structured
 // content only; slow never answers; progress sends progress and never answers; whoami tells its arguments, folder and
-// variables; ask sends the client a request (`method`, `params`) and answers with the client's answer, or with `cancel`
+// variables, with `show`'s under `env`; write makes an empty file at `path` in its folder (8c-2a plan, Task 4); ask
+// sends the client a request (`method`, `params`) and answers with the client's answer, or with `cancel`
 // cancels that request at once and answers "cancelled" (Task 12: a server that gives up on its form); change adds a
 // tool and says the list changed; exit prints `stderr` and exits with `code`. The tools are called by name whatever the
 // list says, so a fake with its own `tools` still answers change and exit, and the unlisted add-resource, which adds its
@@ -60,7 +67,8 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwA
 const tool = (name, description = name) => ({ name, description, inputSchema: { type: "object" } });
 let tools = O.tools || [
   { ...tool("echo", O.description || "Says it back"), inputSchema: { type: "object", properties: { text: { type: "string" } } } },
-  ...["error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit"].map((name) => tool(name)),
+  ...["error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit", "write"]
+    .map((name) => tool(name)),
 ];
 let resources = O.resources || [];
 let notify = () => {};
@@ -110,7 +118,11 @@ function answer(m, reply) {
     }
     case "whoami":
       return text(JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), project: process.env.CLAUDE_PROJECT_DIR ?? null,
-        mine: process.env.MINE ?? null, key: process.env.ANTHROPIC_API_KEY ?? null }));
+        mine: process.env.MINE ?? null, key: process.env.ANTHROPIC_API_KEY ?? null,
+        ...(O.show && { env: Object.fromEntries(O.show.map((n) => [n, process.env[n] ?? null])) }) }));
+    case "write":
+      fs.writeFileSync(require("node:path").join(process.cwd(), String(args.path)), "");
+      return text("written");
     case "ask": {
       const id = request(args.method, args.params, args.cancel ? () => {} : (r) => text(JSON.stringify(r.result ?? r.error)));
       if (!args.cancel) return;
@@ -380,6 +392,85 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
           await fetch(back);
         })().catch(() => {}),
   };
+}
+
+type Answer = Awaited<ReturnType<DockerRun>>;
+const STANDIN = fileURLToPath(new URL("../standin/dockerExec.mjs", import.meta.url));
+
+// A stand-in's server and everything it started, as the kill in the box ends the server's group: on Windows its tree,
+// elsewhere the group it leads (dockerExec.mjs).
+function killGroup(pid: number): void {
+  if (process.platform === "win32") {
+    spawnSync(system32("taskkill.exe"), ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
+  } else {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      // ESRCH: the group is gone
+    }
+  }
+}
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+// One start of the stand-in Docker: its own pid, its arguments and environment, and its server's pid once started.
+export interface Start {
+  self: number;
+  args: string[];
+  env: Record<string, string>;
+  child?: number;
+}
+
+// A stand-in for the session's box (8c-2a plan, Task 4), recording into a file in `dir`: an McpBox of id "b0x" whose
+// program is tests/standin/dockerExec.mjs, so its servers run on this machine, and whose DockerRun records each call
+// (`calls`) and answers it. `inspect` is answered as running, or, with `gone`, failing with those words, as Docker
+// answers for a box that is not there; `inspects` queues answers given before that. The kill in the box (killLine)
+// kills the server of the start whose group it names, with everything it started, and exits 0, unless `kills` queues
+// an answer, given in its place. `started()` gives each start; `order()` the calls and starts as they came, each call
+// by its verb and the kill as "kill". `killAll()`, in a test's cleanup once its servers are stopped and before its
+// folder is removed, kills those still running, as a stop with `exit` kills only the stand-in where it is not Windows.
+export function standinBox(dir: string, opts: { kind?: "live" | "copy"; gone?: string } = {}) {
+  const record = path.join(dir, `docker-${++made}.jsonl`);
+  const calls: string[][] = [];
+  const kills: Answer[] = [];
+  const inspects: Answer[] = [];
+  const started = (): Start[] => {
+    const lines = readLog(record);
+    return lines
+      .filter((l) => l.args)
+      .map((s) => ({ ...s, ...lines.find((l) => l.self === s.self && l.child) }) as Start);
+  };
+  const groupOf = (args: string[]) =>
+    args[0] === "exec" ? /^touch (\S+)\.stop;/.exec(args.at(-1) ?? "")?.[1] : undefined;
+  const order = () =>
+    readLog(record).flatMap((l) => (l.args ? ["start"] : l.run ? [groupOf(l.run) ? "kill" : l.run[0]] : []));
+  const inspect = (): Answer =>
+    opts.gone === undefined ? { code: 0, out: "true\n", err: "" } : { code: 1, out: "", err: opts.gone };
+  const run: DockerRun = async (args) => {
+    calls.push(args);
+    appendFileSync(record, `${JSON.stringify({ run: args })}\n`);
+    if (args[0] === "inspect") return inspects.shift() ?? inspect();
+    const group = groupOf(args);
+    if (group !== undefined) {
+      const queued = kills.shift();
+      if (queued) return queued;
+      const pid = started().find((s) => s.args.some((a) => a.includes(group)))?.child;
+      if (pid !== undefined && alive(pid)) killGroup(pid);
+    }
+    return { code: 0, out: "", err: "" };
+  };
+  const killAll = () => {
+    for (const { child } of started()) if (child !== undefined && alive(child)) killGroup(child);
+  };
+  const program = { file: process.execPath, args: [STANDIN, record] };
+  const box: McpBox = { id: "b0x", kind: opts.kind ?? "live", state: new BoxState("b0x", run), run, program };
+  return { box, calls, kills, inspects, started, order, killAll };
 }
 
 // The fake's log, one entry per line; none before its first message.

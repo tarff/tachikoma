@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   badNameLine,
   BOX_WORK,
@@ -8,9 +12,14 @@ import {
   INNER,
   NOT_FOUND,
   notFoundLine,
+  unstoppedLine,
 } from "../../src/mcp/box.js";
+import type { ServerConfig, ServerEntry } from "../../src/mcp/config.js";
+import { Server } from "../../src/mcp/server.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
 import { killInBox, killLine } from "../../src/sandbox/executor.js";
+import { removeTree } from "../helpers.js";
+import { type FakeOptions, fakeServer, standinBox } from "./fake.js";
 
 const NUL = String.fromCharCode(0);
 
@@ -117,5 +126,245 @@ describe("killLine and killInBox", () => {
     expect(await kill(async () => ({ code: 1, out: "", err: "Error: boom\n" }))).toBe("Error: boom");
     expect(await kill(async () => ({ code: 1, out: "", err: "" }))).toBe("the box stopped");
     expect(await kill(() => Promise.reject(new Error("spawn docker EACCES")))).toBe("spawn docker EACCES");
+  });
+});
+
+// 8c-2a plan, Task 4: a server started in the box, through the stand-in Docker (tests/standin/dockerExec.mjs), whose
+// servers run on this machine (decisions 1, 3-8 and 24). Real Docker runs the same in Task 5's tests.
+const base: Omit<ServerConfig, "entry" | "asWritten"> = {
+  name: "fake", safe: "fake", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "",
+};
+const local = (args: string[], over: Partial<Extract<ServerEntry, { kind: "stdio" }>> = {}): ServerConfig => ({
+  ...base,
+  entry: { kind: "stdio", command: process.execPath, args, env: {}, ...over },
+  asWritten: { command: process.execPath, args },
+});
+const textOf = (result: { content: unknown }) =>
+  (result.content as { type: string; text: string }[]).map((c) => c.text).join("");
+const BOOM = { code: 1, out: "", err: "Error: boom\n" };
+const UNREACHABLE = {
+  code: 1,
+  out: "",
+  err: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n",
+};
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+const pidIn = (file: string) => Number(readFileSync(file, "utf8"));
+// A wait on another process: a few seconds for a busy machine, well inside the test's 15 s.
+const WAIT = { timeout: 5_000 };
+// The group file a start's outer script names.
+const groupIn = (args: string[]) => /\/tmp\/tachikoma-[0-9a-f-]{36}/.exec(args[7] ?? "")![0];
+
+// The test's own folder, the project's root, the stand-in box recording there, and its servers, each stopped before the
+// folder is removed, as on Windows a running server holds the folder it works in; then any left running is killed.
+async function setup(opts: { gone?: string } = {}) {
+  const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-box-"));
+  const fake = standinBox(dir, opts);
+  const servers: Server[] = [];
+  onTestFinished(async () => {
+    await Promise.all(servers.map((s) => s.stop()));
+    fake.killAll();
+    await removeTree(dir);
+  });
+  const make = (config: ServerConfig, env: NodeJS.ProcessEnv = process.env) => {
+    const server = new Server(config, { root: dir, env, onChange: () => {}, box: fake.box });
+    servers.push(server);
+    return server;
+  };
+  const script = (o: FakeOptions = {}) => fakeServer(dir, o);
+  const pidFile = path.join(dir, "pid");
+  // One that keeps running when its input closes, with a child of its own.
+  const stubborn = () => script({ stubborn: true, pidFile, childPidFile: path.join(dir, "child-pid") });
+  return { dir, fake, make, script, stubborn, pidFile };
+}
+
+describe("a server in the box, through the stand-in Docker", () => {
+  it("starts as docker exec -i in /work, never -t, with no value of its env in the arguments", async () => {
+    const { fake, make, script } = await setup();
+    const fakeScript = await script();
+    const server = make(local([fakeScript, "two words"], { env: { SECRET_ONE: "value-from-the-entry" } }));
+    await server.start();
+    expect(server.state.is).toBe("ready");
+    const [start, ...more] = fake.started();
+    expect(more).toEqual([]);
+    expect(start!.args.slice(0, 5)).toEqual(["exec", "-i", "-w", "/work", "b0x"]);
+    expect(start!.args).not.toContain("-t");
+    expect(start!.args.slice(-3)).toEqual([process.execPath, fakeScript, "two words"]);
+    expect(start!.args.join(" ")).not.toContain("value-from-the-entry");
+  });
+
+  it("gives the docker program the session's DOCKER_HOST and DOCKER_CONFIG, never the entry's, nor a key", async () => {
+    const { fake, make, script } = await setup();
+    const session = { DOCKER_HOST: "tcp://session:2375", DOCKER_CONFIG: "/session/docker" };
+    const env = { ...process.env, ...session, ANTHROPIC_API_KEY: "sk-test-not-a-key" };
+    const entry = { DOCKER_HOST: "tcp://entry:2375", DOCKER_CONFIG: "/entry/docker" };
+    const server = make(local([await script({ show: ["DOCKER_HOST", "DOCKER_CONFIG"] })], { env: entry }), env);
+    await server.start();
+    const [start] = fake.started();
+    expect(start!.env.DOCKER_HOST).toBe("tcp://session:2375");
+    expect(start!.env.DOCKER_CONFIG).toBe("/session/docker");
+    expect(start!.env.ANTHROPIC_API_KEY).toBeUndefined();
+    // The server itself gets the entry's, over its input.
+    expect(JSON.parse(textOf(await server.callTool("whoami", {}, {}))).env).toEqual(entry);
+  });
+
+  it("gives the server its entry's variables whole, CLAUDE_PROJECT_DIR=/work, and roots of file:///work", async () => {
+    const { make, script } = await setup();
+    const vars = { LINES: "one\ntwo", TABBED: "end\t" };
+    const server = make(local([await script({ show: ["LINES", "TABBED"] })], { env: vars }));
+    await server.start();
+    const seen = JSON.parse(textOf(await server.callTool("whoami", {}, {})));
+    expect(seen.env).toEqual(vars);
+    expect(seen.project).toBe("/work");
+    const roots = await server.callTool("ask", { method: "roots/list" }, {});
+    expect(JSON.parse(textOf(roots))).toEqual({ roots: [{ uri: "file:///work" }] });
+  });
+
+  it("fails with the not-found line for a command the box lacks, its control characters escaped", async () => {
+    const { make } = await setup();
+    const server = make(local([], { command: "tachi-no-such-server" }));
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: notFoundLine("tachi-no-such-server") });
+    const odd = make(local([], { command: `tachi-no-such${String.fromCharCode(27)}server` }));
+    await odd.start();
+    expect(odd.state).toEqual({ is: "failed", reason: notFoundLine("tachi-no-such\\u001bserver") });
+  });
+
+  it("refuses a variable name the box cannot take, starting nothing", async () => {
+    const { fake, make, script } = await setup();
+    const server = make(local([await script()], { env: { OK: "1", "ProgramFiles(x86)": "C:\\Program Files (x86)" } }));
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: badNameLine("ProgramFiles(x86)") });
+    expect(fake.started()).toEqual([]);
+  });
+
+  it("runs nothing in the box to stop a server that ends when its input closes", async () => {
+    const { fake, make, script } = await setup();
+    const server = make(local([await script()]));
+    await server.start();
+    await server.stop();
+    expect(fake.calls).toEqual([]);
+    await vi.waitFor(() => expect(alive(fake.started()[0]!.self)).toBe(false), WAIT);
+  });
+
+  it("kills a stubborn one's group in the box through the box's DockerRun, and it ends", async () => {
+    const { fake, make, stubborn, pidFile } = await setup();
+    const server = make(local([await stubborn()]));
+    await server.start();
+    const pid = pidIn(pidFile);
+    await server.stop();
+    expect(fake.calls).toEqual([["exec", "b0x", "bash", "-c", killLine(groupIn(fake.started()[0]!.args))]]);
+    await vi.waitFor(() => expect(alive(pid)).toBe(false), WAIT);
+  });
+
+  it("at the exit, runs nothing in the box and ends a stubborn one's docker exec at once", async () => {
+    const { fake, make, stubborn } = await setup();
+    const server = make(local([await stubborn()]));
+    await server.start();
+    await server.stop({ exit: true });
+    expect(fake.calls).toEqual([]);
+    await vi.waitFor(() => expect(alive(fake.started()[0]!.self)).toBe(false), WAIT);
+  });
+
+  it("shows the box stopped when a server ends while the box is gone, and refuses a start once it broke", async () => {
+    const { fake, make, script } = await setup({ gone: "Error response from daemon: No such container: b0x" });
+    const server = make(local([await script()]));
+    await server.start();
+    await server.callTool("exit", { code: 1 }, {}).catch(() => {});
+    const stopped = { is: "stopped", reason: "the box stopped", retry: false };
+    await vi.waitFor(() => expect(server.state).toEqual(stopped), WAIT);
+    fake.box.state.fail("Docker stopped");
+    const next = make(local([await script()]));
+    await next.start();
+    expect(next.state).toEqual({ is: "failed", reason: "the box stopped" });
+    expect(fake.started()).toHaveLength(1);
+  });
+});
+
+// Decision 24: a stop whose kill in the box failed is tried again before any new start, and confirmed only on proof.
+describe("a box server's stop that failed", () => {
+  const blocked = (reason: string) => ({ is: "failed", reason: unstoppedLine(reason) });
+
+  it("blocks a new start while its kill still fails, and lets one copy start once it works", async () => {
+    const { fake, make, stubborn } = await setup();
+    const server = make(local([await stubborn()]));
+    await server.start();
+    fake.kills.push(BOOM);
+    await server.stop();
+    // A restart, as /mcp's Reconnect makes one: the kill is tried again and fails.
+    fake.kills.push(BOOM);
+    await server.start();
+    expect(server.state).toEqual(blocked("Error: boom"));
+    expect(unstoppedLine("Error: boom")).toBe(
+      "its earlier copy could not be stopped in the box (Error: boom), so it was not started again",
+    );
+    expect(fake.started()).toHaveLength(1);
+    // The kill works now: exactly one more copy starts.
+    await server.start();
+    expect(server.state.is).toBe("ready");
+    expect(fake.started()).toHaveLength(2);
+    expect(fake.order()).toEqual(["start", "kill", "inspect", "kill", "inspect", "kill", "start"]);
+  });
+
+  it("keeps the record while the daemon is unreachable, and kills before a new start once Docker is back", async () => {
+    const { fake, make, stubborn } = await setup();
+    const server = make(local([await stubborn()]));
+    await server.start();
+    fake.kills.push(BOOM);
+    await server.stop();
+    fake.inspects.push(UNREACHABLE);
+    fake.kills.push(UNREACHABLE);
+    await server.start();
+    expect(server.state).toEqual(blocked(UNREACHABLE.err.trim()));
+    expect(fake.started()).toHaveLength(1);
+    // Docker is back, the old copy still running: inspect says true, so the kill runs, and only then a new start.
+    await server.start();
+    expect(server.state.is).toBe("ready");
+    expect(fake.order().slice(-3)).toEqual(["inspect", "kill", "start"]);
+    expect(fake.started()).toHaveLength(2);
+  });
+
+  it("is cleared without a kill when inspect says the box is not running", async () => {
+    const { fake, make, stubborn } = await setup();
+    const server = make(local([await stubborn()]));
+    await server.start();
+    fake.kills.push(BOOM);
+    await server.stop();
+    fake.inspects.push({ code: 0, out: "false\n", err: "" });
+    await server.start();
+    expect(server.state.is).toBe("ready");
+    expect(fake.order()).toEqual(["start", "kill", "inspect", "start"]);
+  });
+
+  it("is cleared once Tachikoma's own removal of the box succeeded", async () => {
+    const { fake, make, stubborn } = await setup();
+    const server = make(local([await stubborn()]));
+    await server.start();
+    fake.kills.push(BOOM);
+    await server.stop();
+    // As DockerExecutor.stop sets it once its rm -f exits 0 (tests/sandbox/executor.test.ts).
+    fake.box.state.removed = true;
+    await server.start();
+    expect(server.state.is).toBe("ready");
+    expect(fake.order()).toEqual(["start", "kill", "start"]);
+  });
+
+  it("is kept when there is no docker program", async () => {
+    const { fake, make, stubborn } = await setup();
+    const server = make(local([await stubborn()]));
+    await server.start();
+    fake.kills.push("missing");
+    await server.stop();
+    fake.inspects.push("missing");
+    fake.kills.push("missing");
+    await server.start();
+    expect(server.state).toEqual(blocked("no docker program is on PATH any more"));
+    expect(fake.started()).toHaveLength(1);
   });
 });

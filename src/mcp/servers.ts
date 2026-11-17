@@ -5,6 +5,7 @@ import { visible } from "../core/permissions.js";
 import { errorText, type ToolSpec } from "../core/types.js";
 import type { Answers } from "./answers.js";
 import type { AuthStore, SignInIO } from "./auth.js";
+import type { McpBox, Unstopped } from "./box.js";
 import { Checker } from "./checker.js";
 import type { ServerConfig } from "./config.js";
 import { Forms } from "./forms.js";
@@ -85,6 +86,11 @@ export class Servers {
   readonly #auth?: AuthStore;
   readonly #openBrowser: (url: string) => void;
   readonly #headless: boolean;
+  readonly #box: McpBox | undefined;
+  // Each name's stops that failed in the box (8c-2a plan, Task 4, decision 24): one list per name, given to every copy
+  // of it, so a record outlives live edits, a removal and the entry added back. A list is never replaced, as a copy
+  // still stopping may yet add to it; one emptied by the retries stays, holding nothing.
+  readonly #unstopped = new Map<string, Unstopped[]>();
   #slots: Slot[];
   #answers: Answers | null | undefined; // null: they could not be read, and none were given in their place; undefined: not read yet
   #unreadable: string | undefined; // why, until it is said
@@ -103,13 +109,14 @@ export class Servers {
   // then, kept for that launch only (Task 9). `network` is the sandbox's: "none" when it is off. `lead` names the model
   // leading, which every error on the bus carries. `startMs` is a server's start limit, 30 s unless a test gives one.
   // `auth` keeps the remote servers' sign-ins, and `openBrowser` opens a sign-in's page, the system's browser unless a test
-  // gives its own (Task 11); `headless` is -p, which cannot sign in, and says so of a server that needs it.
+  // gives its own (Task 11); `headless` is -p, which cannot sign in, and says so of a server that needs it. `box`: the
+  // session's box, given to every server, its local ones started in it (8c-2a plan, Task 4; Task 6 decides which).
   constructor(
     configs: ServerConfig[],
     opts: {
       root: string; env: NodeJS.ProcessEnv; bus: Bus; answers: () => Answers; unread?: Answers;
       network: "on" | "off" | "none"; lead: () => string; startMs?: number;
-      auth?: AuthStore; openBrowser?: (url: string) => void; headless?: boolean;
+      auth?: AuthStore; openBrowser?: (url: string) => void; headless?: boolean; box?: McpBox;
     },
   ) {
     this.#root = opts.root;
@@ -123,6 +130,7 @@ export class Servers {
     this.#auth = opts.auth;
     this.#openBrowser = opts.openBrowser ?? openBrowser;
     this.#headless = opts.headless ?? false;
+    this.#box = opts.box;
     this.forms = new Forms({ bus: this.#bus, headless: this.#headless, openBrowser: this.#openBrowser, lead: this.#lead });
     this.#slots = configs.map((c) => this.#slot(c));
   }
@@ -416,12 +424,13 @@ export class Servers {
   }
 
   // At Tachikoma's exit: every server stopped (choice 3), all forgotten, and those a live edit removed waited for too,
-  // as on Windows a running server holds the folder it works in (CI on PR #18's merge).
+  // as on Windows a running server holds the folder it works in (CI on PR #18's merge). A box server's `docker exec` is
+  // ended at once, as removing the box ends the server (8c-2a plan, decision 6).
   async stopAll(): Promise<void> {
     const slots = this.#slots;
     this.#slots = [];
     this.#wake();
-    await Promise.all([...slots.map((s) => s.server?.stop()), ...this.#stopping]);
+    await Promise.all([...slots.map((s) => s.server?.stop({ exit: true })), ...this.#stopping]);
   }
 
   // A project's server starts only on the user's yes for its entry as written (choice 24; Task 9 asks); with the sandbox's
@@ -435,9 +444,12 @@ export class Servers {
       if (yes === undefined) return { ...slot, fixed: { is: "waiting for your yes" } };
       if (!yes) return { ...slot, fixed: { is: "you said no" } };
     }
+    let unstopped = this.#unstopped.get(config.name);
+    if (!unstopped) this.#unstopped.set(config.name, (unstopped = []));
     const server = new Server(config, {
       root: this.#root, env: this.#env, auth: this.#auth, startMs: this.#startMs, onChange: () => this.#changed(slot, server),
       onForm: (form, ctx) => this.forms.answer(slot.config.name, form, ctx),
+      ...(this.#box && { box: this.#box }), unstopped,
     });
     slot.server = server;
     return slot;

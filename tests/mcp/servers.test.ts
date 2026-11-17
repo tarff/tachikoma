@@ -7,18 +7,21 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { projectFile, SETTINGS } from "../../src/core/datadir.js";
 import { running } from "../../src/exec/local.js";
 import { type Answers, answersFor } from "../../src/mcp/answers.js";
+import { type McpBox, unstoppedLine } from "../../src/mcp/box.js";
 import { readServers, type ServerConfig } from "../../src/mcp/config.js";
 import { NotReached } from "../../src/mcp/server.js";
 import { type Offered, Servers } from "../../src/mcp/servers.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import { Bus, collectErrors, removeTree } from "../helpers.js";
-import { type FakeOptions, fakeServer, httpFake, readLog } from "./fake.js";
+import { type FakeOptions, fakeServer, httpFake, readLog, standinBox } from "./fake.js";
 
 // Release 8c plan, Task 5: the servers together, one table of unique names, against the fake servers of fake.ts.
 
 // A wait on another process: a few seconds for a busy machine, well inside the test's 15 s.
 const WAIT = { timeout: 5_000 };
-const TEN = ["echo", "error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit"];
+const ELEVEN = [
+  "echo", "error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit", "write",
+];
 const tool = (name: string, inputSchema: object = { type: "object" }, description = name) => ({ name, description, inputSchema });
 const plain = tool("plain", { type: "object", properties: { x: { type: "number" } } });
 const nobody = (): Answers => {
@@ -49,10 +52,17 @@ async function setup() {
     const entry = { kind: "stdio" as const, command: process.execPath, args: [script], env: {} };
     return { name, safe, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "", entry, asWritten: entry, ...over };
   };
-  const make = (configs: ServerConfig[], opts: { answers?: () => Answers; unread?: Answers; network?: "on" | "off" | "none" } = {}) => {
+  const make = (
+    configs: ServerConfig[],
+    opts: { answers?: () => Answers; unread?: Answers; network?: "on" | "off" | "none"; box?: McpBox } = {},
+  ) => {
     const answers = opts.answers ?? nobody;
     const unread = opts.unread ? { unread: opts.unread } : {};
-    const servers = new Servers(configs, { root: dir, env: process.env, bus, answers, ...unread, network: opts.network ?? "none", lead: () => "fake:a" });
+    const network = opts.network ?? "none";
+    const box = opts.box ? { box: opts.box } : {};
+    const servers = new Servers(configs, {
+      root: dir, env: process.env, bus, answers, ...unread, network, ...box, lead: () => "fake:a",
+    });
     made.push(servers);
     return servers;
   };
@@ -133,8 +143,10 @@ describe("Servers: names", () => {
     await servers.ready();
     const offered = every(servers);
     expect(owner(offered, "mcp__x_y__echo")).toEqual(["x.y echo"]);
-    expect(offered).toHaveLength(10);
-    expect(notes).toEqual(TEN.map((t) => `MCP server x_y: "${t}" was left out: its name mcp__x_y__${t} is already x.y's "${t}"`));
+    expect(offered).toHaveLength(11);
+    expect(notes).toEqual(
+      ELEVEN.map((t) => `MCP server x_y: "${t}" was left out: its name mcp__x_y__${t} is already x.y's "${t}"`),
+    );
   });
 
   // Release 8c plan, choice 68 and Task 18: the screen names an MCP call by the server and the tool's own name the last
@@ -161,7 +173,9 @@ describe("Servers: names", () => {
     await gate.open();
     expect(await servers.ready()).toBe(true);
     expect(owner(every(servers), "mcp__x_y__echo")).toEqual(["x_y echo"]);
-    expect(notes).toEqual(TEN.map((t) => `MCP server x.y: "${t}" was left out: its name mcp__x_y__${t} is already x_y's "${t}"`));
+    expect(notes).toEqual(
+      ELEVEN.map((t) => `MCP server x.y: "${t}" was left out: its name mcp__x_y__${t} is already x_y's "${t}"`),
+    );
   });
 
   // Choice 7 for a changed list: the new tool comes first in the list, and still does not take the name in force.
@@ -364,7 +378,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const line = "MCP server bad failed to start: it exited with code 3: boom";
     expect(errors).toEqual([{ kind: "mcp", attempted: "MCP server bad", message: line, lead: "fake:a" }]);
     expect(notes).toEqual([]); // nobody waited past it, so no ready line
-    expect(every(servers)).toHaveLength(10);
+    expect(every(servers)).toHaveLength(11);
   });
 
   // The error log's `attempted` is printed by /errors, so a name from the file is escaped there too.
@@ -533,9 +547,10 @@ describe("Servers: starting, waiting and stopping", () => {
     expect(await waited).toBe(false);
     expect(notes).toEqual([]);
     await gate.open();
-    await vi.waitFor(() => expect(notes).toEqual(["MCP server late is ready: 10 tools."]), WAIT);
+    await vi.waitFor(() => expect(notes).toEqual(["MCP server late is ready: 11 tools."]), WAIT);
     await one.open();
-    await vi.waitFor(() => expect(notes).toEqual(["MCP server late is ready: 10 tools.", "MCP server single is ready: 1 tool."]), WAIT);
+    const ready = ["MCP server late is ready: 11 tools.", "MCP server single is ready: 1 tool."];
+    await vi.waitFor(() => expect(notes).toEqual(ready), WAIT);
     expect(await servers.ready()).toBe(true);
   });
 
@@ -549,7 +564,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const line = "MCP server s stopped: it exited with code 4: gone; reconnect it from /mcp.";
     await vi.waitFor(() => expect(errors.map((e) => e.message)).toEqual([line]), WAIT);
     expect(errors[0]).toMatchObject({ kind: "mcp", attempted: "MCP server s" });
-    expect(every(servers).map((o) => o.server)).toEqual(Array(10).fill("t"));
+    expect(every(servers).map((o) => o.server)).toEqual(Array(11).fill("t"));
     expect(servers.current(echo)).toBe("stopped");
     expect(errors).toHaveLength(1);
   });
@@ -668,6 +683,75 @@ describe("Servers: starting, waiting and stopping", () => {
     expect(servers.list().map((s) => s.tools)).toEqual([1]);
     expect(servers.tools("a_b")).toEqual({ names: ["t"], leftOut: [] }); // the tool's own name (choice 66)
     expect(notes).toHaveLength(1);
+  });
+});
+
+// 8c-2a plan, Task 4, decision 24: a box server's stop that failed is kept by its name, through the stand-in Docker
+// (tests/mcp/box.test.ts has its proofs), whatever then happens to its entry, until a retry confirms it.
+describe("Servers: a box server's stop that failed", () => {
+  const BOOM = { code: 1, out: "", err: "Error: boom\n" };
+  const BLOCKED = { is: "failed", reason: unstoppedLine("Error: boom") };
+  // The stand-in box, and a stubborn server in it, which keeps running when its input closes; each live edit gives its
+  // entry a new variable, so the edit restarts it. The servers are stopped before the stand-in's are killed, then the
+  // folder is removed (setup's, after this).
+  async function boxed() {
+    const s = await setup();
+    const fake = standinBox(s.dir);
+    const made: Servers[] = [];
+    onTestFinished(async () => {
+      await Promise.all(made.map((servers) => servers.stopAll()));
+      fake.killAll();
+    });
+    const a = await s.config("s", { stubborn: true, childPidFile: path.join(s.dir, "child-pid") });
+    const entry = a.entry as Extract<ServerConfig["entry"], { kind: "stdio" }>;
+    const edit = (v: string): ServerConfig => ({ ...a, entry: { ...entry, env: { V: v } } });
+    const make = (configs: ServerConfig[]) => {
+      const servers = s.make(configs, { network: "on", box: fake.box });
+      made.push(servers);
+      return servers;
+    };
+    const kills = () => fake.order().filter((o) => o === "kill").length;
+    return { ...s, fake, a, edit, make, kills };
+  }
+
+  it("blocks a live edit's restart and a second edit's while the kill fails, starting one once it works", async () => {
+    const { fake, a, edit, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    fake.kills.push(BOOM, BOOM); // A's stop, then B's retry
+    expect(servers.set([edit("b")]).restarted).toEqual(["s"]);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(kills()).toBe(2);
+    // C: its kill is tried again first, and fails.
+    fake.kills.push(BOOM);
+    servers.set([edit("c")]);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(kills()).toBe(3);
+    expect(fake.started()).toHaveLength(1);
+    // The kill works now: the next Reconnect starts exactly one copy.
+    await servers.restart("s");
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(fake.started()).toHaveLength(2);
+    expect(fake.order().slice(-2)).toEqual(["kill", "start"]);
+  });
+
+  it("keeps the record when the entry is removed and added back, blocking the copy until the kill works", async () => {
+    const { fake, a, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    fake.kills.push(BOOM);
+    expect(servers.set([]).removed).toEqual(["s"]);
+    await vi.waitFor(() => expect(kills()).toBe(1), WAIT);
+    fake.kills.push(BOOM);
+    expect(servers.set([a]).added).toEqual(["s"]);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(fake.started()).toHaveLength(1);
+    await servers.restart("s");
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(fake.started()).toHaveLength(2);
   });
 });
 

@@ -164,6 +164,9 @@ export class BoxState {
   // The box's last count of kills by its memory limit: null when the box has no memory.events (cgroup v1), undefined
   // while it could not be read.
   oomKills: number | null | undefined;
+  // Set once Tachikoma's own removal of the box succeeded (DockerExecutor.stop's rm -f exited 0), so nothing runs in it
+  // (8c-2a plan, Task 4, decision 24).
+  removed = false;
 
   constructor(
     readonly id: string,
@@ -185,6 +188,15 @@ export class BoxState {
     const state = await this.run(["inspect", "--format", "{{.State.Running}}", this.id]);
     if (state === "missing") return NO_DOCKER;
     return state.code !== 0 || state.out.trim() !== "true" ? state.err.trim() : undefined;
+  }
+
+  // Whether the box is known to run nothing, so a box server's stop that failed is confirmed (decision 24): Tachikoma
+  // removed it, or `inspect` exits 0 and says it is not running. No docker program, an inspect that fails or cannot be
+  // run, and an unreachable daemon prove nothing, as gone() would give words for each.
+  async stopped(): Promise<boolean> {
+    if (this.removed) return true;
+    const state = await this.run(["inspect", "--format", "{{.State.Running}}", this.id]).catch(() => undefined);
+    return !!state && state !== "missing" && state.code === 0 && state.out.trim() === "false";
   }
 
   // The memory limit's line, for a failure the limit caused.
@@ -325,10 +337,11 @@ export class DockerExecutor implements Executor {
   }
 
   // Removes the box. What it held that is kept lives in /work, a host folder (choice 18). A removal that fails leaves the
-  // box to the next launch's sweep.
+  // box to the next launch's sweep; one that worked is recorded in the state (BoxState.removed).
   async stop(): Promise<void> {
     boxes.delete(this.id);
-    await this.run(["rm", "-f", this.id]).catch(() => {});
+    const got = await this.run(["rm", "-f", this.id]).catch(() => undefined);
+    if (got && got !== "missing" && got.code === 0) this.state.removed = true;
   }
 }
 

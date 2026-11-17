@@ -21,16 +21,32 @@ import {
   type Transport,
   UnauthorizedError,
 } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { StdioClientTransport, type StdioServerParameters } from "@modelcontextprotocol/client/stdio";
 import { type Owner, visible } from "../core/permissions.js";
 import { connectReason, errorText } from "../core/types.js";
 import { commandEnv, mcpProgram } from "../exec/env.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { killTree, running } from "../exec/local.js";
 import { MAX_TIMER_MS } from "../hooks/config.js";
+import { killInBox, NO_DOCKER } from "../sandbox/executor.js";
 import { type AuthStore, McpAuth, NoSignIn, type SignInIO } from "./auth.js";
+import {
+  badNameLine,
+  BOX_ROOTS,
+  BOX_STOPPED,
+  BOX_WORK,
+  dockerProgram,
+  envBlock,
+  execArgs,
+  groupFile,
+  type McpBox,
+  NOT_FOUND,
+  notFoundLine,
+  type Unstopped,
+  unstoppedLine,
+} from "./box.js";
 import { Checker } from "./checker.js";
-import type { ServerConfig } from "./config.js";
+import type { ServerConfig, ServerEntry } from "./config.js";
 import type { FormHandler } from "./forms.js";
 
 // One MCP server's connection, local or remote, through the library's own transports (release 8c plan, Task 4; choice 2).
@@ -93,6 +109,25 @@ class Stdio extends StdioClientTransport {
   }
 }
 
+// A box server's transport (8c-2a plan, Task 4, decision 1): the `docker exec -i` that runs it, whose input carries the
+// block of its variables first, written once the process has spawned. The library awaits start() before it sends its
+// first message, and a pipe keeps the order of what is written, so the block comes before `initialize`. `group` is the
+// file in the box naming the server's process group, for the stop's kill.
+class BoxStdio extends Stdio {
+  constructor(
+    params: StdioServerParameters,
+    readonly block: Buffer,
+    readonly group: string,
+  ) {
+    super(params);
+  }
+
+  override async start(): Promise<void> {
+    await super.start();
+    this.child!.stdin!.write(this.block);
+  }
+}
+
 interface Conn {
   client: Client;
   transport: Transport;
@@ -119,14 +154,22 @@ export class Server {
   readonly #auth: McpAuth | undefined;
   readonly #onForm: FormHandler | undefined;
   readonly #calls = new Set<{ owner?: Owner }>(); // the calls running, each with the subagent that made it, if one did
+  readonly #box: McpBox | undefined;
+  readonly #unstopped: Unstopped[];
 
   // `startMs` is the start's limit, 30 s unless a test gives a short one. `auth` keeps sign-ins: with it a remote server
   // has its own OAuth client (Task 11), unless its entry has an Authorization header of its own, in any letter case, which
   // is never signed in, so its 401 says to look at its key (choice 55); without it, as in most tests, a 401 is an answer
   // like any other. `onForm` answers the server's forms (Task 12); without it, as in most tests, each is declined.
+  // `box`: the session's box, for a local server that runs in it (8c-2a plan, Task 4). `unstopped`: its name's stops
+  // that failed in the box, a list `Servers` owns and gives every copy of the name, or else this server's own
+  // (decision 24).
   constructor(
     config: ServerConfig,
-    opts: { root: string; env: NodeJS.ProcessEnv; auth?: AuthStore; onChange(): void; onForm?: FormHandler; startMs?: number },
+    opts: {
+      root: string; env: NodeJS.ProcessEnv; auth?: AuthStore; onChange(): void; onForm?: FormHandler; startMs?: number;
+      box?: McpBox; unstopped?: Unstopped[];
+    },
   ) {
     this.config = config;
     this.#root = opts.root;
@@ -134,6 +177,8 @@ export class Server {
     this.#onChange = opts.onChange;
     this.#onForm = opts.onForm;
     this.#startMs = opts.startMs ?? START_MS;
+    this.#box = opts.box;
+    this.#unstopped = opts.unstopped ?? [];
     const keyed = config.entry.kind !== "stdio" && Object.keys(config.entry.headers).some((k) => k.toLowerCase() === "authorization");
     const signs = opts.auth && config.entry.kind !== "stdio" && !keyed;
     this.#auth = signs ? new McpAuth(opts.auth!, config) : undefined;
@@ -244,9 +289,10 @@ export class Server {
     }
   }
 
-  // At Tachikoma's exit, a restart or a removal (choice 3).
-  async stop(): Promise<void> {
-    if (this.#conn) await this.#close(this.#conn);
+  // At Tachikoma's exit, a restart or a removal (choice 3). `exit`: at Tachikoma's exit, when removing the box ends a
+  // box server, so its `docker exec` is ended at once (8c-2a plan, decision 6).
+  async stop(opts: { exit?: boolean } = {}): Promise<void> {
+    if (this.#conn) await this.#close(this.#conn, opts.exit);
   }
 
   // /mcp's Sign in and Sign out (Task 11), for a remote server that has its own OAuth client; the caller connects again.
@@ -265,6 +311,15 @@ export class Server {
   async #connect(failed: (reason: string) => State): Promise<boolean> {
     this.#connection++;
     this.#state = { is: "starting" };
+    // Decision 24: the name's stops that failed in the box are tried again first; while one is not confirmed, nothing
+    // starts, as its copy may still run there. Only then is there a wait, so a start with none connects as before.
+    if (this.#unstopped.length) {
+      const left = await this.#retryStops();
+      if (left !== undefined) {
+        this.#state = failed(unstoppedLine(visible(left, { tabs: true }))); // Docker's words, escaped as a reason's are
+        return false;
+      }
+    }
     const made = this.#transport();
     if (typeof made === "string") {
       this.#state = failed(made);
@@ -328,6 +383,37 @@ export class Server {
     return true;
   }
 
+  // Each of the name's failed stops, tried again (decision 24): confirmed when the box is known to run nothing
+  // (BoxState.stopped) or the kill now runs in the box, and then forgotten; otherwise kept with the new reason. Gives
+  // the latest retry's reason while any is left. The box is the one every copy of the name is given (Servers).
+  async #retryStops(): Promise<string | undefined> {
+    const box = this.#box!;
+    for (const stop of [...this.#unstopped]) {
+      const reason = (await box.state.stopped()) ? undefined : await killInBox(box.run, box.id, stop.group);
+      const at = this.#unstopped.indexOf(stop);
+      if (reason !== undefined) stop.reason = reason;
+      else if (at !== -1) this.#unstopped.splice(at, 1); // not already confirmed by another start's retry
+    }
+    return this.#unstopped.at(-1)?.reason;
+  }
+
+  // A local server in the session's box (8c-2a plan, Task 4; decisions 3-5): refused when the box has broken, or when
+  // the box cannot take a variable's name. The docker program is found on PATH at each start, unless a test gives its
+  // stand-in, and gets the commands' environment, never the entry's, as Docker reads variables of its own (design,
+  // "What the server gets"). The server's variables, CLAUDE_PROJECT_DIR=/work then the entry's, go in the block over
+  // its input. Docker runs in the project's folder on this machine; the server, in /work.
+  #inBox(box: McpBox, entry: Extract<ServerEntry, { kind: "stdio" }>): Transport | string {
+    if (box.state.broken) return BOX_STOPPED;
+    const made = envBlock({ CLAUDE_PROJECT_DIR: BOX_WORK, ...entry.env });
+    if ("bad" in made) return badNameLine(made.bad);
+    const program = box.program ?? dockerProgram(this.#env);
+    if (!program) return NO_DOCKER;
+    const group = groupFile();
+    const args = [...program.args, ...execArgs(box.id, group, entry.command, entry.args)];
+    const env = commandEnv(this.#env) as Record<string, string>;
+    return new BoxStdio({ command: program.file, args, env, cwd: this.#root, stderr: "pipe" }, made.block, group);
+  }
+
   // Local: the program by its full path (choice 4), with the commands' environment, which never holds Tachikoma's keys,
   // CLAUDE_PROJECT_DIR as Claude Code sets it, then the entry's env, in the project's folder (choice 2). Remote: the
   // entry's headers with each request, and its OAuth client (Task 11); with a client, the headers go only to the server's
@@ -336,6 +422,7 @@ export class Server {
   #transport(): Transport | string {
     const entry = this.config.entry;
     if (entry.kind === "stdio") {
+      if (this.#box) return this.#inBox(this.#box, entry);
       const program = mcpProgram(entry.command, this.#env);
       if (program === null) return `${visible(entry.command)} was not found on PATH`;
       const env = { ...commandEnv(this.#env), CLAUDE_PROJECT_DIR: this.#root, ...entry.env } as Record<string, string>;
@@ -386,7 +473,9 @@ export class Server {
         },
       },
     );
-    client.setRequestHandler("roots/list", () => ({ roots: [{ uri: pathToFileURL(this.#root).href }] }));
+    // A box server's root is /work, written out: pathToFileURL("/work") gives file:///C:/work on Windows (decision 8).
+    const root = conn.local instanceof BoxStdio ? BOX_ROOTS : pathToFileURL(this.#root).href;
+    client.setRequestHandler("roots/list", () => ({ roots: [{ uri: root }] }));
     // A form (Task 12). MCP's request names no call it belongs to, so it is a subagent's when every call running on this
     // server is that one subagent's, and otherwise the lead's (choice 29). The server's cancel of its request stops it.
     client.setRequestHandler("elicitation/create", (request, ctx) => {
@@ -397,9 +486,19 @@ export class Server {
     });
     // A local server's end is its process's; a remote one's is a request that finds it gone (isDrop). Any other error
     // the library reports along the way is not fatal, and is passed over.
+    // A ready box server's end asks Docker first whether the box still runs: if not, the box stopped (decision 7). A
+    // stop's own close asks nothing.
     client.onclose = () => {
       const local = conn.local;
-      if (local) this.#dropped(conn, () => exitReason(local));
+      if (!(local instanceof BoxStdio)) {
+        if (local) this.#dropped(conn, () => exitReason(local));
+        return;
+      }
+      if (conn !== this.#conn || !conn.ready || conn.closed) return;
+      void this.#box!.state
+        .gone()
+        .catch(() => undefined)
+        .then((gone) => this.#dropped(conn, () => (gone === undefined ? exitReason(local) : BOX_STOPPED)));
     };
     client.onerror = (err) => {
       if (this.#auth && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
@@ -433,12 +532,23 @@ export class Server {
   // close would wait 2 s, then SIGTERM, 2 s, then SIGKILL, and never takes children. killTree kills only a process whose
   // exit Node has not seen, so a pid Windows has given to another program is never hit.
   // Begun a tick later, so `closed` is set before the client's close can report back through onclose.
-  #close(conn: Conn): Promise<void> {
+  // A box server's process here is its `docker exec`, and killing that leaves the server running in the box, so one
+  // still running after the 300 ms has its group killed in the box first (design, "Stop"); a kill that fails is kept in
+  // the name's record (decision 24). With `exit`, its `docker exec` is ended at once, as removing the box ends the
+  // server (decision 6).
+  #close(conn: Conn, exit = false): Promise<void> {
     conn.closed ??= Promise.resolve().then(async () => {
       const closing = conn.client.close().catch(() => {});
       const child = conn.local?.child;
+      const boxed = conn.local instanceof BoxStdio ? conn.local : undefined;
       if (child && alive(child)) {
-        await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(KILL_MS)]);
+        const exited = () => new Promise((resolve) => child.once("exit", resolve));
+        if (!(boxed && exit)) await Promise.race([exited(), sleep(KILL_MS)]);
+        if (boxed && !exit && alive(child)) {
+          const box = this.#box!; // a BoxStdio is made only with a box
+          const reason = await killInBox(box.run, box.id, boxed.group);
+          if (reason !== undefined) this.#unstopped.push({ group: boxed.group, reason });
+        }
         if (alive(child)) killTree(child);
       }
       await closing;
@@ -450,6 +560,10 @@ export class Server {
   #startReason(conn: Conn, err: unknown): string {
     const local = conn.local;
     if (local?.spawnError !== undefined) return `${visible(this.#command())} could not start (${visible(errorText(local.spawnError), { tabs: true })})`;
+    // The box's inner script says so when the command is not in the box (decision 3).
+    if (local instanceof BoxStdio && local.child?.exitCode === 127 && lastLine(local.errors) === NOT_FOUND) {
+      return notFoundLine(visible(this.#command()));
+    }
     if (local?.child && !alive(local.child)) return exitReason(local);
     if (err instanceof SdkError && err.code === SdkErrorCode.RequestTimeout) return this.#late();
     if (!local) return remoteReason(this.#address(), err);

@@ -47,7 +47,9 @@ async function setup() {
 
 const textOf = (result: { content: unknown }) => (result.content as { type: string; text: string }[]).map((c) => c.text).join("");
 const names = (server: Server) => (server.state.is === "ready" ? server.state.tools.map((t) => t.name) : server.state);
-const TOOLS = ["echo", "error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit"];
+const TOOLS = [
+  "echo", "error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit", "write",
+];
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0);

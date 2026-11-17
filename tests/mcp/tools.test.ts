@@ -32,7 +32,9 @@ import { type FakeOptions, fakeServer, httpFake, readLog } from "./fake.js";
 
 // A wait on another process: a few seconds for a busy machine, well inside the test's 15 s.
 const WAIT = { timeout: 5_000 };
-const TEN = ["echo", "error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit"];
+const ELEVEN = [
+  "echo", "error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit", "write",
+];
 // The fake's own 1x1 PNG (fake.ts).
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const png = Buffer.from(PNG, "base64");
@@ -142,7 +144,7 @@ describe("MCP tools in the session", () => {
     const servers = await t.ready([await t.local("s")]);
     const { session, model } = t.session(servers, [callTool("c1", "mcp__s__echo", { text: "hi" }), reply("done")]);
     await session.send("go");
-    expect(model.requests[0]!.tools).toEqual(["own", "tool_search", ...TEN.map((n) => `mcp__s__${n}`)]);
+    expect(model.requests[0]!.tools).toEqual(["own", "tool_search", ...ELEVEN.map((n) => `mcp__s__${n}`)]);
     expect(t.results(session)).toEqual([{ output: "hi", isError: false }]);
     expect(t.q.asked).toEqual(['mcp__s__echo {"text":"hi"}']);
     expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "hi" }]);
@@ -174,7 +176,7 @@ describe("MCP tools in the session", () => {
     await session.send("one");
     session.setLead(new OpenAIProvider("openai", "gpt-5"));
     await session.send("two");
-    const names = ["own", "tool_search", ...TEN.map((n) => `mcp__s__${n}`)];
+    const names = ["own", "tool_search", ...ELEVEN.map((n) => `mcp__s__${n}`)];
     expect((anthropic.mock.calls[0]![0] as unknown as { tools: { name: string }[] }).tools.map((x) => x.name)).toEqual(names);
     expect((openai.mock.calls[0]![0] as unknown as { tools: { function: { name: string } }[] }).tools.map((x) => x.function.name)).toEqual(names);
   });
@@ -296,7 +298,7 @@ describe("MCP tools in the session", () => {
   it("sends the turn's MCP tools with a shortening's summary request and with a fallback's request", async () => {
     const t = await setup();
     const servers = await t.ready([await t.local("s")]);
-    const names = ["own", "tool_search", ...TEN.map((n) => `mcp__s__${n}`)];
+    const names = ["own", "tool_search", ...ELEVEN.map((n) => `mcp__s__${n}`)];
     const folder = path.join(t.dir, "sessions", "project");
     const transcript = new Transcript(path.join(folder, "s1.jsonl"), path.join(folder, "s1", "pictures"), { inherits: true });
     const turns = [reply("noted"), new TooLong("prompt is too long"), reply("Summary."), reply("done")];

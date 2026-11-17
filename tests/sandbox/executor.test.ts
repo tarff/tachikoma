@@ -12,6 +12,7 @@ import {
   type BoxOptions,
   boxLimits,
   boxUser,
+  BoxState,
   DockerExecutor,
   dockerRoom,
   type Limits,
@@ -556,6 +557,30 @@ describe("DockerExecutor with a stand-in Docker", () => {
     const box = await DockerExecutor.start(OPTS, fake.run);
     expect(box.id).toBe("b0x");
     await box.stop();
+  });
+});
+
+// 8c-2a plan, Task 4, decision 24: what proves that nothing of a box server still runs in the box.
+describe("BoxState.stopped", () => {
+  it("is true once DockerExecutor.stop's rm -f exited 0, and false when it exited 1", async () => {
+    const removing = (rm: Answer) =>
+      fakeDocker((args) => (args[0] === "run" ? ok("b0x\n") : args[0] === "rm" ? rm : ok("true\n")));
+    const removed = await DockerExecutor.start(OPTS, removing(ok()).run);
+    await removed.stop();
+    expect(await removed.state.stopped()).toBe(true);
+    const kept = await DockerExecutor.start(OPTS, removing({ code: 1, out: "", err: "Error: boom\n" }).run);
+    await kept.stop();
+    expect(await kept.state.stopped()).toBe(false);
+  });
+
+  it("is true when inspect exits 0 with false; false for true, for exit 1 and for no docker program", async () => {
+    const stopped = (answer: Answer) => new BoxState("b0x", fakeDocker(() => answer).run).stopped();
+    const fake = fakeDocker(() => ok("false\n"));
+    expect(await new BoxState("b0x", fake.run).stopped()).toBe(true);
+    expect(fake.calls).toEqual([["inspect", "--format", "{{.State.Running}}", "b0x"]]);
+    expect(await stopped(ok("true\n"))).toBe(false);
+    expect(await stopped({ code: 1, out: "", err: "Cannot connect to the Docker daemon\n" })).toBe(false);
+    expect(await stopped("missing")).toBe(false);
   });
 });
 

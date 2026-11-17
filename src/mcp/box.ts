@@ -81,6 +81,17 @@ export const notFoundLine = (command: string) =>
   `${command} was not found in the box; if it needs this computer, add "host": true to its entry in ` +
   "~/.tachikoma/settings.json";
 
+// A stop of a box server whose kill in the box failed, not yet confirmed: its group's file, and why the kill failed,
+// the latest try's (8c-2a plan, Task 4, decision 24). `Servers` keeps them by the server's name.
+export interface Unstopped {
+  group: string;
+  reason: string;
+}
+
+// The red line's reason while one is not confirmed (the plan review's line, which the user approved).
+export const unstoppedLine = (reason: string) =>
+  `its earlier copy could not be stopped in the box (${reason}), so it was not started again`;
+
 // The red line's reason for a variable name the box cannot take (choice 5), quoted as config.ts quotes a name.
 export const badNameLine = (name: string) =>
   `its env has the name ${visible(JSON.stringify(name))}, which the box cannot take: ` +
