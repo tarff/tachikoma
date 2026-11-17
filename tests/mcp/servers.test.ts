@@ -846,7 +846,6 @@ describe("Servers: a project's servers and the network", () => {
     expect(errors.map((e) => e.message)).toEqual([expect.stringMatching(unreadable)]);
     expect(servers.list().map((s) => s.state.is)).toEqual(["ready", "you said no"]);
   });
-
 });
 
 // 8c-2a plan, Task 6 (design, "Where a local server runs"; choice 3): with the sandbox on, a local server runs in the
@@ -931,6 +930,30 @@ describe("Servers: where each server runs", () => {
     expect(fake.started()).toHaveLength(1);
     expect(initializes(logs.get("s")!)).toBe(2); // once in the box, then once here
     expect(every(servers).map((o) => o.boxNetwork)).toEqual([undefined]);
+  });
+
+  // With the sandbox off every local server runs on this computer, so host moves nothing.
+  it("restarts nothing at a live edit adding host with the sandbox off", async () => {
+    const { config, make, logs } = await setup();
+    const a = await config("s", { tools: [plain] });
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const server = servers.server("s");
+    expect(servers.set([{ ...a, host: true }])).toEqual({ restarted: [], added: [], removed: [] });
+    expect(servers.server("s")).toBe(server);
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(initializes(logs.get("s")!)).toBe(1);
+  });
+
+  // Decision 10: a sandbox's network with no box is a programming error.
+  it("throws when the sandbox's network is given with no box", async () => {
+    const { dir, bus } = await setup();
+    const opts = { root: dir, env: process.env, bus, answers: nobody, lead: () => "fake:a" };
+    const noBox = "Servers: the sandbox is on, but no box was given";
+    expect(() => new Servers([], { ...opts, network: "off" })).toThrow(noBox);
+    expect(() => new Servers([], { ...opts, network: "on" })).toThrow(noBox);
+    expect(() => new Servers([], { ...opts, network: "none" })).not.toThrow();
   });
 });
 

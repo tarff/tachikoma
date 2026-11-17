@@ -163,9 +163,8 @@ export class Server {
   // is never signed in, so its 401 says to look at its key (choice 55); without it, as in most tests, a 401 is an answer
   // like any other. `onForm` answers the server's forms (Task 12); without it, as in most tests, each is declined.
   // `box`: the session's box, in which a local server runs unless its entry says host (8c-2a plan, Tasks 4 and 6); any
-  // server given it uses it to try its name's failed stops again. `unstopped`: its name's stops
-  // that failed in the box, a list `Servers` owns and gives every copy of the name, or else this server's own
-  // (decision 24).
+  // server given it uses it to try its name's failed stops again. `unstopped`: its name's stops that failed in the box,
+  // a list `Servers` owns and gives every copy of the name, or else this server's own (decision 24).
   constructor(
     config: ServerConfig,
     opts: {

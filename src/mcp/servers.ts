@@ -284,9 +284,9 @@ export class Servers {
   // in place. A stopped Server keeps the state it had, so it is forgotten, never read again. The names restarted, added
   // and removed are given back, for the live-edit line (Task 10, liveEdits.ts).
   set(configs: ServerConfig[]): { restarted: string[]; added: string[]; removed: string[] } {
-    // `host` too, as it moves a local server in or out of the box (8c-2a plan, Task 6).
+    // Where it runs too, which `host` changes only with the sandbox on (8c-2a plan, Task 6).
     const key = (c: ServerConfig) =>
-      JSON.stringify([c.where, c.entry, c.where === "project" ? c.written : "", c.host === true]);
+      JSON.stringify([c.where, c.entry, c.where === "project" ? c.written : "", placeOf(c, this.#sandbox)]);
     const old = new Map(this.#slots.map((s) => [s.config.name, s]));
     const before = new Set(old.keys());
     const now = new Set(configs.map((c) => c.name));
