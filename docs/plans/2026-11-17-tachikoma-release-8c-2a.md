@@ -1214,10 +1214,13 @@ sampling stay "Not planned".
 4. **The user's terminal check** (Windows Terminal, PowerShell, a real lead):
    - With TradingView and MemPalace set to `"host": true` in `~/.tachikoma/settings.json`, run
      `tachi --sandbox live --network on`. Both start (`/mcp`), and a TradingView tool and a MemPalace search answer.
+     As run: `--sandbox copy`, as live link is refused in a folder that ignores letter case, Windows' default (release
+     7, choice 104).
    - The same with `--network off`: the launch says choice 3's line, and `/mcp` shows both servers off.
    - A small `npx` server inside the box (the user picks one), with `--network on` so npx can download it: `/mcp` shows
      it ready and a tool answers. With `--sandbox copy --mode never --network off`, a server from a script in the
-     project runs its tool unasked, and its write shows in the review.
+     project runs its tool unasked, and its write shows in the review. As run: the `npx` part skipped (the user,
+     2026-11-18), as `npx` in the box fetches from the registry without `sfw`.
    - A helper that prints a header from a file (the README's example): the server connects. Change the file and the
      server's key, then call a tool: the call fails once, and the next call works.
 5. **Commit:** `docs: 8c-2a: README and the 8c design's table: servers in the box, and headersHelper`.
@@ -1278,13 +1281,12 @@ then its review's fixes.
   - a new connection's resource and prompt lists are taken before it becomes the server's, and a failed refresh
     clears the server's connection;
   - the drain tests take their rejection first, and a refresh whose new connection needs sign-in is tested.
-- **The terminal check** (the commit "terminal check: a call answered 401 or 403 says the helper runs again and the
-  call can be sent again"): a tool call whose own 401 or 403 began the refresh, or came while it ran, gets the user's
-  note (2026-11-18) after the server's words, `(the server answered <status>; its headersHelper is being run again
-  for a new connection, and the call was not sent again: call it again if it should still run)`. Its status is the
-  streamable HTTP transport's error's (`SdkHttpError`'s status, or `InsufficientScopeError` for a 403); an `sse`
-  server's call gets none, as that transport has the status only in its words (decision 18). Resource reads and
-  prompts, whose errors go to the window, are unchanged.
+- **The terminal check** (e7bd5cd, 217b81e): a tool call whose own 401 or 403 began the refresh, or came while it
+  ran, gets the user's note (2026-11-18) after the server's words, which are cut first so the note stays whole: `(the
+  server answered <status>; its headersHelper is being run again for a new connection, and the call was not sent
+  again: call it again if it should still run)`. The status is the streamable HTTP transport's error's (`SdkHttpError`'s
+  status, or `InsufficientScopeError` for a 403); an `sse` server's call gets none, as that transport has the status
+  only in its words (decision 18). Resource reads and prompts, whose errors go to the window, are unchanged.
 - **Known limits found in review** are in the README's "MCP servers' limits", grouped under servers in the box, a
   project's answers, `headersHelper`, refreshes and redirects. One is not there, as nothing shows it today: any
   rejection of `#prepare` reads as a stop, and only a stop's `Cancelled` rejects it now.
