@@ -141,12 +141,13 @@ describe("runHelper", () => {
   }, 15_000);
 
   // The test's own limit, so it does not wait the real 10 s, but long enough that the helper has recorded its run when
-  // it is killed: Git Bash and Node took 106-135 ms to get that far (15 starts, measured 2026-11-17), and 5 s is the
-  // time run.test.ts's readPid allows a Node start under load.
+  // it is killed: Git Bash and Node took 106-135 ms to get that far (15 starts, measured 2026-11-17), so 2 s is about
+  // 15 times the slowest; run.test.ts's test of a hook killed at its limit asks the same with 1 s, and has passed in the
+  // full suite since release 8b.
   it("ends a helper still running at its limit, and says the limit", async () => {
     const { helper, run } = await setup();
     helper.mode("slow");
-    expect(await run({ limitMs: 5000 })).toEqual({ reason: "it did not finish within 5 s" });
+    expect(await run({ limitMs: 2000 })).toEqual({ reason: "it did not finish within 2 s" });
     expect(helper.runs()).toHaveLength(1);
     await allEnded(helper.runs());
   }, 15_000);

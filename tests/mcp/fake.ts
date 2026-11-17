@@ -399,8 +399,9 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
 // (`project`) and its variables' names, then prints `headersFile`, which `give` writes, unless `mode` says otherwise:
 // "fail" exits 3 after printing a made-up secret on its error output, "bad" prints a list, "slow" never ends, "stdin"
 // reads its stdin to the end first and records only then, with the bytes it got as `stdin`. `hold()` makes the runs
-// after it wait, looking every 20 ms, until `go()`, then do as the mode said. `command` starts it in the shell hooks
-// use: Git Bash or sh, or Windows PowerShell when there is no Git Bash (hooks/run.ts, shellOf).
+// after it wait, looking every 20 ms, until `go()`, then do as the mode said, except "stdin", which then only prints
+// the headers. `command` starts it in the shell hooks use: Git Bash or sh, or Windows PowerShell when there is no Git
+// Bash (hooks/run.ts, shellOf).
 const HELPER = String.raw`
 const fs = require("node:fs");
 const env = process.env;
