@@ -174,8 +174,8 @@ export class Server {
   // has its own OAuth client (Task 11) when its headersHelper runs, or when its entry has no Authorization header of
   // its own, in any letter case; a connection signs in only when its headers, the helper's merged in, have none (8c-2a
   // plan, decision 16), as one with its own key is never signed in, so its 401 says to look at the key (choice 55);
-  // without it, as in most tests, a 401 is an answer
-  // like any other. `onForm` answers the server's forms (Task 12); without it, as in most tests, each is declined.
+  // without it, as in most tests, a 401 is an answer like any other. `onForm` answers the server's forms (Task 12);
+  // without it, as in most tests, each is declined.
   // `box`: the session's box, in which a local server runs unless its entry says host (8c-2a plan, Tasks 4 and 6); any
   // server given it uses it to try its name's failed stops again. `unstopped`: its name's stops that failed in the box,
   // a list `Servers` owns and gives every copy of the name, or else this server's own (decision 24). `helper`: given
@@ -345,10 +345,12 @@ export class Server {
     }
     // A remote connection's headers, with its helper's when it runs (8c-2a plan, Task 10), whose 10 s come before the
     // start's limit, which is the server's (decision 14). Only a stop rejects it, as the stop kills the helper, and the
-    // start then goes no further, as after the retries above (decision 22).
+    // start then goes no further, as after the retries above (decision 22). An earlier start's helper still running, as
+    // when two Reconnects come close together, is killed too, as that start would go no further.
     const entry = this.config.entry;
     let prepared: Prepared = { headers: {}, signs: false, helped: false };
     if (entry.kind !== "stdio") {
+      this.#helping?.abort();
       const helping = (this.#helping = new AbortController());
       const got = await this.#prepare(entry, helping.signal).catch(() => undefined);
       if (got === undefined || this.#stops !== stops || this.#connection !== connection) return false;

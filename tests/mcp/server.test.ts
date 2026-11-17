@@ -652,13 +652,34 @@ describe("a remote server's headersHelper, and its redirects", () => {
     const starting = server.start();
     await vi.waitFor(() => expect(helper.runs()).toHaveLength(1), WAIT);
     await server.stop();
-    await starting;
-    helper.go();
+    // Gone before its go file exists, and within WAIT's 5 s, before its own 10 s limit, so the stop killed it.
     await vi.waitFor(() => expect(alive(helper.runs()[0]!.pid)).toBe(false), WAIT);
+    await starting;
     expect(readLog(log)).toEqual([]);
+    helper.go(); // for the next start's run
     await server.start();
     expect(names(server)).toEqual(TOOLS);
     expect(helper.runs()).toHaveLength(2);
+    expect(posts(log).filter((m) => m.body.method === "initialize")).toHaveLength(1);
+  });
+
+  // Two Reconnects close together: the second start kills the first one's helper, which would go no further.
+  it("kills an earlier start's helper when a newer start begins, and connects once", async () => {
+    const { dir, make, log } = await setup();
+    const fake = await httpFake(dir, { log });
+    const helper = fakeHelper(dir);
+    helper.hold();
+    const server = make(remote(fake.url, {}, helper.command), { helper: { cwd: tmpdir(), project: false } });
+    const first = server.start();
+    await vi.waitFor(() => expect(helper.runs()).toHaveLength(1), WAIT);
+    const second = server.start();
+    await vi.waitFor(() => expect(helper.runs()).toHaveLength(2), WAIT);
+    // Gone before its go file exists, and within WAIT's 5 s, before its own 10 s limit, so the newer start killed it.
+    await vi.waitFor(() => expect(alive(helper.runs()[0]!.pid)).toBe(false), WAIT);
+    await first;
+    helper.go();
+    await second;
+    expect(names(server)).toEqual(TOOLS);
     expect(posts(log).filter((m) => m.body.method === "initialize")).toHaveLength(1);
   });
 });
