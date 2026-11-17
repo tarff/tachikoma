@@ -156,6 +156,24 @@ describe("exportText", () => {
     );
   });
 
+  // The user's choice, Task 9's code review: a shortening's layout puts "\n\n" before a section, so after a note that
+  // text opens a new "You:" block with blank lines at its start, which /export drops.
+  it("drops the blank lines at the start of a block that follows a note", () => {
+    const messages: Message[] = [
+      {
+        role: "user",
+        parts: [
+          { type: "text", text: "now this" },
+          { type: "text", text: "Today's date is now 2026-11-18.", from: "note", note: { date: "2026-11-18" } },
+          { type: "text", text: "\n\nThe files:\n--- a.txt ---" },
+        ],
+      },
+    ];
+    expect(exportText(messages, "fake:a")).toBe(
+      "You:\nnow this\n\nNotes:\nToday's date is now 2026-11-18.\n\nYou:\nThe files:\n--- a.txt ---\n",
+    );
+  });
+
   // User, 2026-11-06: "Record each reply's lead". A reply saved before replies kept their lead is headed with the lead
   // leading now.
   it("heads each reply with the lead that wrote it, or without one the lead leading now", () => {

@@ -35,6 +35,10 @@ export function exportText(messages: Message[], lead: string): string {
       const hook = p.type === "text" && p.from === "hooks" ? /^(.*)\n([^]*)$/.exec(p.text) : null;
       const heading = hook ? hook[1]! : note ? "Subagents:" : told ? "Notes:"
         : m.role === "user" ? "You:" : `Tachikoma (${m.lead ?? lead}):`;
+      // A shortening's layout puts "\n\n" before a section, and after a note that text opens a new block, so its line
+      // breaks there are dropped (the user's choice, Task 9's code review). Only after a note: the session puts notes
+      // at a message's end, so text after one is the layout's, and other text that opens a block keeps its line breaks.
+      const afterNote = block?.heading === "Notes:" && heading !== "Notes:";
       if (block?.heading !== heading) {
         blocks.push((block = { heading, lines: [] }));
         picture = false;
@@ -42,7 +46,8 @@ export function exportText(messages: Message[], lead: string): string {
       // The user's text and pictures are one prompt, as the scrollback shows it: two pictures next to each other get a
       // space between, as the blanks between them were left out of the message (describe.ts).
       if (p.type === "text" || p.type === "image") {
-        const text = p.type === "image" ? `${picture ? " " : ""}${marker(p.id)}` : hook ? hook[2]! : p.text;
+        const text = p.type === "image" ? `${picture ? " " : ""}${marker(p.id)}`
+          : hook ? hook[2]! : afterNote ? p.text.replace(/^[\r\n]+/, "") : p.text;
         picture = p.type === "image";
         if (heading === "You:" && block.lines.length) block.lines[block.lines.length - 1] += text;
         else block.lines.push(text);
