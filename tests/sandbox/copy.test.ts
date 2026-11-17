@@ -11,6 +11,9 @@ import { Session } from "../../src/core/session.js";
 import { localDate } from "../../src/core/setup.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { onPath } from "../../src/exec/env.js";
+import type { McpBox } from "../../src/mcp/box.js";
+import type { ServerConfig } from "../../src/mcp/config.js";
+import { Server } from "../../src/mcp/server.js";
 import { gitSettings } from "../../src/safety/gitconfig.js";
 import { type ReviewIo, reviewCommand } from "../../src/sandbox/copies.js";
 import { docker, dockerState } from "../../src/sandbox/docker.js";
@@ -19,6 +22,7 @@ import { imageFor } from "../../src/sandbox/image.js";
 import { shellTools } from "../../src/tools/commands.js";
 import { TOOLS } from "../../src/tools/index.js";
 import { Bus, callTool, FakeProvider, removeTree, reply } from "../helpers.js";
+import { fakeServer } from "../mcp/fake.js";
 
 const TEST_LABEL = { "tachikoma.test": "1" }; // the plan's rule for every container a test starts
 
@@ -116,6 +120,35 @@ describe("a session in the box with copy mode, in real Docker", { timeout: 0 }, 
     await started.box.stop();
     expect(existsSync(path.join(folder, "manifest.pending.json"))).toBe(true); // not kept: cli.tsx keeps it (dropOnExit)
     expect(readFileSync(path.join(folder, "base", "notes.txt"), "utf8")).toBe("made-up notes\n");
+  });
+
+  // 8c-2a plan, Task 5: a box server's call writes in the copy, never in the folder. The fake goes to the box's /tmp
+  // over docker exec's input, so the copy holds only what the call made. The server is stopped before the box is
+  // removed, then the folder.
+  it("makes a box server's file in the copy, never in the folder", async (ctx) => {
+    const w = world();
+    onTestFinished(() => removeTree(w.dir));
+    const session = `test-${randomUUID()}`;
+    const started = await launch(ctx, w, session);
+    const id = started.box.id;
+    const put = await docker(["exec", "-i", id, "bash", "-c", "cat > /tmp/fake.cjs"], {
+      input: readFileSync(await fakeServer(w.dir)),
+    });
+    expect(put !== "missing" && put.code).toBe(0);
+    const box: McpBox = { id, kind: "copy", state: started.box.state, run: docker };
+    const config: ServerConfig = {
+      name: "fake", safe: "fake", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "",
+      entry: { kind: "stdio", command: "node", args: ["/tmp/fake.cjs"], env: {} },
+      asWritten: { command: "node", args: ["/tmp/fake.cjs"] },
+    };
+    const server = new Server(config, { root: w.root, env: w.env, onChange: () => {}, box });
+    onTestFinished(() => server.stop());
+    await server.start();
+    expect(server.state.is).toBe("ready");
+    await server.callTool("write", { path: "made.txt" }, {});
+    expect(existsSync(path.join(w.data, "copies", session, "work", "made.txt"))).toBe(true);
+    expect((await started.box.exec("git status --porcelain", "/work")).stdout).toBe("?? made.txt\n");
+    expect(readdirSync(w.root)).toEqual(["notes.txt"]);
   });
 });
 
