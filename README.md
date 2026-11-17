@@ -2791,7 +2791,9 @@ it says so.
   Tachikoma's console. Their stop lines say to reconnect from `/mcp`, which `-p` has no use for,
   and SessionEnd `mcp_tool` hooks then find them not running.
 - **A restart's gap:** a call that lands while a server restarts, a gap of up to 300 ms, gets the
-  MCP library's `Not connected`.
+  MCP library's `Not connected`. A server outside the box that is reconnected twice in quick
+  succession, or removed and added back, can start its new copy while the old one still has up to
+  300 ms before it is killed; for that moment both run, and can clash over a lock file or port.
 - **Servers in the box:** with the network on, one can reach the whole web, until the allowed sites
   of 8c-2's second part, and in live link it writes your real files, as the box's commands do. A
   program missing from the box shows only when the server starts. A command file that is there but
@@ -2799,9 +2801,7 @@ it says so.
   a command that is one of bash's own, such as `cd`, gives a less clear reason; and a command
   starting with `-` reads as not found. Some `env` names are bash's own: bash refuses `SHELLOPTS`,
   `BASHOPTS`, `PPID`, `UID` and `EUID`, and replaces or drops `_`, `RANDOM`, `SECONDS`, `LINENO`,
-  `SHLVL`, `OPTIND`, `BASHPID`, `FUNCNAME`, `GROUPS`, `BASH_SOURCE` and `PIPESTATUS`. A server
-  removed and added back within its stop's 300 ms can start its new copy before a failed kill of
-  the old one is known.
+  `SHLVL`, `OPTIND`, `BASHPID`, `FUNCNAME`, `GROUPS`, `BASH_SOURCE` and `PIPESTATUS`.
 - **A project's answers:** going back to release 8c after a yes given for the box, 8c reads it as
   its own yes and starts the server on your machine. A newer answer given in 8c does not replace
   this release's answer for this computer. An answers file edited by hand, with a setup that is
