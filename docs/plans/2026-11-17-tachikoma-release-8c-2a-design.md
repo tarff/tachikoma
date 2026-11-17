@@ -173,18 +173,21 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   second design review's finding 4); 8c makes it once, from the static headers, when the server is set up
   (`src/mcp/server.ts`). A helper that gives `Authorization` on one connection and not on the next leaves sign-in to
   the next. While sign-in is used, the headers, the helper's included, go only to the server's own address, never to
-  the sign-in service (8c, choice 54).
-- **No redirect with the entry's headers** (the third design review's finding 2). 8c checks the address before
-  `fetch` is called, and `fetch` then follows a redirect by itself: it drops `Authorization` when the redirect leaves
-  the server's origin (<https://fetch.spec.whatwg.org/#http-redirect-fetch>), but keeps any other header, such as an
-  `X-API-Key`. So a request that carries the entry's headers, static or the helper's, with sign-in used or not, is
-  sent with redirects not followed, and a redirect answer fails it, with nothing sent to the new address: `the server
-  answered with a redirect to <address>; Tachikoma does not follow a redirect with the entry's headers` (the user
-  approved the wording). This covers 8c's static headers too, so a server that redirects today with a static key
-  stops working; part B's site check applies to redirects without the entry's headers. Anything else (a
-  non-zero exit, the time running out, output that is not such an object, a value with a line break or NUL) means the
-  server does not connect, and its red line says why. Claude Code's documentation does not say what it does here, so
-  this is Tachikoma's own rule.
+  the sign-in service (8c, choice 54). Anything else (a non-zero exit, the time running out, output that is not such
+  an object, a value with a line break or NUL) means the server does not connect, and its red line says why. Claude
+  Code's documentation does not say what it does here, so this is Tachikoma's own rule.
+- **No redirect to another site with the entry's headers** (the third design review's finding 2). `fetch` alone would
+  follow a redirect anywhere: it drops `Authorization` when the redirect leaves the server's origin
+  (<https://fetch.spec.whatwg.org/#http-redirect-fetch>), but keeps any other header, such as an `X-API-Key`. The MCP
+  library Tachikoma uses (2.4.0) already handles every transport request's redirects itself, sign-in's included: its
+  `redirectPolicy` defaults to `'same-origin'`, following a redirect only within the request's origin with its method
+  kept and failing any other (`node_modules/@modelcontextprotocol/client/dist/index.d.mts`, found while planning). So
+  a request that carries the entry's headers, static or the helper's, with sign-in used or not, fails on a redirect to
+  another origin, with nothing sent there, and the red line or the call's error says `the server answered with a
+  redirect to <address>; Tachikoma does not follow a redirect with the entry's headers` (the user approved the
+  wording). A redirect within the server's own origin, such as `/mcp` to `/mcp/`, is left to the library, so servers
+  that work in 8c keep working (the user's choice while planning, 2026-11-17: "Only other sites fail"). Part B's site
+  check applies to redirects without the entry's headers.
 - **A project's helper** runs only after the user's yes to that server, saved for the entry as written (8c) and for
   whether the helper runs (above), so a changed helper, or a first launch with the sandbox off, asks again. It runs
   without any variable whose name looks like a credential (with TOKEN, SECRET, PASSWORD, KEY or AUTH in it), as
@@ -281,6 +284,7 @@ above:
 1. **`read -r -d ''` strips a value's trailing spaces, tabs and line breaks.** The wrapper uses `IFS=`, and the tests
    send such values.
 2. **`fetch` follows redirects with headers other than `Authorization`.** A request with the entry's headers no longer
-   follows a redirect (the user approved the line).
+   follows a redirect to another site (the user approved the line). While planning, the MCP library was found to do
+   this already by default; the user chose to leave redirects within the server's own address to it.
 3. **A refresh that fails or is overtaken was left open.** Waiting calls now fail at once (the user approved the line),
    and a removal, restart, Reconnect or exit closes both connections and throws away a late refresh.

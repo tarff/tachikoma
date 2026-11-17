@@ -207,7 +207,8 @@ Each is marked in its task. The user approves them with the plan.
 
 ## Choices for the user
 
-The plan holds each recommendation. The task named changes if the user chooses otherwise.
+The user chose 1-9 on 2026-11-17, each as recommended (1: "Only other sites fail"; 2: "One per setup"; 7:
+"Refused"; 3-6, 8 and 9: "Approve all as written"). 10, the README's words, is approved before Task 12's commit.
 
 1. **Redirects within the server's own address (Task 10).** The design's finding 2 assumed that `fetch` follows a
    redirect by itself. The MCP library Tachikoma uses (2.4.0) already applies its own rule to every transport request,
