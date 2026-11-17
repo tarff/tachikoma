@@ -156,6 +156,7 @@ export class Server {
   readonly #calls = new Set<{ owner?: Owner }>(); // the calls running, each with the subagent that made it, if one did
   readonly #box: McpBox | undefined;
   readonly #unstopped: Unstopped[];
+  #stops = 0; // how many stops have come, so a start that waited can tell one came meanwhile (#connect)
 
   // `startMs` is the start's limit, 30 s unless a test gives a short one. `auth` keeps sign-ins: with it a remote server
   // has its own OAuth client (Task 11), unless its entry has an Authorization header of its own, in any letter case, which
@@ -292,6 +293,7 @@ export class Server {
   // At Tachikoma's exit, a restart or a removal (choice 3). `exit`: at Tachikoma's exit, when removing the box ends a
   // box server, so its `docker exec` is ended at once (8c-2a plan, decision 6).
   async stop(opts: { exit?: boolean } = {}): Promise<void> {
+    this.#stops++;
     if (this.#conn) await this.#close(this.#conn, opts.exit);
   }
 
@@ -309,12 +311,16 @@ export class Server {
 
   // A new connection: connected and its tools listed within the start's limit. `failed` gives the state for a reason.
   async #connect(failed: (reason: string) => State): Promise<boolean> {
-    this.#connection++;
+    const connection = ++this.#connection;
+    const stops = this.#stops;
     this.#state = { is: "starting" };
     // Decision 24: the name's stops that failed in the box are tried again first; while one is not confirmed, nothing
-    // starts, as its copy may still run there. Only then is there a wait, so a start with none connects as before.
+    // starts, as its copy may still run there. Only then is there a wait, so a start with none connects as before. A
+    // stop or a newer start during that wait leaves this start going no further, the state theirs, as there is no
+    // connection yet for the stop to close (Task 4's spec review).
     if (this.#unstopped.length) {
       const left = await this.#retryStops();
+      if (this.#stops !== stops || this.#connection !== connection) return false;
       if (left !== undefined) {
         this.#state = failed(unstoppedLine(visible(left, { tabs: true }))); // Docker's words, escaped as a reason's are
         return false;
@@ -388,8 +394,9 @@ export class Server {
   // the latest retry's reason while any is left. The box is the one every copy of the name is given (Servers).
   async #retryStops(): Promise<string | undefined> {
     const box = this.#box!;
+    const stopped = await box.state.stopped(); // one answer for the whole box
     for (const stop of [...this.#unstopped]) {
-      const reason = (await box.state.stopped()) ? undefined : await killInBox(box.run, box.id, stop.group);
+      const reason = stopped ? undefined : await killInBox(box.run, box.id, stop.group);
       const at = this.#unstopped.indexOf(stop);
       if (reason !== undefined) stop.reason = reason;
       else if (at !== -1) this.#unstopped.splice(at, 1); // not already confirmed by another start's retry
@@ -535,7 +542,8 @@ export class Server {
   // A box server's process here is its `docker exec`, and killing that leaves the server running in the box, so one
   // still running after the 300 ms has its group killed in the box first (design, "Stop"); a kill that fails is kept in
   // the name's record (decision 24). With `exit`, its `docker exec` is ended at once, as removing the box ends the
-  // server (decision 6).
+  // server (decision 6). The `docker exec` is ended alone, never with killTree: it has no tree of its own to take, and
+  // on Windows taskkill /T blocks for 2-4 s (src/sandbox/docker.ts, choice 125), which would hold every exit.
   #close(conn: Conn, exit = false): Promise<void> {
     conn.closed ??= Promise.resolve().then(async () => {
       const closing = conn.client.close().catch(() => {});
@@ -549,7 +557,10 @@ export class Server {
           const reason = await killInBox(box.run, box.id, boxed.group);
           if (reason !== undefined) this.#unstopped.push({ group: boxed.group, reason });
         }
-        if (alive(child)) killTree(child);
+        if (alive(child)) {
+          if (boxed) child.kill();
+          else killTree(child);
+        }
       }
       await closing;
     });

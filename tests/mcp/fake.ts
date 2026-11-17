@@ -430,16 +430,17 @@ export interface Start {
 // A stand-in for the session's box (8c-2a plan, Task 4), recording into a file in `dir`: an McpBox of id "b0x" whose
 // program is tests/standin/dockerExec.mjs, so its servers run on this machine, and whose DockerRun records each call
 // (`calls`) and answers it. `inspect` is answered as running, or, with `gone`, failing with those words, as Docker
-// answers for a box that is not there; `inspects` queues answers given before that. The kill in the box (killLine)
-// kills the server of the start whose group it names, with everything it started, and exits 0, unless `kills` queues
-// an answer, given in its place. `started()` gives each start; `order()` the calls and starts as they came, each call
-// by its verb and the kill as "kill". `killAll()`, in a test's cleanup once its servers are stopped and before its
-// folder is removed, kills those still running, as a stop with `exit` kills only the stand-in where it is not Windows.
+// answers for a box that is not there; `inspects` queues answers given before that, one given as a promise held until
+// it settles. The kill in the box (killLine) kills the server of the start whose group it names, with everything it
+// started, and exits 0, unless `kills` queues an answer, given in its place. `started()` gives each start; `order()`
+// the calls and starts as they came, each call by its verb and the kill as "kill". `killAll()`, in a test's cleanup
+// once its servers are stopped and before its folder is removed, kills those still running, as a stop with `exit`, or
+// one whose kill in the box failed, ends only the stand-in.
 export function standinBox(dir: string, opts: { kind?: "live" | "copy"; gone?: string } = {}) {
   const record = path.join(dir, `docker-${++made}.jsonl`);
   const calls: string[][] = [];
   const kills: Answer[] = [];
-  const inspects: Answer[] = [];
+  const inspects: (Answer | Promise<Answer>)[] = [];
   const started = (): Start[] => {
     const lines = readLog(record);
     return lines

@@ -3,6 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { running } from "../../src/exec/local.js";
 import {
   badNameLine,
   BOX_WORK,
@@ -263,13 +264,36 @@ describe("a server in the box, through the stand-in Docker", () => {
     await vi.waitFor(() => expect(alive(pid)).toBe(false), WAIT);
   });
 
-  it("at the exit, runs nothing in the box and ends a stubborn one's docker exec at once", async () => {
+  // At once: a server that ends when its input closes has had no time to, so its docker exec ends by the kill, where
+  // the stop without `exit` above sees it end by itself.
+  it("at the exit, runs nothing in the box and ends the docker exec at once, not waiting for the server", async () => {
+    const { fake, make, script } = await setup();
+    const server = make(local([await script()]));
+    await server.start();
+    const exec = [...running].find((c) => c.pid === fake.started()[0]!.self)!;
+    await server.stop({ exit: true });
+    expect(fake.calls).toEqual([]);
+    await vi.waitFor(() => expect(exec.signalCode).not.toBeNull(), WAIT);
+    expect(exec.exitCode).toBeNull();
+  });
+
+  it("at the exit, ends a stubborn one's docker exec too, running nothing in the box", async () => {
     const { fake, make, stubborn } = await setup();
     const server = make(local([await stubborn()]));
     await server.start();
     await server.stop({ exit: true });
     expect(fake.calls).toEqual([]);
     await vi.waitFor(() => expect(alive(fake.started()[0]!.self)).toBe(false), WAIT);
+  });
+
+  it("gives its exit's reason when a server ends while the box still runs", async () => {
+    const { fake, make, script } = await setup();
+    const server = make(local([await script()]));
+    await server.start();
+    await server.callTool("exit", { code: 3, stderr: "x" }, {}).catch(() => {});
+    const stopped = { is: "stopped", reason: "it exited with code 3: x", retry: false };
+    await vi.waitFor(() => expect(server.state).toEqual(stopped), WAIT);
+    expect(fake.calls.map((c) => c[0])).toEqual(["inspect"]);
   });
 
   it("shows the box stopped when a server ends while the box is gone, and refuses a start once it broke", async () => {
@@ -353,6 +377,24 @@ describe("a box server's stop that failed", () => {
     await server.start();
     expect(server.state.is).toBe("ready");
     expect(fake.order()).toEqual(["start", "kill", "start"]);
+  });
+
+  // The spec review of Task 4: a stop that comes while the retries wait on Docker holds; the start goes no further.
+  it("starts nothing when a stop comes while the retries wait on Docker", async () => {
+    const { fake, make, stubborn } = await setup();
+    const server = make(local([await stubborn()]));
+    await server.start();
+    fake.kills.push(BOOM);
+    await server.stop();
+    let answer!: (got: Awaited<ReturnType<DockerRun>>) => void;
+    fake.inspects.push(new Promise((resolve) => (answer = resolve)));
+    const starting = server.start();
+    await vi.waitFor(() => expect(fake.calls.at(-1)?.[0]).toBe("inspect"), WAIT);
+    await server.stop();
+    answer({ code: 0, out: "false\n", err: "" }); // the record is confirmed, so only the stop keeps the start back
+    await starting;
+    expect(fake.started()).toHaveLength(1);
+    expect(server.state.is).not.toBe("ready");
   });
 
   it("is kept when there is no docker program", async () => {
