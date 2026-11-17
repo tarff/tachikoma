@@ -358,11 +358,7 @@ export async function inGroup(
   // words, or undefined when it reached the box. A kill that cannot reach the box stops the sandbox (choice 87).
   let kill: Promise<string | undefined> | undefined;
   const onAbort = () => {
-    const line = `touch ${group}.stop; kill -KILL -- -"$(cat ${group} 2>/dev/null)" 2>/dev/null; exit 0`;
-    kill = run(["exec", id, "bash", "-c", line]).then(
-      (r) => (r === "missing" ? NO_DOCKER : r.code !== 0 ? r.err.trim() || "the box stopped" : undefined),
-      (err: Error) => err.message,
-    );
+    kill = killInBox(run, id, group);
   };
   signal?.addEventListener("abort", onAbort, { once: true });
   let got: Awaited<ReturnType<DockerRun>>;
@@ -379,6 +375,21 @@ export async function inGroup(
     signal?.removeEventListener("abort", onAbort);
   }
   return got === "missing" ? { unreached: NO_DOCKER } : got;
+}
+
+// inGroup's kill of a group in the box, shared with a box's MCP server (8c-2a plan, Task 3, decision 24): it writes the
+// group's `.stop` file, then kills the group named in its file, and ends with exit 0 once it ran in the box.
+export function killLine(group: string): string {
+  return `touch ${group}.stop; kill -KILL -- -"$(cat ${group} 2>/dev/null)" 2>/dev/null; exit 0`;
+}
+
+// The kill, run in the box: undefined once it ran there, else why it could not: NO_DOCKER, Docker's error output (the
+// box stopped when it gave none), or the error's message.
+export function killInBox(run: DockerRun, id: string, group: string): Promise<string | undefined> {
+  return run(["exec", id, "bash", "-c", killLine(group)]).then(
+    (r) => (r === "missing" ? NO_DOCKER : r.code !== 0 ? r.err.trim() || "the box stopped" : undefined),
+    (err: Error) => err.message,
+  );
 }
 
 // At the launch, before a box starts: removes the boxes of this process space whose Tachikoma process is gone, as one that
