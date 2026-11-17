@@ -94,33 +94,41 @@ const INITIALIZE = Buffer.from(
 // The pause between pieces: the test's own, long beside a pipe's delivery, not a product number (the plan's).
 const PAUSE_MS = 200;
 
+// The wait for the first answer: a server's start limit, START_MS in src/mcp/server.ts (not exported), so a wrapper
+// that swallowed `initialize` fails the test, which has no time limit of its own, instead of hanging it.
+const ANSWER_MS = 30_000;
+
 // The docker exec a box server starts as, run by hand: `pieces` written to its input PAUSE_MS apart, and its first line
-// of output, the server's first answer. Its input is then closed, which ends the fake.
+// of output, the server's first answer. Its input is then closed, which ends the fake; the test's end kills it if not.
 async function firstAnswer(id: string, script: string, pieces: Buffer[]): Promise<unknown> {
   const child = spawn(dockerProgram(process.env)!.file, execArgs(id, groupFile(), "node", [script]), {
     env: commandEnv(),
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
-  const ended = new Promise((resolve) => child.once("close", resolve));
   onTestFinished(() => void (child.exitCode === null && child.signalCode === null && child.kill()));
+  // A docker that exits before reading all its input makes a write fail; the answer's wait says what went wrong.
+  child.stdin.on("error", () => {});
   let out = "";
   let err = "";
   child.stderr.on("data", (chunk: Buffer) => (err += chunk));
+  let timer: NodeJS.Timeout | undefined;
   const line = new Promise<string>((resolve, reject) => {
     child.stdout.on("data", (chunk: Buffer) => {
       out += chunk;
       if (out.includes("\n")) resolve(out.slice(0, out.indexOf("\n")));
     });
     child.once("close", (code) => reject(new Error(`docker exec ended with ${code} before an answer: ${err}`)));
+    timer = setTimeout(() => reject(new Error(`no answer within ${ANSWER_MS / 1000} s: ${err}`)), ANSWER_MS);
   });
+  // Handled here too, so a failure before the wait below is not reported as unhandled; that wait still throws it.
+  line.catch(() => {}).finally(() => clearTimeout(timer));
   for (const [i, piece] of pieces.entries()) {
     if (i > 0) await sleep(PAUSE_MS);
     child.stdin.write(piece);
   }
   const got = await line;
   child.stdin.end();
-  await ended;
   return JSON.parse(got);
 }
 
@@ -207,7 +215,7 @@ describe("a server in the box, in real Docker", { timeout: 0 }, () => {
     const { box, make, fake } = await realBox(ctx);
     const network = await docker(["inspect", "--format", "{{.HostConfig.NetworkMode}}", box.id]);
     expect(network !== "missing" && network.out.trim()).toBe("none");
-    const script = await fake({ stubborn: true, pidFile: "/work/pid", childPidFile: "/work/child-pid" });
+    const script = await fake({ stubborn: true, childPidFile: "/work/child-pid" });
     const server = make(local("node", [script]));
     await server.start();
     expect(server.state.is).toBe("ready");
