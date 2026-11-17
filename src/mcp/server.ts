@@ -48,6 +48,7 @@ import {
 import { Checker } from "./checker.js";
 import type { ServerConfig, ServerEntry } from "./config.js";
 import type { FormHandler } from "./forms.js";
+import { mergeHeaders, runHelper } from "./helper.js";
 
 // One MCP server's connection, local or remote, through the library's own transports (release 8c plan, Task 4; choice 2).
 // `Tool` is the library's tool, as tools/list sends it, each description whole: the views cut their own copies.
@@ -138,7 +139,16 @@ interface Conn {
   resources: Resource[];
   prompts: Prompt[];
   listed: Promise<void>;
+  // A remote one's (8c-2a plan, Task 10): whether it signs in (decision 16), whether a helper gave its headers, and the
+  // redirect its fetch refused, if one did (connectionFetch).
+  signs: boolean;
+  helped: boolean;
+  redirected?: Redirected;
 }
+
+type RemoteEntry = Extract<ServerEntry, { kind: "http" | "sse" }>;
+// A connection's headers, the helper's merged in, and whether it signs in, which #prepare decides for each one.
+type Prepared = { headers: Record<string, string>; signs: boolean; helped: boolean };
 
 export class Server {
   readonly config: ServerConfig;
@@ -157,19 +167,24 @@ export class Server {
   readonly #box: McpBox | undefined;
   readonly #unstopped: Unstopped[];
   #stops = 0; // how many stops have come, so a start that waited can tell one came meanwhile (#connect)
+  readonly #helper: { cwd: string; project: boolean } | undefined;
+  #helping: AbortController | undefined; // the latest start's helper, which a stop kills
 
   // `startMs` is the start's limit, 30 s unless a test gives a short one. `auth` keeps sign-ins: with it a remote server
-  // has its own OAuth client (Task 11), unless its entry has an Authorization header of its own, in any letter case, which
-  // is never signed in, so its 401 says to look at its key (choice 55); without it, as in most tests, a 401 is an answer
+  // has its own OAuth client (Task 11) when its headersHelper runs, or when its entry has no Authorization header of
+  // its own, in any letter case; a connection signs in only when its headers, the helper's merged in, have none (8c-2a
+  // plan, decision 16), as one with its own key is never signed in, so its 401 says to look at the key (choice 55);
+  // without it, as in most tests, a 401 is an answer
   // like any other. `onForm` answers the server's forms (Task 12); without it, as in most tests, each is declined.
   // `box`: the session's box, in which a local server runs unless its entry says host (8c-2a plan, Tasks 4 and 6); any
   // server given it uses it to try its name's failed stops again. `unstopped`: its name's stops that failed in the box,
-  // a list `Servers` owns and gives every copy of the name, or else this server's own (decision 24).
+  // a list `Servers` owns and gives every copy of the name, or else this server's own (decision 24). `helper`: given
+  // when the entry's headersHelper runs, the folder it runs in and whether it is the project's (Servers; Task 10).
   constructor(
     config: ServerConfig,
     opts: {
       root: string; env: NodeJS.ProcessEnv; auth?: AuthStore; onChange(): void; onForm?: FormHandler; startMs?: number;
-      box?: McpBox; unstopped?: Unstopped[];
+      box?: McpBox; unstopped?: Unstopped[]; helper?: { cwd: string; project: boolean };
     },
   ) {
     this.config = config;
@@ -180,8 +195,9 @@ export class Server {
     this.#startMs = opts.startMs ?? START_MS;
     this.#box = opts.box;
     this.#unstopped = opts.unstopped ?? [];
-    const keyed = config.entry.kind !== "stdio" && Object.keys(config.entry.headers).some((k) => k.toLowerCase() === "authorization");
-    const signs = opts.auth && config.entry.kind !== "stdio" && !keyed;
+    this.#helper = opts.helper;
+    const entry = config.entry;
+    const signs = opts.auth && entry.kind !== "stdio" && (opts.helper || !hasAuthorization(entry.headers));
     this.#auth = signs ? new McpAuth(opts.auth!, config) : undefined;
   }
 
@@ -248,7 +264,7 @@ export class Server {
     } catch (err) {
       if (!conn.local && notReached(err)) throw new NotReached(remoteReason(this.#address(), err), { cause: err });
       // A sign-in lost mid-session: a refused refresh, a Sign out in another window (choice 59).
-      if (this.#auth && UnauthorizedError.isInstance(err)) {
+      if (conn.signs && UnauthorizedError.isInstance(err)) {
         this.#lostSignIn(conn);
         throw new Error(needsSignIn(this.config.name), { cause: err });
       }
@@ -280,7 +296,7 @@ export class Server {
       return await send(conn.client, this.#limit());
     } catch (err) {
       if (!conn.local && notReached(err)) throw new NotReached(remoteReason(this.#address(), err), { cause: err });
-      if (this.#auth && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
+      if (conn.signs && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
       else if (!conn.local && (err instanceof TypeError || err instanceof SdkHttpError || err instanceof SseError)) {
         throw new Error(remoteReason(this.#address(), err), { cause: err });
       }
@@ -294,6 +310,7 @@ export class Server {
   // box server, so its `docker exec` is ended at once (8c-2a plan, decision 6).
   async stop(opts: { exit?: boolean } = {}): Promise<void> {
     this.#stops++;
+    this.#helping?.abort(); // a helper still running for a start is killed (decision 22)
     if (this.#conn) await this.#close(this.#conn, opts.exit);
   }
 
@@ -326,12 +343,31 @@ export class Server {
         return false;
       }
     }
-    const made = this.#transport();
+    // A remote connection's headers, with its helper's when it runs (8c-2a plan, Task 10), whose 10 s come before the
+    // start's limit, which is the server's (decision 14). Only a stop rejects it, as the stop kills the helper, and the
+    // start then goes no further, as after the retries above (decision 22).
+    const entry = this.config.entry;
+    let prepared: Prepared = { headers: {}, signs: false, helped: false };
+    if (entry.kind !== "stdio") {
+      const helping = (this.#helping = new AbortController());
+      const got = await this.#prepare(entry, helping.signal).catch(() => undefined);
+      if (got === undefined || this.#stops !== stops || this.#connection !== connection) return false;
+      if (typeof got === "string") {
+        this.#state = failed(got);
+        return false;
+      }
+      prepared = got;
+    }
+    const conn: Conn = {
+      transport: undefined as unknown as Transport, client: undefined as unknown as Client, ready: false,
+      resources: [], prompts: [], listed: Promise.resolve(), signs: prepared.signs, helped: prepared.helped,
+    };
+    const made = this.#transport(prepared, conn);
     if (typeof made === "string") {
       this.#state = failed(made);
       return false;
     }
-    const conn: Conn = { transport: made, client: undefined as unknown as Client, ready: false, resources: [], prompts: [], listed: Promise.resolve() };
+    conn.transport = made;
     if (made instanceof Stdio) conn.local = made;
     conn.client = this.#client(conn);
     // One still open, as when two Reconnects come close together, is closed first, so only one server runs; its own start
@@ -372,7 +408,7 @@ export class Server {
     } catch (err) {
       // A start the server refused for want of a sign-in, which only /mcp starts (Task 11); one that publishes no sign-in
       // details keeps its 401 (choice 59).
-      if (this.#auth && UnauthorizedError.isInstance(err)) signIn = true;
+      if (conn.signs && UnauthorizedError.isInstance(err)) signIn = true;
       else reason = err instanceof NoSignIn ? `${this.#address()} answered 401` : this.#startReason(conn, err);
     } finally {
       clearTimeout(timer);
@@ -406,6 +442,22 @@ export class Server {
     return this.#unstopped.at(-1)?.reason;
   }
 
+  // A remote connection's headers (8c-2a plan, Task 10; decision 16): the entry's, with the helper's over them when it
+  // runs, and whether the connection signs in, which it does with an OAuth client when those headers hold no
+  // Authorization. A helper that fails gives the reason instead, choice 5's `<why>` after its prefix.
+  async #prepare(entry: RemoteEntry, signal: AbortSignal): Promise<Prepared | string> {
+    const helper = this.#helper;
+    let headers = entry.headers;
+    if (helper && entry.headersHelper !== undefined) {
+      const { name } = this.config;
+      const opts = { name, url: entry.url, ...helper, root: this.#root, env: this.#env, signal };
+      const got = await runHelper(entry.headersHelper, opts);
+      if ("reason" in got) return `its headersHelper failed: ${got.reason}`;
+      headers = mergeHeaders(headers, got.headers);
+    }
+    return { headers, signs: this.#auth !== undefined && !hasAuthorization(headers), helped: helper !== undefined };
+  }
+
   // A local server in the session's box (8c-2a plan, Task 4; decisions 3-5): refused when the box has broken, or when
   // the box cannot take a variable's name. The docker program is found on PATH at each start, unless a test gives its
   // stand-in, and gets the commands' environment, never the entry's, as Docker reads variables of its own (design,
@@ -425,10 +477,11 @@ export class Server {
 
   // Local: the program by its full path (choice 4), with the commands' environment, which never holds Tachikoma's keys,
   // CLAUDE_PROJECT_DIR as Claude Code sets it, then the entry's env, in the project's folder (choice 2). Remote: the
-  // entry's headers with each request, and its OAuth client (Task 11); with a client, the headers go only to the server's
-  // own address (choice 54, toServer), as the library's sign-in requests would carry requestInit's too. A reason instead
-  // when the program is not on PATH.
-  #transport(): Transport | string {
+  // connection's headers with each request, and its OAuth client when it signs in (Task 11; 8c-2a plan, decision 16);
+  // then the headers go only to the server's own address (choice 54), as the library's sign-in requests would carry
+  // requestInit's too. Its own fetch either way (connectionFetch; decision 17). A reason instead when the program is
+  // not on PATH.
+  #transport(prepared: Prepared, conn: Conn): Transport | string {
     const entry = this.config.entry;
     if (entry.kind === "stdio") {
       // A host entry is given the box too, for its name's retries only (8c-2a plan, Task 6; place.ts, placeOf).
@@ -443,12 +496,17 @@ export class Server {
     // An sse server's messages go to the address its event stream names, at the same host (the library checks it), so
     // that is its own address too; the library keeps it as _endpoint, read when each request is made.
     const endpoint = () => (made as { _endpoint?: URL } | undefined)?._endpoint;
-    const opts = this.#auth
-      ? { authProvider: this.#auth, ...(Object.keys(entry.headers).length && { fetch: toServer(url, endpoint, entry.headers) }) }
-      : { requestInit: { headers: entry.headers } };
+    const { headers, signs } = prepared;
+    const answered = (status: number) => this.#answered(conn, status);
+    const redirected = (err: Redirected) => (conn.redirected = err);
+    const send = connectionFetch({ url, endpoint, headers, signs, answered, redirected });
+    const opts = signs ? { authProvider: this.#auth!, fetch: send } : { requestInit: { headers }, fetch: send };
     made = entry.kind === "http" ? new StreamableHTTPClientTransport(url, opts) : new SSEClientTransport(url, opts);
     return made;
   }
+
+  // A status the server's own address answered on this connection (connectionFetch), for Task 11's refresh.
+  #answered(_conn: Conn, _status: number): void {}
 
   // One client per connection, so nothing of an old one's lists or handlers reaches the new one.
   #client(conn: Conn): Client {
@@ -511,7 +569,7 @@ export class Server {
         .then((gone) => this.#dropped(conn, () => (gone === undefined ? exitReason(local) : BOX_STOPPED)));
     };
     client.onerror = (err) => {
-      if (this.#auth && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
+      if (conn.signs && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
       else if (!conn.local && isDrop(err)) this.#dropped(conn, () => remoteReason(this.#address(), err));
     };
     return client;
@@ -580,6 +638,9 @@ export class Server {
       return notFoundLine(visible(this.#command()));
     }
     if (local?.child && !alive(local.child)) return exitReason(local);
+    // Its fetch's words for a redirect it refused (8c-2a plan, decision 17), read from the connection: an sse server's
+    // event stream keeps only the message of what its fetch threw (the eventsource package's flattenError).
+    if (conn.redirected) return conn.redirected.message;
     if (err instanceof SdkError && err.code === SdkErrorCode.RequestTimeout) return this.#late();
     if (!local) return remoteReason(this.#address(), err);
     return visible(errorText(err), { tabs: true });
@@ -598,19 +659,76 @@ export class Server {
   #address = () => (this.config.entry.kind === "stdio" ? "" : new URL(this.config.entry.url).origin);
 }
 
-// Choice 54: the entry's headers on a request for the server's own address only, its scheme, host, port and path, the query
-// aside (a request there is the server's whatever it asks), so a sign-in service at the same host gets none; a header the
-// library set, the sign-in's Authorization among them, is kept.
-function toServer(url: URL, endpoint: () => URL | undefined, headers: Record<string, string>): FetchLike {
-  const same = (a: URL, b: URL | undefined) => b !== undefined && a.origin === b.origin && a.pathname === b.pathname;
-  return (input, init) => {
-    const at = new URL(input);
-    // An SSE server's endpoint counts only at the entry's own origin: the library keeps a foreign one it refused.
-    const own = endpoint();
-    if (!same(at, url) && !(own?.origin === url.origin && same(at, own))) return fetch(input, init);
-    const sent = new Headers(init?.headers);
+// Whether headers hold an Authorization header, in any letter case (choice 55).
+const hasAuthorization = (headers: Record<string, string>) =>
+  Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
+
+// The statuses fetch follows as redirects (the Fetch standard, "redirect status").
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+
+// A redirect to another origin answering a request with the entry's headers (8c-2a plan, Task 10), its words naming the
+// origin alone, as a path or a query can hold a key (decision 28).
+export class Redirected extends Error {}
+
+// Each remote connection's own fetch (8c-2a plan, Task 10; decisions 17 and 27).
+// - The server's own address is its scheme, host, port and path, the query aside (a request there is the server's
+//   whatever it asks; choice 54), or an sse server's endpoint, counted only at the entry's own origin, as the library
+//   keeps a foreign one it refused.
+// - With sign-in, the entry's headers go on requests for that address alone, so a sign-in service at the same host gets
+//   none; a header the library set, the sign-in's Authorization among them, is kept. Without it, every request carries
+//   them, in the transport's requestInit.
+// - A request carrying them is sent with redirect "manual", and a redirect to another origin fails before anything is
+//   sent there. One within the origin is left to the library, which follows it only when it keeps the method (choice 1
+//   (b)), each hop a call of this fetch with the request's very headers object (its fetchWithinOrigin passes a shallow
+//   copy of the init). Such a hop is that request: with sign-in it gets the headers too, and its status is heard. Only
+//   that request's own chain counts, never a lasting list of places, so any other call to that path, a sign-in
+//   request's among them, is not a hop.
+// `answered` hears each status the server's own address or a hop answered; `redirected`, each redirect refused.
+export function connectionFetch(opts: {
+  url: URL;
+  endpoint: () => URL | undefined;
+  headers: Record<string, string>;
+  signs: boolean;
+  answered(status: number): void;
+  redirected?(err: Redirected): void;
+}): FetchLike {
+  const { url, endpoint, headers, signs } = opts;
+  const place = (u: URL) => `${u.origin}${u.pathname}`;
+  const chains = new WeakMap<object, Set<string>>(); // by a request's headers object, the places it was sent on to
+  const carried = Object.keys(headers).length > 0;
+  const withEntry = (given: HeadersInit | undefined) => {
+    const sent = new Headers(given);
     for (const [name, value] of Object.entries(headers)) if (!sent.has(name)) sent.set(name, value);
-    return fetch(input, { ...init, headers: sent });
+    return sent;
+  };
+  return async (input, init) => {
+    const at = new URL(input);
+    const own = endpoint();
+    const key = init?.headers;
+    const hop = key !== undefined && chains.get(key)?.has(place(at)) === true;
+    const mine = place(at) === place(url) || (own?.origin === url.origin && place(at) === place(own)) || hop;
+    const carries = carried && (mine || !signs);
+    if (!mine && !carries) return fetch(input, init);
+    const sent = carries ? { ...init, redirect: "manual" as const, ...(signs && { headers: withEntry(key) }) } : init;
+    const answer = await fetch(input, sent);
+    const location = REDIRECTS.has(answer.status) ? answer.headers.get("location") : null;
+    const target = location === null ? null : URL.parse(location, at);
+    if (target && target.origin !== at.origin && carries) {
+      await answer.body?.cancel();
+      const err = new Redirected(
+        `the server answered with a redirect to ${target.origin}; ` +
+          "Tachikoma does not follow a redirect with the entry's headers",
+      );
+      opts.redirected?.(err);
+      throw err;
+    }
+    if (target && target.origin === at.origin && mine && key !== undefined) {
+      let chain = chains.get(key);
+      if (!chain) chains.set(key, (chain = new Set()));
+      chain.add(place(target));
+    }
+    if (mine) opts.answered(answer.status);
+    return answer;
   };
 }
 

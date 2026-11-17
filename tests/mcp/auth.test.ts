@@ -13,7 +13,7 @@ import { AuthStore, McpAuth } from "../../src/mcp/auth.js";
 import type { OAuthEntry, ServerConfig } from "../../src/mcp/config.js";
 import { Servers } from "../../src/mcp/servers.js";
 import { Bus, removeTree } from "../helpers.js";
-import { signInFake } from "./fake.js";
+import { fakeHelper, httpFake, readLog, signInFake } from "./fake.js";
 
 // Release 8c plan, Task 11: signing in to a remote server, against the fake sign-in service of fake.ts on 127.0.0.1, the
 // browser a function of the test's own.
@@ -22,9 +22,12 @@ const windows = process.platform === "win32";
 // A wait on a request to the fake: a few seconds for a busy machine, well inside the test's 15 s.
 const WAIT = { timeout: 5_000 };
 
-const remote = (name: string, url: string, oauth?: OAuthEntry, headers: Record<string, string> = {}): ServerConfig => ({
+const remote = (
+  name: string, url: string, oauth?: OAuthEntry, headers: Record<string, string> = {}, headersHelper?: string,
+): ServerConfig => ({
   name, safe: name, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "",
-  entry: { kind: "http", url, headers, ...(oauth && { oauth }) }, asWritten: { url, headers },
+  entry: { kind: "http", url, headers, ...(oauth && { oauth }), ...(headersHelper !== undefined && { headersHelper }) },
+  asWritten: { url, headers },
 });
 
 // The test's own folder, the data folder two levels inside it, the fake, and Servers that use that data folder's
@@ -45,7 +48,7 @@ async function setup(fakeOpts: Parameters<typeof signInFake>[0] = {}) {
   const opened: string[] = [];
   const damaged: string[] = [];
   let browser: (url: string) => void = fake.browser;
-  const make = (configs: ServerConfig[], opts: { headless?: boolean } = {}) => {
+  const make = (configs: ServerConfig[], opts: { headless?: boolean; settingsDir?: string } = {}) => {
     const servers = new Servers(configs, {
       root: dir, env: process.env, bus, answers: launchAnswers, network: "none", lead: () => "fake:a",
       auth: new AuthStore(data, () => {}, (line) => damaged.push(line)), openBrowser: (url) => (opened.push(url), browser(url)), ...opts,
@@ -457,6 +460,80 @@ describe("signing in to a remote MCP server", () => {
     client.tokens(step);
     await client.invalidateCredentials("tokens");
     expect(store.get("om", t.fake.url)?.tokens).toBeUndefined();
+  });
+});
+
+// 8c-2a plan, Task 10 (decisions 16, 17 and 27): sign-in chosen for each connection once its helper has run, the
+// headers kept from the sign-in service, and no redirect to another origin. Each helper is the user's, run in the
+// test's folder as its settings folder.
+describe("signing in, with a headersHelper", () => {
+  const redirected = (origin: string) =>
+    `the server answered with a redirect to ${origin}; Tachikoma does not follow a redirect with the entry's headers`;
+
+  it("never signs in on a connection whose helper gives Authorization, and signs in once it gives none", async () => {
+    const t = await setup();
+    const helper = fakeHelper(t.dir);
+    helper.give({ Authorization: "Bearer from-the-helper" });
+    const servers = t.make([remote("om", t.fake.url, undefined, {}, helper.command)], { settingsDir: t.dir });
+    await servers.ready();
+    expect(servers.list()[0]!.state).toEqual({ is: "failed", reason: `${t.fake.base} answered 401` });
+    expect(t.fake.seen.requests.filter((r) => r.path !== "/mcp")).toEqual([]);
+    expect(new Set(t.fake.seen.bearer)).toEqual(new Set(["Bearer from-the-helper"]));
+    expect(t.fake.seen.registered).toBe(0);
+    helper.give({});
+    await servers.restart("om");
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    expect(helper.runs()).toHaveLength(2);
+  });
+
+  it("sends the helper's headers to the server's own address alone, never to the sign-in service", async () => {
+    const t = await setup();
+    const helper = fakeHelper(t.dir);
+    helper.give({ "X-Region": "eu" });
+    const servers = t.make([remote("om", t.fake.url, undefined, {}, helper.command)], { settingsDir: t.dir });
+    await servers.ready();
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    expect(await servers.signIn("om", t.io())).toBe(true);
+    expect(t.states(servers)).toEqual(["om ready"]);
+    const toServer = t.fake.seen.requests.filter((r) => r.path === "/mcp");
+    const signIn = t.fake.seen.requests.filter((r) => r.path !== "/mcp");
+    expect(signIn.map((r) => r.path)).toEqual(expect.arrayContaining(["/register", "/authorize", "/token"]));
+    expect(signIn.filter((r) => "x-region" in r.headers)).toEqual([]);
+    expect(toServer.length).toBeGreaterThan(0);
+    expect(new Set(toServer.map((r) => r.headers["x-region"]))).toEqual(new Set(["eu"]));
+    expect(toServer.at(-1)!.headers.authorization).toMatch(/^Bearer access-\d+$/);
+  });
+
+  it("fails on a redirect to another origin on a connection that signs in, sending nothing there", async () => {
+    const t = await setup();
+    const otherLog = path.join(t.dir, "elsewhere.jsonl");
+    const other = await httpFake(t.dir, { log: otherLog });
+    const origin = `http://127.0.0.1:${other.port}`;
+    const fake = await httpFake(t.dir, { redirect: `${origin}/mcp` });
+    const servers = t.make([remote("om", fake.url, undefined, { "X-Region": "eu" })]);
+    await servers.ready();
+    expect(servers.list()[0]!.state).toEqual({ is: "failed", reason: redirected(origin) });
+    expect(readLog(otherLog)).toEqual([]);
+  });
+
+  // Decision 27, with sign-in: /mcp answers with a 307 to /mcp/, whose requests are hops of the request redirected.
+  it("sends the helper's and the static headers on the hops to /mcp/, and none to the sign-in service", async () => {
+    const t = await setup({ slash: true });
+    const helper = fakeHelper(t.dir);
+    helper.give({ "X-Region": "eu" });
+    const config = remote("om", t.fake.url, undefined, { "X-Team": "a" }, helper.command);
+    const servers = t.make([config], { settingsDir: t.dir });
+    await servers.ready();
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    expect(await servers.signIn("om", t.io())).toBe(true);
+    expect(t.states(servers)).toEqual(["om ready"]);
+    const hops = t.fake.seen.requests.filter((r) => r.path === "/mcp/");
+    const service = t.fake.seen.requests.filter((r) => !r.path.startsWith("/mcp"));
+    expect(hops.length).toBeGreaterThan(0);
+    expect(new Set(hops.map((r) => `${r.headers["x-region"]} ${r.headers["x-team"]}`))).toEqual(new Set(["eu a"]));
+    expect(hops.at(-1)!.headers.authorization).toMatch(/^Bearer access-\d+$/);
+    expect(service.length).toBeGreaterThan(0);
+    expect(service.filter((r) => "x-region" in r.headers || "x-team" in r.headers)).toEqual([]);
   });
 });
 

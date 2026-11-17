@@ -31,6 +31,10 @@ export interface FakeOptions {
   description?: string; // echo's description
   port?: number; // over HTTP, the port to listen on; any free one without it
   status?: number; // over HTTP, the status every POST is answered with
+  // Over HTTP (8c-2a plan, Task 10): `slash` answers a POST to /mcp with a 307 to /mcp/, which it serves; `redirect`
+  // answers every other POST with a 307 to this address.
+  slash?: true;
+  redirect?: string;
   tools?: object[]; // its tools/list, in place of its own tools (Task 5's names and schemas)
   added?: object[]; // what change adds, before the others, in place of "added"
   results?: Record<string, object>; // a call to a tool named here is answered with this result (Task 6's answers)
@@ -193,10 +197,12 @@ function serveHttp() {
     req.setEncoding("utf8");
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      log({ http: req.method, headers: req.headers, body: body ? JSON.parse(body) : null });
+      log({ http: req.method, path: req.url, headers: req.headers, body: body ? JSON.parse(body) : null });
       // Each connection ends with its answer, so no call goes out on an open one after the fake has stopped.
       res.setHeader("Connection", "close");
       if (req.method !== "POST") return res.writeHead(405).end();
+      if (O.slash && req.url === "/mcp") return res.writeHead(307, { location: "/mcp/" }).end();
+      if (O.redirect) return res.writeHead(307, { location: O.redirect }).end();
       if (O.status) return res.writeHead(O.status).end("refused");
       const m = JSON.parse(body);
       if (m.method !== "initialize" && !sessions.has(req.headers["mcp-session-id"])) return res.writeHead(404).end();
@@ -264,8 +270,14 @@ export async function httpFake(dir: string, opts: FakeOptions = {}): Promise<{ u
 // sign-in details at all, and "elsewhere" publishes the service's metadata only at /elsewhere/metadata, for an entry's
 // authServerMetadataUrl; "challenge" names its discovery document only in the 401, at /challenge/resource, and the
 // service there is at /issuer, so nothing is found at the server's own well-known addresses (choice 70). `slow` holds
-// each code's tokens until `answer()`.
-export async function signInFake(opts: { refresh?: false; registration?: false | "refused"; metadata?: "none" | "elsewhere" | "challenge"; slow?: true } = {}) {
+// each code's tokens until `answer()`. `slash` answers a POST to /mcp with a 307 to /mcp/, its MCP endpoint then, whose
+// discovery document still names /mcp, the entry's address (8c-2a plan, Task 10).
+export async function signInFake(
+  opts: {
+    refresh?: false; registration?: false | "refused"; metadata?: "none" | "elsewhere" | "challenge"; slow?: true;
+    slash?: true;
+  } = {},
+) {
   const clients = new Map<string, { redirect_uris: string[] }>();
   const codes = new Map<string, { client: string; challenge: string; redirect: string }>();
   const live = new Set<string>();
@@ -343,11 +355,15 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
         if (grant === "refresh_token" && refresh.delete(form.get("refresh_token") ?? "")) return give();
         return json(400, { error: "invalid_grant" });
       }
-      if (url.pathname.endsWith("/mcp")) {
+      if (opts.slash && url.pathname === "/mcp" && req.method === "POST") {
+        return res.writeHead(307, { location: "/mcp/", connection: "close" }).end();
+      }
+      if (url.pathname.endsWith(opts.slash ? "/mcp/" : "/mcp")) {
         const bearer = req.headers.authorization ?? null;
         seen.bearer.push(bearer);
         if (!bearer || !live.has(bearer.replace(/^Bearer /, ""))) {
-          const resource = opts.metadata === "challenge" ? `${base}/challenge/resource` : `${base}/.well-known/oauth-protected-resource${url.pathname}`;
+          const named = `${base}/.well-known/oauth-protected-resource${opts.slash ? "/mcp" : url.pathname}`;
+          const resource = opts.metadata === "challenge" ? `${base}/challenge/resource` : named;
           return json(401, { error: "invalid_token" }, { "www-authenticate": `Bearer resource_metadata="${resource}"` });
         }
         if (req.method !== "POST") return res.writeHead(405, { connection: "close" }).end();

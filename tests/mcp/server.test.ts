@@ -1,14 +1,16 @@
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { running } from "../../src/exec/local.js";
 import type { ServerConfig, ServerEntry } from "../../src/mcp/config.js";
-import { NotReached, Server } from "../../src/mcp/server.js";
+import { connectionFetch, NotReached, Server } from "../../src/mcp/server.js";
 import { removeTree } from "../helpers.js";
-import { type FakeOptions, fakeServer, httpFake, readLog } from "./fake.js";
+import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog } from "./fake.js";
 
 // Release 8c plan, Task 4: one server's connection, local or remote, against the fake servers of fake.ts.
 
@@ -23,7 +25,11 @@ const local = (args: string[], over: Partial<Extract<ServerEntry, { kind: "stdio
   entry: { kind: "stdio", command: process.execPath, args, env: {}, ...over },
   asWritten: { command: process.execPath, args },
 });
-const remote = (url: string, headers: Record<string, string> = {}): ServerConfig => ({ ...base, entry: { kind: "http", url, headers }, asWritten: { url, headers } });
+const remote = (url: string, headers: Record<string, string> = {}, headersHelper?: string): ServerConfig => ({
+  ...base,
+  entry: { kind: "http", url, headers, ...(headersHelper !== undefined && { headersHelper }) },
+  asWritten: { url, headers },
+});
 
 // The test's own folder, the project's root, and its servers, each stopped before the folder is removed: on Windows a
 // running server holds the folder it works in.
@@ -35,8 +41,13 @@ async function setup() {
     await removeTree(dir);
   });
   const onChange = vi.fn();
-  const make = (config: ServerConfig, opts: { env?: NodeJS.ProcessEnv; startMs?: number; root?: string } = {}) => {
-    const server = new Server(config, { root: opts.root ?? dir, env: opts.env ?? process.env, onChange, startMs: opts.startMs });
+  const make = (
+    config: ServerConfig,
+    opts: { env?: NodeJS.ProcessEnv; startMs?: number; root?: string; helper?: { cwd: string; project: boolean } } = {},
+  ) => {
+    const server = new Server(config, {
+      root: opts.root ?? dir, env: opts.env ?? process.env, onChange, startMs: opts.startMs, helper: opts.helper,
+    });
     servers.push(server);
     return server;
   };
@@ -467,5 +478,187 @@ describe("a remote server", () => {
     await expect(call).rejects.not.toBeInstanceOf(NotReached);
     expect(server.state.is === "stopped" && server.state.retry).toBe(true);
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+});
+
+// 8c-2a plan, Task 10 (decisions 14, 17, 22, 27 and 28; choices 1 (b) and 5): the headersHelper at each connection, and
+// no redirect to another origin with the entry's headers.
+describe("a remote server's headersHelper, and its redirects", () => {
+  const posts = (log: string) => readLog(log).filter((m) => m.http === "POST");
+  const keys = (sent: Record<string, any>[]) =>
+    new Set(sent.map((m) => `${m.headers["x-key"]} ${m.headers["x-other"]}`));
+  const redirected = (origin: string) =>
+    `the server answered with a redirect to ${origin}; Tachikoma does not follow a redirect with the entry's headers`;
+  // A fake of its own logging to `log`, whose own address (its origin) the other fakes redirect to.
+  const elsewhere = async (dir: string) => {
+    const log = path.join(dir, "elsewhere.jsonl");
+    const fake = await httpFake(dir, { log });
+    return { log, origin: `http://127.0.0.1:${fake.port}` };
+  };
+
+  it("runs the helper at each connection, its x-key over the static X-Key, the other static header kept", async () => {
+    const { dir, make, log } = await setup();
+    const fake = await httpFake(dir, { log });
+    const helper = fakeHelper(dir);
+    helper.give({ "x-key": "first" });
+    const config = remote(fake.url, { "X-Key": "static", "X-Other": "kept" }, helper.command);
+    const server = make(config, { helper: { cwd: dir, project: false } });
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    const first = posts(log);
+    expect(first.length).toBeGreaterThan(0);
+    expect(keys(first)).toEqual(new Set(["first kept"]));
+    helper.give({ "x-key": "second" });
+    await server.stop();
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    const second = posts(log).slice(first.length);
+    expect(second.length).toBeGreaterThan(0);
+    expect(keys(second)).toEqual(new Set(["second kept"]));
+    expect(helper.runs()).toHaveLength(2);
+  });
+
+  it("fails when its helper fails, saying its exit code alone, and sends the server nothing", async () => {
+    const { dir, make, log } = await setup();
+    const fake = await httpFake(dir, { log });
+    const helper = fakeHelper(dir);
+    helper.mode("fail");
+    const server = make(remote(fake.url, {}, helper.command), { helper: { cwd: dir, project: false } });
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: "its headersHelper failed: it exited with code 3" });
+    expect(readLog(log)).toEqual([]);
+  });
+
+  it("connects with its static headers when its helper is not run, which then records no run", async () => {
+    const { dir, make, log } = await setup();
+    const fake = await httpFake(dir, { log });
+    const helper = fakeHelper(dir);
+    const server = make(remote(fake.url, { "X-Key": "static" }, helper.command));
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    expect(new Set(posts(log).map((m) => m.headers["x-key"]))).toEqual(new Set(["static"]));
+    expect(helper.runs()).toEqual([]);
+  });
+
+  // The path and query of the address it names are left out, as either may hold a key (decision 28).
+  it("fails on a redirect to another origin, with static headers or the helper's, naming its origin", async () => {
+    const { dir, make } = await setup();
+    const other = await elsewhere(dir);
+    const fake = await httpFake(dir, { redirect: `${other.origin}/key-in-path/mcp?token=key-in-query` });
+    const helper = fakeHelper(dir);
+    helper.give({ "x-key": "from the helper" });
+    const servers = [
+      make(remote(fake.url, { "X-Key": "static" })),
+      make(remote(fake.url, {}, helper.command), { helper: { cwd: dir, project: false } }),
+    ];
+    for (const server of servers) {
+      await server.start();
+      expect(server.state).toEqual({ is: "failed", reason: redirected(other.origin) });
+    }
+    expect(readLog(other.log)).toEqual([]);
+  });
+
+  // The SSE transport's event stream keeps only the message of what its fetch threw.
+  it("fails on a redirect of an sse server's event stream to another origin with the same line", async () => {
+    const { dir, make } = await setup();
+    const other = await elsewhere(dir);
+    const moved = http.createServer((_req, res) => {
+      res.writeHead(307, { location: `${other.origin}/sse`, connection: "close" }).end();
+    });
+    await new Promise<void>((resolve) => moved.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => void moved.close());
+    const url = `http://127.0.0.1:${(moved.address() as AddressInfo).port}/sse`;
+    const headers = { "X-Key": "static" };
+    const server = make({ ...base, entry: { kind: "sse", url, headers }, asWritten: { url, headers } });
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: redirected(other.origin) });
+    expect(readLog(other.log)).toEqual([]);
+  });
+
+  // Choice 1 (b): a redirect within the server's own origin is left to the library.
+  it("follows a redirect within its origin that keeps the method", async () => {
+    const { dir, make, log } = await setup();
+    const fake = await httpFake(dir, { log, slash: true });
+    const server = make(remote(fake.url, { "X-Key": "static" }));
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    expect(new Set(posts(log).map((m) => m.path))).toEqual(new Set(["/mcp", "/mcp/"]));
+  });
+
+  // Decision 27, without sign-in: the hop is the same request, so it carries the entry's headers.
+  it("sends the helper's and the static headers on a hop within its origin, and fails a hop on elsewhere", async () => {
+    const { dir, make, log } = await setup();
+    const fake = await httpFake(dir, { log, slash: true });
+    const helper = fakeHelper(dir);
+    helper.give({ "x-key": "from the helper" });
+    const helped = { helper: { cwd: dir, project: false } };
+    const server = make(remote(fake.url, { "X-Other": "kept" }, helper.command), helped);
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    const hops = posts(log).filter((m) => m.path === "/mcp/");
+    expect(hops.length).toBeGreaterThan(0);
+    expect(keys(hops)).toEqual(new Set(["from the helper kept"]));
+
+    const other = await elsewhere(dir);
+    const onward = await httpFake(dir, { slash: true, redirect: `${other.origin}/mcp` });
+    const second = make(remote(onward.url, { "X-Other": "kept" }, helper.command), helped);
+    await second.start();
+    expect(second.state).toEqual({ is: "failed", reason: redirected(other.origin) });
+    expect(readLog(other.log)).toEqual([]);
+  });
+
+  // Decision 27: a hop is a call with the very headers object of a request its own address, or a hop of it, answered
+  // with a redirect within the origin, as the library's fetchWithinOrigin passes it on; any other call is not.
+  it.each([true, false])("connectionFetch, signing in %s, takes a request's own hops alone as it", async (signs) => {
+    const { dir, log } = await setup();
+    const fake = await httpFake(dir, { log, slash: true });
+    const url = new URL(fake.url);
+    const statuses: number[] = [];
+    const answered = (status: number) => statuses.push(status);
+    const send = connectionFetch({ url, endpoint: () => undefined, headers: { "X-Key": "entry" }, signs, answered });
+    const initialize = { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } };
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: initialize });
+    const post = async (at: string, headers: Headers) => {
+      const answer = await send(new URL(at, url), { method: "POST", headers, body });
+      await answer.text();
+      return answer.status;
+    };
+    const json = () => new Headers({ "content-type": "application/json" });
+    const h1 = json();
+    expect(await post("/mcp", h1)).toBe(307); // not followed by fetch itself: sent with redirect "manual"
+    expect(await post("/mcp/", h1)).toBe(200); // the library's hop
+    expect(await post("/mcp/", json())).toBe(200); // another request's own headers, as a sign-in request's are
+    const h2 = json();
+    expect(await post("/mcp/", h2)).toBe(200); // a path h1's chain has, and h2's has not yet
+    expect(await post("/mcp", h2)).toBe(307);
+    expect(await post("/mcp/", h2)).toBe(200); // h2's own hop
+    // With sign-in the entry's headers go on the server's own address and its hops; without it they are the
+    // transport's requestInit's, which this call alone does not give.
+    const key = signs ? "entry" : null;
+    expect(posts(log).map((m) => [m.path, m.headers["x-key"] ?? null])).toEqual([
+      ["/mcp", key], ["/mcp/", key], ["/mcp/", null], ["/mcp/", null], ["/mcp", key], ["/mcp/", key],
+    ]);
+    expect(statuses).toEqual([307, 200, 307, 200]);
+  });
+
+  // Decision 22: a stop that comes while the helper runs kills it, and the start goes no further.
+  it("makes no connection when stopped while its helper runs, and the next start connects once", async () => {
+    const { dir, make, log } = await setup();
+    const fake = await httpFake(dir, { log });
+    const helper = fakeHelper(dir);
+    helper.hold();
+    // Out of the test's folder, which Windows keeps a moment for a killed program that worked in it.
+    const server = make(remote(fake.url, {}, helper.command), { helper: { cwd: tmpdir(), project: false } });
+    const starting = server.start();
+    await vi.waitFor(() => expect(helper.runs()).toHaveLength(1), WAIT);
+    await server.stop();
+    await starting;
+    helper.go();
+    await vi.waitFor(() => expect(alive(helper.runs()[0]!.pid)).toBe(false), WAIT);
+    expect(readLog(log)).toEqual([]);
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    expect(helper.runs()).toHaveLength(2);
+    expect(posts(log).filter((m) => m.body.method === "initialize")).toHaveLength(1);
   });
 });

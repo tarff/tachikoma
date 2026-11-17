@@ -1,6 +1,7 @@
 import type { Tool } from "@modelcontextprotocol/client";
 import { openBrowser } from "../auth/chatgpt.js";
 import type { Bus } from "../core/bus.js";
+import { settingsDir } from "../core/datadir.js";
 import { visible } from "../core/permissions.js";
 import { errorText, type ToolSpec } from "../core/types.js";
 import type { Answers } from "./answers.js";
@@ -9,7 +10,7 @@ import type { McpBox, Unstopped } from "./box.js";
 import { Checker } from "./checker.js";
 import type { ServerConfig } from "./config.js";
 import { Forms } from "./forms.js";
-import { answerSetup, type McpSandbox, placeOf, starts } from "./place.js";
+import { answerSetup, helperRuns, type McpSandbox, placeOf, starts } from "./place.js";
 import { Server, type State } from "./server.js";
 
 // The MCP servers together, and one table of tool names over them all (release 8c plan, Task 5; design, "Tools for the
@@ -90,6 +91,7 @@ export class Servers {
   readonly #openBrowser: (url: string) => void;
   readonly #headless: boolean;
   readonly #box: McpBox | undefined;
+  readonly #settingsDir: string;
   // Each name's stops that failed in the box (8c-2a plan, Task 4, decision 24): one list per name, given to every copy
   // of it, so a record outlives live edits, a removal and the entry added back. A list is never replaced, as a copy
   // still stopping may yet add to it; one emptied by the retries stays, holding nothing.
@@ -115,12 +117,14 @@ export class Servers {
   // gives its own (Task 11); `headless` is -p, which cannot sign in, and says so of a server that needs it. `box`: the
   // session's box, needed with the sandbox on, given to every server then, its box servers started in it (8c-2a plan,
   // Tasks 4 and 6; decision 10): a host or remote copy needs it too, to try a failed in-box stop of its name again.
+  // `settingsDir`: the folder a user's entry's headersHelper runs in, ~/.tachikoma unless a test gives its own (8c-2a
+  // plan, Task 10).
   constructor(
     configs: ServerConfig[],
     opts: {
       root: string; env: NodeJS.ProcessEnv; bus: Bus; answers: () => Answers; unread?: Answers;
       network: "on" | "off" | "none"; lead: () => string; startMs?: number;
-      auth?: AuthStore; openBrowser?: (url: string) => void; headless?: boolean; box?: McpBox;
+      auth?: AuthStore; openBrowser?: (url: string) => void; headless?: boolean; box?: McpBox; settingsDir?: string;
     },
   ) {
     this.#root = opts.root;
@@ -136,6 +140,7 @@ export class Servers {
     this.#openBrowser = opts.openBrowser ?? openBrowser;
     this.#headless = opts.headless ?? false;
     this.#box = opts.box;
+    this.#settingsDir = opts.settingsDir ?? settingsDir();
     this.forms = new Forms({ bus: this.#bus, headless: this.#headless, openBrowser: this.#openBrowser, lead: this.#lead });
     this.#slots = configs.map((c) => this.#slot(c));
   }
@@ -444,7 +449,9 @@ export class Servers {
   // A project's server starts only on the user's yes for its entry as written (choice 24; Task 9 asks), in this
   // launch's setup (8c-2a plan, Task 6; decision 11); with the box's network off only a box server starts, as one on
   // the user's machine would run with the web open (choice 3). Every copy gets the box with the sandbox on, so a host
-  // or remote copy can try a failed in-box stop of its name again; only a box server runs in it (Server).
+  // or remote copy can try a failed in-box stop of its name again; only a box server runs in it (Server). A remote
+  // entry's headersHelper that runs (helperRuns) does so in the settings folder for the user's entry, and in the
+  // project's for a project's (8c-2a plan, Task 10).
   #slot(config: ServerConfig): Slot {
     const slot: Slot = { config, said: new Set() };
     if (!starts(config, this.#sandbox)) return { ...slot, fixed: { is: "off" } };
@@ -459,6 +466,9 @@ export class Servers {
       root: this.#root, env: this.#env, auth: this.#auth, startMs: this.#startMs, onChange: () => this.#changed(slot, server),
       onForm: (form, ctx) => this.forms.answer(slot.config.name, form, ctx),
       ...(this.#sandbox && { box: this.#box! }), unstopped,
+      ...(helperRuns(config, this.#sandbox) && {
+        helper: { cwd: config.where === "user" ? this.#settingsDir : this.#root, project: config.where === "project" },
+      }),
     });
     slot.server = server;
     return slot;
@@ -484,9 +494,19 @@ export class Servers {
     this.#unreadable = undefined;
   }
 
+  // A remote entry's headersHelper that does not run, a project's with the sandbox on, is said once for the slot as it
+  // starts: a Reconnect starts no new slot, and a live edit's restart does (8c-2a plan, Task 10; choice 9).
   #begin(slot: Slot): void {
     const server = slot.server;
-    if (server) void server.start().then(() => this.#changed(slot, server));
+    if (!server) return;
+    const { config } = slot;
+    const helper = config.entry.kind !== "stdio" && config.entry.headersHelper !== undefined;
+    if (helper && !helperRuns(config, this.#sandbox)) {
+      const line = `${visible(config.name)}: its headersHelper was not run, ` +
+        "as it comes from the project and the sandbox is on.";
+      this.#bus.emit("mcp-note", line);
+    }
+    void server.start().then(() => this.#changed(slot, server));
   }
 
   // A server started, failed, changed its list or stopped. One replaced or forgotten by set() or stopAll() is not read.

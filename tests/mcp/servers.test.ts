@@ -13,7 +13,7 @@ import { NotReached } from "../../src/mcp/server.js";
 import { type Offered, Servers } from "../../src/mcp/servers.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import { Bus, collectErrors, removeTree } from "../helpers.js";
-import { type FakeOptions, fakeServer, httpFake, readLog, standinBox } from "./fake.js";
+import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog, standinBox } from "./fake.js";
 
 // Release 8c plan, Task 5: the servers together, one table of unique names, against the fake servers of fake.ts.
 
@@ -54,14 +54,17 @@ async function setup() {
   };
   const make = (
     configs: ServerConfig[],
-    opts: { answers?: () => Answers; unread?: Answers; network?: "on" | "off" | "none"; box?: McpBox } = {},
+    opts: {
+      answers?: () => Answers; unread?: Answers; network?: "on" | "off" | "none"; box?: McpBox; settingsDir?: string;
+    } = {},
   ) => {
     const answers = opts.answers ?? nobody;
     const unread = opts.unread ? { unread: opts.unread } : {};
     const network = opts.network ?? "none";
     const box = opts.box ? { box: opts.box } : {};
+    const settings = opts.settingsDir ? { settingsDir: opts.settingsDir } : {};
     const servers = new Servers(configs, {
-      root: dir, env: process.env, bus, answers, ...unread, network, ...box, lead: () => "fake:a",
+      root: dir, env: process.env, bus, answers, ...unread, network, ...box, ...settings, lead: () => "fake:a",
     });
     made.push(servers);
     return servers;
@@ -861,8 +864,8 @@ describe("Servers: where each server runs", () => {
       await Promise.all(made.map((servers) => servers.stopAll()));
       fake.killAll();
     });
-    const make = (configs: ServerConfig[], answers?: () => Answers) => {
-      const servers = s.make(configs, { network, box: fake.box, ...(answers && { answers }) });
+    const make = (configs: ServerConfig[], answers?: () => Answers, settingsDir?: string) => {
+      const servers = s.make(configs, { network, box: fake.box, ...(answers && { answers }), settingsDir });
       made.push(servers);
       return servers;
     };
@@ -954,6 +957,69 @@ describe("Servers: where each server runs", () => {
     expect(() => new Servers([], { ...opts, network: "off" })).toThrow(noBox);
     expect(() => new Servers([], { ...opts, network: "on" })).toThrow(noBox);
     expect(() => new Servers([], { ...opts, network: "none" })).not.toThrow();
+  });
+
+  // 8c-2a plan, Task 10 (choice 9): a remote entry's headersHelper, in the folder the user's entry or the project's
+  // gives, and its line when a project's is not run.
+  const remoteWith = (name: string, url: string, helper: string, over: Partial<ServerConfig> = {}): ServerConfig => ({
+    ...{ name, safe: name, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
+    entry: { kind: "http", url, headers: { "X-Key": "static" }, headersHelper: helper },
+    asWritten: { url, headers: { "X-Key": "static" }, headersHelper: helper },
+    ...over,
+  });
+  const keys = (log: string) => new Set(readLog(log).filter((m) => m.http === "POST").map((m) => m.headers["x-key"]));
+  const NOT_RUN = "p: its headersHelper was not run, as it comes from the project and the sandbox is on.";
+
+  it("with the sandbox on runs the user's helper in its settings folder, not a project's, said once", async () => {
+    const { dir, notes, make } = await placed("on");
+    const settings = path.join(dir, "settings");
+    mkdirSync(settings);
+    const [userLog, projectLog] = [path.join(dir, "user.jsonl"), path.join(dir, "project.jsonl")];
+    const [user, project] = [await httpFake(dir, { log: userLog }), await httpFake(dir, { log: projectLog })];
+    const [mine, theirs] = [fakeHelper(dir), fakeHelper(dir)];
+    mine.give({ "x-key": "mine" });
+    theirs.give({ "x-key": "theirs" });
+    const answers = launchAnswers();
+    answers.set("p", "w1", true, "no helper");
+    const u = remoteWith("u", user.url, mine.command);
+    const p = remoteWith("p", project.url, theirs.command, { where: "project", written: "w1" });
+    const servers = make([u, p], () => answers, settings);
+    servers.startAll();
+    expect(await servers.ready()).toBe(true);
+    expect(servers.list().map((s) => [s.name, s.state.is])).toEqual([["u", "ready"], ["p", "ready"]]);
+    expect(mine.runs().map((run) => [run.cwd, run.project])).toEqual([[settings, dir]]);
+    expect(theirs.runs()).toEqual([]);
+    expect([keys(userLog), keys(projectLog)]).toEqual([new Set(["mine"]), new Set(["static"])]);
+    expect(notes).toEqual([NOT_RUN]);
+    await servers.restart("p"); // a Reconnect says nothing more
+    expect(stateOf(servers, "p")?.is).toBe("ready");
+    expect(notes).toEqual([NOT_RUN]);
+    // A live edit's restart is a start of its own, so it is said again.
+    answers.set("p", "w2", true, "no helper");
+    expect(servers.set([u, { ...p, written: "w2" }]).restarted).toEqual(["p"]);
+    expect(await servers.ready()).toBe(true);
+    expect(notes).toEqual([NOT_RUN, NOT_RUN]);
+    expect(theirs.runs()).toEqual([]);
+  });
+
+  it("runs a project's helper in the project's folder with the sandbox off, saying nothing of it", async () => {
+    const { dir, notes, make } = await setup();
+    const log = path.join(dir, "project.jsonl");
+    const project = await httpFake(dir, { log });
+    const theirs = fakeHelper(dir);
+    theirs.give({ "x-key": "theirs" });
+    const answers = launchAnswers();
+    answers.set("p", "w", true, "helper");
+    const servers = make([remoteWith("p", project.url, theirs.command, { where: "project", written: "w" })], {
+      answers: () => answers,
+      settingsDir: path.join(dir, "not-this-one"),
+    });
+    servers.startAll();
+    expect(await servers.ready()).toBe(true);
+    expect(stateOf(servers, "p")?.is).toBe("ready");
+    expect(theirs.runs().map((run) => [run.cwd, run.project])).toEqual([[dir, dir]]);
+    expect(keys(log)).toEqual(new Set(["theirs"]));
+    expect(notes).toEqual([]);
   });
 });
 

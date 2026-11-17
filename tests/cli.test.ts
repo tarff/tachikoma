@@ -20,7 +20,7 @@ import { readProjectFile, readServers } from "../src/mcp/config.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
 import { removeTree } from "./helpers.js";
-import { type FakeOptions, fakeServer, readLog, signInFake } from "./mcp/fake.js";
+import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog, signInFake } from "./mcp/fake.js";
 
 // Docker's answer for an image with no bash (node:22-alpine, as the quality review gave it).
 const NO_BASH = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "bash": executable file not found in $PATH: unknown';
@@ -1434,6 +1434,41 @@ describe("tachi's MCP servers", { timeout: 60_000 }, () => {
     expect(again).toEqual({ code: 0, stdout: "done\n", stderr: "" });
     const search = p.asked.at(-1)!.tools!.find((t) => t.function.name === "tool_search")!;
     expect(search.function.description).toContain("mcp__om__echo");
+  });
+
+  // 8c-2a plan, Task 10 (decision 28): a helper's error output, the path and query of a redirect's address and the
+  // entry's headers reach no line: neither stdout, with every JSON event, mcp-note among them, nor stderr.
+  it("with -p --json, says a failed headersHelper and a redirect to another origin without their secrets", async () => {
+    const p = await project();
+    const top = path.dirname(p.proj);
+    const helper = fakeHelper(top);
+    helper.mode("fail"); // exits 3, printing sk-fake-secret-1 on its error output
+    const unused = await httpFake(top);
+    const elsewhereLog = path.join(top, "elsewhere.jsonl");
+    const elsewhere = await httpFake(top, { log: elsewhereLog });
+    const origin = `http://127.0.0.1:${elsewhere.port}`;
+    const moving = await httpFake(top, { redirect: `${origin}/sk-fake-secret-2/mcp?token=sk-fake-secret-3` });
+    const mcpServers = {
+      helped: { type: "http", url: unused.url, headersHelper: helper.command },
+      moved: { type: "http", url: moving.url, headers: { "X-Key": "sk-fake-secret-4" } },
+    };
+    const home = homeWith(JSON.stringify({ mcpServers }));
+    const r = await tachiLater("--lead", "openai:lead", "-p", "hi", "--json", { ...p.env, ...home });
+    expect(r.code).toBe(0);
+    const events = r.stdout.trim().split("\n").map((l) => JSON.parse(l));
+    const failures = events.filter((e) => e.event === "error").map((e) => e.data.message);
+    expect(failures.sort()).toEqual(
+      [
+        "MCP server helped failed to start: its headersHelper failed: it exited with code 3",
+        `MCP server moved failed to start: the server answered with a redirect to ${origin}; ` +
+          "Tachikoma does not follow a redirect with the entry's headers",
+      ].sort(),
+    );
+    for (const text of [r.stdout, r.stderr, ...events.map((e) => JSON.stringify(e))]) {
+      expect(text).not.toContain("sk-fake-secret");
+    }
+    expect(helper.runs()).toHaveLength(1);
+    expect(readLog(elsewhereLog)).toEqual([]);
   });
 
   // Choices 23 and 24: one question per project server not yet answered, after the instruction files' question; a yes
