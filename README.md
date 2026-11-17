@@ -1,9 +1,9 @@
 # Tachikoma
 
 > **Work in progress.** Release 8c of 15 is done (the third of release 8's five parts), and
-> background commands, a new look for the screen and replies drawn as markdown after it; a fuller
-> system prompt comes next, then 8c's second half, 8c-2, servers inside the sandbox and allowed
-> sites, and the rest is being built.
+> background commands, a new look for the screen, replies drawn as markdown and a fuller system
+> prompt after it; 8c's second half, 8c-2, servers inside the sandbox and allowed sites, comes
+> next, and the rest is being built.
 > Expect missing features and changes that break things, and don't rely on it for real work yet.
 
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
@@ -35,7 +35,8 @@ So far it has been tested on Windows 11 only; release 14 adds testing on Linux a
   Claude Code does. The project is the folder you start `tachi` in. Each action goes through a
   permission mode, set with `--mode`; when it asks about a write or an edit, it shows what will go
   into the file first. There are four: `ask` (the default), `project`, `auto` and `never`. See
-  [Permission modes](#permission-modes).
+  [Permission modes](#permission-modes). Each session's system prompt tells the model the date,
+  whether the project is a git repository, and whether its shell commands can reach the web.
 - **Background commands** (after release 8c): the model can run a shell command in the
   background, such as a dev server, read what it has printed since it last looked with
   `shell_output`, and stop it with `stop_task`. When one ends by itself, the model is told at once with the output it has not read
@@ -630,13 +631,31 @@ everything the model read, cannot be committed by mistake.
   launch's tools differ from the ones the session was saved under, its earlier replies go without
   their thinking: `The tools have changed since this session was saved, so its earlier replies are
   sent without their thinking.`
-- **Unless the sandbox setting has changed:** a prompt saved with the sandbox on names bash and
-  `/work`, and one saved with it off names this computer's shell and project folder. When this
-  launch's setting differs, the model gets this launch's prompt instead, and keeps it from then on,
-  and the earlier replies go without their thinking: `The sandbox setting has changed since this
-  session was saved, so the model is told this launch's shell and project folder, and its earlier
-  replies are sent without their thinking.` The part after `folder` is said only when a reply had
-  thinking to leave out, and the line only at the launch that changed the setting.
+- **Unless the setup has changed:** the setup is the sandbox setting (off, live link or copy) and,
+  in the sandbox, its network. A prompt saved with the sandbox on names bash and `/work`, and one
+  saved with it off names this computer's shell and project folder. When this launch's setup
+  differs, the model gets this launch's prompt instead, and keeps it from then on, and the earlier
+  replies go without their thinking. The line says which change it was:
+  - the sandbox went on or off: `The sandbox setting has changed since this session was saved, so
+    the model is told this launch's shell and project folder, and its earlier replies are sent
+    without their thinking.`
+  - the sandbox's mode or network changed: `The sandbox's setup has changed since this session was
+    saved, so the model is told this launch's setup, and its earlier replies are sent without their
+    thinking.`
+  - a session saved in the sandbox by an older Tachikoma, opened in the sandbox: `This session was
+    saved before Tachikoma recorded the sandbox's mode and network, so the model is told this
+    launch's setup, and its earlier replies are sent without their thinking.`
+
+  The part after `folder` or `setup` is said only when a reply had thinking to leave out, and the
+  line only at the launch that changed the setup. A project that has become a git repository, or
+  stopped being one, keeps its saved prompt.
+- **The model is told what changed:** on the first message whose local date differs from the last
+  one it was told, as in a session reopened the next day, `Today's date is now <date>.`; after a
+  resume under another setup, one note naming what changed, for example `This session was resumed
+  under another setup. The sandbox is now a copy of the project. The project is a git repository
+  made for this sandbox copy; its one commit holds the project as copied. Shell commands can reach
+  the web now; earlier they could not. Earlier replies about the setup were right at the time.`
+  Neither shows in the conversation on screen; `/export` writes them under `Notes:`.
 - **What does not come back:** the mode, the sandbox and the network, which come from this launch's
   flags and settings, so resuming never brings back `auto` or `never` unasked; in copy mode the box
   gets a fresh copy of the folder as it is now. Nor does the to-do list, or a subagent that had not
@@ -700,8 +719,9 @@ In a session:
 `Tachikoma (<lead>):`, the lead being the one that wrote that reply; each tool call as `● <name>
 <input as JSON>`, with its result under it after `⎿`; each picture as its
 `[Image #1]` marker; and the notes about background subagents and commands the model was given,
-under `Subagents:`. The file is UTF-8 with LF line endings throughout. After a shortening, it is
-the conversation from the summary on; the earlier messages are in the transcript only.
+under `Subagents:`, and the notes of a changed date or setup, under `Notes:`. The file is UTF-8
+with LF line endings throughout. After a shortening, it is the conversation from the summary on;
+the earlier messages are in the transcript only.
 
 - **Where:** a relative path is from the project folder. In copy mode that is your own folder, not
   the copy, as the file is written by Tachikoma on your machine. A path in double quotes, as
@@ -2079,7 +2099,7 @@ Each is fixed in a later release, unless it says otherwise.
   planned to change).
 - **Instruction files are read at the start, and again only at a shortening or `/clear`.** A file
   edited during a session counts from then, and a reopened session keeps the system prompt it was
-  saved with until then, unless the sandbox setting has changed (see [Saved
+  saved with until then, unless the sandbox or its network has changed (see [Saved
   sessions](#saved-sessions)). Files in subfolders, which Claude Code reads as it works there, are
   not read. Reading files as they change, or as the work moves into a subfolder, would need the
   system prompt to change during a session, which prompt caching rules out (no release is set). Read
@@ -2418,9 +2438,7 @@ it says so.
   - when Anthropic's count fails and the estimate says the request will not fit, the summary may
     not have been needed;
   - while Anthropic's own fallback model keeps answering for the lead, every request is counted
-    exactly, one more call each;
-  - after a shortening, the new history is checked with the system prompt before it, so instruction
-    files that have grown can make the check low.
+    exactly, one more call each.
 - **A failed lookup of an Anthropic model's window is not tried again until the lead is switched.**
   Meanwhile the status line shows no "% left", no request is checked against the window, and a
   request holds at most 100 pictures.
