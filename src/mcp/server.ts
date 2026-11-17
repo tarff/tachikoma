@@ -97,8 +97,15 @@ class Stdio extends StdioClientTransport {
   child: ChildProcess | undefined;
   spawnError: unknown;
   errors = "";
+  started: Promise<void> | undefined; // start()'s end, either way, once it is called, for a close that comes first
 
-  override async start(): Promise<void> {
+  override start(): Promise<void> {
+    const starting = this.#start();
+    this.started = starting.catch(() => {});
+    return starting;
+  }
+
+  async #start(): Promise<void> {
     try {
       await super.start();
     } catch (err) {
@@ -113,7 +120,11 @@ class Stdio extends StdioClientTransport {
     const decoder = new StringDecoder("utf8");
     child.stderr?.on("data", (chunk: Buffer) => (this.errors = (this.errors + decoder.write(chunk)).slice(-MAX_TOOL_OUTPUT)));
     (this.stderr as NodeJS.ReadableStream | null)?.resume();
+    this.spawned();
   }
+
+  // Run once its process has spawned, inside start(), so before `started` settles and the library sends (BoxStdio).
+  protected spawned(): void {}
 }
 
 // A box server's transport (8c-2a plan, Task 4, decision 1): the `docker exec -i` that runs it, whose input carries the
@@ -129,8 +140,7 @@ class BoxStdio extends Stdio {
     super(params);
   }
 
-  override async start(): Promise<void> {
-    await super.start();
+  protected override spawned(): void {
     this.child!.stdin!.write(this.block);
   }
 }
@@ -381,6 +391,12 @@ export class Server {
     const connection = ++this.#connection;
     const stops = this.#stops;
     this.#state = { is: "starting" };
+    // One still open, as when two Reconnects come close together, is closed first, so only one server runs; its own
+    // start then finds it closed and leaves the state to this one (release 8c plan, Task 10's quality review). Its
+    // close begins here, before the wait below, so a box copy's is waited for as any of its name's (decision 24, as
+    // built; the review of the PR review's fix, 2026-11-18).
+    const prev = this.#conn;
+    if (prev && !prev.closed) void this.#close(prev);
     // Decision 24: the name's stops that failed in the box are tried again first; while one is not confirmed, nothing
     // starts, as its copy may still run there. Only then is there a wait, so a start with none connects as before. A
     // stop or a newer start during that wait leaves this start going no further, the state theirs, as there is no
@@ -389,7 +405,7 @@ export class Server {
     // an entry removed by one live edit and added back by a later one would otherwise start beside its old copy
     // (decision 24, as built; the PR review, 2026-11-18). A stop or a newer start meanwhile holds here too.
     if (this.#pendingStops.size) {
-      await Promise.all(this.#pendingStops);
+      await Promise.allSettled(this.#pendingStops); // a stop that failed holds nothing more here
       if (this.#stops !== stops || this.#connection !== connection) return false;
     }
     if (this.#unstopped.length) {
@@ -422,10 +438,6 @@ export class Server {
       this.#state = failed(conn);
       return false;
     }
-    // One still open, as when two Reconnects come close together, is closed first, so only one server runs; its own start
-    // then finds it closed and leaves the state to this one (release 8c plan, Task 10's quality review).
-    const prev = this.#conn;
-    if (prev && !prev.closed) void this.#close(prev);
     this.#conn = conn;
     const got = await this.#open(conn);
     if (conn.closed) return false; // stopped meanwhile: the stop's caller owns the state
@@ -748,10 +760,13 @@ export class Server {
   // on Windows taskkill /T blocks for 2-4 s (src/sandbox/docker.ts, choice 125), which would hold every exit. It gets
   // SIGKILL, as killTree sends, since a client that catches SIGTERM would have the library's close wait 2 s twice.
   // A box server's whole close, the 300 ms included, is one of its name's pending stops until any failed kill is
-  // recorded, so a start of the name waits for it (#connect; decision 24, as built).
+  // recorded, so a start of the name waits for it (#connect; decision 24, as built). A process not yet spawned, as when
+  // a second Reconnect closes the first's copy at once, is waited for before the client's close, which would forget
+  // it: until then there is no child to read, and its group would go unkilled (the review of the PR review's fix).
   #close(conn: Conn, exit = false): Promise<void> {
     if (conn.closed) return conn.closed;
     conn.closed = Promise.resolve().then(async () => {
+      await conn.local?.started;
       const closing = conn.client.close().catch(() => {});
       const child = conn.local?.child;
       const boxed = conn.local instanceof BoxStdio ? conn.local : undefined;
@@ -774,7 +789,8 @@ export class Server {
     if (conn.local instanceof BoxStdio) {
       const closed = conn.closed;
       this.#pendingStops.add(closed);
-      void closed.then(() => this.#pendingStops.delete(closed));
+      const done = () => this.#pendingStops.delete(closed);
+      void closed.then(done, done); // gone either way, so a close that failed never holds a start
     }
     return conn.closed;
   }

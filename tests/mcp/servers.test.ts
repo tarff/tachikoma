@@ -807,6 +807,63 @@ describe("Servers: a box server's stop that failed", () => {
     expect(kills()).toBe(1);
   });
 
+  // The same, added back at once, inside the stop's 300 ms, before its kill has begun: the whole stop is waited for,
+  // not only its kill.
+  it("holds an entry added back within its removed copy's 300 ms, blocking it when the kill then fails", async () => {
+    const { fake, a, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const hold = held();
+    fake.kills.push(hold.kill, BOOM); // A's stop, held; then the new copy's retry
+    expect(servers.set([]).removed).toEqual(["s"]);
+    expect(servers.set([a]).added).toEqual(["s"]);
+    await vi.waitFor(() => expect(kills()).toBe(1), WAIT);
+    hold.answer(BOOM);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(kills()).toBe(2);
+    expect(fake.started()).toHaveLength(1);
+  });
+
+  // The review of the PR review's fix (2026-11-18): two Reconnects close together. The first opens a copy, which the
+  // second closes, its process not yet spawned, so the second waits for that close's kill in the box, here failing.
+  // The first copy's own kill is answered as worked without killing it, and the held one so too, so both servers are
+  // left running for the cleanup's killAll.
+  it("blocks two Reconnects close together while the first one's copy cannot be killed", async () => {
+    const { fake, a, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const hold = held();
+    fake.kills.push(WORKED, hold.kill, BOOM); // the first copy's stop; the first Reconnect's copy's, held; the retry
+    const both = Promise.all([servers.restart("s"), servers.restart("s")]);
+    await vi.waitFor(() => expect(kills()).toBe(2), WAIT);
+    expect(fake.started()).toHaveLength(2); // the first copy and the first Reconnect's, none of the second's
+    hold.answer(BOOM);
+    await both;
+    expect(stateOf(servers, "s")).toEqual(BLOCKED);
+    expect(kills()).toBe(3);
+    expect(fake.started()).toHaveLength(2);
+  });
+
+  it("starts the second of two Reconnects close together once the first one's copy is killed", async () => {
+    const { fake, a, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const hold = held();
+    fake.kills.push(WORKED, hold.kill);
+    const both = Promise.all([servers.restart("s"), servers.restart("s")]);
+    await vi.waitFor(() => expect(kills()).toBe(2), WAIT);
+    expect(stateOf(servers, "s")?.is).toBe("starting");
+    expect(fake.started()).toHaveLength(2);
+    hold.answer(WORKED);
+    await both;
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(fake.started()).toHaveLength(3);
+    expect(kills()).toBe(2);
+  });
+
   // 8c-2a plan, Task 6: a host copy is given the box too, so it can try the record's kill again before it starts.
   it("blocks a live edit's host copy while the box copy's kill fails, starting it here once it works", async () => {
     const { fake, a, make, kills, logs } = await boxed();

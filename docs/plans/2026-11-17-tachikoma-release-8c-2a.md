@@ -239,7 +239,9 @@ Each is marked in its task. The user approves them with the plan.
      `broken` for the shell tools and refuses a start with `the box stopped` (decision 7), so nothing more is lost.
    - As built (the PR review, 2026-11-18): a start also waits for its name's stops in the box still pending, from
      the stop's first moment to its kill's answer, before the retries. An entry removed by one live edit and added
-     back by a later one had started at once beside its old copy, whose kill could then fail.
+     back by a later one had started at once beside its old copy, whose kill could then fail. So too with two
+     Reconnects close together: the second now begins closing the first's copy before that wait, and a close waits
+     for a process not yet spawned, whose group in the box was otherwise never killed.
 
    Task 4.
 25. **Retiring connections are kept until they close** (the plan review's finding 2). Each connection a refresh
