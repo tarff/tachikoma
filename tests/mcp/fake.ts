@@ -35,6 +35,15 @@ export interface FakeOptions {
   // answers every other POST with a 307 to this address.
   slash?: true;
   redirect?: string;
+  // Over HTTP (Task 11): `tokenFile`: a POST whose x-token header is not that file's text is answered `denyStatus`, or
+  // 401; `denyTool`: a call to that tool is answered 403; `holdSecond`: the second initialize is answered once that
+  // file exists; `redirectCall`: a tools/call is answered with a 307 to that address.
+  tokenFile?: string;
+  denyStatus?: number;
+  denyTool?: string;
+  holdSecond?: string;
+  redirectCall?: string;
+  gate?: string; // the file whose existence the unlisted wait tool waits for, looked for every 20 ms
   tools?: object[]; // its tools/list, in place of its own tools (Task 5's names and schemas)
   added?: object[]; // what change adds, before the others, in place of "added"
   results?: Record<string, object>; // a call to a tool named here is answered with this result (Task 6's answers)
@@ -56,7 +65,8 @@ export interface FakeOptions {
 // cancels that request at once and answers "cancelled" (Task 12: a server that gives up on its form); change adds a
 // tool and says the list changed; exit prints `stderr` and exits with `code`. The tools are called by name whatever the
 // list says, so a fake with its own `tools` still answers change and exit, and the unlisted add-resource, which adds its
-// `resource` to the resources and says their list changed (Task 13). Over HTTP, which answers in JSON only, nothing
+// `resource` to the resources and says their list changed (Task 13), and wait, which answers "waited" once `gate`
+// exists (8c-2a plan, Task 11). Over HTTP, which answers in JSON only, nothing
 // reaches the client between answers, so progress, ask and the changes' notices need stdio.
 const SCRIPT = String.raw`
 const fs = require("node:fs");
@@ -142,6 +152,10 @@ function answer(m, reply) {
       text("added");
       return notify({ method: "notifications/resources/list_changed" });
     case "exit": return process.stderr.write(args.stderr || "", () => process.exit(args.code));
+    case "wait": {
+      const poll = () => (fs.existsSync(O.gate) ? text("waited") : setTimeout(poll, 20));
+      return poll();
+    }
   }
   reply({ error: { code: -32602, message: "no such tool" } });
 }
@@ -204,18 +218,29 @@ function serveHttp() {
       if (O.slash && req.url === "/mcp") return res.writeHead(307, { location: "/mcp/" }).end();
       if (O.redirect) return res.writeHead(307, { location: O.redirect }).end();
       if (O.status) return res.writeHead(O.status).end("refused");
+      if (O.tokenFile && req.headers["x-token"] !== fs.readFileSync(O.tokenFile, "utf8")) {
+        return res.writeHead(O.denyStatus || 401).end("refused");
+      }
       const m = JSON.parse(body);
       if (m.method !== "initialize" && !sessions.has(req.headers["mcp-session-id"])) return res.writeHead(404).end();
       if (m.id === undefined) return res.writeHead(202).end();
       if (O.silent) return;
       if (m.method === "tools/call" && m.params.name === "cut") return req.socket.destroy();
+      if (m.method === "tools/call" && m.params.name === O.denyTool) return res.writeHead(403).end("refused");
+      if (m.method === "tools/call" && O.redirectCall) return res.writeHead(307, { location: O.redirectCall }).end();
       const headers = { "content-type": "application/json" };
       if (m.method === "initialize") {
         const id = "session-" + ++next;
         sessions.add(id);
         headers["mcp-session-id"] = id;
       }
-      answer(m, (r) => res.writeHead(200, headers).end(JSON.stringify({ jsonrpc: "2.0", id: m.id, ...r })));
+      const send = () =>
+        answer(m, (r) => res.writeHead(200, headers).end(JSON.stringify({ jsonrpc: "2.0", id: m.id, ...r })));
+      if (m.method === "initialize" && next === 2 && O.holdSecond) {
+        const poll = () => (fs.existsSync(O.holdSecond) ? send() : setTimeout(poll, 20));
+        return poll();
+      }
+      send();
     });
   });
   server.listen(O.port || 0, "127.0.0.1", () => process.stdout.write(JSON.stringify({ port: server.address().port }) + "\n"));
@@ -271,11 +296,14 @@ export async function httpFake(dir: string, opts: FakeOptions = {}): Promise<{ u
 // authServerMetadataUrl; "challenge" names its discovery document only in the 401, at /challenge/resource, and the
 // service there is at /issuer, so nothing is found at the server's own well-known addresses (choice 70). `slow` holds
 // each code's tokens until `answer()`. `slash` answers a POST to /mcp with a 307 to /mcp/, its MCP endpoint then, whose
-// discovery document still names /mcp, the entry's address (8c-2a plan, Task 10).
+// discovery document still names /mcp, the entry's address (8c-2a plan, Task 10). `scope403` answers the first
+// tools/call 403 with the insufficient-scope challenge, once, for the scope its tokens already have, so the library's
+// own step-up would only refresh the token and send the call again; `seen.calls` counts the tools/call requests (Task
+// 11).
 export async function signInFake(
   opts: {
     refresh?: false; registration?: false | "refused"; metadata?: "none" | "elsewhere" | "challenge"; slow?: true;
-    slash?: true;
+    slash?: true; scope403?: true;
   } = {},
 ) {
   const clients = new Map<string, { redirect_uris: string[] }>();
@@ -285,9 +313,10 @@ export async function signInFake(
   const held: (() => void)[] = [];
   const seen = {
     registered: 0, grants: [] as string[], bearer: [] as (string | null)[], authorized: [] as URLSearchParams[],
-    requests: [] as { path: string; headers: http.IncomingHttpHeaders }[],
+    requests: [] as { path: string; headers: http.IncomingHttpHeaders }[], calls: 0,
   };
   let issued = 0;
+  let scoped = false;
   const server = http.createServer((req, res) => {
     let body = "";
     req.setEncoding("utf8");
@@ -342,7 +371,8 @@ export async function signInFake(
           live.add(`access-${n}`);
           refresh.add(`refresh-${n}`);
           const again = opts.refresh === false ? {} : { refresh_token: `refresh-${n}` };
-          return json(200, { access_token: `access-${n}`, ...again, token_type: "Bearer", expires_in: 3600 });
+          const scope = opts.scope403 ? { scope: "more" } : {};
+          return json(200, { access_token: `access-${n}`, ...again, ...scope, token_type: "Bearer", expires_in: 3600 });
         };
         if (grant === "authorization_code") {
           const c = codes.get(form.get("code") ?? "");
@@ -369,6 +399,12 @@ export async function signInFake(
         if (req.method !== "POST") return res.writeHead(405, { connection: "close" }).end();
         const m = JSON.parse(body);
         if (m.id === undefined) return res.writeHead(202, { connection: "close" }).end();
+        if (m.method === "tools/call") seen.calls++;
+        if (m.method === "tools/call" && opts.scope403 && !scoped) {
+          scoped = true;
+          const challenge = 'Bearer error="insufficient_scope", scope="more"';
+          return json(403, { error: "insufficient_scope" }, { "www-authenticate": challenge });
+        }
         const result =
           m.method === "initialize"
             ? { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1.0.0" } }

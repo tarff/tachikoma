@@ -683,3 +683,155 @@ describe("a remote server's headersHelper, and its redirects", () => {
     expect(posts(log).filter((m) => m.body.method === "initialize")).toHaveLength(1);
   });
 });
+
+// 8c-2a plan, Task 11 (decisions 18-21, 23, 25 and 27): a 401 or 403 runs the helper again on a new connection, the
+// calls in flight finishing on the old one.
+describe("a remote server's refresh at a 401 or 403", () => {
+  const posts = (log: string) => readLog(log).filter((m) => m.http === "POST");
+  const callsOf = (log: string) => posts(log).filter((m) => m.body.method === "tools/call");
+  const initializes = (log: string) => posts(log).filter((m) => m.body.method === "initialize");
+  // A fake whose every POST needs the x-token held in `token`, and a ready server whose helper gives it; `turn` changes
+  // both. The fake's wait tool answers once `gate` exists. `more` gives the fake's other options.
+  async function turned(more: (dir: string) => FakeOptions = () => ({})) {
+    const t = await setup();
+    const token = path.join(t.dir, "token.txt");
+    const gate = path.join(t.dir, "gate");
+    await writeFile(token, "t1");
+    const fake = await httpFake(t.dir, { log: t.log, tokenFile: token, gate, ...more(t.dir) });
+    const helper = fakeHelper(t.dir);
+    helper.give({ "x-token": "t1" });
+    // Out of the test's folder, which Windows keeps a moment for a killed program that worked in it.
+    const server = t.make(remote(fake.url, {}, helper.command), { helper: { cwd: tmpdir(), project: false } });
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    const turn = async (to: string) => {
+      await writeFile(token, to);
+      helper.give({ "x-token": to });
+    };
+    return { ...t, gate, helper, server, turn };
+  }
+  // A call to wait, once the fake has it; in an object, as an async function's promise would wait for the call itself.
+  const inFlight = async (t: Awaited<ReturnType<typeof turned>>) => {
+    const waiting = t.server.callTool("wait", {}, {});
+    await vi.waitFor(() => expect(callsOf(t.log).filter((m) => m.body.params.name === "wait")).toHaveLength(1), WAIT);
+    return { waiting };
+  };
+
+  it("fails a call answered 401, sent once, runs the helper again, the next call sent with the new token", async () => {
+    const t = await turned(() => ({ resources: [{ uri: "note://a", name: "a", text: "hi" }] }));
+    t.helper.hold();
+    await t.turn("t2");
+    await expect(t.server.callTool("echo", { text: "first" }, {})).rejects.toThrow();
+    const refresh = t.server.refreshing;
+    expect(refresh).toBeDefined();
+    t.helper.go();
+    expect(await refresh).toEqual({ is: "ready" });
+    expect(t.helper.runs()).toHaveLength(2);
+    expect(textOf(await t.server.callTool("echo", { text: "second" }, {}))).toBe("second");
+    const sent = callsOf(t.log).map((m) => [m.body.params.arguments.text, m.headers["x-token"]]);
+    expect(sent).toEqual([["first", "t1"], ["second", "t2"]]);
+    expect(t.server.connection).toBe(1);
+    expect(t.server.refreshing).toBeUndefined();
+    // The new connection's resources, listed before it was the server's, are its own.
+    await t.server.listed;
+    expect(t.server.resources.map((r) => r.uri)).toEqual(["note://a"]);
+  });
+
+  it("starts one refresh for two calls answered 403 at once, a call in flight answered on the old one", async () => {
+    const t = await turned(() => ({ denyStatus: 403 }));
+    const { waiting } = await inFlight(t);
+    t.helper.hold();
+    await t.turn("t2");
+    const two = [t.server.callTool("echo", { text: "a" }, {}), t.server.callTool("echo", { text: "b" }, {})];
+    expect(await Promise.allSettled(two)).toMatchObject([{ status: "rejected" }, { status: "rejected" }]);
+    const refresh = t.server.refreshing!;
+    t.helper.go();
+    expect(await refresh).toEqual({ is: "ready" });
+    await writeFile(t.gate, "");
+    expect(textOf(await waiting)).toBe("waited");
+    expect(textOf(await t.server.callTool("echo", { text: "c" }, {}))).toBe("c");
+    expect(t.helper.runs()).toHaveLength(2);
+    const session = (name: string, text?: string) =>
+      callsOf(t.log)
+        .filter((m) => m.body.params.name === name && m.body.params.arguments?.text === text)
+        .map((m) => m.headers["mcp-session-id"]);
+    expect([session("wait"), session("echo", "c")]).toEqual([["session-1"], ["session-2"]]);
+  });
+
+  it("fails a refresh whose helper fails, the server failed with its reason, a call in flight finishing", async () => {
+    const t = await turned();
+    const { waiting } = await inFlight(t);
+    t.helper.mode("fail");
+    t.helper.hold();
+    await t.turn("t2");
+    await expect(t.server.callTool("echo", { text: "x" }, {})).rejects.toThrow();
+    const refresh = t.server.refreshing!;
+    t.helper.go();
+    expect(await refresh).toEqual({ is: "failed", reason: "it exited with code 3", helper: true });
+    expect(t.server.state).toEqual({ is: "failed", reason: "its headersHelper failed: it exited with code 3" });
+    await writeFile(t.gate, "");
+    expect(textOf(await waiting)).toBe("waited");
+    expect(initializes(t.log)).toHaveLength(1);
+  });
+
+  // Decision 21: the stop kills the refresh's helper, and nothing more is opened.
+  it("drops a refresh stopped while its helper runs, killing the helper, and opens no new connection", async () => {
+    const t = await turned();
+    t.helper.hold();
+    await t.turn("t2");
+    await expect(t.server.callTool("echo", { text: "x" }, {})).rejects.toThrow();
+    const refresh = t.server.refreshing!;
+    await vi.waitFor(() => expect(t.helper.runs()).toHaveLength(2), WAIT);
+    await t.server.stop();
+    expect(await refresh).toEqual({ is: "dropped" });
+    // Gone before its go file exists, and within WAIT's 5 s, before its own 10 s limit, so the stop killed it.
+    await vi.waitFor(() => expect(alive(t.helper.runs()[1]!.pid)).toBe(false), WAIT);
+    expect(initializes(t.log)).toHaveLength(1);
+  });
+
+  it("drops a refresh stopped while its new connection's initialize waits, which then goes no further", async () => {
+    let second = "";
+    const t = await turned((dir) => ({ holdSecond: (second = path.join(dir, "second")) }));
+    await t.turn("t2");
+    await expect(t.server.callTool("echo", { text: "x" }, {})).rejects.toThrow();
+    const refresh = t.server.refreshing!;
+    await vi.waitFor(() => expect(initializes(t.log)).toHaveLength(2), WAIT);
+    const state = t.server.state;
+    await t.server.stop();
+    expect(await refresh).toEqual({ is: "dropped" });
+    expect(t.server.state).toEqual(state);
+    // The held initialize answered, and a start after it: nothing came from the dropped connection in between.
+    await writeFile(second, "");
+    await t.server.start();
+    expect(names(t.server)).toEqual(TOOLS);
+    const methods = posts(t.log).map((m) => m.body.method);
+    const [, at, next] = methods.flatMap((m, i) => (m === "initialize" ? [i] : []));
+    expect(methods.slice(at! + 1, next)).toEqual([]);
+  });
+
+  // Decision 25: a connection a refresh replaced is the server's own until it closes, so a stop closes it too.
+  it("closes the old connection at a stop while a call still drains on it, the call failing", async () => {
+    const t = await turned(() => ({ denyTool: "denied" }));
+    const { waiting } = await inFlight(t);
+    await expect(t.server.callTool("denied", {}, {})).rejects.toThrow();
+    expect(await t.server.refreshing).toEqual({ is: "ready" });
+    await t.server.stop();
+    await expect(waiting).rejects.toThrow();
+    const old = posts(t.log).filter((m) => m.headers["mcp-session-id"] === "session-1");
+    expect(old.at(-1)!.body.params.name).toBe("denied");
+  });
+
+  // Decision 27: a hop within the origin is the same request, so its 403 or 401 starts the refresh.
+  it.each(["a denied tool's 403", "a turned token's 401"])("starts one refresh at %s at /mcp/", async (kind) => {
+    const t = await turned(() => ({ slash: true, denyTool: "denied" }));
+    t.helper.hold();
+    if (kind.includes("token")) await t.turn("t2");
+    await expect(t.server.callTool(kind.includes("token") ? "echo" : "denied", {}, {})).rejects.toThrow();
+    expect(posts(t.log).at(-1)!.path).toBe("/mcp/");
+    const refresh = t.server.refreshing;
+    expect(refresh).toBeDefined();
+    t.helper.go();
+    expect(await refresh).toEqual({ is: "ready" });
+    expect(t.helper.runs()).toHaveLength(2);
+  });
+});

@@ -1023,6 +1023,66 @@ describe("Servers: where each server runs", () => {
   });
 });
 
+// 8c-2a plan, Task 11 (decisions 21 and 25): a removal, a restart and stopAll during a refresh, and after one while a
+// call still drains on the old connection.
+describe("Servers: a refresh at a 401 or 403", () => {
+  // A ready remote server r whose every POST needs the x-token in `token`, which its user's helper gives. The fake's
+  // wait tool answers once its gate exists, which no test makes, and a call to "denied" is answered 403.
+  async function refreshing() {
+    const t = await setup();
+    const log = path.join(t.dir, "r.jsonl");
+    const token = path.join(t.dir, "token.txt");
+    await writeFile(token, "t1");
+    const fake = await httpFake(t.dir, { log, tokenFile: token, gate: path.join(t.dir, "gate"), denyTool: "denied" });
+    const helper = fakeHelper(t.dir);
+    helper.give({ "x-token": "t1" });
+    const entry = { kind: "http" as const, url: fake.url, headers: {}, headersHelper: helper.command };
+    const config: ServerConfig = {
+      name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "", entry,
+      asWritten: entry,
+    };
+    // Out of the test's folder, which Windows keeps a moment for a killed program that worked in it.
+    const servers = t.make([config], { settingsDir: tmpdir() });
+    servers.startAll();
+    await servers.ready();
+    expect(stateOf(servers, "r")?.is).toBe("ready");
+    return { log, token, helper, servers, server: servers.server("r")! };
+  }
+  const ends = {
+    removal: (s: Servers) => void s.set([]),
+    restart: (s: Servers) => s.restart("r"),
+    stopAll: (s: Servers) => s.stopAll(),
+  };
+  const posts = (log: string) => readLog(log).filter((m) => m.http === "POST");
+
+  const three = ["removal", "restart", "stopAll"] as const;
+
+  it.each(three)("drops a refresh at a %s, after which only a restart connects", async (end) => {
+    const r = await refreshing();
+    r.helper.hold();
+    await writeFile(r.token, "t2");
+    r.helper.give({ "x-token": "t2" });
+    await expect(r.server.callTool("echo", { text: "x" }, {})).rejects.toThrow();
+    const refresh = r.server.refreshing!;
+    await vi.waitFor(() => expect(r.helper.runs()).toHaveLength(2), WAIT);
+    const ended = ends[end](r.servers);
+    expect(await refresh).toEqual({ is: "dropped" });
+    r.helper.go(); // for the restart's own start
+    await ended;
+    expect(posts(r.log).filter((m) => m.body.method === "initialize")).toHaveLength(end === "restart" ? 2 : 1);
+  });
+
+  it.each(three)("closes a connection a refresh replaced at a %s, its call failing", async (end) => {
+    const r = await refreshing();
+    const waiting = r.server.callTool("wait", {}, {});
+    await vi.waitFor(() => expect(posts(r.log).filter((m) => m.body.params?.name === "wait")).toHaveLength(1), WAIT);
+    await expect(r.server.callTool("denied", {}, {})).rejects.toThrow();
+    expect(await r.server.refreshing).toEqual({ is: "ready" });
+    await ends[end](r.servers);
+    await expect(waiting).rejects.toThrow();
+  });
+});
+
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0);

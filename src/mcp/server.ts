@@ -57,6 +57,11 @@ export type State =
   | { is: "stopped"; reason: string; retry: boolean } // retry: a remote one whose connection dropped, not yet tried again since this drop (choices 13, 33)
   | { is: "needs sign-in" } | { is: "waiting for your yes" } | { is: "you said no" } | { is: "off" };
 
+// How a refresh ended (8c-2a plan, Task 11; decision 20): its new connection ready; failed, the server with it, with
+// the reason a waiting call is told and whether it was the helper that failed or the new connection (choice 6); or
+// dropped by a stop, or overtaken.
+export type Refresh = { is: "ready" } | { is: "failed"; reason: string; helper: boolean } | { is: "dropped" };
+
 // Claude Code's MCP_TIMEOUT: a server has 30 s to connect and send its first list (choice 1; "Numbers in this plan").
 const START_MS = 30_000;
 // A remote server's single request, unless the entry's timeout is longer (Claude Code's MCP page; "Numbers in this plan").
@@ -144,11 +149,20 @@ interface Conn {
   signs: boolean;
   helped: boolean;
   redirected?: Redirected;
+  // Task 11: its calls and reads waiting for answers, and whether a refresh replaced it, so it closes when none is left
+  // (#retire; decision 25).
+  sent: number;
+  retiring?: boolean;
 }
 
 type RemoteEntry = Extract<ServerEntry, { kind: "http" | "sse" }>;
 // A connection's headers, the helper's merged in, and whether it signs in, which #prepare decides for each one.
 type Prepared = { headers: Record<string, string>; signs: boolean; helped: boolean };
+// A new connection's start (#open): its tools, why it failed, or that it needs sign-in.
+type Opened = { tools: Tool[] } | { reason: string } | { signIn: true };
+// A refresh running (Task 11): the connection it replaces, the new one once made, its helper's stop, whether a stop
+// dropped it, and its end.
+type Refreshing = { from: Conn; next?: Conn; stop: AbortController; dropped?: true; done: Promise<Refresh> };
 
 export class Server {
   readonly config: ServerConfig;
@@ -169,6 +183,8 @@ export class Server {
   #stops = 0; // how many stops have come, so a start that waited can tell one came meanwhile (#connect)
   readonly #helper: { cwd: string; project: boolean } | undefined;
   #helping: AbortController | undefined; // the latest start's helper, which a stop kills
+  #refresh: Refreshing | undefined; // the latest refresh, until it ends (Task 11)
+  readonly #retiring = new Set<Conn>(); // the connections refreshes replaced, until each has closed (decision 25)
 
   // `startMs` is the start's limit, 30 s unless a test gives a short one. `auth` keeps sign-ins: with it a remote server
   // has its own OAuth client (Task 11) when its headersHelper runs, or when its entry has no Authorization header of
@@ -229,6 +245,11 @@ export class Server {
     return this.#conn?.listed ?? Promise.resolve();
   }
 
+  // The refresh running, for a call to wait for (tools.ts; decision 20); a dropped one until it ends (decision 21).
+  get refreshing(): Promise<Refresh> | undefined {
+    return this.#refresh?.done;
+  }
+
   // Never throws: the state says how it went.
   async start(): Promise<void> {
     await this.#connect((reason) => ({ is: "failed", reason }));
@@ -259,6 +280,7 @@ export class Server {
     const timeout = opts.timeout ?? this.#limit();
     const call = opts.owner ? { owner: opts.owner } : {};
     this.#calls.add(call);
+    conn.sent++;
     try {
       return await conn.client.callTool({ name, arguments: args as Record<string, unknown> }, { signal: opts.signal, timeout });
     } catch (err) {
@@ -271,6 +293,7 @@ export class Server {
       throw err;
     } finally {
       this.#calls.delete(call);
+      if (--conn.sent === 0 && conn.retiring) void this.#close(conn);
     }
   }
 
@@ -292,6 +315,7 @@ export class Server {
     if (!conn?.ready || conn.closed || this.#state.is !== "ready") throw new Error("Not connected");
     const call = {};
     this.#calls.add(call);
+    conn.sent++;
     try {
       return await send(conn.client, this.#limit());
     } catch (err) {
@@ -303,15 +327,24 @@ export class Server {
       throw err;
     } finally {
       this.#calls.delete(call);
+      if (--conn.sent === 0 && conn.retiring) void this.#close(conn);
     }
   }
 
   // At Tachikoma's exit, a restart or a removal (choice 3). `exit`: at Tachikoma's exit, when removing the box ends a
-  // box server, so its `docker exec` is ended at once (8c-2a plan, decision 6).
+  // box server, so its `docker exec` is ended at once (8c-2a plan, decision 6). A refresh running is dropped, its
+  // helper killed, and every connection is closed: the current one, the refresh's new one and those still draining
+  // (8c-2a plan, decisions 21 and 25).
   async stop(opts: { exit?: boolean } = {}): Promise<void> {
     this.#stops++;
     this.#helping?.abort(); // a helper still running for a start is killed (decision 22)
-    if (this.#conn) await this.#close(this.#conn, opts.exit);
+    const r = this.#refresh;
+    if (r) {
+      r.dropped = true;
+      r.stop.abort();
+    }
+    const conns = new Set([this.#conn, r?.next, ...this.#retiring]);
+    await Promise.all([...conns].map((conn) => conn && this.#close(conn, opts.exit)));
   }
 
   // /mcp's Sign in and Sign out (Task 11), for a remote server that has its own OAuth client; the caller connects again.
@@ -354,42 +387,64 @@ export class Server {
       const helping = (this.#helping = new AbortController());
       const got = await this.#prepare(entry, helping.signal).catch(() => undefined);
       if (got === undefined || this.#stops !== stops || this.#connection !== connection) return false;
-      if (typeof got === "string") {
-        this.#state = failed(got);
+      if ("reason" in got) {
+        this.#state = failed(helperFailed(got.reason));
         return false;
       }
       prepared = got;
     }
-    const conn: Conn = {
-      transport: undefined as unknown as Transport, client: undefined as unknown as Client, ready: false,
-      resources: [], prompts: [], listed: Promise.resolve(), signs: prepared.signs, helped: prepared.helped,
-    };
-    const made = this.#transport(prepared, conn);
-    if (typeof made === "string") {
-      this.#state = failed(made);
+    const conn = this.#newConn(prepared);
+    if (typeof conn === "string") {
+      this.#state = failed(conn);
       return false;
     }
-    conn.transport = made;
-    if (made instanceof Stdio) conn.local = made;
-    conn.client = this.#client(conn);
     // One still open, as when two Reconnects come close together, is closed first, so only one server runs; its own start
     // then finds it closed and leaves the state to this one (release 8c plan, Task 10's quality review).
     const prev = this.#conn;
     if (prev && !prev.closed) void this.#close(prev);
     this.#conn = conn;
+    const got = await this.#open(conn);
+    if (conn.closed) return false; // stopped meanwhile: the stop's caller owns the state
+    if (!("tools" in got)) {
+      this.#state = "signIn" in got ? { is: "needs sign-in" } : failed(got.reason);
+      await this.#close(conn);
+      return false;
+    }
+    conn.ready = true;
+    this.#instructions = conn.client.getInstructions();
+    this.#state = { is: "ready", tools: got.tools };
+    return true;
+  }
 
-    // The library's own limit on each request is passed too, so neither falls back to its 60 s. Its resources and prompts
-    // (Task 13) are asked for beside its tools, only of a server that offers them, as the library would otherwise print
-    // that it does not onto the window; the start never waits for them, and one that fails stays empty, as the tools still
-    // work. Each fills in when it answers, under the library's own limit.
+  // A connection's transport and client, or the reason it cannot be made.
+  #newConn(prepared: Prepared): Conn | string {
+    const conn: Conn = {
+      transport: undefined as unknown as Transport, client: undefined as unknown as Client, ready: false,
+      resources: [], prompts: [], listed: Promise.resolve(), signs: prepared.signs, helped: prepared.helped, sent: 0,
+    };
+    const made = this.#transport(prepared, conn);
+    if (typeof made === "string") return made;
+    conn.transport = made;
+    if (made instanceof Stdio) conn.local = made;
+    conn.client = this.#client(conn);
+    return conn;
+  }
+
+  // A new connection connected and its tools listed within the start's limit, for a start and a refresh alike.
+  // The library's own limit on each request is passed too, so neither falls back to its 60 s. Its resources and
+  // prompts (Task 13) are asked for beside its tools, only of a server that offers them, as the library would otherwise
+  // print that it does not onto the window; the start never waits for them, and one that fails stays empty, as the
+  // tools still work. Each fills in when it answers, under the library's own limit, and is taken by a refresh's new
+  // connection before it is the server's (Task 11).
+  async #open(conn: Conn): Promise<Opened> {
     const work = (async () => {
-      await conn.client.connect(made, { timeout: this.#startMs });
+      await conn.client.connect(conn.transport, { timeout: this.#startMs });
       const offers = conn.client.getServerCapabilities();
       const list = <T>(asked: Promise<T[]>, take: (items: T[]) => void) =>
         asked.then((items) => {
-          if (conn !== this.#conn || conn.closed) return;
+          if (conn.closed) return;
           take(items);
-          if (conn.ready) this.#onChange();
+          if (conn === this.#conn && conn.ready) this.#onChange();
         }, () => {});
       conn.listed = Promise.all([
         offers?.resources && list(conn.client.listResources().then((r) => r.resources), (r) => (conn.resources = r)),
@@ -400,31 +455,87 @@ export class Server {
     work.catch(() => {}); // a late answer, or the close at the limit, comes after the race below is settled
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), this.#startMs)));
-    let reason: string | undefined;
-    let signIn = false;
-    let tools: Tool[] = [];
     try {
       const got = await Promise.race([work, late]);
-      if (got === "late") reason = this.#late();
-      else tools = got;
+      return got === "late" ? { reason: this.#late() } : { tools: got };
     } catch (err) {
       // A start the server refused for want of a sign-in, which only /mcp starts (Task 11); one that publishes no sign-in
       // details keeps its 401 (choice 59).
-      if (conn.signs && UnauthorizedError.isInstance(err)) signIn = true;
-      else reason = err instanceof NoSignIn ? `${this.#address()} answered 401` : this.#startReason(conn, err);
+      if (conn.signs && UnauthorizedError.isInstance(err)) return { signIn: true };
+      return { reason: err instanceof NoSignIn ? `${this.#address()} answered 401` : this.#startReason(conn, err) };
     } finally {
       clearTimeout(timer);
     }
-    if (conn.closed) return false; // stopped meanwhile: the stop's caller owns the state
-    if (reason !== undefined || signIn) {
-      this.#state = signIn ? { is: "needs sign-in" } : failed(reason!);
-      await this.#close(conn);
-      return false;
+  }
+
+  // A status the server's own address answered on this connection (connectionFetch). A 401 or 403 on the ready
+  // connection in force, whose headers a helper gave, starts a refresh, unless one is running; on a connection that
+  // signs in a 401 stays sign-in's (8c-2a plan, Task 11; decision 18). A dropped refresh still ending blocks none.
+  #answered(conn: Conn, status: number): void {
+    if (status !== 403 && (status !== 401 || conn.signs)) return;
+    if (!conn.helped || conn !== this.#conn || !conn.ready || conn.closed) return;
+    if (this.#refresh && !this.#refresh.dropped) return;
+    const r = { from: conn, stop: new AbortController() } as Refreshing;
+    this.#refresh = r;
+    r.done = this.#reopen(r);
+  }
+
+  // A refresh (decisions 19, 21 and 23): the helper run again and a new connection opened beside the old one, which
+  // then is the server's, its connection number kept, and the old one closed once its calls have their answers. A
+  // failure leaves the server failed, as at a start. After each step it goes on only while it is still the refresh in
+  // force, not dropped, and its old connection still the server's; otherwise what it opened is closed.
+  async #reopen(r: Refreshing): Promise<Refresh> {
+    const current = () => this.#refresh === r && !r.dropped && this.#conn === r.from;
+    try {
+      const got = await this.#prepare(this.config.entry as RemoteEntry, r.stop.signal).catch(() => undefined);
+      if (got === undefined || !current()) return { is: "dropped" };
+      if ("reason" in got) return this.#refreshFailed(r, helperFailed(got.reason), got.reason, true);
+      const conn = this.#newConn(got);
+      if (typeof conn === "string") return this.#refreshFailed(r, conn, conn, false);
+      r.next = conn;
+      const opened = await this.#open(conn);
+      if (!current()) {
+        await this.#close(conn);
+        return { is: "dropped" };
+      }
+      if (!("tools" in opened)) {
+        await this.#close(conn);
+        if ("reason" in opened) return this.#refreshFailed(r, opened.reason, opened.reason, false);
+        // Its sign-in no longer holds: as at a start, and a call waiting is told so (tools.ts, notRunning).
+        this.#state = { is: "needs sign-in" };
+        this.#conn = undefined;
+        this.#retire(r.from);
+        this.#onChange();
+        return { is: "dropped" };
+      }
+      conn.ready = true;
+      this.#conn = conn;
+      this.#instructions = conn.client.getInstructions();
+      this.#state = { is: "ready", tools: opened.tools };
+      this.#retire(r.from);
+      this.#onChange();
+      return { is: "ready" };
+    } finally {
+      if (this.#refresh === r) this.#refresh = undefined;
     }
-    conn.ready = true;
-    this.#instructions = conn.client.getInstructions();
-    this.#state = { is: "ready", tools };
-    return true;
+  }
+
+  // A refresh that failed: the server failed with `state`'s reason, said as at a start, and the old connection closed
+  // once its calls have their answers; a call waiting gets `reason` (decision 23; choice 6).
+  #refreshFailed(r: Refreshing, state: string, reason: string, helper: boolean): Refresh {
+    this.#state = { is: "failed", reason: state };
+    this.#conn = undefined;
+    this.#retire(r.from);
+    this.#onChange();
+    return { is: "failed", reason, helper };
+  }
+
+  // A connection a refresh replaced: kept until it closes, once no call or read waits on it (decision 25).
+  #retire(conn: Conn): void {
+    conn.retiring = true;
+    if (conn.closed) return;
+    this.#retiring.add(conn);
+    if (conn.sent === 0) void this.#close(conn);
   }
 
   // Each of the name's failed stops, tried again (decision 24): confirmed when the box is known to run nothing
@@ -446,15 +557,15 @@ export class Server {
 
   // A remote connection's headers (8c-2a plan, Task 10; decision 16): the entry's, with the helper's over them when it
   // runs, and whether the connection signs in, which it does with an OAuth client when those headers hold no
-  // Authorization. A helper that fails gives the reason instead, choice 5's `<why>` after its prefix.
-  async #prepare(entry: RemoteEntry, signal: AbortSignal): Promise<Prepared | string> {
+  // Authorization. A helper that fails gives choice 5's `<why>` instead, which a start puts after its prefix.
+  async #prepare(entry: RemoteEntry, signal: AbortSignal): Promise<Prepared | { reason: string }> {
     const helper = this.#helper;
     let headers = entry.headers;
     if (helper && entry.headersHelper !== undefined) {
       const { name } = this.config;
       const opts = { name, url: entry.url, ...helper, root: this.#root, env: this.#env, signal };
       const got = await runHelper(entry.headersHelper, opts);
-      if ("reason" in got) return `its headersHelper failed: ${got.reason}`;
+      if ("reason" in got) return got;
       headers = mergeHeaders(headers, got.headers);
     }
     return { headers, signs: this.#auth !== undefined && !hasAuthorization(headers), helped: helper !== undefined };
@@ -503,12 +614,15 @@ export class Server {
     const redirected = (err: Redirected) => (conn.redirected = err);
     const send = connectionFetch({ url, endpoint, headers, signs, answered, redirected });
     const opts = signs ? { authProvider: this.#auth!, fetch: send } : { requestInit: { headers }, fetch: send };
-    made = entry.kind === "http" ? new StreamableHTTPClientTransport(url, opts) : new SSEClientTransport(url, opts);
+    // With a helper, a 403 asking for more scope fails its request, which the library would otherwise send again after
+    // signing in again, and the refresh follows (Task 11; decision 26). The SSE transport sends nothing again.
+    const scope = prepared.helped ? { onInsufficientScope: "throw" as const } : {};
+    made =
+      entry.kind === "http"
+        ? new StreamableHTTPClientTransport(url, { ...opts, ...scope })
+        : new SSEClientTransport(url, opts);
     return made;
   }
-
-  // A status the server's own address answered on this connection (connectionFetch), for Task 11's refresh.
-  #answered(_conn: Conn, _status: number): void {}
 
   // One client per connection, so nothing of an old one's lists or handlers reaches the new one.
   #client(conn: Conn): Client {
@@ -627,6 +741,7 @@ export class Server {
         }
       }
       await closing;
+      this.#retiring.delete(conn);
     });
     return conn.closed;
   }
@@ -660,6 +775,9 @@ export class Server {
   // shown on screen.
   #address = () => (this.config.entry.kind === "stdio" ? "" : new URL(this.config.entry.url).origin);
 }
+
+// A red line's reason for a helper that failed, choice 5's `<why>` after its prefix (8c-2a plan, Task 9).
+const helperFailed = (why: string) => `its headersHelper failed: ${why}`;
 
 // Whether headers hold an Authorization header, in any letter case (choice 55).
 const hasAuthorization = (headers: Record<string, string>) =>

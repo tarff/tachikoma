@@ -30,6 +30,9 @@ const stopped = (o: Offered) => `The MCP server ${visible(o.server)} has stopped
 const restarted = (o: Offered) => `Stopped: the MCP server ${visible(o.server)} restarted while the call ran.`;
 const untrusted = (o: Offered) =>
   `Not run: ${visible(o.server)}'s "${visible(o.tool, { tabs: true })}" is no longer trusted as read-only, and subagents only read.`;
+// A call that waited for a refresh which failed (8c-2a plan, Task 11; "Lines this plan adds"; choice 6 (b)).
+const helperFailed = (reason: string) => `its headersHelper failed, so the call was not sent: ${reason}`;
+const connectionFailed = (reason: string) => `its new connection failed, so the call was not sent: ${reason}`;
 
 // The launch's question for every call, the lead's and its subagents' (release 8c plan, Task 7; design, "Approval";
 // choices 14-17). Trust is read here, from the entry in force, right before the gate would decide, so a live edit applies
@@ -123,6 +126,15 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
         // review). A subagent's view also calls a tool whose trust has gone "changed"; approve's own line says why.
         if (!o.trustedOnly && servers.current(o) === "changed") throw new Error(changed(o));
         await approve(o, input, ctx);
+        // A call approved while its server's connection is refreshed waits for the new one (8c-2a plan, Task 11;
+        // decision 20). A failed refresh fails it unsent; a dropped one gives 8c's line for a server replaced or
+        // stopped, or its sign-in's when the new connection needed one.
+        const refreshing = servers.server(o.server)?.refreshing;
+        if (refreshing) {
+          const r = await until(refreshing, ctx.signal);
+          if (r.is === "failed") throw new Error(r.helper ? helperFailed(r.reason) : connectionFailed(r.reason));
+          if (r.is === "dropped") throw new Error(servers.current(o) === "changed" ? changed(o) : notRunning(o));
+        }
         // Nothing reaches the server unless its tool is still the one shown, on the connection that showed it (finding 4).
         const now = servers.current(o);
         if (now === "changed" || now === "restarted") throw new Error(changed(o));

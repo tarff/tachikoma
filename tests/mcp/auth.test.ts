@@ -535,6 +535,57 @@ describe("signing in, with a headersHelper", () => {
     expect(service.length).toBeGreaterThan(0);
     expect(service.filter((r) => "x-region" in r.headers || "x-team" in r.headers)).toEqual([]);
   });
+
+  // 8c-2a plan, Task 11 (decisions 18, 26 and 27): a signed-in server whose helper gives X-Region.
+  const signedIn = async (opts: Parameters<typeof signInFake>[0] = {}) => {
+    const t = await setup(opts);
+    const helper = fakeHelper(t.dir);
+    helper.give({ "X-Region": "eu" });
+    const servers = t.make([remote("om", t.fake.url, undefined, {}, helper.command)], { settingsDir: t.dir });
+    await servers.ready();
+    expect(await servers.signIn("om", t.io())).toBe(true);
+    expect(t.states(servers)).toEqual(["om ready"]);
+    return { t, helper, servers, server: servers.server("om")!, runs: helper.runs().length };
+  };
+  const signIns = (t: Awaited<ReturnType<typeof setup>>) =>
+    t.fake.seen.requests.filter((r) => r.path === "/authorize" || r.path === "/token").length;
+
+  it("keeps an expired token's 401 on a connection that signs in as sign-in's, running no helper again", async () => {
+    const s = await signedIn({ refresh: false });
+    s.t.fake.expire();
+    const call = s.server.callTool("echo", {}, {});
+    await expect(call).rejects.toThrow(new Error("The MCP server om needs sign-in, which the user does from /mcp."));
+    expect(s.t.states(s.servers)).toEqual(["om needs sign-in"]);
+    expect(s.server.refreshing).toBeUndefined();
+    expect(s.helper.runs()).toHaveLength(s.runs);
+  });
+
+  // Decision 26: the library would sign in again and send the call once more; the 403 fails it, and a refresh follows.
+  it("fails a call answered 403 insufficient_scope, sent once with no new sign-in, and refreshes once", async () => {
+    const s = await signedIn({ scope403: true });
+    const before = signIns(s.t);
+    await expect(s.server.callTool("echo", {}, {})).rejects.toThrow();
+    expect(s.t.fake.seen.calls).toBe(1);
+    const refresh = s.server.refreshing;
+    expect(refresh).toBeDefined();
+    expect(await refresh).toEqual({ is: "ready" });
+    expect(signIns(s.t)).toBe(before);
+    expect(s.helper.runs()).toHaveLength(s.runs + 1);
+    expect(await s.server.callTool("echo", {}, {})).toMatchObject({ content: [{ type: "text", text: "echoed" }] });
+    expect(s.t.fake.seen.calls).toBe(2);
+    expect(s.t.states(s.servers)).toEqual(["om ready"]);
+  });
+
+  // Decision 27: the hop to /mcp/ is the same request, so its 403 starts the refresh.
+  it("refreshes once at a 403 on the hop to /mcp/", async () => {
+    const s = await signedIn({ slash: true, scope403: true });
+    await expect(s.server.callTool("echo", {}, {})).rejects.toThrow();
+    expect(s.t.fake.seen.requests.at(-1)!.path).toBe("/mcp/");
+    const refresh = s.server.refreshing;
+    expect(refresh).toBeDefined();
+    expect(await refresh).toEqual({ is: "ready" });
+    expect(s.helper.runs()).toHaveLength(s.runs + 1);
+  });
 });
 
 // Choice 53: the sign-in's own address, Claude Code's form, on both of this machine's own addresses at one port; and
