@@ -1445,7 +1445,8 @@ describe("tachi's MCP servers", { timeout: 60_000 }, () => {
     p.mcpJson({ yes: yes.entry, no: no.entry });
     // Node's path holds a space where it is installed under C:\Program Files, so it is shown in quotes there.
     const node = process.execPath.includes(" ") ? `"${process.execPath}"` : process.execPath;
-    const question = (name: string, script: string) => `Start the MCP server "${name}" from this project's .mcp.json: ${node} ${script}? [y/n] `;
+    const question = (name: string, script: string) =>
+      `Start the MCP server "${name}" from this project's .mcp.json on this computer: ${node} ${script}? [y/n] `;
     const w = windowLater("--lead", "ollama:none", p.env);
     await vi.waitFor(() => expect(w.stdout()).toContain(question("yes", yes.script)), WAIT);
     w.write("y");
@@ -1456,7 +1457,9 @@ describe("tachi's MCP servers", { timeout: 60_000 }, () => {
     expect(w.stdout()).toContain(`${question("yes", yes.script)}y\n${question("no", no.script)}n\n`);
     expect(readLog(no.log)).toEqual([]);
     expect(alive(yes.pid())).toBe(false);
-    expect([p.answers().get("yes", p.written("yes")), p.answers().get("no", p.written("no"))]).toEqual([true, false]);
+    // Kept for this computer, as the sandbox is off (8c-2a plan, Task 8).
+    const kept = ["yes", "no"].map((name) => p.answers().get(name, p.written(name), "host"));
+    expect(kept).toEqual([true, false]);
     // The next launch asks nothing and starts the yes again.
     const again = windowLater("--lead", "ollama:none", p.env);
     await vi.waitFor(() => expect(initializes(yes.log)).toBe(2), WAIT);

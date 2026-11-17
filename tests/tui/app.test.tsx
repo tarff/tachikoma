@@ -12820,9 +12820,9 @@ describe("App's MCP", () => {
     expect(app.lastFrame()).not.toContain(HEADING);
     expect(states(mcp!.servers)).toEqual(["proj ready"]);
     const asked: string[] = [];
-    await askServers([c], () => answersFor(dir, data), async (q) => (asked.push(q), false), () => {});
+    await askServers([c], null, () => answersFor(dir, data), async (q) => (asked.push(q), false), () => {});
     expect(asked).toHaveLength(1);
-    expect(asked[0]).toMatch(/^Start the MCP server "proj" from this project's \.mcp\.json: /);
+    expect(asked[0]).toMatch(/^Start the MCP server "proj" from this project's \.mcp\.json on this computer: /);
   });
 
   // Choice 52: the answer is forgotten only once the reset line is written. The answers folder is moved aside and a file

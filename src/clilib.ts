@@ -20,6 +20,7 @@ import type { Executor } from "./exec/executor.js";
 import { headCommand } from "./exec/log.js";
 import type { Answers } from "./mcp/answers.js";
 import { type ServerConfig, variables } from "./mcp/config.js";
+import { answerSetup, helperRuns, type McpSandbox, starts } from "./mcp/place.js";
 import { SEARCH } from "./mcp/search.js";
 import { KILL_MS } from "./mcp/server.js";
 import type { Servers } from "./mcp/servers.js";
@@ -695,39 +696,51 @@ export function approvalQuestion(reached: Reached[]): string {
 // and the answer covers just what was shown (choice 48); a local one's then names the variables its entry sets, names
 // only, as a value may hold a key (choice 49), and a remote one's the variables its address and headers read, each once
 // (choice 64). A command, argument or name that is empty or holds a space or a quote is shown in quotes, a quote in it as
-// \", so where each one ends can be seen; all of it escaped.
-export function serverQuestion(c: ServerConfig): string {
+// \", so where each one ends can be seen; all of it escaped. It says where a local server runs, and whether a remote
+// one's headersHelper runs, after the address (8c-2a plan, Task 8; design, "A project's servers"; choice 8).
+export function serverQuestion(c: ServerConfig, sandbox: McpSandbox): string {
   const name = visible(c.name);
   const w = c.asWritten;
   const shown = (word: string) => (word === "" || /[\s"]/.test(word) ? `"${word.replaceAll('"', '\\"')}"` : word);
   if (!("command" in w)) {
     const read = [...new Set([w.url, ...Object.values(w.headers)].flatMap(variables))];
     const sends = read.length ? ` (sends ${read.map(shown).join(", ")})` : "";
-    return `Connect to the MCP server "${name}" from this project's .mcp.json at ${visible(w.url + sends)}? [y/n]`;
+    const at = `Connect to the MCP server "${name}" from this project's .mcp.json at ${visible(w.url + sends)}`;
+    if (w.headersHelper === undefined) return `${at}? [y/n]`;
+    if (!helperRuns(c, sandbox)) return `${at}, without its headersHelper? [y/n]`;
+    return `${at}, running its headersHelper on this computer: ${visible(w.headersHelper)}? [y/n]`;
   }
   const vars = c.entry.kind === "stdio" ? Object.keys(c.entry.env) : [];
   const sets = vars.length ? ` (sets ${vars.map(shown).join(", ")})` : "";
-  return `Start the MCP server "${name}" from this project's .mcp.json: ${visible([w.command, ...w.args].map(shown).join(" ") + sets)}? [y/n]`;
+  const where = sandbox
+    ? ` inside the sandbox (${sandbox.kind === "live" ? "live link" : "copy"}, network ${sandbox.network})`
+    : " on this computer";
+  const command = visible([w.command, ...w.args].map(shown).join(" ") + sets);
+  return `Start the MCP server "${name}" from this project's .mcp.json${where}: ${command}? [y/n]`;
 }
 
 // Each project server not yet answered for its entry as written, asked about one at a time, in the order the file gives
 // them, its answer kept, a no too (choices 23 and 24). `answers` is called only when a project's server needs one, as
 // reading the project's answers throws on a file it cannot read (answersFor). An answer that cannot be saved still holds
 // for this launch, as answersFor keeps it before writing; `failed` gets its red line, and the launch goes on (choice 50).
+// Only the servers that start in this sandbox are asked about, each answer kept for its setup, as Servers reads it
+// (8c-2a plan, Task 8; choice 2 (b)).
 export async function askServers(
   configs: ServerConfig[],
+  sandbox: McpSandbox,
   answers: () => Answers,
   ask: (question: string) => Promise<boolean>,
   failed: (line: string) => void,
 ): Promise<void> {
-  const project = configs.filter((c) => c.where === "project");
+  const project = configs.filter((c) => c.where === "project" && starts(c, sandbox));
   if (!project.length) return;
   const given = answers();
   for (const c of project) {
-    if (given.get(c.name, c.written) !== undefined) continue;
-    const yes = await ask(serverQuestion(c));
+    const setup = answerSetup(c, sandbox);
+    if (given.get(c.name, c.written, setup) !== undefined) continue;
+    const yes = await ask(serverQuestion(c, sandbox));
     try {
-      given.set(c.name, c.written, yes);
+      given.set(c.name, c.written, yes, setup);
     } catch (err) {
       failed(`Your answer for ${visible(c.name)} could not be saved (${visible(errorText(err), { tabs: true })}); Tachikoma asks again at the next launch.`);
     }
