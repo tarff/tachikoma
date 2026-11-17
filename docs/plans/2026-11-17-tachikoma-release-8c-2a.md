@@ -207,14 +207,32 @@ Each is marked in its task. The user approves them with the plan.
    sandbox's executor reads it (executor.ts:360-366): no docker program gives `NO_DOCKER`; a non-zero exit gives
    Docker's error output, or `the box stopped` when it gave none; a thrown error gives its message. That mapping moves
    into one exported function that inGroup and the box server share (`killInBox`, Task 3).
-   - A failed kill leaves the old copy recorded on its `Server` as left running (its group's file and the reason).
-     The exception is a box that Docker says has gone (`BoxState.gone()`), as removing the box ended the copy.
-   - Before any new copy starts, the left-running copy's kill is tried again. This covers a Reconnect or a restart (the
-     same `Server`) and a live edit's restart (a new `Server`, given the old one as `before`). If the retry fails,
-     nothing new starts, and the server is `failed` with the approved line `its earlier copy could not be stopped in
-     the box (<reason>), so it was not started again`. If it succeeds, one copy starts.
-   - Each later Reconnect tries the kill again.
+   - **Kept by name, in `Servers`** (the second plan review's finding 1). A failed kill is recorded as an unresolved
+     stop (the group's file, and the reason) in `Servers`, keyed by the server's name. It is not kept on the `Server`
+     object, because a live edit or a removal replaces that. The record outlives any number of slot changes: a
+     blocked copy replaced again, an entry removed, an entry added back under the same name. It is deleted only when
+     the stop is confirmed.
+   - **Every new copy for a name retries all of that name's unresolved stops first.** That covers a Reconnect, a
+     restart, a live edit's restart and a re-add after removal. Each `Server` is given its name's record
+     (`unstopped`, a list `Servers` owns), so its `#connect` runs the retries itself.
+   - **If any stop is still unresolved after the retries,** nothing new starts, and the server is `failed` with the
+     approved line `its earlier copy could not be stopped in the box (<reason>), so it was not started again`. The
+     reason is the latest retry's. Once every stop is resolved, one copy starts.
+   - **What confirms a stop** (the second plan review's finding 2). `BoxState.gone()` (executor.ts:182-187) gives a
+     reason for a stopped box, but also for no docker program and for any failed `docker inspect`, an unreachable
+     daemon included. So a record is cleared only on evidence the code reads directly, never by parsing Docker's error
+     text:
+     - (a) the kill exits 0 (`killLine` ends `exit 0` only once it ran in the box, the group killed or already gone);
+     - (b) `docker inspect --format {{.State.Running}}` exits 0 and prints `false`: a stopped container runs no
+       process;
+     - (c) Tachikoma's own removal of the box succeeded: `DockerExecutor.stop`'s `rm -f` exits 0, which sets a new
+       `BoxState.removed`.
+
+     A new `BoxState.stopped(): Promise<boolean>` gives (b) or (c). No docker program, an inspect that fails, or a
+     daemon that cannot be reached keeps the record, and the next retry runs the kill again before anything starts.
    - The exit is unchanged (decision 6): removing the box ends every copy.
+   - A box removed outside Tachikoma is not confirmed by (c). Its servers stay blocked, but such a box is already
+     `broken` for the shell tools and refuses a start with `the box stopped` (decision 7), so nothing more is lost.
 
    Task 4.
 25. **Retiring connections are kept until they close** (the plan review's finding 2). Each connection a refresh
@@ -237,9 +255,24 @@ Each is marked in its task. The user approves them with the plan.
 27. **A hop the library follows within the origin is the same request** (the plan review's finding 4). The library's
    `fetchWithinOrigin` calls the connection's `fetch` once per hop (src-CeKsbNLO.mjs:6854-6876), so `/mcp` to `/mcp/`
    arrives as a request for `/mcp/`.
-   - The connection's `fetch` keeps the targets (origin and path) of the same-origin redirects that its own-address
-     requests were answered with, and treats a request for one of them as its own address. With sign-in, the entry's
-     headers go on it. Its 401 or 403 counts for the refresh.
+   - **Only along that one request's own chain** (the second plan review's finding 3). There is no lasting allow-list
+     of redirect targets. A hop is tied to its originating request by the identity of the request's `init.headers`
+     object:
+     - The library's `fetchWithinOrigin` passes `{ ...init, redirect: "manual" }` on every hop
+       (src-CeKsbNLO.mjs:6862), a shallow copy, so every hop of one logical request carries the very same headers
+       object.
+     - Each transport builds a fresh `Headers` object for every request, through `_commonHeaders()`: the streamable
+       HTTP transport per message (index.mjs:1700), per event-stream open (1476) and per session end (1826), and the
+       SSE transport per message (1214) and per event-stream open (1100).
+     - A sign-in request is built by the library's `auth()` with its own `init`, so it never shares one.
+   - **How the connection's `fetch` tracks a chain.** It keeps a `WeakMap` from a request's headers object to the
+     targets (origin and path) of the same-origin redirects that this one request was answered with. It records a
+     target only when the request was for its own address, or was already a hop of such a request.
+   - **What a hop gets.** A call whose headers object is in the map, for a path in that object's set, is a hop of the
+     same MCP request. With sign-in, the entry's headers go on it, and its 401 or 403 counts for the refresh.
+   - **What does not count.** Anything else to that path is not a hop: a sign-in request, a later request on its own.
+     A later MCP request that redirects again builds its own chain. The map holds the headers object weakly, so a
+     chain is dropped with its request.
    - A redirect to another origin still fails before anything is sent there.
 
    Task 10.
@@ -373,6 +406,21 @@ For the builders:
 - `fetchWithinOrigin` is src-CeKsbNLO.mjs:6854-6876.
 - `runHook`'s start failures are hooks/run.ts:71, 79 and 118; answer.ts:109 reads `startError` for hooks' own lines.
 - cli.test.ts already runs `-p --json` with MCP servers from a settings file (1412-1440, `homeWith`).
+
+**The second plan review (an outside review of 72951f4, three findings, each checked; all held, and the design was
+changed to match):**
+1. **Failed-stop records were lost across later slot changes:** `before` reached back one `Server` only, and a removal
+   dropped it. Unresolved stops are now kept in `Servers` by name (decision 24).
+2. **`BoxState.gone()` is no proof that a box server stopped:** it gives a reason for no docker program and for any
+   failed `docker inspect` too (executor.ts:182-187). Only a successful kill, an inspect that says not running, or
+   Tachikoma's own successful removal now clears a record (decision 24).
+3. **A connection-wide set of redirect targets would give the entry's headers to an unrelated sign-in request** to the
+   same path. Headers now follow only one request's own chain, tied by its headers object (decision 27).
+
+For the builders:
+- `DockerExecutor.stop`'s `rm -f` result is thrown away today (executor.ts:329-332).
+- `fetchWithinOrigin`'s hop call is src-CeKsbNLO.mjs:6862.
+- The transports' per-request `_commonHeaders()` calls are index.mjs:1100, 1214, 1476, 1700 and 1826.
 
 **In the code, for the builders:**
 - **Local start:** `Server.#transport()` is at src/mcp/server.ts:336-343. It starts through `Stdio` (73-94), which uses
@@ -522,6 +570,14 @@ tests/mcp/box.test.ts.
 - No secret in screen lines, `--json` events or a tool error: Task 9, tests/mcp/helper.test.ts; Task 10,
   tests/cli.test.ts; Task 11, tests/mcp/tools.test.ts.
 
+**The second plan review's tests:**
+- A fails, B blocked, an edit to C still blocked, starting once the retry works; A fails, the entry removed and added
+  back, still blocked until the retry works: Task 4, tests/mcp/servers.test.ts.
+- An inspection that fails keeping the record, the retry kill running before any new start once Docker recovers, and a
+  confirmed stop clearing it: Task 4, tests/mcp/box.test.ts and tests/sandbox/executor.test.ts.
+- A `/mcp` to `/mcp/` chain getting the headers, a later sign-in request to `/mcp/` getting none, and a later MCP
+  request getting them on its own chain, with sign-in on and off: Task 10, tests/mcp/server.test.ts.
+
 **The user's terminal checklist:** Task 12.
 
 ---
@@ -628,7 +684,8 @@ tests/mcp/box.test.ts.
 ## Task 4: A server started in the box, against a stand-in Docker
 
 **Files:**
-- src/mcp/server.ts, and src/mcp/servers.ts (`stopAll`, and `set`'s `before`);
+- src/mcp/server.ts, src/mcp/servers.ts (`stopAll`, `#unstopped`), and src/sandbox/executor.ts (`BoxState.removed`,
+  `stopped()`; tests/sandbox/executor.test.ts gains their tests with its stand-in `DockerRun`);
 - create tests/standin/dockerExec.mjs;
 - tests/mcp/fake.ts (`show`, the `write` tool, `standinBox`), tests/mcp/box.test.ts, and tests/mcp/server.test.ts
   and tests/mcp/servers.test.ts (their tool lists gain `write`; servers.test.ts gains the live edit's failed-kill
@@ -651,9 +708,25 @@ Holds choice 5's first two reasons and the plan review's line. Decisions 1, 3-8 
   - the retried kill fails too: the server is `failed: its earlier copy could not be stopped in the box (Error:
     boom), so it was not started again`, and the stand-in records no second start;
   - the retried kill succeeds: the stand-in records exactly one second start, and the server is ready.
-- The same two in tests/mcp/servers.test.ts, for a live edit's restart (`set` with the entry's args changed), the new
-  `Server` given the old one as `before`.
-- A failed kill when `gone` says the box has gone records nothing left running, and the next start goes ahead.
+- In tests/mcp/servers.test.ts (decision 24, kept by name):
+  - A's stop fails, so B (a live edit's restart) is blocked with the line. A second edit makes C: C is still blocked,
+    with the stand-in's kill run again first. Once the stand-in's kill works, the next Reconnect starts exactly one
+    copy.
+  - A's stop fails; the entry is removed by a live edit, then added back. The new copy is blocked until the kill
+    works, then exactly one starts.
+- What confirms a stop (decision 24):
+  - the kill fails and `inspect` fails as an unreachable daemon would (exit 1, `Cannot connect to the Docker daemon`):
+    the record is kept;
+  - Docker then recovers with the old copy still running (`inspect` prints `true`). On the next Reconnect, the
+    recorded calls show the kill run before the stand-in records any new start;
+  - `inspect` exiting 0 with `false` clears the record without a kill, and one copy starts;
+  - after `DockerExecutor.stop`'s `rm -f` exits 0 (`BoxState.removed`), the record is cleared;
+  - no docker program (`"missing"`) keeps the record.
+- tests/sandbox/executor.test.ts: `BoxState.stopped()`, given a stand-in `DockerRun`:
+  - true after a `DockerExecutor.stop` whose `rm -f` exited 0;
+  - false after one whose `rm -f` exited 1;
+  - true for `inspect` exit 0 with `false`;
+  - false for `true`, for exit 1 and for `"missing"`.
 - A box server ending while `gone` says the box is missing shows `stopped: the box stopped` (retry false); after
   `BoxState.fail`, a new start fails with `the box stopped`.
 
@@ -676,16 +749,24 @@ Holds choice 5's first two reasons and the plan review's line. Decisions 1, 3-8 
   `NOT_FOUND`.
 - `stop(opts: { exit?: boolean } = {})`, and `#close(conn, exit)`. For a box server:
   - without `exit`: race the process's exit against `KILL_MS`, then, if it is still alive, run `killInBox` through
-    `McpBox.run`, then `killTree`. A kill that fails, in a box Docker does not say has gone, is recorded as
-    `#leftRunning: { group: string; reason: string }` (decision 24);
+    `McpBox.run`, then `killTree`. A kill that fails is pushed onto the name's `unstopped` record as
+    `{ group: string; reason: string }` (decision 24);
   - with `exit`: `killTree` at once, with nothing run in the box.
 
   Host servers are unchanged.
-- `Server` options gain `before?: Server` (the copy a live edit's restart replaces). The first step of `#connect`
-  tries `killInBox` again for its own `#leftRunning` and for `before`'s, and clears each one that it kills or that
-  belongs to a box that has gone. One that still fails leaves the state `failed` with the approved line, and nothing
-  starts.
-- `Servers.set` (274-317) gives a restarted name's new `Server` the old one as `before`.
+- `Server` options gain `unstopped?: { group: string; reason: string }[]`, its name's record, which `Servers` owns.
+  The first step of `#connect`, for every entry in it:
+  - first asks `BoxState.stopped()`; a `true` deletes the entry;
+  - otherwise runs `killInBox` again; exit 0 deletes the entry, and a failure updates its reason.
+
+  Any entry left leaves the state `failed` with the approved line (the latest reason), and nothing starts.
+- `Servers` keeps `#unstopped: Map<string, { group: string; reason: string }[]>` by name. Each new `Server` for a name
+  gets that name's list, in `#slot` (430-444), so `set`'s restarts and re-adds and `restart` all share it. A list is
+  dropped only when it is empty.
+- src/sandbox/executor.ts (also in this task's files):
+  - `BoxState` gains `removed` (set by `DockerExecutor.stop` when its `rm -f` exits 0) and `stopped()`. `stopped()` is
+    `removed`, or `inspect` exiting 0 with `false`, as decision 24 says.
+  - `gone()` is unchanged: it still only picks the reason a server's end shows (decision 7).
 - `Servers.stopAll` calls `stop({ exit: true })`.
 - Stand-in (`dockerExec.mjs`): node runs it as `[script, recordFile, ...docker's args]`.
   - It records its arguments and its own environment.
@@ -700,6 +781,8 @@ Holds choice 5's first two reasons and the plan review's line. Decisions 1, 3-8 
   - `standinBox(dir, { kind?, gone? })` gives `{ box, calls, started(), kills }`. Its `DockerRun` records each call
     and answers `inspect` as running, unless `gone` gives Docker's words. The in-box kill kills the recorded child
     pid, unless the test has queued a failure in `kills` (an exit code and error output), which it answers instead.
+    `inspects`, a queue like `kills`, sets `inspect`'s answers: running, stopped (exit 0, `false`), unreachable
+    (exit 1) or `"missing"`.
 
 **Run:** `tests/mcp/box.test.ts`, `tests/mcp/server.test.ts`, `tests/mcp/servers.test.ts`; types.
 
@@ -927,6 +1010,13 @@ tests/mcp/servers.test.ts, tests/cli.test.ts (the secrets test). Holds choices 1
     shows the helper's and the static headers. A hop from `/mcp/` to another origin still fails with the redirect
     line, with nothing sent there. (That a 403 or 401 at `/mcp/` starts the refresh is tested in Task 11, which adds
     `denyTool` and `tokenFile`.)
+  - `connectionFetch` alone, against a `slash` fake, with sign-in on and off (decision 27, one chain per request):
+    - a call for `/mcp` with headers object H is answered 307; the library's hop, a call for `/mcp/` with H, carries
+      the entry's headers when signing in, and `answered` hears its status, in both modes;
+    - a later call for `/mcp/` with another `init` (as a sign-in request is) carries none of the entry's headers, and
+      `answered` hears nothing;
+    - a later call for `/mcp` with a new headers object H2 that redirects again gets the headers on its own hop,
+      while a call with H2 for any path H's chain had and H2's did not is not a hop.
 - auth.test.ts (using `signInFake`, with `settingsDir` given):
   - a helper that gives `Authorization` never signs in, and fails `answered 401` with no sign-in request;
   - after `restart`, the same helper with no `Authorization` signs in (`needs sign-in`);
@@ -966,10 +1056,14 @@ tests/mcp/servers.test.ts, tests/cli.test.ts (the secrets test). Holds choices 1
   - it sends `redirect: "manual"` on a request carrying headers;
   - a 301/302/303/307/308 with a `Location` at another origin throws `Redirected` with the approved line (the origin
     alone, decision 28), after cancelling the body;
-  - a same-origin `Location` answering a request for its own address, or for a hop already taken, is added to the
-    connection's `hops` set (origin and path). A later request for a path in that set counts as its own address: with
-    sign-in the headers go on it, and its status is reported (decision 27);
-  - it calls `answered(status)` for its own address and its hops. Task 11 fills that in; here it is an empty method.
+  - a same-origin `Location` answering a request for its own address, or a hop of one, is added to that request's
+    chain: a `WeakMap<object, Set<string>>` keyed by the request's own `init.headers` object, holding origin and path.
+    A later call with the same headers object, for a path in its set, is a hop of that request: with sign-in the
+    headers go on it, and its status is reported. Any other call to that path gets neither (decision 27). A call with
+    no headers object is never a hop;
+  - it calls `answered(status)` for its own address and its chains' hops. Task 11 fills that in; here it is an empty
+    method;
+  - `connectionFetch` is exported, for its unit tests.
 - `#startReason` returns a `Redirected` found in the error's cause chain.
 - The sign-in checks at 205, 237, 314 and 405 read `conn.signs`.
 - `Servers.#begin` (466-469) says choice 9's grey line, once per slot, for a project's remote entry whose helper does

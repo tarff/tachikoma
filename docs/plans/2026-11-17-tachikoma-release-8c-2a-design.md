@@ -136,10 +136,16 @@ review's finding 1):
   in the box while its `docker exec` on the machine has ended. Its reason is read as the sandbox's commands read a
   failed kill (`src/sandbox/executor.ts`): no docker program, Docker's own error output (or `the box stopped` when it
   gave none), or the error's message. No second copy starts while the first may be running:
-  - a Reconnect, a restart or a live edit's restart first tries the stop again;
-  - if it still fails, nothing new starts, and the red line says `its earlier copy could not be stopped in the box
+  - the failed stop is kept for the server's name (the second plan review's finding 1), whatever then happens to its
+    entry: another live edit, a removal, the entry added back;
+  - every new copy for that name (a Reconnect, a restart, a live edit's restart, a re-add) first tries again every
+    stop of that name not yet confirmed;
+  - if one still fails, nothing new starts, and the red line says `its earlier copy could not be stopped in the box
     (<reason>), so it was not started again` (the user approved the wording);
-  - a box that Docker says has gone needs no second try, as its removal ended the server.
+  - a stop counts as confirmed only on evidence (the second plan review's finding 2): the kill running in the box;
+    Docker saying the box is not running (`docker inspect` succeeding and saying so); or Tachikoma's own removal of the
+    box succeeding. No docker program, a failed inspection or an unreachable Docker confirm nothing, as the old copy
+    may still run once Docker is back.
 - **If the box stops or breaks,** its servers show `the box stopped`, and their tools say so, as a stopped server's
   tools do in 8c.
 
@@ -206,8 +212,10 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   plan review's finding 5). A redirect within the server's own origin, such as `/mcp` to `/mcp/`, is left to the
   library, so servers that work in 8c keep working (the user's choice while planning, 2026-11-17: "Only other sites
   fail"). Such a hop is the same request as the one redirected (the plan review's finding 4): the entry's headers go
-  on it, with sign-in used or not, and its 401 or 403 starts the refresh as the server's own answer would. Part B's
-  site check applies to redirects without the entry's headers.
+  on it, with sign-in used or not, and its 401 or 403 starts the refresh as the server's own answer would. That holds
+  only along that one request's own chain of hops, never as a lasting list of trusted addresses (the second plan
+  review's finding 3). A sign-in request to the same path gets none of the entry's headers, and a later request
+  starts a chain of its own. Part B's site check applies to redirects without the entry's headers.
 - **A project's helper** runs only after the user's yes to that server, saved for the entry as written (8c) and for
   whether the helper runs (above), so a changed helper, or a first launch with the sandbox off, asks again. It runs
   without any variable whose name looks like a credential (with TOKEN, SECRET, PASSWORD, KEY or AUTH in it), as
@@ -271,6 +279,13 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
     sign-in, a 401) there starting the refresh; a hop to another origin still failing before anything is sent there;
   - a secret printed by a helper on its error output, and one in a redirect's path and query, never in the screen's
     lines, `--json` events or a tool's error.
+- **The second plan review's tests:**
+  - a failed stop, a blocked copy, a second edit still blocked, starting once the stop works;
+  - the same when the entry is removed and added back;
+  - a failed inspection keeping the failed stop, the stop retried before any new start once Docker is back, and a
+    confirmed stop clearing it;
+  - a `/mcp` to `/mcp/` chain carrying the headers, a later sign-in request to `/mcp/` getting none, and a later
+    request's own chain getting them, with sign-in on and off.
 - **The user's terminal checklist:** TradingView and MemPalace with `"host": true`, the sandbox and its network on; a
   small `npx` server inside the box; a helper that prints a header from a file.
 - CI runs it all on Windows for the pull request.
@@ -333,3 +348,14 @@ against the code and the pinned MCP library, held, and changed the design above:
 5. **Lines could carry secrets:** a helper's last error line, a failed start's whole error, and a redirect target's
    path and query. A helper's reasons now give only its exit code or its error's code, and the redirect line names
    only the origin (the user approved the forms).
+
+A second outside review of the plan the same day (the second plan review) made three findings. Each was checked and
+held, and each changed the design above:
+
+1. **A failed stop could be forgotten:** once a second live edit replaced the blocked copy, or the entry was removed
+   and added back, nothing remembered the first copy. Failed stops are now kept for the server's name until each is
+   confirmed.
+2. **"The box has gone" was read from answers that do not prove it:** no docker program, or a failed inspection. Only
+   the kill running, Docker saying the box is not running, or Tachikoma's own removal of the box now confirms a stop.
+3. **Trusting a redirect target for the whole connection** would give the entry's headers to an unrelated sign-in
+   request to that path. A hop now carries them only within its own request's chain.
