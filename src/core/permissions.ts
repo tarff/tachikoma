@@ -50,8 +50,9 @@ export interface Protection {
 // judge decides (release 7 plan, Task 10); a protected write and a danger the gate checks itself.
 export function needsApproval(mode: Mode, action: Action): boolean {
   // An MCP call by its kind, never by `outside`: the user is asked in every mode, never included, as the server is outside
-  // the box, and in auto the judge decides (release 8c plan, choice 32; design, "Approval"). In never, a boxed one, a
-  // box server's with the box's network off, runs, as nothing it does leaves the box (8c-2a plan, Task 7).
+  // the box or the box's network is on, and in auto the judge decides (release 8c plan, choice 32; design, "Approval");
+  // except in never a boxed one, a box server's with the box's network off, runs, as nothing it does leaves the box
+  // (8c-2a plan, Task 7).
   if (action.kind === "mcp") return !(mode === "never" && action.boxed);
   if (mode === "never") return false;
   if (action.outside) return true;
@@ -283,8 +284,8 @@ export class PermissionGate {
     const mode = this.mode;
     const found = action.command === undefined ? [] : dangers(action.command, this.#context, this.rules);
     const part = action.protectedPart;
-    // These refusals and passes are for the box's own actions; an MCP call goes on to the question (release 8c plan,
-    // choice 32; the plan review, finding 1).
+    // These refusals and passes are for the box's own actions; an MCP call goes on to needsApproval, which asks about
+    // it unless it is boxed (release 8c plan, choice 32; the plan review, finding 1; 8c-2a plan, Task 7).
     if (mode === "never" && action.kind !== "mcp") {
       if (part !== undefined) throw new Declined(protectedRefusal(action.path ?? action.summary, part));
       // A write outside the project, one whose real place cannot be told among them (a link that leads nowhere has no

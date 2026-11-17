@@ -847,15 +847,18 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   });
 
   // 8c-2a plan, Task 7 (design, "Where a local server runs"; decision 12 and choice 7): a box server's call, through
-  // the stand-in box, a copy. The servers are stopped before the stand-in's are killed, then the folder is removed
-  // (setup's).
+  // the stand-in box, a copy. The cleanup is registered before the start, so it runs even if the start throws: the
+  // servers are stopped before the stand-in's are killed, then the folder is removed (setup's, run after this, as
+  // vitest runs onTestFinished in reverse order).
   async function boxed(t: Setup, network: "on" | "off") {
     const fake = standinBox(t.dir, { kind: "copy" });
-    const servers = await t.ready([await t.local("s", { description: ECHO })], { network, box: fake.box });
+    const servers = t.make([await t.local("s", { description: ECHO })], { network, box: fake.box });
     onTestFinished(async () => {
       await servers.stopAll();
       fake.killAll();
     });
+    servers.startAll();
+    await servers.ready();
     expect(fake.started()).toHaveLength(1);
     return servers;
   }
