@@ -119,9 +119,11 @@ review's finding 1):
 - **The block's framing** (the second design review's finding 2): each variable is `NAME=VALUE` followed by one NUL
   byte, and the block ends with one more NUL (an empty entry). A name is letters, digits and `_`, not starting with a
   digit; a value may hold a line break but never a NUL (no environment value can). The wrapper reads the entries with
-  bash's `read -r -d ''`, which takes a pipe one byte at a time, so it never takes a byte past the block's end, and then
-  replaces itself with the server (`exec`), which reads its input from the next byte on: the first MCP message.
-  Whether `read` holds to that is checked by the tests below, not assumed.
+  bash's `IFS= read -r -d ''`, which takes a pipe one byte at a time, so it never takes a byte past the block's end, and
+  then replaces itself with the server (`exec`), which reads its input from the next byte on: the first MCP message.
+  The `IFS=` matters: without it `read` strips spaces, tabs and line breaks from a value's end (the third design
+  review's finding 1; seen in Git Bash 2026-11-17, `A=x <tab><line break>` read back as `A=x`, and kept whole with
+  `IFS=`). Whether `read` holds to all this in the box's bash is checked by the tests below, not assumed.
 - **The stream:** a box server's input stays open for the whole connection, written by the MCP library's own stdio
   transport (8c's `Stdio`) through a `docker exec -i` it starts. The block is the first thing written, before the
   library's first message. The sandbox's Docker runner (`src/sandbox/docker.ts`), which writes its input once and
@@ -151,6 +153,14 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   already sent on the old connection get their answers there, each within its own time limit, and the old connection
   closes when the last has finished. Calls not yet sent go to the new connection, provided their tool is unchanged
   there (8c's check). `/mcp` Reconnect and a restart still close the old connection first, as in 8c.
+- **A refresh that fails, or is overtaken** (the third design review's finding 3):
+  - **The helper fails or the new connection fails:** calls waiting for the new connection fail at once with `its
+    headersHelper failed, so the call was not sent: <reason>` (or the connection's own reason), the server shows its
+    red line as at a start, and calls already sent on the old connection still finish there before it closes.
+  - **The server is removed by a live edit, restarted, reconnected from `/mcp`, or Tachikoma exits mid-refresh:** the
+    refresh is dropped, both connections are closed, and waiting calls fail with 8c's line for that case (changed or
+    stopped). A refresh that finishes afterwards is thrown away, checked against the server's current connection as
+    8c's late answers are, so it can never bring back a server that was removed or restarted.
 - **How:** by the shell hooks use (8b design, "The shell, as Claude Code's": Git Bash on Windows, Windows PowerShell
   when there is none, `sh -c` elsewhere). In `~/.tachikoma` for an entry in the user's settings, and in the project
   folder for a project's entry (Claude Code's table, with `~/.claude` as Tachikoma's `~/.tachikoma`). Stopped after
@@ -163,7 +173,15 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   second design review's finding 4); 8c makes it once, from the static headers, when the server is set up
   (`src/mcp/server.ts`). A helper that gives `Authorization` on one connection and not on the next leaves sign-in to
   the next. While sign-in is used, the headers, the helper's included, go only to the server's own address, never to
-  the sign-in service (8c, choice 54). Anything else (a
+  the sign-in service (8c, choice 54).
+- **No redirect with the entry's headers** (the third design review's finding 2). 8c checks the address before
+  `fetch` is called, and `fetch` then follows a redirect by itself: it drops `Authorization` when the redirect leaves
+  the server's origin (<https://fetch.spec.whatwg.org/#http-redirect-fetch>), but keeps any other header, such as an
+  `X-API-Key`. So a request that carries the entry's headers, static or the helper's, with sign-in used or not, is
+  sent with redirects not followed, and a redirect answer fails it, with nothing sent to the new address: `the server
+  answered with a redirect to <address>; Tachikoma does not follow a redirect with the entry's headers` (the user
+  approved the wording). This covers 8c's static headers too, so a server that redirects today with a static key
+  stops working; part B's site check applies to redirects without the entry's headers. Anything else (a
   non-zero exit, the time running out, output that is not such an object, a value with a line break or NUL) means the
   server does not connect, and its red line says why. Claude Code's documentation does not say what it does here, so
   this is Tachikoma's own rule.
@@ -200,7 +218,8 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   sets `DOCKER_HOST` and `DOCKER_CONFIG` changing nothing there; the block on the server's input, and what the server's
   environment holds, line breaks included; roots saying `/work`; the "not found in the box" line; the stop sequence.
 - **The block, in the real box:** written in several pieces with pauses between them; written in the same piece as
-  `initialize`, the server still answering it; a bad name refused before anything starts.
+  `initialize`, the server still answering it; values ending in spaces, tabs and line breaks, and values with line
+  breaks inside, reaching the server whole; a bad name refused before anything starts.
 - **Answers:** a yes for the box asked again with the sandbox off, and the reverse; a yes for a copy with the network
   off asked again in live link and with the network on, and each of these skipped in `-p`; a remote answer without the
   helper asked again when the helper would run; an 8c answer counting as `host`; the questions' text.
@@ -214,7 +233,11 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   call, sent once only, with the helper run again and the next call on the new connection, and a tool changed there
   refused; two calls at once, one answered 403 and the other succeeding on the old connection, with one refresh only
   and a third call on the new one; sign-in chosen per connection, a helper's `Authorization` on one connection and
-  none on the next; the headers kept from the sign-in service; the two variables it gets; credential-looking names
+  none on the next; the headers kept from the sign-in service; a redirect answer to a request with the entry's
+  headers, static and the helper's, with sign-in used and not, failing with nothing sent to the new address; a failed
+  refresh failing the waiting calls at once while a call in flight finishes; a live edit's removal, a restart, a
+  Reconnect and an exit mid-refresh closing both connections, and a late refresh thrown away; the two variables it
+  gets; credential-looking names
   removed from a project's helper; a project's helper with the sandbox on, not run.
 - **The user's terminal checklist:** TradingView and MemPalace with `"host": true`, the sandbox and its network on; a
   small `npx` server inside the box; a helper that prints a header from a file.
@@ -251,3 +274,13 @@ A second review the same day made four more findings, each checked against the c
    flight finish on the old one, new ones go to the new one.
 4. **Sign-in was chosen once, from the static headers.** It is now chosen per connection, after the helper's headers
    are merged.
+
+A third review the same day made three more, each checked (the first in Git Bash, the others in the code) and fixed
+above:
+
+1. **`read -r -d ''` strips a value's trailing spaces, tabs and line breaks.** The wrapper uses `IFS=`, and the tests
+   send such values.
+2. **`fetch` follows redirects with headers other than `Authorization`.** A request with the entry's headers no longer
+   follows a redirect (the user approved the line).
+3. **A refresh that fails or is overtaken was left open.** Waiting calls now fail at once (the user approved the line),
+   and a removal, restart, Reconnect or exit closes both connections and throws away a late refresh.
