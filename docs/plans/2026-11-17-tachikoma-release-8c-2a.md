@@ -1278,6 +1278,13 @@ then its review's fixes.
   - a new connection's resource and prompt lists are taken before it becomes the server's, and a failed refresh
     clears the server's connection;
   - the drain tests take their rejection first, and a refresh whose new connection needs sign-in is tested.
+- **The terminal check** (the commit "terminal check: a call answered 401 or 403 says the helper runs again and the
+  call can be sent again"): a tool call whose own 401 or 403 began the refresh, or came while it ran, gets the user's
+  note (2026-11-18) after the server's words, `(the server answered <status>; its headersHelper is being run again
+  for a new connection, and the call was not sent again: call it again if it should still run)`. Its status is the
+  streamable HTTP transport's error's (`SdkHttpError`'s status, or `InsufficientScopeError` for a 403); an `sse`
+  server's call gets none, as that transport has the status only in its words (decision 18). Resource reads and
+  prompts, whose errors go to the window, are unchanged.
 - **Known limits found in review** are in the README's "MCP servers' limits", grouped under servers in the box, a
   project's answers, `headersHelper`, refreshes and redirects. One is not there, as nothing shows it today: any
   rejection of `#prepare` reads as a stop, and only a stop's `Cancelled` rejects it now.

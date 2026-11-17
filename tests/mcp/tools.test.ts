@@ -628,8 +628,49 @@ describe("MCP tools in the session: a refresh at a 401 or 403", () => {
         .filter((e) => e.body?.method === "tools/call" && e.body.params.arguments?.text === "mine")
         .map((e) => e.headers["x-token"]);
     const echo = callTool("c1", "mcp__r__echo", { text: "mine" });
-    return { t, log, gate, helper, servers, begin, mine, echo, origin: new URL(f.url).origin };
+    const turn = (to: string) => {
+      writeFileSync(token, to);
+      helper.give({ "x-token": to });
+    };
+    return { t, log, gate, helper, servers, begin, mine, echo, turn, origin: new URL(f.url).origin };
   }
+
+  // The user's choice, 2026-11-18, from the terminal check: the call whose own 401 or 403 began the refresh says so.
+  const NOTE = (status: number) =>
+    ` (the server answered ${status}; its headersHelper is being run again for a new connection, and the call ` +
+    "was not sent again: call it again if it should still run)";
+  it.each([401, 403])("fails a call answered %s with the server's words and the note, and refreshes", async (s) => {
+    const r = await refreshed({ denyStatus: s });
+    r.helper.hold();
+    r.turn("t2");
+    const { session } = r.t.session(r.servers, [r.echo, reply("ok")]);
+    await session.send("go");
+    expect(r.t.results(session)).toEqual([{ output: `Error POSTing to endpoint: refused${NOTE(s)}`, isError: true }]);
+    const refresh = r.servers.server("r")!.refreshing!;
+    r.helper.go();
+    expect(await refresh).toEqual({ is: "ready" });
+    expect(r.mine()).toEqual(["t1"]); // sent once, with the old token
+  });
+
+  it("fails a call answered 500 with the server's words alone, starting no refresh", async () => {
+    const r = await refreshed({ denyStatus: 500 });
+    r.turn("t2");
+    const { session } = r.t.session(r.servers, [r.echo, reply("ok")]);
+    await session.send("go");
+    expect(r.t.results(session)).toEqual([{ output: "Error POSTing to endpoint: refused", isError: true }]);
+    expect(r.servers.server("r")!.refreshing).toBeUndefined();
+    expect(r.helper.runs()).toHaveLength(1);
+  });
+
+  it("fails a call answered 403 by a server with no helper with the server's words alone", async () => {
+    const t = await setup();
+    const f = await httpFake(t.dir, { denyTool: "denied", tools: [tool("denied")] });
+    const servers = await t.ready([t.remote("s", f.url)]);
+    const { session } = t.session(servers, [callTool("c1", "mcp__s__denied", {}), reply("ok")]);
+    await session.send("go");
+    expect(t.results(session)).toEqual([{ output: "Error POSTing to endpoint: refused", isError: true }]);
+    expect(servers.server("s")!.refreshing).toBeUndefined();
+  });
 
   it("waits for the refresh, then runs the call once on the new connection", async () => {
     const r = await refreshed();

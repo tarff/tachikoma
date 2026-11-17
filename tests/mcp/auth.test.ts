@@ -604,6 +604,30 @@ describe("signing in, with a headersHelper", () => {
     expect(s.t.fake.seen.calls).toBe(1);
   });
 
+  // The user's choice, 2026-11-18, from the terminal check: a call whose own 403 began the refresh says so; a 401 on a
+  // connection that signs in is sign-in's, its line as before.
+  it.each([401, 403])("says a call's %s with sign-in as before, the note at a 403 only", async (status) => {
+    const s = await signedIn(status === 401 ? { refresh: false } : { scope403: true });
+    if (status === 401) s.t.fake.expire();
+    s.helper.hold();
+    const named = s.servers.offer({ loaded: new Set() }).named.flatMap((n) => n.tools);
+    const offered = named.find((o) => o.tool === "echo")!;
+    const ctx = {
+      root: s.t.dir, executor: new LocalExecutor(), workspace: new LocalWorkspace(s.t.dir),
+      gate: new PermissionGate("never", async () => false),
+    };
+    const run = mcpTools(s.servers, new Bus(), async () => {}).tool(offered).run({}, ctx);
+    const note =
+      " (the server answered 403; its headersHelper is being run again for a new connection, and the call was not " +
+      "sent again: call it again if it should still run)";
+    const signIn = "The MCP server om needs sign-in, which the user does from /mcp.";
+    const said = status === 401 ? signIn : `Insufficient scope: required "more"${note}`;
+    await expect(run).rejects.toMatchObject({ message: said });
+    expect(s.server.refreshing === undefined).toBe(status === 401);
+    s.helper.go();
+    await s.server.refreshing;
+  });
+
   // Decision 27: the hop to /mcp/ is the same request, so its 403 starts the refresh.
   it("refreshes once at a 403 on the hop to /mcp/", async () => {
     const s = await signedIn({ slash: true, scope403: true });

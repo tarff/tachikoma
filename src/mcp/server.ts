@@ -8,6 +8,7 @@ import {
   Client,
   type FetchLike,
   type GetPromptResult,
+  InsufficientScopeError,
   type Prompt,
   type ReadResourceResult,
   type Resource,
@@ -273,8 +274,13 @@ export class Server {
   // NotReached; one that may have (a connection cut mid-answer) fails with the library's error. Either way the server is
   // stopped with retry by then (onerror), and the call is not sent again here. `timeout`, in ms, is a caller's own limit in
   // place of these: an mcp_tool hook's, whose own time limit ends its call (hooks/run.ts). `owner`: the subagent making the
-  // call, if one is, so a form the server asks for meanwhile is headed with its id (choice 29).
-  async callTool(name: string, args: object, opts: { signal?: AbortSignal; timeout?: number; owner?: Owner }): Promise<CallToolResult> {
+  // call, if one is, so a form the server asks for meanwhile is headed with its id (choice 29). `noted`: the message of
+  // a call whose own 401 or 403 began the refresh running for its connection, or came while it ran (tools.ts, refused).
+  async callTool(
+    name: string,
+    args: object,
+    opts: { signal?: AbortSignal; timeout?: number; owner?: Owner; noted?(message: string, status: number): string },
+  ): Promise<CallToolResult> {
     const conn = this.#conn;
     if (!conn?.ready || conn.closed || this.#state.is !== "ready") throw new Error("Not connected"); // stopped: not closed yet
     const timeout = opts.timeout ?? this.#limit();
@@ -289,6 +295,12 @@ export class Server {
       if (conn.signs && UnauthorizedError.isInstance(err)) {
         this.#lostSignIn(conn);
         throw new Error(needsSignIn(this.config.name), { cause: err });
+      }
+      // On a connection that signs in, a 401 is sign-in's and begins no refresh (#answered).
+      const status = refusedWith(err);
+      const r = this.#refresh;
+      if (opts.noted && status && (status === 403 || !conn.signs) && r?.from === conn && !r.dropped) {
+        (err as Error).message = opts.noted((err as Error).message, status);
       }
       throw err;
     } finally {
@@ -911,6 +923,14 @@ function lastLine(errors: string): string | undefined {
 function remoteReason(address: string, err: unknown): string {
   if (err instanceof SdkHttpError && typeof err.status === "number") return `${address} answered ${err.status}`;
   return visible(err instanceof Error ? connectReason(err) : String(err), { tabs: true });
+}
+
+// The 401 or 403 a remote request's own answer was, from the streamable HTTP transport's error: its status, or its
+// InsufficientScopeError, thrown only at a 403 (decision 26). The SSE transport's error has it only in its words
+// (decision 18), so none is read from it.
+function refusedWith(err: unknown): number | undefined {
+  if (InsufficientScopeError.isInstance(err)) return 403;
+  return err instanceof SdkHttpError && (err.status === 401 || err.status === 403) ? err.status : undefined;
 }
 
 // A remote server is gone when a request cannot reach it (fetch's TypeError, the Fetch standard's network error), when it

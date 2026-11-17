@@ -1648,8 +1648,11 @@ server, such as a fresh token. Here it prints a file that holds `{"Authorization
   a name that is not a header name`; and `it gave the header "<name>" a value with a line break or
   NUL`.
 - **A 401 or 403** from the server, on a connection whose headers the helper gave, fails that call
-  with the server's answer. The call is not sent again, as the server has seen it; Claude Code
-  sends it once more. Then the helper runs again, and a new connection opens beside the old one.
+  with the server's answer; a tool call's error then ends `(the server answered <status>; its
+  headersHelper is being run again for a new connection, and the call was not sent again: call it
+  again if it should still run)`, except for an `"sse"` server. The call is not sent again, as the
+  server has seen it; Claude Code sends it once more. Then the helper runs again, and a new
+  connection opens beside the old one.
   Calls already sent finish on the old one, which then closes; calls approved meanwhile wait, and
   go on the new one, unless their tool changed there. On a connection that signs in, a 401 still
   means `needs sign-in`, and only a 403 does this. Only a tool call, a resource read or a prompt

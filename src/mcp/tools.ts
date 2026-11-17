@@ -33,6 +33,11 @@ const untrusted = (o: Offered) =>
 // A call that waited for a refresh which failed (8c-2a plan, Task 11; "Lines this plan adds"; choice 6 (b)).
 const helperFailed = (reason: string) => `its headersHelper failed, so the call was not sent: ${reason}`;
 const connectionFailed = (reason: string) => `its new connection failed, so the call was not sent: ${reason}`;
+// A call whose own 401 or 403 began a refresh, or came while one ran (Server.callTool): the user's choice, 2026-11-18,
+// from the terminal check.
+const refused = (message: string, status: number) =>
+  `${message} (the server answered ${status}; its headersHelper is being run again for a new connection, ` +
+  "and the call was not sent again: call it again if it should still run)";
 
 // The launch's question for every call, the lead's and its subagents' (release 8c plan, Task 7; design, "Approval";
 // choices 14-17). Trust is read here, from the entry in force, right before the gate would decide, so a live edit applies
@@ -95,7 +100,8 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
   async function call(o: Offered, input: Record<string, unknown>, ctx: ToolContext): Promise<CallToolResult> {
     const { signal, gate } = ctx;
     try {
-      return await servers.server(o.server)!.callTool(o.tool, input, { signal, ...(gate.owner && { owner: gate.owner }) });
+      const opts = { signal, noted: refused, ...(gate.owner && { owner: gate.owner }) };
+      return await servers.server(o.server)!.callTool(o.tool, input, opts);
     } catch (err) {
       if (!signal?.aborted && !(err instanceof NotReached) && servers.current(o) === "restarted") throw new Error(restarted(o));
       throw err;
