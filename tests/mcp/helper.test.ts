@@ -142,8 +142,8 @@ describe("runHelper", () => {
 
   // The test's own limit, so it does not wait the real 10 s, but long enough that the helper has recorded its run when
   // it is killed: Git Bash and Node took 106-135 ms to get that far (15 starts, measured 2026-11-17), so 2 s is about
-  // 15 times the slowest; run.test.ts's test of a hook killed at its limit asks the same with 1 s, and has passed in the
-  // full suite since release 8b.
+  // 15 times the slowest; run.test.ts's test of a hook killed at its limit asks the same with 1 s, and has passed in
+  // the full suite since release 8b.
   it("ends a helper still running at its limit, and says the limit", async () => {
     const { helper, run } = await setup();
     helper.mode("slow");
