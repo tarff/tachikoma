@@ -180,18 +180,22 @@ Each is marked in its task. The user approves them with the plan.
      transport's event stream wraps what its fetch throws.
 
    Task 10.
-18. **What starts a refresh** is a 401 or 403 from the server's own address, seen by the connection's `fetch`, on
-   a ready connection whose headers a helper gave. On a connection that signs in, a 401 stays sign-in's, as in 8c
-   (choice 59: `needs sign-in`), and only a 403 refreshes. The SDK's own errors are not used to decide: the SSE
-   transport carries the status only in its words (index.mjs:1252). Task 11.
+18. **What starts a refresh** is a 401 or 403 to a POST from the server's own address, seen by the connection's
+   `fetch`, on a ready connection whose headers a helper gave (as built: a POST's only, Task 11's review; and only a
+   `tools/call`, `resources/read` or `prompts/get`, the controller's fix after Task 11's re-check, as a refused
+   `resources/list` or `prompts/list` landing after `tools/list` refreshed again at each new connection). On a
+   connection that signs in, a 401 stays sign-in's, as in 8c (choice 59: `needs sign-in`), and only a 403 refreshes.
+   The SDK's own errors are not used to decide: the SSE transport carries the status only in its words
+   (index.mjs:1252). Task 11.
 19. **A refresh keeps the server's connection number** (`Server.connection`). `Servers.current` therefore still binds a
    call offered before the refresh, and its check of the tool's definition (`#now`) refuses one that changed on the new
    connection, as the design asks. `/mcp` Reconnect and a restart raise the number, as in 8c. Task 11.
 20. **Calls wait for a refresh in `mcp/tools.ts`,** after their approval and before 8c's last check.
    - The refresh's end is `Server.refreshing`: `ready`, `failed` (with its reason, and whether the helper failed) or
      `dropped`.
-   - A dropped refresh gives 8c's changed line when the server was removed or replaced, and its stopped line otherwise
-     (a restart, Reconnect or the exit).
+   - A dropped refresh gives 8c's changed line when the server was removed or replaced, the exit included, as 8c
+     gives a call at the exit, and its stopped line otherwise (a restart or a Reconnect), or 8c's sign-in line when
+     the new connection needs sign-in (as built, Task 11).
    - An `mcp_tool` hook's call does not wait: it goes on the connection in force, under its own limit.
 
    Task 11.
@@ -327,7 +331,9 @@ The user chose 1-9 on 2026-11-17, each as recommended (1: "Only other sites fail
      - `it was ended by signal <signal>`
      - `it did not finish within 10 s`
      - `it printed something other than a JSON object of text values`
-     - `it gave "<name>", which is not a header name`
+     - `it gave a name that is not a header name` (as built: the user's choice in Task 9's review, 2026-11-17, was
+       to leave the name out, as a helper gone wrong may have put a secret there; it was `it gave "<name>", which is
+       not a header name`)
      - `it gave the header "<name>" a value with a line break or NUL`
 
      The first two were changed after the plan review's finding 5, the user approving: they used to carry the whole
@@ -749,9 +755,10 @@ Holds choice 5's first two reasons and the plan review's line. Decisions 1, 3-8 
   `NOT_FOUND`.
 - `stop(opts: { exit?: boolean } = {})`, and `#close(conn, exit)`. For a box server:
   - without `exit`: race the process's exit against `KILL_MS`, then, if it is still alive, run `killInBox` through
-    `McpBox.run`, then `killTree`. A kill that fails is pushed onto the name's `unstopped` record as
+    `McpBox.run`, then the `docker exec` alone with `child.kill("SIGKILL")` (as built: never `killTree`; see "As
+    built", Task 4). A kill that fails is pushed onto the name's `unstopped` record as
     `{ group: string; reason: string }` (decision 24);
-  - with `exit`: `killTree` at once, with nothing run in the box.
+  - with `exit`: the `docker exec` killed at once the same way, with nothing run in the box.
 
   Host servers are unchanged.
 - `Server` options gain `unstopped?: { group: string; reason: string }[]`, its name's record, which `Servers` owns.
@@ -1219,4 +1226,58 @@ sampling stay "Not planned".
 
 ## As built
 
-What changed from the plan while building, for the later tasks and the reviewers. (Filled in during the build.)
+What changed from the plan while building, for the later tasks and the reviewers. Each task's commits are its build,
+then its review's fixes.
+
+- **Task 1** (09ca7d0, bd47e7f): as planned; three comments in config.ts brought up to date.
+- **Task 2** (2833724, 84f10e8): as planned. Any `host` answer wins over an 8c line, whatever their order, and the
+  keeper's comment says so.
+- **Task 3** (0c67baa, 6326f22): `INNER` first keeps the command and its arguments as its own `$1` on, and exports the
+  entries only after the whole block is read, so no entry can change the command run (an entry named `BASH_ARGV0`
+  would have changed `$0`). Other names bash keeps for itself are a known limit (README, "MCP servers' limits").
+- **Task 4** (422900d, 135b070, b3de77c):
+  - a box server's `docker exec` is ended alone with `child.kill("SIGKILL")`, never `killTree`, after the 300 ms and
+    the kill in the box, and at once with `exit`: it has no tree of its own, and on Windows taskkill /T blocks for
+    2-4 s (src/sandbox/docker.ts, choice 125). SIGKILL, as killTree sends, since a client that catches SIGTERM would
+    have the library's close wait 2 s twice. Task 4's lines 752 and 754 above now say so;
+  - a stop during the retries of the name's failed stops holds: `#connect` counts stops (`#stops`), which the plan
+    gave only to Task 10 (decision 22);
+  - tests/tui/app.test.tsx: two lines `10 tools` became `11 tools`, as the fakes gained `write`.
+- **Task 5** (12c158e, ac9439f): no source change; the box ran the wrapper as written. The stream test's wait for the
+  first answer ends after 30 s with a clear error, as its describe has no time limit.
+- **Task 6** (b82b5e4, ed73f75):
+  - a live edit restarts a server when where it runs changes (`placeOf` in `set`'s key), not on `host` alone, so with
+    the sandbox off adding or removing `host` restarts nothing;
+  - every copy of a name gets the box with the sandbox on, host and remote ones too, so each can retry its name's
+    failed stops; a copy given no box keeps its record, and nothing starts;
+  - tests/cli.test.ts (about 1987) changed too, which the plan did not list.
+- **Task 7** (f5e7e43, 3785612): as planned; the gate's comments name the boxed exception.
+- **Task 8** (f66266f, 88ffe96): as planned; the read-back tests show the `host` setup.
+- **Task 9** (2a85237, dd06d48, 7b416be, 78cbfc9):
+  - choice 5's header-name reason is `it gave a name that is not a header name`, without the name: the user's choice
+    in the review (2026-11-17), as a helper gone wrong may have put a secret there; the line-break reason keeps its
+    name. Choice 5 above now says so;
+  - one leading byte order mark in the helper's output is taken (Windows PowerShell 5.1's `Set-Content -Encoding
+    UTF8` writes one);
+  - the timeout test uses a 2 s limit (`it did not finish within 2 s`), not 500 ms, so the helper has recorded its
+    run before it is killed: Git Bash and Node took 106-135 ms to get that far (15 starts, measured 2026-11-17, in
+    the test's comment).
+- **Task 10** (6ea60b4, 4d81eaf):
+  - a refused redirect is found through a `redirected` callback of `connectionFetch`, kept on the connection
+    (`conn.redirected`), not in the error's cause chain (decision 17's last point): the SSE transport's event stream
+    keeps only the message of what its fetch threw;
+  - a newer start kills an earlier start's helper still running, and the stop test shows the helper killed.
+- **Task 11** (2c62105, eb4e50a, 8de9c8b, 1fc6df4):
+  - decision 18: only a 401 or 403 to a POST starts a refresh. A server that refused the event stream's GET with 401
+    or 403 started a new refresh at each new connection (14 to 45 helper runs in 6 s, measured in the review). Only
+    a `tools/call`, `resources/read` or `prompts/get` starts one now (the controller's fix after Task 11's re-check):
+    a refused `resources/list` or `prompts/list` landing after `tools/list` refreshed again at each new connection;
+  - decision 20: at the exit a waiting call gets 8c's changed line, as 8c gives a call then, not the stopped line;
+    decision 20 above now says so. A dropped refresh's call gets `notRunning`, so 8c's sign-in line when the new
+    connection needs sign-in;
+  - a new connection's resource and prompt lists are taken before it becomes the server's, and a failed refresh
+    clears the server's connection;
+  - the drain tests take their rejection first, and a refresh whose new connection needs sign-in is tested.
+- **Known limits found in review** are in the README's "MCP servers' limits", grouped under servers in the box, a
+  project's answers, `headersHelper`, refreshes and redirects. One is not there, as nothing shows it today: any
+  rejection of `#prepare` reads as a stop, and only a stop's `Cancelled` rejects it now.
