@@ -71,7 +71,11 @@ The user approved each of the four sections below on 2026-11-17, and the changes
 adds where the server runs, so a yes given for the box never starts the server on the user's machine (the design
 review's finding 1):
 
-- **A local server's answer** records `box` or `host`: `box` while the sandbox is on, `host` while it is off.
+- **A local server's answer** records the setup it was given for: `host` while the sandbox is off, and while it is
+  on, `box` with the sandbox's kind (copy or live link) and the box's network (off or on), so five setups in all.
+  Starting a server runs its code before any call is approved, and live link (the real files) or the network (the
+  web) widens what that code can reach, so a yes for a copy with the network off never starts it in live link or with
+  the network on (the second design review's finding 1).
 - **A remote server's answer** records whether its `headersHelper` runs: it does with the sandbox off, and not with
   it on (choice 3). An entry without a helper records nothing more.
 - **Only an exact match counts,** a yes and a no alike: a change asks again in the window, and in `-p` the server is
@@ -79,7 +83,8 @@ review's finding 1):
 - **Answers saved by 8c** count as `host`, as every server ran on the user's machine then. A remote entry with a
   helper was left out in 8c, so it has no answer and is asked about.
 - **The question says which** (choice 5); the text after the colon is 8c's:
-  - `Start the MCP server "x" from this project's .mcp.json inside the sandbox: <command>? [y/n]`
+  - `Start the MCP server "x" from this project's .mcp.json inside the sandbox (copy, network off): <command>? [y/n]`,
+    with `copy` or `live link` and `network off` or `network on` as the launch's setup is
   - `Start the MCP server "x" from this project's .mcp.json on this computer: <command>? [y/n]`
   - `Connect to the MCP server "x" from this project's .mcp.json at <url>, running its headersHelper on this
     computer: <helper>? [y/n]`
@@ -111,6 +116,16 @@ review's finding 1):
   in a file on disk (`docker exec --env-file` would write one, and cannot carry a line break). `${VAR}` in an entry is
   still filled
   from the user's environment when the settings are read (8c). The server's roots (MCP `roots/list`) say `/work`.
+- **The block's framing** (the second design review's finding 2): each variable is `NAME=VALUE` followed by one NUL
+  byte, and the block ends with one more NUL (an empty entry). A name is letters, digits and `_`, not starting with a
+  digit; a value may hold a line break but never a NUL (no environment value can). The wrapper reads the entries with
+  bash's `read -r -d ''`, which takes a pipe one byte at a time, so it never takes a byte past the block's end, and then
+  replaces itself with the server (`exec`), which reads its input from the next byte on: the first MCP message.
+  Whether `read` holds to that is checked by the tests below, not assumed.
+- **The stream:** a box server's input stays open for the whole connection, written by the MCP library's own stdio
+  transport (8c's `Stdio`) through a `docker exec -i` it starts. The block is the first thing written, before the
+  library's first message. The sandbox's Docker runner (`src/sandbox/docker.ts`), which writes its input once and
+  closes it, is not used for servers.
 - **Stop:** at `/mcp` Reconnect or a restart, the server's input is closed; if it still runs 300 ms later (8c's limit,
   `KILL_MS` in `src/mcp/server.ts`), its process group is killed inside the box. Killing the `docker exec` program on
   the machine is not enough: the process in the box keeps running (measured for the box's shell commands, release 7).
@@ -130,6 +145,12 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   answer, so the request reached it, and Tachikoma resends only a call that never reached its server (8c, choice 13;
   `src/mcp/tools.ts`). Claude Code retries it once; this one rule differs on purpose. 8c's check still refuses a tool
   that changed on the new connection.
+- **One refresh per connection, and calls in flight finish** (the second design review's finding 3). The first 401 or
+  403 on a connection starts its refresh; another on the same connection joins it rather than starting a second. The
+  new connection opens beside the old one, which 8c's Reconnect would close at once (`src/mcp/server.ts`): calls
+  already sent on the old connection get their answers there, each within its own time limit, and the old connection
+  closes when the last has finished. Calls not yet sent go to the new connection, provided their tool is unchanged
+  there (8c's check). `/mcp` Reconnect and a restart still close the old connection first, as in 8c.
 - **How:** by the shell hooks use (8b design, "The shell, as Claude Code's": Git Bash on Windows, Windows PowerShell
   when there is none, `sh -c` elsewhere). In `~/.tachikoma` for an entry in the user's settings, and in the project
   folder for a project's entry (Claude Code's table, with `~/.claude` as Tachikoma's `~/.tachikoma`). Stopped after
@@ -137,7 +158,12 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   so a helper written for Claude Code works unchanged. Provider keys are never passed.
 - **Output:** a JSON object whose values are all strings (Claude Code's rule). Its headers beat a static header of the
   same name, whatever the letter case (Claude Code: "Dynamic headers override any static headers with the same name").
-  An `Authorization` header from it means the server does not use sign-in (OAuth), as in Claude Code. Anything else (a
+  An `Authorization` header from it means the server does not use sign-in (OAuth) on that connection, as in Claude
+  Code. So the choice is made for each connection, after the helper has run and its headers have been merged (the
+  second design review's finding 4); 8c makes it once, from the static headers, when the server is set up
+  (`src/mcp/server.ts`). A helper that gives `Authorization` on one connection and not on the next leaves sign-in to
+  the next. While sign-in is used, the headers, the helper's included, go only to the server's own address, never to
+  the sign-in service (8c, choice 54). Anything else (a
   non-zero exit, the time running out, output that is not such an object, a value with a line break or NUL) means the
   server does not connect, and its red line says why. Claude Code's documentation does not say what it does here, so
   this is Tachikoma's own rule.
@@ -173,9 +199,11 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   start command (no `-t`, no server value on it, `/work`); the `docker` program's own environment, with an entry that
   sets `DOCKER_HOST` and `DOCKER_CONFIG` changing nothing there; the block on the server's input, and what the server's
   environment holds, line breaks included; roots saying `/work`; the "not found in the box" line; the stop sequence.
-- **Answers:** a yes for the box asked again with the sandbox off, and the reverse, in the window and skipped in
-  `-p`; a remote answer without the helper asked again when the helper would run; an 8c answer counting as `host`;
-  the four questions' text.
+- **The block, in the real box:** written in several pieces with pauses between them; written in the same piece as
+  `initialize`, the server still answering it; a bad name refused before anything starts.
+- **Answers:** a yes for the box asked again with the sandbox off, and the reverse; a yes for a copy with the network
+  off asked again in live link and with the network on, and each of these skipped in `-p`; a remote answer without the
+  helper asked again when the helper would run; an 8c answer counting as `host`; the questions' text.
 - **A stand-in Docker** whose `exec -i` runs a small fake server on the machine and records how it was called: start,
   stop and failure tests without Docker.
 - **Real Docker tests,** skipped where Docker is not running, as the sandbox's tests are: a fake server in the real box
@@ -184,8 +212,10 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
 - **Helper tests** with small fake helper scripts: good output; the merge with static headers, letter case included;
   `Authorization` turning off sign-in; a failing exit, the time running out, bad output; a 401 or 403 failing its
   call, sent once only, with the helper run again and the next call on the new connection, and a tool changed there
-  refused; the two variables it gets; credential-looking names removed from a project's helper; a project's helper with
-  the sandbox on, not run.
+  refused; two calls at once, one answered 403 and the other succeeding on the old connection, with one refresh only
+  and a third call on the new one; sign-in chosen per connection, a helper's `Authorization` on one connection and
+  none on the next; the headers kept from the sign-in service; the two variables it gets; credential-looking names
+  removed from a project's helper; a project's helper with the sandbox on, not run.
 - **The user's terminal checklist:** TradingView and MemPalace with `"host": true`, the sandbox and its network on; a
   small `npx` server inside the box; a helper that prints a header from a file.
 - CI runs it all on Windows for the pull request.
@@ -209,3 +239,15 @@ changed the design above:
    review shows. It now asks then (choice 4).
 4. **Retrying a call after a 401 or 403 could run it twice,** as the answer shows the request reached the server.
    The helper's fresh headers serve the calls after it; the call is not sent again.
+
+A second review the same day made four more findings, each checked against the code and fixed above:
+
+1. **A yes for the box was too broad:** starting a server runs its code, and live link or the network widens what it
+   reaches. An answer now records the sandbox's kind and network too, and the question names them (the user approved
+   the wording).
+2. **The variables block needed exact framing,** as one read can hold its end and the first message, and the sandbox's
+   Docker runner closes its input. The framing and the stream are now set out, and tested in the real box.
+3. **A refresh would close calls still waiting on the old connection.** One refresh per connection now; calls in
+   flight finish on the old one, new ones go to the new one.
+4. **Sign-in was chosen once, from the static headers.** It is now chosen per connection, after the helper's headers
+   are merged.
