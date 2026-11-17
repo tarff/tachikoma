@@ -611,13 +611,14 @@ describe("a remote server's headersHelper, and its redirects", () => {
   // with a redirect within the origin, as the library's fetchWithinOrigin passes it on; any other call is not.
   it.each([true, false])("connectionFetch, signing in %s, takes a request's own hops alone as it", async (signs) => {
     const { dir, log } = await setup();
-    const fake = await httpFake(dir, { log, slash: true });
+    // Each POST past the slash's 307 answered 200: the tool call sent, a request whose status is heard, has no session.
+    const fake = await httpFake(dir, { log, slash: true, status: 200 });
     const url = new URL(fake.url);
     const statuses: number[] = [];
     const answered = (status: number) => statuses.push(status);
     const send = connectionFetch({ url, endpoint: () => undefined, headers: { "X-Key": "entry" }, signs, answered });
-    const initialize = { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } };
-    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: initialize });
+    const call = { name: "echo", arguments: {} };
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: call });
     const post = async (at: string, headers: Headers) => {
       const answer = await send(new URL(at, url), { method: "POST", headers, body });
       await answer.text();
@@ -848,5 +849,38 @@ describe("a remote server's refresh at a 401 or 403", () => {
     expect(t.helper.runs()).toHaveLength(1);
     expect(initializes(t.log)).toHaveLength(1);
     expect(t.server.state.is).toBe("ready");
+  });
+
+  // Only a tool call, a resource read or a prompt starts a refresh: a list a connection asks for beside its tools,
+  // refused once it is ready, would otherwise refresh again at each new connection (Task 11's re-check).
+  const offers = (denyMethod: string) => ({
+    denyMethod,
+    resources: [{ uri: "note://a", name: "a", text: "hi" }],
+    prompts: [{ name: "greet", messages: [{ role: "user", content: { type: "text", text: "Hello." } }] }],
+  });
+  it.each(["resources/list", "prompts/list"])("starts no refresh at %s answered 403 once ready", async (method) => {
+    const t = await turned(() => offers(method));
+    await writeFile(t.gate, ""); // the 403, held until now, comes after the start
+    await t.server.listed;
+    expect(t.server.refreshing).toBeUndefined();
+    expect(t.helper.runs()).toHaveLength(1);
+    expect(initializes(t.log)).toHaveLength(1);
+    expect(t.server.state.is).toBe("ready");
+    expect(names(t.server)).toEqual(TOOLS);
+    expect(method === "resources/list" ? t.server.resources : t.server.prompts).toEqual([]);
+  });
+
+  it.each(["resources/read", "prompts/get"])("starts a refresh at %s answered 403", async (method) => {
+    const t = await turned(() => offers(method));
+    await writeFile(t.gate, "");
+    t.helper.hold();
+    const asked =
+      method === "resources/read" ? t.server.readResource("note://a", {}) : t.server.getPrompt("greet", {}, {});
+    await expect(asked).rejects.toThrow();
+    const refresh = t.server.refreshing;
+    expect(refresh).toBeDefined();
+    t.helper.go();
+    expect(await refresh).toEqual({ is: "ready" });
+    expect(t.helper.runs()).toHaveLength(2);
   });
 });

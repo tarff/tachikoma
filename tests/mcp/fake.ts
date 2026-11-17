@@ -43,6 +43,7 @@ export interface FakeOptions {
   denyTool?: string;
   holdSecond?: string;
   redirectCall?: string;
+  denyMethod?: string; // over HTTP, a request of that method is answered 403 once `gate` exists (Task 11's re-check)
   // Over HTTP: the status a GET for the event stream is answered with in place of 405, held until the first tools/call
   // comes, so it reaches a ready connection (Task 11's review).
   getStatus?: number;
@@ -234,6 +235,10 @@ function serveHttp() {
       if (m.method === "tools/call" && !called) {
         called = true;
         for (const held of gets.splice(0)) held.writeHead(O.getStatus).end();
+      }
+      if (m.method === O.denyMethod) {
+        const poll = () => (fs.existsSync(O.gate) ? res.writeHead(403).end("refused") : setTimeout(poll, 20));
+        return poll();
       }
       if (m.method === "tools/call" && m.params.name === "cut") return req.socket.destroy();
       if (m.method === "tools/call" && m.params.name === O.denyTool) return res.writeHead(403).end("refused");

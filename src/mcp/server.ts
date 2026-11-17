@@ -468,7 +468,8 @@ export class Server {
     }
   }
 
-  // A status the server's own address answered on this connection (connectionFetch). A 401 or 403 on the ready
+  // A status the server's own address answered to a tool call, a resource read or a prompt on this connection
+  // (connectionFetch), never to a list the connection asks for itself (Task 11's re-check). A 401 or 403 on the ready
   // connection in force, whose headers a helper gave, starts a refresh, unless one is running; on a connection that
   // signs in a 401 stays sign-in's (8c-2a plan, Task 11; decision 18). A dropped refresh still ending blocks none.
   #answered(conn: Conn, status: number): void {
@@ -803,10 +804,11 @@ export class Redirected extends Error {}
 //   copy of the init). Such a hop is that request: with sign-in it gets the headers too, and its status is heard. Only
 //   that request's own chain counts, never a lasting list of places, so any other call to that path, a sign-in
 //   request's among them, is not a hop.
-// `answered` hears each status the server's own address or a hop answered to a POST, the method that carries calls,
-// reads and initialize, and that a hop keeps; never a GET for the event stream or a DELETE ending the session: a
-// server may refuse those whatever the headers, and each new connection's refusal would start another refresh (Task
-// 11's review). `redirected` hears each redirect refused.
+// `answered` hears each status the server's own address or a hop answered to a POST of one request the model or the
+// user make, a tools/call, resources/read or prompts/get (ASKED), a hop judged by the same body; never a list, an
+// initialize, a notification, a GET for the event stream or a DELETE ending the session: a server may refuse those
+// whatever the headers, and each new connection, asking again, would start another refresh (Task 11's review and
+// re-check). `redirected` hears each redirect refused.
 export function connectionFetch(opts: {
   url: URL;
   endpoint: () => URL | undefined;
@@ -850,9 +852,22 @@ export function connectionFetch(opts: {
       if (!chain) chains.set(key, (chain = new Set()));
       chain.add(place(target));
     }
-    if (mine && init?.method?.toUpperCase() === "POST") opts.answered(answer.status);
+    if (mine && init?.method?.toUpperCase() === "POST" && asked(init.body)) opts.answered(answer.status);
     return answer;
   };
+}
+
+const ASKED = new Set(["tools/call", "resources/read", "prompts/get"]);
+
+// A body that is one JSON-RPC request of a method in ASKED (connectionFetch).
+function asked(body: unknown): boolean {
+  if (typeof body !== "string") return false;
+  try {
+    const m = JSON.parse(body);
+    return typeof m === "object" && m !== null && !Array.isArray(m) && m.id !== undefined && ASKED.has(m.method);
+  } catch {
+    return false;
+  }
 }
 
 // Choice 6: the exit code, with the last line of the error output that is not blank (choice 5), or the signal.
