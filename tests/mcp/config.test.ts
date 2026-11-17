@@ -66,7 +66,6 @@ describe("readServers", () => {
   it("leaves out a server of a kind Tachikoma does not run, with its line", () => {
     expect(read(remote({ type: "ws" }))).toEqual({ kept: [], warnings: left(' has "type" "ws", which Tachikoma does not support; it was left out') });
     expect(said(remote({ type: "grpc" }))).toEqual(left(' has "type" "grpc", which is not "stdio", "http" or "sse"; it was left out'));
-    expect(said(remote({ headersHelper: "get-token.sh" }))).toEqual(left(' has "headersHelper", which Tachikoma does not run yet (planned); it was left out'));
   });
 
   it("leaves out a server missing what its kind needs", () => {
@@ -400,6 +399,53 @@ describe("readServers", () => {
     const bad: string[] = [];
     expect(readServers(".mcp.json", { s: local({ trusted: true }) }, ENV, bad)).toHaveLength(1);
     expect(bad).toEqual(['.mcp.json: "s" has "trusted"; trust counts only in ~/.tachikoma/settings.json, so it was ignored']);
+  });
+
+  // 8c-2a plan, Task 1 (decision 9, choice 5): "host" is a local server's field, set only by true.
+  it('reads "host": true into a local server from the user\'s file, and passes it over on a remote one', () => {
+    const { kept, warnings } = read(local({ host: true }));
+    expect(warnings).toEqual([]);
+    expect(kept[0]).toMatchObject({ host: true, entry: { kind: "stdio", command: "node", args: ["server.js"] } });
+    const off = read(local({ host: false }));
+    expect(off.warnings).toEqual([]);
+    expect(off.kept[0]).not.toHaveProperty("host");
+    expect(read(local({ host: "yes" }))).toEqual({
+      kept: [], warnings: left(': "host" must be true or false, without quotes (got "yes"); it was left out'),
+    });
+    const r = read(remote({ host: true }));
+    expect(r.warnings).toEqual([]);
+    expect(r.kept).toHaveLength(1);
+    expect(r.kept[0]).not.toHaveProperty("host");
+  });
+
+  // 8c-2a plan, Task 1 (choice 4): a project's file cannot put a server on this computer, whatever the value.
+  it('ignores "host" in .mcp.json with its line, and keeps the server without it', () => {
+    for (const value of [true, false, "yes"]) {
+      const warnings: string[] = [];
+      const kept = readServers(".mcp.json", { x: local({ host: value }) }, ENV, warnings);
+      expect(kept).toHaveLength(1);
+      expect(kept[0]).not.toHaveProperty("host");
+      expect(warnings).toEqual([
+        '.mcp.json: "x" has "host"; a server runs on this computer only from ~/.tachikoma/settings.json, ' +
+          "so it was ignored",
+      ]);
+    }
+  });
+
+  // 8c-2a plan, Task 1 (decision 9, choice 5): a shell command, which reads its own variables, so ${VAR} is not filled.
+  it('reads "headersHelper" into a remote entry and asWritten as written, and passes it over on a local one', () => {
+    const helper = "get-token.sh --key=${TOKEN} ${MISSING}";
+    const { kept, warnings } = read(remote({ headersHelper: helper }));
+    expect(warnings).toEqual([]);
+    const url = "https://mcp.example.com/mcp";
+    expect(kept[0]!.entry).toEqual({ kind: "http", url, headers: {}, headersHelper: helper });
+    expect(kept[0]!.asWritten).toEqual({ url, headers: {}, headersHelper: helper });
+    expect(read(remote({ headersHelper: 5 }))).toEqual({
+      kept: [], warnings: left(': "headersHelper" must be text in quotes (got a number); it was left out'),
+    });
+    const l = read(local({ headersHelper: 5 }));
+    expect(l.warnings).toEqual([]);
+    expect(l.kept[0]!.entry).toEqual({ kind: "stdio", command: "node", args: ["server.js"], env: {} });
   });
 
   it("starts a project's left-out lines with .mcp.json", () => {
