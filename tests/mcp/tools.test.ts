@@ -652,6 +652,22 @@ describe("MCP tools in the session: a refresh at a 401 or 403", () => {
     expect(r.mine()).toEqual(["t1"]); // sent once, with the old token
   });
 
+  // The session cuts a failure to MAX_TOOL_OUTPUT; the server's words are cut first, so the note stays whole.
+  it("keeps the note whole after a refusal longer than a tool's output may be", async () => {
+    const r = await refreshed({ denyStatus: 403, denyLength: MAX_TOOL_OUTPUT + 1000 });
+    r.helper.hold();
+    r.turn("t2");
+    const { session } = r.t.session(r.servers, [r.echo, reply("ok")]);
+    await session.send("go");
+    const { output } = (r.t.results(session) as { output: string }[])[0]!;
+    expect(output.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+    expect(output).toMatch(/^Error POSTing to endpoint: x+\n\[cut: \d+ more characters\] \(the server/);
+    expect(output.endsWith(NOTE(403))).toBe(true);
+    const refresh = r.servers.server("r")!.refreshing!;
+    r.helper.go();
+    expect(await refresh).toEqual({ is: "ready" });
+  });
+
   it("fails a call answered 500 with the server's words alone, starting no refresh", async () => {
     const r = await refreshed({ denyStatus: 500 });
     r.turn("t2");

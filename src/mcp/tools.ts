@@ -1,6 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/client";
 import type { Bus } from "../core/bus.js";
 import { visible } from "../core/permissions.js";
+import { truncateLeaving } from "../core/session.js";
 import type { Picture } from "../core/types.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import { typeOf } from "../tui/clipboard.js";
@@ -34,10 +35,13 @@ const untrusted = (o: Offered) =>
 const helperFailed = (reason: string) => `its headersHelper failed, so the call was not sent: ${reason}`;
 const connectionFailed = (reason: string) => `its new connection failed, so the call was not sent: ${reason}`;
 // A call whose own 401 or 403 began a refresh, or came while one ran (Server.callTool): the user's choice, 2026-11-18,
-// from the terminal check.
-const refused = (message: string, status: number) =>
-  `${message} (the server answered ${status}; its headersHelper is being run again for a new connection, ` +
-  "and the call was not sent again: call it again if it should still run)";
+// from the terminal check. The server's words are cut first, so the session's cut of a failure leaves the note whole.
+const refused = (message: string, status: number) => {
+  const note =
+    ` (the server answered ${status}; its headersHelper is being run again for a new connection, ` +
+    "and the call was not sent again: call it again if it should still run)";
+  return `${truncateLeaving(message, note.length)}${note}`;
+};
 
 // The launch's question for every call, the lead's and its subagents' (release 8c plan, Task 7; design, "Approval";
 // choices 14-17). Trust is read here, from the entry in force, right before the gate would decide, so a live edit applies

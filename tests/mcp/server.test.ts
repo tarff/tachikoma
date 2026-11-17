@@ -903,6 +903,40 @@ describe("a remote server's refresh at a 401 or 403", () => {
     expect(method === "resources/list" ? t.server.resources : t.server.prompts).toEqual([]);
   });
 
+  // The note for a call whose own 401 or 403 began the refresh for its connection, or came while it ran (tools.ts,
+  // refused; the user's choice, 2026-11-18, from the terminal check).
+  const noted = (message: string, status: number) => `${message} [noted ${status}]`;
+  it("notes two calls at once answered 401 on the connection a refresh is for", async () => {
+    const t = await turned();
+    t.helper.hold();
+    await t.turn("t2");
+    const two = ["a", "b"].map((text) => t.server.callTool("echo", { text }, { noted }));
+    const said = (await Promise.allSettled(two)).map((s) => (s.status === "rejected" ? s.reason.message : s.status));
+    expect(said).toEqual(Array(2).fill("Error POSTing to endpoint: refused [noted 401]"));
+    const refresh = t.server.refreshing!;
+    t.helper.go();
+    expect(await refresh).toEqual({ is: "ready" });
+  });
+
+  // A call sent on the first connection, its 403 held until `gate`, comes after a second refresh, from the second
+  // connection, began: a refresh for another connection than its own.
+  it("notes no call refused on a connection that the refresh running is not for", async () => {
+    const t = await turned(() => ({ denyMethod: "tools/call" }));
+    const first = t.server.callTool("echo", { text: "held" }, { noted });
+    await vi.waitFor(() => expect(callsOf(t.log)).toHaveLength(1), WAIT);
+    await t.turn("t2");
+    await expect(t.server.callTool("echo", {}, {})).rejects.toThrow(); // its 401 begins the first refresh
+    expect(await t.server.refreshing).toEqual({ is: "ready" });
+    t.helper.hold();
+    await t.turn("t3");
+    await expect(t.server.callTool("echo", {}, {})).rejects.toThrow(); // and this one the second
+    const refresh = t.server.refreshing!;
+    await writeFile(t.gate, "");
+    await expect(first).rejects.toMatchObject({ message: "Error POSTing to endpoint: refused", status: 403 });
+    t.helper.go();
+    expect(await refresh).toEqual({ is: "ready" });
+  });
+
   it.each(["resources/read", "prompts/get"])("starts a refresh at %s answered 403", async (method) => {
     const t = await turned(() => offers(method));
     await writeFile(t.gate, "");

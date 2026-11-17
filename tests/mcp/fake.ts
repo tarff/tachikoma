@@ -40,6 +40,7 @@ export interface FakeOptions {
   // file exists; `redirectCall`: a tools/call is answered with a 307 to that address.
   tokenFile?: string;
   denyStatus?: number;
+  denyLength?: number; // that refusal's text, as many "x" in place of "refused"
   denyTool?: string;
   holdSecond?: string;
   redirectCall?: string;
@@ -226,7 +227,7 @@ function serveHttp() {
       if (O.redirect) return res.writeHead(307, { location: O.redirect }).end();
       if (O.status) return res.writeHead(O.status).end("refused");
       if (O.tokenFile && req.headers["x-token"] !== fs.readFileSync(O.tokenFile, "utf8")) {
-        return res.writeHead(O.denyStatus || 401).end("refused");
+        return res.writeHead(O.denyStatus || 401).end(O.denyLength ? "x".repeat(O.denyLength) : "refused");
       }
       const m = JSON.parse(body);
       if (m.method !== "initialize" && !sessions.has(req.headers["mcp-session-id"])) return res.writeHead(404).end();

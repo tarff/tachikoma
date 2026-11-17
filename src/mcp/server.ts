@@ -274,8 +274,9 @@ export class Server {
   // NotReached; one that may have (a connection cut mid-answer) fails with the library's error. Either way the server is
   // stopped with retry by then (onerror), and the call is not sent again here. `timeout`, in ms, is a caller's own limit in
   // place of these: an mcp_tool hook's, whose own time limit ends its call (hooks/run.ts). `owner`: the subagent making the
-  // call, if one is, so a form the server asks for meanwhile is headed with its id (choice 29). `noted`: the message of
-  // a call whose own 401 or 403 began the refresh running for its connection, or came while it ran (tools.ts, refused).
+  // call, if one is, so a form the server asks for meanwhile is headed with its id (choice 29). `noted`: rewrites the
+  // error's words for a call whose own 401 or 403 began the refresh running for its connection, or came while it ran
+  // (tools.ts, refused).
   async callTool(
     name: string,
     args: object,
