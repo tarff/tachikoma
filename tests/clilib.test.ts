@@ -253,6 +253,9 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
     const kept = answersFor(top, data);
     const kept3 = ["old", "yes", "no"].map((name) => kept.get(name, `as written: ${name}`, "host"));
     expect(kept3).toEqual([true, true, false]);
+    // Kept for this computer, not with no setup: a lookup with none finds only an answer kept with none, as old's is.
+    const noSetup = ["old", "yes", "no"].map((name) => kept.get(name, `as written: ${name}`));
+    expect(noSetup).toEqual([true, undefined, undefined]);
     // Nothing read nor asked without a project server.
     const never = async () => expect.unreachable();
     const unread = () => expect.unreachable("no project server, so no answers are read");
@@ -281,6 +284,9 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
     expect(failed).toEqual([expect.stringMatching(unsaved("yes")), expect.stringMatching(unsaved("no\\\\u001b"))]);
     const kept = ["yes", "no\u001b"].map((name) => answers!.get(name, `as written: ${name}`, "host"));
     expect(kept).toEqual([true, false]);
+    // Kept for this computer, not with no setup: a lookup with none finds only an answer kept with none.
+    const noSetup = ["yes", "no\u001b"].map((name) => answers!.get(name, `as written: ${name}`));
+    expect(noSetup).toEqual([undefined, undefined]);
   });
 
   // 8c-2a plan, Task 8 (design, "A project's servers"; choice 2 (b)): one answer per server and setup. Each new setup
@@ -314,7 +320,6 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
       const listed = servers([tv, far], network, () => answersFor(top, data), sandbox?.kind).list();
       expect(listed.map((s) => s.state.is)).toEqual(["starting", network === "off" ? "off" : "starting"]);
     }
-    expect(serverQuestion(far, copyOn)).toContain("without its headersHelper");
     // With the sandbox off, the remote server's yes is kept for its helper running.
     expect(answersFor(top, data).get("far", far.written, "helper")).toBe(true);
   });

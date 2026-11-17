@@ -1457,9 +1457,11 @@ describe("tachi's MCP servers", { timeout: 60_000 }, () => {
     expect(w.stdout()).toContain(`${question("yes", yes.script)}y\n${question("no", no.script)}n\n`);
     expect(readLog(no.log)).toEqual([]);
     expect(alive(yes.pid())).toBe(false);
-    // Kept for this computer, as the sandbox is off (8c-2a plan, Task 8).
+    // Kept for this computer, as the sandbox is off (8c-2a plan, Task 8), not with no setup: a lookup with none finds
+    // only an answer kept with none.
     const kept = ["yes", "no"].map((name) => p.answers().get(name, p.written(name), "host"));
     expect(kept).toEqual([true, false]);
+    expect(["yes", "no"].map((name) => p.answers().get(name, p.written(name)))).toEqual([undefined, undefined]);
     // The next launch asks nothing and starts the yes again.
     const again = windowLater("--lead", "ollama:none", p.env);
     await vi.waitFor(() => expect(initializes(yes.log)).toBe(2), WAIT);

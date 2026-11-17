@@ -696,8 +696,9 @@ export function approvalQuestion(reached: Reached[]): string {
 // and the answer covers just what was shown (choice 48); a local one's then names the variables its entry sets, names
 // only, as a value may hold a key (choice 49), and a remote one's the variables its address and headers read, each once
 // (choice 64). A command, argument or name that is empty or holds a space or a quote is shown in quotes, a quote in it as
-// \", so where each one ends can be seen; all of it escaped. It says where a local server runs, and whether a remote
-// one's headersHelper runs, after the address (8c-2a plan, Task 8; design, "A project's servers"; choice 8).
+// \", so where each one ends can be seen; all of it escaped. It says where a local server runs, before its command, and
+// whether a remote one's headersHelper runs, after its address (8c-2a plan, Task 8; design, "A project's servers";
+// choice 8).
 export function serverQuestion(c: ServerConfig, sandbox: McpSandbox): string {
   const name = visible(c.name);
   const w = c.asWritten;
