@@ -37,14 +37,16 @@ const untrusted = (o: Offered) =>
 // subagent's call to a tool no longer trusted is refused, as subagents only read (choice 17). Else the gate decides:
 // the question is the server, the tool and its input as JSON, which the gate escapes, its grey note the first line of
 // the tool's own description, as the server sent it (choices 14 and 47), and the judge is shown the 4,096 cut (choice 15;
-// Task 6b). `outside` is true, as the server runs apart from the project; only the judge reads it, since the gate decides
-// an MCP call by its kind (release 8c plan, choice 32).
+// Task 6b). `outside` is true for a server on the user's machine or a remote one, false for a box server's, as it runs
+// in the box; only the judge reads it, since the gate decides an MCP call by its kind (release 8c plan, choice 32;
+// 8c-2a plan, decision 12). `boxed`: a box server's with the box's network off, which runs unasked in never (Task 7).
 export function approveOf(servers: Servers): Approve {
   return async (o, input, ctx) => {
     if (servers.trust(o.server, o.tool)) return;
     if (o.trustedOnly) throw new Error(untrusted(o));
     const summary = `${o.server}: ${o.tool} ${JSON.stringify(input)}`;
-    await ctx.gate.require({ kind: "mcp", outside: true, summary, description: o.forJudge, note: o.forNote }, ctx.signal);
+    const where = { outside: o.boxNetwork === undefined, ...(o.boxNetwork === "off" && { boxed: true }) };
+    await ctx.gate.require({ kind: "mcp", ...where, summary, description: o.forJudge, note: o.forNote }, ctx.signal);
   };
 }
 

@@ -9,8 +9,9 @@ import type { Bus } from "./bus.js";
 // auto:    reads and edits in the project run, the judge decides the rest, and dangerous commands ask the user (release 7
 //          design, "Auto mode"; release 7 plan, Task 10)
 // never:   never ask; only with --sandbox copy, so nothing reaches the folder before the user has reviewed it
-//          (release 7 design, "Launching"); but an MCP call asks, as its server is outside the box (release 8c plan,
-//          choice 32)
+//          (release 7 design, "Launching"); but an MCP call asks, as its server is outside the box or the box's network
+//          is on (release 8c plan, choice 32), except a box server's while the box's network is off, which runs (8c-2a
+//          plan, Task 7)
 export type Mode = "ask" | "project" | "auto" | "never";
 export const MODES: Mode[] = ["ask", "project", "auto", "never"];
 // The modes a mistake's words offer: all four, now that copy mode, which `never` needs, is built (release 7 plan, Task 21).
@@ -31,6 +32,9 @@ export interface Action {
   // An MCP tool's own description, as the server sent it; its first line is the question's grey note, on one screen row
   // (choices 14 and 47).
   note?: string;
+  // An MCP call to a server in the box while the box's network is off, which runs unasked in never (8c-2a plan,
+  // Task 7).
+  boxed?: boolean;
 }
 
 // The git settings' paths the protected paths add, read once at launch (release 7 plan, Task 8; choices 57 and 59):
@@ -46,8 +50,9 @@ export interface Protection {
 // judge decides (release 7 plan, Task 10); a protected write and a danger the gate checks itself.
 export function needsApproval(mode: Mode, action: Action): boolean {
   // An MCP call by its kind, never by `outside`: the user is asked in every mode, never included, as the server is outside
-  // the box, and in auto the judge decides (release 8c plan, choice 32; design, "Approval").
-  if (action.kind === "mcp") return true;
+  // the box, and in auto the judge decides (release 8c plan, choice 32; design, "Approval"). In never, a boxed one, a
+  // box server's with the box's network off, runs, as nothing it does leaves the box (8c-2a plan, Task 7).
+  if (action.kind === "mcp") return !(mode === "never" && action.boxed);
   if (mode === "never") return false;
   if (action.outside) return true;
   if (mode === "ask") return action.kind !== "read";
@@ -248,9 +253,10 @@ export class PermissionGate {
   // Where a PreToolUse hook's ask cannot be put, in never and headless, where nobody can answer it, the words of the
   // call's refusal (release 8b plan, choice 15; design, "Tool hooks"), which the session says and tells the model; else
   // undefined, and the question is put (hookAsks). `mcp`: the call is an MCP tool's, whose hook's ask is put in never too,
-  // as the gate asks about such a call there (release 8c plan, choice 47).
-  hookCannotAsk(reason: string, mcp = false): string | undefined {
-    if (this.mode === "never" && !mcp) return hookNeverRefusal(reason);
+  // as the gate asks about such a call there (release 8c plan, choice 47); `boxed`, it is a box server's with the box's
+  // network off, which the gate does not ask about in never, so its hook's ask is refused there (8c-2a plan, choice 7).
+  hookCannotAsk(reason: string, mcp = false, boxed = false): string | undefined {
+    if (this.mode === "never" && (!mcp || boxed)) return hookNeverRefusal(reason);
     if (this.options.headless) return hookHeadlessRefusal(reason);
     return undefined;
   }

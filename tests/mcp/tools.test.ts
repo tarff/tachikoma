@@ -25,7 +25,7 @@ import { writeFileTool } from "../../src/tools/files.js";
 import { defineTool } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
 import { Bus, callTool, collectErrors, FakeProvider, removeTree, reply, texts, usage } from "../helpers.js";
-import { type FakeOptions, fakeServer, httpFake, readLog } from "./fake.js";
+import { type FakeOptions, fakeServer, httpFake, readLog, standinBox } from "./fake.js";
 
 // Release 8c plan, Task 6: MCP tools in the session, each call on the tool the model was shown, against the fake servers
 // of fake.ts and a stand-in model. Every request the model is sent is the stand-in's; none reaches a provider.
@@ -97,16 +97,20 @@ async function setup() {
     return { ...user, name, safe: name, entry, asWritten: entry };
   };
   const remote = (name: string, url: string): ServerConfig => ({ ...user, name, safe: name, entry: { kind: "http", url, headers: {} }, asWritten: { url, headers: {} } });
-  const make = (configs: ServerConfig[]) => {
+  // `more`: Servers' other options, such as the box's network and the box (8c-2a plan, Task 7).
+  type More = Partial<ConstructorParameters<typeof Servers>[1]>;
+  const make = (configs: ServerConfig[], more: More = {}) => {
     const answers = () => {
       throw new Error("no project server here, so no answers are read");
     };
-    const servers = new Servers(configs, { root: dir, env: process.env, bus, answers, network: "none", lead: () => "fake:a" });
+    const servers = new Servers(configs, {
+      root: dir, env: process.env, bus, answers, network: "none", lead: () => "fake:a", ...more,
+    });
     made.push(servers);
     return servers;
   };
-  const ready = async (configs: ServerConfig[]) => {
-    const servers = make(configs);
+  const ready = async (configs: ServerConfig[], more: More = {}) => {
+    const servers = make(configs, more);
     servers.startAll();
     await servers.ready();
     return servers;
@@ -839,6 +843,83 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const { session } = lead(t, servers, gate, [callTool("c1", "mcp__s__echo", { text: "hi" })]);
     await session.send("go", stop.signal);
     expect([t.results(session), t.outcomes]).toEqual([[{ output: "Cancelled by the user.", isError: true }], ["cancelled"]]);
+    expect(t.calls(t.logs.get("s")!, "echo")).toEqual([]);
+  });
+
+  // 8c-2a plan, Task 7 (design, "Where a local server runs"; decision 12 and choice 7): a box server's call, through
+  // the stand-in box, a copy. The servers are stopped before the stand-in's are killed, then the folder is removed
+  // (setup's).
+  async function boxed(t: Setup, network: "on" | "off") {
+    const fake = standinBox(t.dir, { kind: "copy" });
+    const servers = await t.ready([await t.local("s", { description: ECHO })], { network, box: fake.box });
+    onTestFinished(async () => {
+      await servers.stopAll();
+      fake.killAll();
+    });
+    expect(fake.started()).toHaveLength(1);
+    return servers;
+  }
+
+  it("runs a box server's call unasked in never with the box's network off, in the window and in -p", async () => {
+    const t = await setup();
+    const servers = await boxed(t, "off");
+    for (const o of [{}, { headless: true }] as const) {
+      const g = gated(t, "never", o);
+      const text = o.headless ? "p" : "window";
+      const { session } = lead(t, servers, g.gate, [callTool("c1", "mcp__s__echo", { text }), reply("ok")]);
+      await session.send("go");
+      expect([text, t.results(session), g.asked, g.judged]).toEqual([text, [{ output: text, isError: false }], [], []]);
+    }
+    const sent = t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments);
+    expect(sent).toEqual([{ text: "window" }, { text: "p" }]);
+  });
+
+  const hi = (text = "hi") => [callTool("c1", "mcp__s__echo", { text }), reply("ok")];
+  it("asks in never with the box's network on, a yes running the call, and refuses it in -p", async () => {
+    const t = await setup();
+    const servers = await boxed(t, "on");
+    const g = gated(t, "never", { answers: [true] });
+    await lead(t, servers, g.gate, hi("window")).session.send("go");
+    expect(g.asked).toEqual([asking("window")]);
+    const p = gated(t, "never", { headless: true });
+    const { session } = lead(t, servers, p.gate, hi("p"));
+    await session.send("go");
+    const refused = { output: `${P}: s: echo {"text":"p"}`, isError: true };
+    expect([t.results(session), p.asked]).toEqual([[refused], [asking("p")]]);
+    expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "window" }]);
+  });
+
+  it("shows auto's judge a box server's call with the network off as inside, and boxed", async () => {
+    const t = await setup();
+    const servers = await boxed(t, "off");
+    const g = gated(t, "auto", { allows: () => true });
+    const { session } = lead(t, servers, g.gate, hi());
+    await session.send("go");
+    const shown: Action = {
+      ...{ kind: "mcp", outside: false, boxed: true, summary: 's: echo {"text":"hi"}' },
+      ...{ description: ECHO, note: ECHO },
+    };
+    expect([t.results(session), g.judged, g.asked]).toEqual([[{ output: "hi", isError: false }], [shown], []]);
+  });
+
+  it.each(["ask", "project"] as const)("asks once in %s about a box server's call with the network off", async (m) => {
+    const t = await setup();
+    const servers = await boxed(t, "off");
+    const g = gated(t, m, { answers: [true] });
+    const { session } = lead(t, servers, g.gate, hi());
+    await session.send("go");
+    expect([t.results(session), g.asked]).toEqual([[{ output: "hi", isError: false }], [asking("hi")]]);
+  });
+
+  it("refuses a hook's ask on a box server's call in never with the network off, never reaching it", async () => {
+    const t = await setup();
+    const servers = await boxed(t, "off");
+    const g = gated(t, "never", { answers: [true] });
+    const { hooks } = hooked(t, g.gate, ASK);
+    const { session } = lead(t, servers, g.gate, hi(), { hooks });
+    await session.send("go");
+    const line = "Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).";
+    expect([t.results(session), g.asked]).toEqual([[{ output: line, isError: true }], []]);
     expect(t.calls(t.logs.get("s")!, "echo")).toEqual([]);
   });
 });
