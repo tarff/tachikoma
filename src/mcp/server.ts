@@ -803,7 +803,10 @@ export class Redirected extends Error {}
 //   copy of the init). Such a hop is that request: with sign-in it gets the headers too, and its status is heard. Only
 //   that request's own chain counts, never a lasting list of places, so any other call to that path, a sign-in
 //   request's among them, is not a hop.
-// `answered` hears each status the server's own address or a hop answered; `redirected`, each redirect refused.
+// `answered` hears each status the server's own address or a hop answered to a POST, the method that carries calls,
+// reads and initialize, and that a hop keeps; never a GET for the event stream or a DELETE ending the session: a
+// server may refuse those whatever the headers, and each new connection's refusal would start another refresh (Task
+// 11's review). `redirected` hears each redirect refused.
 export function connectionFetch(opts: {
   url: URL;
   endpoint: () => URL | undefined;
@@ -847,7 +850,7 @@ export function connectionFetch(opts: {
       if (!chain) chains.set(key, (chain = new Set()));
       chain.add(place(target));
     }
-    if (mine) opts.answered(answer.status);
+    if (mine && init?.method?.toUpperCase() === "POST") opts.answered(answer.status);
     return answer;
   };
 }

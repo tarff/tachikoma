@@ -1078,8 +1078,10 @@ describe("Servers: a refresh at a 401 or 403", () => {
     await vi.waitFor(() => expect(posts(r.log).filter((m) => m.body.params?.name === "wait")).toHaveLength(1), WAIT);
     await expect(r.server.callTool("denied", {}, {})).rejects.toThrow();
     expect(await r.server.refreshing).toEqual({ is: "ready" });
+    // Taken before the teardown, which fails the call before a restart has ended.
+    const failing = expect(waiting).rejects.toThrow();
     await ends[end](r.servers);
-    await expect(waiting).rejects.toThrow();
+    await failing;
   });
 });
 

@@ -6,12 +6,15 @@ import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { PermissionGate } from "../../src/core/permissions.js";
 import { commandEnv, system32 } from "../../src/exec/env.js";
+import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import { launchAnswers } from "../../src/mcp/answers.js";
 import { listen } from "../../src/auth/oauth.js";
 import { AuthStore, McpAuth } from "../../src/mcp/auth.js";
 import type { OAuthEntry, ServerConfig } from "../../src/mcp/config.js";
 import { Servers } from "../../src/mcp/servers.js";
+import { type Approve, mcpTools } from "../../src/mcp/tools.js";
 import { Bus, removeTree } from "../helpers.js";
 import { fakeHelper, httpFake, readLog, signInFake } from "./fake.js";
 
@@ -574,6 +577,31 @@ describe("signing in, with a headersHelper", () => {
     expect(await s.server.callTool("echo", {}, {})).toMatchObject({ content: [{ type: "text", text: "echoed" }] });
     expect(s.t.fake.seen.calls).toBe(2);
     expect(s.t.states(s.servers)).toEqual(["om ready"]);
+  });
+
+  // A refresh whose new connection is refused for want of a sign-in, as at a start: the server needs sign-in, and a
+  // call waiting for the refresh is told so, unsent (Task 11's review). Its tokens go stale with no refresh while the
+  // helper is held.
+  it("needs sign-in when a refresh's new connection does, and a call waiting for it says so", async () => {
+    const s = await signedIn({ scope403: true });
+    const named = s.servers.offer({ loaded: new Set() }).named.flatMap((n) => n.tools);
+    const offered = named.find((o) => o.tool === "echo")!;
+    const approve: Approve = async () => {
+      s.helper.hold();
+      await expect(s.server.callTool("echo", {}, {})).rejects.toThrow();
+      expect(s.server.refreshing).toBeDefined();
+      s.t.fake.expire();
+      s.t.fake.revoke();
+      s.helper.go();
+    };
+    const ctx = {
+      root: s.t.dir, executor: new LocalExecutor(), workspace: new LocalWorkspace(s.t.dir),
+      gate: new PermissionGate("never", async () => false),
+    };
+    const run = mcpTools(s.servers, new Bus(), approve).tool(offered).run({}, ctx);
+    await expect(run).rejects.toThrow(new Error("The MCP server om needs sign-in, which the user does from /mcp."));
+    expect(s.t.states(s.servers)).toEqual(["om needs sign-in"]);
+    expect(s.t.fake.seen.calls).toBe(1);
   });
 
   // Decision 27: the hop to /mcp/ is the same request, so its 403 starts the refresh.

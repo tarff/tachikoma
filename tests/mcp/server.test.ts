@@ -815,8 +815,10 @@ describe("a remote server's refresh at a 401 or 403", () => {
     const { waiting } = await inFlight(t);
     await expect(t.server.callTool("denied", {}, {})).rejects.toThrow();
     expect(await t.server.refreshing).toEqual({ is: "ready" });
+    // Taken before the stop, which fails the call before it ends.
+    const failing = expect(waiting).rejects.toThrow();
     await t.server.stop();
-    await expect(waiting).rejects.toThrow();
+    await failing;
     const old = posts(t.log).filter((m) => m.headers["mcp-session-id"] === "session-1");
     expect(old.at(-1)!.body.params.name).toBe("denied");
   });
@@ -833,5 +835,18 @@ describe("a remote server's refresh at a 401 or 403", () => {
     t.helper.go();
     expect(await refresh).toEqual({ is: "ready" });
     expect(t.helper.runs()).toHaveLength(2);
+  });
+
+  // Only a POST carries a call, a read or an initialize: a server refusing the event stream's GET, as a gateway may
+  // refuse a method it does not map, would otherwise be refreshed again and again (Task 11's review).
+  it("starts no refresh when the event stream's GET is answered 403", async () => {
+    const t = await turned(() => ({ getStatus: 403 }));
+    expect(textOf(await t.server.callTool("echo", { text: "a" }, {}))).toBe("a"); // its tools/call answers the GET
+    expect(textOf(await t.server.callTool("echo", { text: "b" }, {}))).toBe("b"); // a round trip after that answer
+    expect(readLog(t.log).filter((m) => m.http === "GET")).toHaveLength(1);
+    expect(t.server.refreshing).toBeUndefined();
+    expect(t.helper.runs()).toHaveLength(1);
+    expect(initializes(t.log)).toHaveLength(1);
+    expect(t.server.state.is).toBe("ready");
   });
 });

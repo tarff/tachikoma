@@ -43,6 +43,9 @@ export interface FakeOptions {
   denyTool?: string;
   holdSecond?: string;
   redirectCall?: string;
+  // Over HTTP: the status a GET for the event stream is answered with in place of 405, held until the first tools/call
+  // comes, so it reaches a ready connection (Task 11's review).
+  getStatus?: number;
   gate?: string; // the file whose existence the unlisted wait tool waits for, looked for every 20 ms
   tools?: object[]; // its tools/list, in place of its own tools (Task 5's names and schemas)
   added?: object[]; // what change adds, before the others, in place of "added"
@@ -206,6 +209,8 @@ function serveStdio() {
 function serveHttp() {
   const sessions = new Set();
   let next = 0;
+  let called = false;
+  const gets = []; // the GETs held for getStatus
   const server = require("node:http").createServer((req, res) => {
     let body = "";
     req.setEncoding("utf8");
@@ -214,6 +219,7 @@ function serveHttp() {
       log({ http: req.method, path: req.url, headers: req.headers, body: body ? JSON.parse(body) : null });
       // Each connection ends with its answer, so no call goes out on an open one after the fake has stopped.
       res.setHeader("Connection", "close");
+      if (req.method === "GET" && O.getStatus) return called ? res.writeHead(O.getStatus).end() : gets.push(res);
       if (req.method !== "POST") return res.writeHead(405).end();
       if (O.slash && req.url === "/mcp") return res.writeHead(307, { location: "/mcp/" }).end();
       if (O.redirect) return res.writeHead(307, { location: O.redirect }).end();
@@ -225,6 +231,10 @@ function serveHttp() {
       if (m.method !== "initialize" && !sessions.has(req.headers["mcp-session-id"])) return res.writeHead(404).end();
       if (m.id === undefined) return res.writeHead(202).end();
       if (O.silent) return;
+      if (m.method === "tools/call" && !called) {
+        called = true;
+        for (const held of gets.splice(0)) held.writeHead(O.getStatus).end();
+      }
       if (m.method === "tools/call" && m.params.name === "cut") return req.socket.destroy();
       if (m.method === "tools/call" && m.params.name === O.denyTool) return res.writeHead(403).end("refused");
       if (m.method === "tools/call" && O.redirectCall) return res.writeHead(307, { location: O.redirectCall }).end();
