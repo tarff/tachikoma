@@ -45,11 +45,11 @@ describe("execArgs", () => {
   });
 
   it("runs its words in a group of its own, writing and removing the group's file and its .stop file", () => {
-    const outer = args[7];
-    expect(outer).toContain(
-      `setsid -w bash -c 'echo $$ > ${group}; [ -e ${group}.stop ] && exit; exec bash -c "$@"' _ "$@"`,
+    expect(args[7]).toBe(
+      "exec 3>&2 2>/dev/null; " +
+        `setsid -w bash -c 'echo $$ > ${group}; [ -e ${group}.stop ] && exit; exec bash -c "$@"' _ "$@" 2>&3 3>&-; ` +
+        `s=$?; rm -f ${group} ${group}.stop; exit $s`,
     );
-    expect(outer).toContain(`rm -f ${group} ${group}.stop`);
   });
 
   it("takes a new group file in the box's /tmp each time", () => {
@@ -62,12 +62,15 @@ describe("execArgs", () => {
 describe("INNER", () => {
   it("reads with IFS= read -r -d '', looks the command up after its exports, and says when it is not found", () => {
     expect(INNER).toContain("IFS= read -r -d ''");
-    expect(INNER.indexOf("command -v")).toBeGreaterThan(INNER.indexOf("export"));
+    // The command is kept as $1 before any entry is exported, so no entry (BASH_ARGV0 sets $0) can change it.
+    expect(INNER.startsWith('set -- "$0" "$@"; ')).toBe(true);
+    // x exports the entries; the lookup comes after the loop's end and x's call, and is of the kept command, $1.
+    expect(INNER).toContain('done; x "${a[@]}"; command -v "$1" >/dev/null');
     expect(INNER).toContain(NOT_FOUND);
     expect(NOT_FOUND).toBe("tachikoma: not found");
     expect(INNER).toContain("exit 127");
     expect(INNER).toContain("exit 2");
-    expect(INNER).toMatch(/exec "\$0" "\$@"$/);
+    expect(INNER).toMatch(/exec "\$@"$/);
   });
 });
 
