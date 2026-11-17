@@ -173,8 +173,9 @@ Each is marked in its task. The user approves them with the plan.
    - With sign-in, it adds the headers to the server's own address only, as `toServer` did. Without sign-in, the
      headers stay `requestInit`'s, as in 8c.
    - A request carrying the headers is sent with `redirect: "manual"`.
-   - The redirect line shows the new address's origin and path. Its query is left out, because a query can hold a
-     token; 8c's lines show only an origin for the same reason (server.ts:467-469).
+   - The redirect line names only the new address's origin, as 8c's lines do (server.ts:467-469), because a path or a
+     query can hold a token (the plan review's finding 5).
+   - A hop the library follows within the origin is the same request (decision 27).
    - `#startReason` reads a `Redirected` error anywhere in the error's cause chain as its own words, because the SSE
      transport's event stream wraps what its fetch throws.
 
@@ -202,6 +203,54 @@ Each is marked in its task. The user approves them with the plan.
    the start without connecting, as 8c's `conn.closed` check does after a connect. Task 10.
 23. **A failed refresh** leaves the server `failed` with its reason, so its red line is said as at a start. Calls in
    flight on the old connection finish there, and the old connection then closes. Task 11.
+24. **A stop that cannot kill a box server's group** (the plan review's finding 1). The kill's failure is read as the
+   sandbox's executor reads it (executor.ts:360-366): no docker program gives `NO_DOCKER`; a non-zero exit gives
+   Docker's error output, or `the box stopped` when it gave none; a thrown error gives its message. That mapping moves
+   into one exported function that inGroup and the box server share (`killInBox`, Task 3).
+   - A failed kill leaves the old copy recorded on its `Server` as left running (its group's file and the reason).
+     The exception is a box that Docker says has gone (`BoxState.gone()`), as removing the box ended the copy.
+   - Before any new copy starts, the left-running copy's kill is tried again. This covers a Reconnect or a restart (the
+     same `Server`) and a live edit's restart (a new `Server`, given the old one as `before`). If the retry fails,
+     nothing new starts, and the server is `failed` with the approved line `its earlier copy could not be stopped in
+     the box (<reason>), so it was not started again`. If it succeeds, one copy starts.
+   - Each later Reconnect tries the kill again.
+   - The exit is unchanged (decision 6): removing the box ends every copy.
+
+   Task 4.
+25. **Retiring connections are kept until they close** (the plan review's finding 2). Each connection a refresh
+   replaced stays in a set (`#retiring`) until it closes, whether that is its last call finishing or a teardown.
+   `stop()` closes every connection in it, as well as the current one and a refresh's new one. That covers `stopAll`,
+   a live edit's removal, `/mcp` Reconnect and a restart. A call still running on a closed retiring connection ends
+   as 8c ends a call in flight on a server stopped the same way. Task 11.
+26. **The library's own 403 replay is turned off** (the plan review's finding 3).
+   - The streamable HTTP transport, on a 403 with `WWW-Authenticate: Bearer error="insufficient_scope"`, runs step-up
+     sign-in and sends the request again (index.mjs:1754-1764 for a message, 1515 for its event stream). That resend
+     would run a call twice, which the design forbids.
+   - Every streamable HTTP connection with a helper is made with the transport option `onInsufficientScope: "throw"`
+     (index.d.mts:2371, read at index.mjs:1375 and 1393). The 403 then fails the call. The connection's `fetch` has
+     already seen the 403, so Task 11's refresh starts.
+   - The error thrown is an `InsufficientScopeError`, an `OAuthClientFlowError` (public-CvV4ZHkX.mjs:175) and not an
+     `UnauthorizedError`, so the call is not taken as a lost sign-in.
+   - The SSE transport has no such replay: its `_send` handles only 401 (index.mjs:1211-1259), so it needs no option.
+
+   Task 11.
+27. **A hop the library follows within the origin is the same request** (the plan review's finding 4). The library's
+   `fetchWithinOrigin` calls the connection's `fetch` once per hop (src-CeKsbNLO.mjs:6854-6876), so `/mcp` to `/mcp/`
+   arrives as a request for `/mcp/`.
+   - The connection's `fetch` keeps the targets (origin and path) of the same-origin redirects that its own-address
+     requests were answered with, and treats a request for one of them as its own address. With sign-in, the entry's
+     headers go on it. Its 401 or 403 counts for the refresh.
+   - A redirect to another origin still fails before anything is sent there.
+
+   Task 10.
+28. **Diagnostics carry no secrets** (the plan review's finding 5; the user approved the new forms).
+   - A helper's exit reason is `it exited with code <n>`, never its error output.
+   - A helper that cannot start gives `it could not start (<error code>)`. `runHook`'s `Ran` gains `startCode`: the
+     Node error's `code`, or `ENOENT` for a program not found on PATH. Hooks' own lines keep `startError`.
+   - The redirect line names only the origin (decision 17).
+   - The helper's output is never quoted in any reason.
+
+   Tasks 9 and 10.
 
 ---
 
@@ -240,16 +289,17 @@ The user chose 1-9 on 2026-11-17, each as recommended (1: "Only other sites fail
      letters, digits and _, not starting with a digit`;
    - no docker program (Task 4): the sandbox's own `no docker program is on PATH any more`;
    - a helper that fails (Task 9): `its headersHelper failed: <why>`, where `<why>` is one of these:
-     - `it could not start (<error>)`
-     - `it exited with code <n>`, or `it exited with code <n>: <its last error line>`
+     - `it could not start (<error code, such as ENOENT>)`
+     - `it exited with code <n>`
      - `it was ended by signal <signal>`
      - `it did not finish within 10 s`
      - `it printed something other than a JSON object of text values`
      - `it gave "<name>", which is not a header name`
      - `it gave the header "<name>" a value with a line break or NUL`
 
-     A refresh's helper failure puts the same `<why>` after the approved
-     `its headersHelper failed, so the call was not sent: `;
+     The first two were changed after the plan review's finding 5, the user approving: they used to carry the whole
+     error and the last error line, either of which can hold a secret. A refresh's helper failure puts the same
+     `<why>` after the approved `its headersHelper failed, so the call was not sent: `;
    - two settings lines in 8c's existing forms (Task 1): `"host" must be true or false, without quotes (got <value>);
      it was left out` and `"headersHelper" must be text in quotes (got <type>); it was left out`.
 
@@ -301,6 +351,28 @@ The user chose 1-9 on 2026-11-17, each as recommended (1: "Only other sites fail
   reads it as that tool's result, so it is kept as written.
 - The 8c design's "Not in this release" table says `headersHelper` is "Not planned", while 8c's settings line says
   "(planned)". Task 12 updates the table.
+
+**The plan review (an outside review of a8bf7b5, five findings, each checked against the code and the pinned SDK; all
+held, and the design was changed to match):**
+1. **A failed group kill could leave a box server running in the box** while its `docker exec` on this computer died,
+   and a Reconnect would then start a second copy (Task 4 had "failure ignored"). See decision 24.
+2. **A connection a refresh replaced was no longer tracked once the refresh had finished,** so a teardown could leave it
+   open with a call still draining. See decision 25.
+3. **The library resends a request after a 403 with `insufficient_scope`,** running a call twice
+   (index.mjs:1754-1764). See decision 26.
+4. **Same-origin redirect hops reached the connection's `fetch` as other addresses,** so with sign-in on the entry's
+   headers were dropped at `/mcp/`, and a 401 or 403 there started no refresh. See decision 27.
+5. **Diagnostics could carry secrets:** a helper's last error line, a start error's whole text, and the redirect
+   target's path. See decision 28.
+
+For the builders:
+- The kill's failure mapping is executor.ts:360-366.
+- The step-up replay: index.mjs:1375 (the option), 1393 (`"throw"`), 1515 (the event stream) and 1754-1764 (a message).
+  The SSE `_send` is 1211-1259.
+- `InsufficientScopeError` is public-CvV4ZHkX.mjs:175.
+- `fetchWithinOrigin` is src-CeKsbNLO.mjs:6854-6876.
+- `runHook`'s start failures are hooks/run.ts:71, 79 and 118; answer.ts:109 reads `startError` for hooks' own lines.
+- cli.test.ts already runs `-p --json` with MCP servers from a settings file (1412-1440, `homeWith`).
 
 **In the code, for the builders:**
 - **Local start:** `Server.#transport()` is at src/mcp/server.ts:336-343. It starts through `Stdio` (73-94), which uses
@@ -366,15 +438,18 @@ These are approved in the design, word for word. `"x"` is the server's name, esc
 - A red line's reason: `the box stopped`
 - A call's error, to the model: `its headersHelper failed, so the call was not sent: <reason>`
 - A grey line: `<name>: its headersHelper was not run, as it comes from the project and the sandbox is on.`
-- A red line's reason, and a call's error: `the server answered with a redirect to <address>; Tachikoma does not
-  follow a redirect with the entry's headers`
+- A red line's reason, and a call's error: `the server answered with a redirect to <origin>; Tachikoma does not
+  follow a redirect with the entry's headers` (the origin only, after the plan review's finding 5; the user approved)
+- A red line's reason (the plan review's finding 1; the user approved): `its earlier copy could not be stopped in the
+  box (<reason>), so it was not started again`
 
 `<command>` and `<url>` are 8c's text after the colon (with `(sets ...)` and `(sends ...)`; see choice 8). A remote
 entry without a helper keeps 8c's question. 8c's -p line is unchanged: `MCP server x from .mcp.json was skipped: -p
 starts only the project's servers you said yes to in the window.`
 
-For the user's approval (choices 3-6 and 10): the network-off line, the `host` warning, the red lines' new reasons, the
-two settings lines, the new-connection line and the README.
+Approved by the user with choices 3-6: the network-off line, the `host` warning, the red lines' new reasons (in the
+forms the plan review changed), the two settings lines and the new-connection line. Still to approve: the README
+(choice 10).
 
 Gone: `has "headersHelper", which Tachikoma does not run yet (planned)`, and 8c's network-off line.
 
@@ -436,6 +511,16 @@ tests/mcp/box.test.ts.
 - The helper's two variables, and credential-looking names removed from a project's helper: Task 9,
   tests/mcp/helper.test.ts.
 - A project's helper with the sandbox on, not run: Task 10, tests/mcp/servers.test.ts.
+
+**The plan review's tests** (in the design's "Testing" since the plan review):
+- A failed in-box kill, then a Reconnect whose retried stop fails or succeeds, and the same for a live edit's restart:
+  Task 4, tests/mcp/box.test.ts and tests/mcp/servers.test.ts.
+- Teardown while a call drains on a retiring connection: Task 11, tests/mcp/server.test.ts and tests/mcp/tools.test.ts.
+- A 403 `insufficient_scope` with sign-in on, failing its call, sent once, with one refresh: Task 11,
+  tests/mcp/auth.test.ts.
+- `/mcp` to `/mcp/` hops, with sign-in on and off: Task 10, tests/mcp/server.test.ts and tests/mcp/auth.test.ts.
+- No secret in screen lines, `--json` events or a tool error: Task 9, tests/mcp/helper.test.ts; Task 10,
+  tests/cli.test.ts; Task 11, tests/mcp/tools.test.ts.
 
 **The user's terminal checklist:** Task 12.
 
@@ -508,10 +593,18 @@ tests/mcp/box.test.ts.
 - The outer script writes and removes the group's file and its `.stop` file.
 - `INNER` reads with `IFS= read -r -d ''`, looks the command up after its exports, and prints `NOT_FOUND`.
 - `killLine` gives inGroup's exact line.
+- `killInBox(run, "b0x", group)` (decision 24), with a stand-in `DockerRun`, gives:
+  - `undefined` for exit 0;
+  - `no docker program is on PATH any more` for `"missing"`;
+  - `Error: boom` for exit 1 with that error output;
+  - `the box stopped` for exit 1 with none;
+  - the message for a rejection.
+- inGroup's existing Esc tests in tests/sandbox/executor.test.ts pass unchanged.
 
 **Implementation:**
-- executor.ts: export `killLine(group: string): string`, the kill line inGroup builds today (executor.ts:361), and use
-  it in inGroup.
+- executor.ts: export `killLine(group: string): string`, the kill line inGroup builds today (executor.ts:361), and
+  `killInBox(run: DockerRun, id: string, group: string): Promise<string | undefined>`, the mapping at 362-365. inGroup
+  uses both.
 - box.ts has these exports:
   - `McpBox`: `{ id: string; kind: "live" | "copy"; state: BoxState; run: DockerRun; program?: { file: string; args:
     string[] } }`. Tasks 4-8 share this shape.
@@ -535,12 +628,13 @@ tests/mcp/box.test.ts.
 ## Task 4: A server started in the box, against a stand-in Docker
 
 **Files:**
-- src/mcp/server.ts, and src/mcp/servers.ts (`stopAll` only);
+- src/mcp/server.ts, and src/mcp/servers.ts (`stopAll`, and `set`'s `before`);
 - create tests/standin/dockerExec.mjs;
-- tests/mcp/fake.ts (`show`, the `write` tool, `standinBox`), tests/mcp/box.test.ts, and the tool lists in
-  tests/mcp/server.test.ts and tests/mcp/servers.test.ts (which gain `write`).
+- tests/mcp/fake.ts (`show`, the `write` tool, `standinBox`), tests/mcp/box.test.ts, and tests/mcp/server.test.ts
+  and tests/mcp/servers.test.ts (their tool lists gain `write`; servers.test.ts gains the live edit's failed-kill
+  tests).
 
-Holds choice 5's first two reasons. Decisions 1 and 3-8.
+Holds choice 5's first two reasons and the plan review's line. Decisions 1, 3-8 and 24.
 
 **Tests first** (tests/mcp/box.test.ts, through the stand-in):
 - The start command has `exec -i -w /work b0x`, no `-t`, and no entry value anywhere in its arguments.
@@ -552,6 +646,14 @@ Holds choice 5's first two reasons. Decisions 1 and 3-8.
 - Stopping a server that ends at its input's close runs nothing in the box.
 - Stopping a stubborn one runs `killLine(<its group>)` through the box's `DockerRun`, and its process ends.
 - `stop({ exit: true })` on a stubborn one runs nothing in the box, and its `docker exec` ends.
+- A failed kill (decision 24): a stubborn server is stopped while the stand-in's kill answers exit 1 with
+  `Error: boom`. Then `restart` is called (as `/mcp` Reconnect does):
+  - the retried kill fails too: the server is `failed: its earlier copy could not be stopped in the box (Error:
+    boom), so it was not started again`, and the stand-in records no second start;
+  - the retried kill succeeds: the stand-in records exactly one second start, and the server is ready.
+- The same two in tests/mcp/servers.test.ts, for a live edit's restart (`set` with the entry's args changed), the new
+  `Server` given the old one as `before`.
+- A failed kill when `gone` says the box has gone records nothing left running, and the next start goes ahead.
 - A box server ending while `gone` says the box is missing shows `stopped: the box stopped` (retry false); after
   `BoxState.fail`, a new start fails with `the box stopped`.
 
@@ -573,11 +675,17 @@ Holds choice 5's first two reasons. Decisions 1 and 3-8.
 - `#startReason` gives `notFoundLine(command)` when a `BoxStdio`'s process exited 127 and its last error line is
   `NOT_FOUND`.
 - `stop(opts: { exit?: boolean } = {})`, and `#close(conn, exit)`. For a box server:
-  - without `exit`: race the process's exit against `KILL_MS`, then, if it is still alive, run
-    `["exec", id, "bash", "-c", killLine(group)]` through `McpBox.run` (failure ignored), then `killTree`;
+  - without `exit`: race the process's exit against `KILL_MS`, then, if it is still alive, run `killInBox` through
+    `McpBox.run`, then `killTree`. A kill that fails, in a box Docker does not say has gone, is recorded as
+    `#leftRunning: { group: string; reason: string }` (decision 24);
   - with `exit`: `killTree` at once, with nothing run in the box.
 
   Host servers are unchanged.
+- `Server` options gain `before?: Server` (the copy a live edit's restart replaces). The first step of `#connect`
+  tries `killInBox` again for its own `#leftRunning` and for `before`'s, and clears each one that it kills or that
+  belongs to a box that has gone. One that still fails leaves the state `failed` with the approved line, and nothing
+  starts.
+- `Servers.set` (274-317) gives a restarted name's new `Server` the old one as `before`.
 - `Servers.stopAll` calls `stop({ exit: true })`.
 - Stand-in (`dockerExec.mjs`): node runs it as `[script, recordFile, ...docker's args]`.
   - It records its arguments and its own environment.
@@ -589,8 +697,9 @@ Holds choice 5's first two reasons. Decisions 1 and 3-8.
 - fake.ts:
   - `show?: string[]`: `whoami` also reports these variables under `env`.
   - A `write` tool writes `args.path` under the server's working folder.
-  - `standinBox(dir, { kind?, gone? })` gives `{ box, calls, started() }`. Its `DockerRun` records each call and
-    answers `inspect` as running, unless `gone` gives Docker's words. The in-box kill kills the recorded child pid.
+  - `standinBox(dir, { kind?, gone? })` gives `{ box, calls, started(), kills }`. Its `DockerRun` records each call
+    and answers `inspect` as running, unless `gone` gives Docker's words. The in-box kill kills the recorded child
+    pid, unless the test has queued a failure in `kills` (an exit code and error output), which it answers instead.
 
 **Run:** `tests/mcp/box.test.ts`, `tests/mcp/server.test.ts`, `tests/mcp/servers.test.ts`; types.
 
@@ -752,15 +861,17 @@ tests/clilib.test.ts (136-230). Holds choice 8.
 ## Task 9: Running a headersHelper
 
 **Files:** create src/mcp/helper.ts and tests/mcp/helper.test.ts; modify src/hooks/run.ts and tests/mcp/fake.ts
-(`fakeHelper`). Holds choice 5's helper reasons. Decisions 13 and 15.
+(`fakeHelper`). Holds choice 5's helper reasons. Decisions 13, 15 and 28.
 
 **Tests first** (each test in a folder of its own, removed as tests/hooks/run.test.ts's `folder()` removes its own):
 - It gives the headers it printed, run in the folder given, with both variables and `CLAUDE_PROJECT_DIR` set to the
   root.
 - A project's helper gets none of `GH_TOKEN`, `my_secret`, `DB_PASSWORD`, `API_KEY_2` or `AUTH_URL`, only `PLAIN`; the
   user's gets them all.
-- Exit 3 gives `it exited with code 3: no token today`; a list gives the not-an-object reason, and so does a value that
+- Exit 3 gives `it exited with code 3`, though the helper printed `no token today sk-fake-secret-1` on its error
+  output: the reason holds no part of it (decision 28). A list gives the not-an-object reason, and so does a value that
   is not text.
+- A helper whose folder does not exist (`cwd` a missing folder, so spawn fails) gives `it could not start (ENOENT)`.
 - `Bad Name` gives the header-name reason; a value with a line break gives the line-break reason.
 - A slow helper with `limitMs` 500 gives `it did not finish within 0.5 s`. The 500 ms is the test's own, so the test
   does not wait the real 10 s.
@@ -770,7 +881,7 @@ tests/clilib.test.ts (136-230). Holds choice 8.
 **Implementation:**
 - run.ts: `shellOf` and `runHook` take `Pick<Hook, "command" | "args" | "shell">`. `runHook`'s input becomes
   `object | undefined` (stdin ended with nothing), and its options gain `projectDir`, used for `CLAUDE_PROJECT_DIR`
-  (67).
+  (67), and `Ran` gains `startCode` (decision 28): the error's `code` at 79 and 118, `ENOENT` at 71.
 - helper.ts exports:
   - `HELPER_MS = 10_000`, Claude Code's documented limit, cited from the design.
   - `runHelper(command, { name, url, cwd, root, env, project, signal?, limitMs? })`, which gives
@@ -778,7 +889,8 @@ tests/clilib.test.ts (136-230). Holds choice 8.
     - It sets `CLAUDE_CODE_MCP_SERVER_NAME` and `CLAUDE_CODE_MCP_SERVER_URL`, and, for a project's helper, removes the
       credential-looking names.
     - It runs through `runHook({ command }, undefined, ...)`, its `limit` in seconds.
-    - It turns each failure into choice 5's `<why>`, and checks the output: a JSON object of text values; names that are
+    - It turns each failure into choice 5's `<why>`, from the exit code or `startCode` only, never the helper's
+      output or error text; and it checks the output: a JSON object of text values; names that are
       HTTP tokens; values with no line break or NUL.
   - `mergeHeaders(fixed, given)`: the helper's headers over the static ones, letter case aside.
 - fake.ts: `fakeHelper(dir)` gives `{ command, runs(), give(headers), mode(m), hold(), go(), headersFile }`.
@@ -786,7 +898,7 @@ tests/clilib.test.ts (136-230). Holds choice 8.
     PowerShell when `gitBash()` finds none.
   - Each run records its working folder, its two variables, `CLAUDE_PROJECT_DIR` and its variables' names.
   - It prints the headers file, unless its mode file says:
-    - `fail`: exit 3 with a stderr line;
+    - `fail`: exit 3, printing `no token today sk-fake-secret-1` on stderr;
     - `bad`: print a list;
     - `slow`: never end;
     - `wait <mode>`: wait until the `.go` file exists (looked for every 20 ms), then act as `<mode>`.
@@ -798,23 +910,37 @@ tests/clilib.test.ts (136-230). Holds choice 8.
 ## Task 10: The helper at each connection, sign-in per connection, and no redirect elsewhere
 
 **Files:** src/mcp/server.ts, src/mcp/servers.ts (the `helper` option, `settingsDir`, the grey line in `#begin`),
-tests/mcp/fake.ts (`redirect`), tests/mcp/server.test.ts, tests/mcp/auth.test.ts, tests/mcp/servers.test.ts. Holds
-choices 1 (b), 5 and 9. Decisions 14, 16, 17 and 22.
+tests/mcp/fake.ts (`redirect`, `slash`; `signInFake`'s `slash`), tests/mcp/server.test.ts, tests/mcp/auth.test.ts,
+tests/mcp/servers.test.ts, tests/cli.test.ts (the secrets test). Holds choices 1 (b), 5 and 9. Decisions 14, 16, 17, 22,
+27 and 28.
 
 **Tests first:**
 - server.test.ts:
   - the helper runs at each connection, and its `x-key` beats a static `X-Key`, the other static header kept; the second
     connection carries the helper's new value;
-  - a failing helper leaves the server `failed: its headersHelper failed: it exited with code 3: no token today`;
+  - a failing helper leaves the server `failed: its headersHelper failed: it exited with code 3`;
   - an entry whose helper is not run connects with its static headers, and the helper records no run;
-  - a redirect to another origin, with static headers and with the helper's, fails with the approved line (no query
-    shown), and the other server's log is empty;
-  - a redirect within the origin is followed when the method is kept (choice 1 (b)).
+  - a redirect to another origin, with static headers and with the helper's, fails with the approved line, naming
+    only the other server's origin, and the other server's log is empty;
+  - a redirect within the origin is followed when the method is kept (choice 1 (b));
+  - hops without sign-in (decision 27): `slash` answers `/mcp` with a 307 to `/mcp/`, and the fake's log at `/mcp/`
+    shows the helper's and the static headers. A hop from `/mcp/` to another origin still fails with the redirect
+    line, with nothing sent there. (That a 403 or 401 at `/mcp/` starts the refresh is tested in Task 11, which adds
+    `denyTool` and `tokenFile`.)
 - auth.test.ts (using `signInFake`, with `settingsDir` given):
   - a helper that gives `Authorization` never signs in, and fails `answered 401` with no sign-in request;
   - after `restart`, the same helper with no `Authorization` signs in (`needs sign-in`);
   - the helper's `X-Region` went only to `/mcp`, never to the sign-in service;
-  - a redirect elsewhere on a connection that signs in fails with the approved line, with nothing sent there.
+  - a redirect elsewhere on a connection that signs in fails with the approved line, with nothing sent there;
+  - hops with sign-in on (`signInFake`'s `slash`: `/mcp` answered with a 307 to `/mcp/`, its MCP endpoint at
+    `/mcp/`): after sign-in, the requests at `/mcp/` carry the helper's and the static headers, and the sign-in
+    service's requests carry none.
+- cli.test.ts, `-p --json` with `homeWith` settings (decision 28), two remote servers:
+  - one whose helper exits 3 after printing `sk-fake-secret-1` on stderr;
+  - one whose fake redirects to another origin at `/sk-fake-secret-2/mcp?token=sk-fake-secret-3`.
+
+  Neither secret is in stdout (every JSON event, `mcp-note` and the failures among them) or in stderr. Each failure
+  line is there, with `it exited with code 3` and the other origin alone.
 - servers.test.ts: with the sandbox on, the user's helper runs in its settings folder, a project's does not run, and
   choice 9's line is said exactly once.
 
@@ -838,24 +964,31 @@ choices 1 (b), 5 and 9. Decisions 14, 16, 17 and 22.
   - the same own-address rule;
   - with sign-in, it adds the headers on the server's own address;
   - it sends `redirect: "manual"` on a request carrying headers;
-  - a 301/302/303/307/308 with a `Location` at another origin throws `Redirected` with the approved line (origin and
-    path), after cancelling the body;
-  - it calls `answered(status)` for the server's own address. Task 11 fills that in; here it is an empty method.
+  - a 301/302/303/307/308 with a `Location` at another origin throws `Redirected` with the approved line (the origin
+    alone, decision 28), after cancelling the body;
+  - a same-origin `Location` answering a request for its own address, or for a hop already taken, is added to the
+    connection's `hops` set (origin and path). A later request for a path in that set counts as its own address: with
+    sign-in the headers go on it, and its status is reported (decision 27);
+  - it calls `answered(status)` for its own address and its hops. Task 11 fills that in; here it is an empty method.
 - `#startReason` returns a `Redirected` found in the error's cause chain.
 - The sign-in checks at 205, 237, 314 and 405 read `conn.signs`.
 - `Servers.#begin` (466-469) says choice 9's grey line, once per slot, for a project's remote entry whose helper does
   not run.
-- fake.ts: `redirect?: string` answers every POST with a 307 to that address.
+- fake.ts:
+  - `redirect?: string` answers every POST with a 307 to that address;
+  - `slash?: true` answers a POST to `/mcp` with a 307 to `/mcp/`, and serves `/mcp/`;
+  - `signInFake` gains the same `slash`, its MCP endpoint then at `/mcp/`.
 
-**Run:** `tests/mcp/server.test.ts`, `tests/mcp/auth.test.ts`, `tests/mcp/servers.test.ts`, `tests/mcp/forms.test.ts`;
-types.
+**Run:** `tests/mcp/server.test.ts`, `tests/mcp/auth.test.ts`, `tests/mcp/servers.test.ts`, `tests/mcp/forms.test.ts`,
+`tests/cli.test.ts -t "MCP"`; types.
 
 **Commit:** `feat: 8c-2a: the headersHelper at each connection, sign-in per connection, no redirect elsewhere`
 
 ## Task 11: A 401 or 403 refreshes the connection
 
 **Files:** src/mcp/server.ts, src/mcp/tools.ts, tests/mcp/fake.ts (HTTP options), tests/mcp/server.test.ts,
-tests/mcp/tools.test.ts, tests/mcp/servers.test.ts, tests/mcp/auth.test.ts. Holds choice 6 (b). Decisions 18-21 and 23.
+tests/mcp/tools.test.ts, tests/mcp/servers.test.ts, tests/mcp/auth.test.ts (and `signInFake`'s `scope403`). Holds
+choice 6 (b). Decisions 18-21, 23, 25 and 26.
 
 **Tests first** (the helper held with `hold()` and `wait`, so each refresh is caught while it runs):
 - server.test.ts:
@@ -867,24 +1000,45 @@ tests/mcp/tools.test.ts, tests/mcp/servers.test.ts, tests/mcp/auth.test.ts. Hold
     call in flight still finishes;
   - a stop while the helper waits resolves `dropped`, and no new `initialize` comes;
   - a stop while the new connection's `initialize` is held resolves `dropped`, with no `tools/list` after it and the
-    state as the stop left it.
-- auth.test.ts: on a connection that signs in, an expired token's 401 gives `needs sign-in`, and the helper is not run
-  again.
+    state as the stop left it;
+  - teardown while a call drains (decision 25): the refresh ready, a `wait` call still running on the old connection,
+    then `stop()`: the old connection closes (its log shows no request after it), and the `wait` call rejects rather
+    than staying open;
+  - hops (decision 27, with Task 10's `slash`): a `denyTool` 403 at `/mcp/` starts one refresh, and so does a 401
+    there from a turned `tokenFile`.
+- auth.test.ts:
+  - on a connection that signs in, an expired token's 401 gives `needs sign-in`, and the helper is not run again;
+  - decision 26: `signInFake`'s `scope403` answers one `tools/call` with 403 and `WWW-Authenticate: Bearer
+    error="insufficient_scope", scope="more"`. With sign-in on and the helper giving `X-Region`, that call fails. The
+    fake's log shows that call once only, no new `/authorize` or `/token` request follows, and the helper runs once
+    more (one refresh); the next call succeeds on the new connection;
+  - hops with sign-in (Task 10's `slash`): a 403 at `/mcp/` starts one refresh.
 - tools.test.ts (the approval held by `q.then` until another call's 403 has begun the refresh):
   - the call waits, then runs once with the new token;
   - with the helper failing, the call fails with `its headersHelper failed, so the call was not sent: it exited with
-    code 3: no token today`, and the server never sees it;
+    code 3`, and the server never sees it;
   - with the fake's list changed beforehand (the HTTP fake's `change`, which only the new connection sees), the call
     gets 8c's changed line and is not sent;
-  - a live edit removing the server mid-refresh gives the changed line, and a restart gives the stopped line.
-- servers.test.ts: a removal, a restart and `stopAll` each mid-refresh resolve `dropped`, and after `go()` only the
-  restart's own connection sends an `initialize`.
+  - a live edit removing the server mid-refresh gives the changed line, and a restart gives the stopped line;
+  - a call still draining on a retiring connection when the server is removed by a live edit, and when it is
+    reconnected (`restart`), ends with the same tool result 8c's own tests give a call in flight on a server stopped
+    that way (decision 25);
+  - no secret in a tool error (decision 28): a refresh whose helper exits 3 after printing `sk-fake-secret-1` on
+    stderr, and a fake whose `tools/call` is redirected to another origin at
+    `/sk-fake-secret-2/x?token=sk-fake-secret-3`. Neither secret is in any tool result or in any `mcp-note` or `error`
+    event on the bus, which is what the screen and `-p --json` both print.
+- servers.test.ts:
+  - a removal, a restart and `stopAll` each mid-refresh resolve `dropped`, and after `go()` only the restart's own
+    connection sends an `initialize`;
+  - the same three after the refresh is ready, with a call draining on the old connection: each closes the old
+    connection (decision 25).
 
 **Implementation:**
 - `export type Refresh = { is: "ready" } | { is: "failed"; reason: string; helper: boolean } | { is: "dropped" }`. This
   is the interface tools.ts reads.
 - `Conn` gains `sent` (calls and reads waiting for answers), raised and lowered in `callTool` and `#request`, and
-  `retiring`. A retiring connection closes when `sent` reaches 0 (`#retire`).
+  `retiring`. A retiring connection closes when `sent` reaches 0 (`#retire`). Every retiring connection is also in
+  `#retiring: Set<Conn>` until its close, which removes it (decision 25).
 - `#refresh: { from, next?, stop: AbortController, dropped?: true, done: Promise<Refresh> }`, and the getter
   `refreshing`.
 - `#answered(conn, status)` starts a refresh as decision 18 says, only when the connection is current, ready, not closed
@@ -897,7 +1051,10 @@ tests/mcp/tools.test.ts, tests/mcp/servers.test.ts, tests/mcp/auth.test.ts. Hold
     `onChange`, keeping the connection number;
   - on failure it calls `#refreshFailed`: state `failed`, the old connection retired;
   - in its `finally`, it clears `#refresh` if `#refresh` is still `r`.
-- `stop()` marks a refresh dropped, aborts it, and closes `#conn` and `r.next`.
+- `stop()` marks a refresh dropped, aborts it, and closes `#conn`, `r.next` and every connection in `#retiring`, so
+  `stopAll`, a removal, `/mcp` Reconnect and a restart close them all (decision 25).
+- `#newConn` makes a streamable HTTP connection with a helper with `onInsufficientScope: "throw"` (decision 26). SSE
+  takes no such option.
 - tools.ts, after `approve` and before the last `current` check (125):
   - if `refreshing` is set, wait for it with `until`;
   - `failed` throws `helperFailed` or `connectionFailed` (choice 6), declared among the file's lines;
@@ -906,7 +1063,9 @@ tests/mcp/tools.test.ts, tests/mcp/servers.test.ts, tests/mcp/auth.test.ts. Hold
   - `tokenFile`: a POST whose `x-token` is not the file's text is answered `denyStatus`, or 401;
   - `denyTool`: a call to that tool is answered 403;
   - a `wait` tool answered once `gate` exists;
-  - `holdSecond`: the second `initialize` is answered once that file exists.
+  - `holdSecond`: the second `initialize` is answered once that file exists;
+  - `redirectCall`: a `tools/call` is answered with a 307 to that address;
+  - `signInFake`'s `scope403`: the next `tools/call` is answered 403 with the insufficient-scope challenge, once.
 
 **Run:** `tests/mcp/server.test.ts`, `tests/mcp/tools.test.ts`, `tests/mcp/servers.test.ts`, `tests/mcp/auth.test.ts`,
 `tests/hooks/mcp.test.ts`; types.

@@ -132,6 +132,14 @@ review's finding 1):
   `KILL_MS` in `src/mcp/server.ts`), its process group is killed inside the box. Killing the `docker exec` program on
   the machine is not enough: the process in the box keeps running (measured for the box's shell commands, release 7).
   At exit nothing waits: removing the box ends every server in it.
+- **A stop that fails in the box** (the plan review's finding 1). If the kill cannot be run, the server may still run
+  in the box while its `docker exec` on the machine has ended. Its reason is read as the sandbox's commands read a
+  failed kill (`src/sandbox/executor.ts`): no docker program, Docker's own error output (or `the box stopped` when it
+  gave none), or the error's message. No second copy starts while the first may be running:
+  - a Reconnect, a restart or a live edit's restart first tries the stop again;
+  - if it still fails, nothing new starts, and the red line says `its earlier copy could not be stopped in the box
+    (<reason>), so it was not started again` (the user approved the wording);
+  - a box that Docker says has gone needs no second try, as its removal ended the server.
 - **If the box stops or breaks,** its servers show `the box stopped`, and their tools say so, as a stopped server's
   tools do in 8c.
 
@@ -146,13 +154,19 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   after it. The call itself is not sent again (the design review's finding 4): a 401 or 403 is the server's own
   answer, so the request reached it, and Tachikoma resends only a call that never reached its server (8c, choice 13;
   `src/mcp/tools.ts`). Claude Code retries it once; this one rule differs on purpose. 8c's check still refuses a tool
-  that changed on the new connection.
+  that changed on the new connection. The MCP library would itself resend a request answered 403 with
+  `WWW-Authenticate: Bearer error="insufficient_scope"`, after its own step-up sign-in. A connection with a helper turns
+  that off (the transport's `onInsufficientScope: 'throw'`), so the call fails once and the refresh above follows (the
+  plan review's finding 3). The library's SSE transport has no such resend.
 - **One refresh per connection, and calls in flight finish** (the second design review's finding 3). The first 401 or
   403 on a connection starts its refresh; another on the same connection joins it rather than starting a second. The
   new connection opens beside the old one, which 8c's Reconnect would close at once (`src/mcp/server.ts`): calls
   already sent on the old connection get their answers there, each within its own time limit, and the old connection
   closes when the last has finished. Calls not yet sent go to the new connection, provided their tool is unchanged
-  there (8c's check). `/mcp` Reconnect and a restart still close the old connection first, as in 8c.
+  there (8c's check). `/mcp` Reconnect and a restart still close the old connection first, as in 8c. An old connection
+  still finishing its calls stays the server's own until it closes (the plan review's finding 2), so a teardown closes
+  it too: a stop, the exit, a live edit's removal, a Reconnect or a restart. A call still running on it ends as 8c ends
+  a call in flight on a server stopped the same way.
 - **A refresh that fails, or is overtaken** (the third design review's finding 3):
   - **The helper fails or the new connection fails:** calls waiting for the new connection fail at once with `its
     headersHelper failed, so the call was not sent: <reason>` (or the connection's own reason), the server shows its
@@ -175,7 +189,10 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   the next. While sign-in is used, the headers, the helper's included, go only to the server's own address, never to
   the sign-in service (8c, choice 54). Anything else (a non-zero exit, the time running out, output that is not such
   an object, a value with a line break or NUL) means the server does not connect, and its red line says why. Claude
-  Code's documentation does not say what it does here, so this is Tachikoma's own rule.
+  Code's documentation does not say what it does here, so this is Tachikoma's own rule. The red line never quotes what
+  the helper printed, as a helper prints secrets (the plan review's finding 5; the user approved the forms). An exit
+  is `it exited with code <n>`, with nothing from its error output, and a failed start is `it could not start (<error
+  code, such as ENOENT>)`, not the whole error.
 - **No redirect to another site with the entry's headers** (the third design review's finding 2). `fetch` alone would
   follow a redirect anywhere: it drops `Authorization` when the redirect leaves the server's origin
   (<https://fetch.spec.whatwg.org/#http-redirect-fetch>), but keeps any other header, such as an `X-API-Key`. The MCP
@@ -184,10 +201,13 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   kept and failing any other (`node_modules/@modelcontextprotocol/client/dist/index.d.mts`, found while planning). So
   a request that carries the entry's headers, static or the helper's, with sign-in used or not, fails on a redirect to
   another origin, with nothing sent there, and the red line or the call's error says `the server answered with a
-  redirect to <address>; Tachikoma does not follow a redirect with the entry's headers` (the user approved the
-  wording). A redirect within the server's own origin, such as `/mcp` to `/mcp/`, is left to the library, so servers
-  that work in 8c keep working (the user's choice while planning, 2026-11-17: "Only other sites fail"). Part B's site
-  check applies to redirects without the entry's headers.
+  redirect to <origin>; Tachikoma does not follow a redirect with the entry's headers` (the user approved the
+  wording). Only the origin is named, as 8c's lines name only an origin, since a path or a query can hold a token (the
+  plan review's finding 5). A redirect within the server's own origin, such as `/mcp` to `/mcp/`, is left to the
+  library, so servers that work in 8c keep working (the user's choice while planning, 2026-11-17: "Only other sites
+  fail"). Such a hop is the same request as the one redirected (the plan review's finding 4): the entry's headers go
+  on it, with sign-in used or not, and its 401 or 403 starts the refresh as the server's own answer would. Part B's
+  site check applies to redirects without the entry's headers.
 - **A project's helper** runs only after the user's yes to that server, saved for the entry as written (8c) and for
   whether the helper runs (above), so a changed helper, or a first launch with the sandbox off, asks again. It runs
   without any variable whose name looks like a credential (with TOKEN, SECRET, PASSWORD, KEY or AUTH in it), as
@@ -242,6 +262,15 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   Reconnect and an exit mid-refresh closing both connections, and a late refresh thrown away; the two variables it
   gets; credential-looking names
   removed from a project's helper; a project's helper with the sandbox on, not run.
+- **The plan review's tests:**
+  - a failed kill in the box, then a Reconnect whose second try fails (nothing new starts, the line) and one whose
+    second try works (one copy starts), and the same for a live edit's restart;
+  - a teardown after a refresh while a call still runs on the old connection, which closes it;
+  - with sign-in on, a 403 `insufficient_scope` answer failing its call, sent once only, with one refresh;
+  - with sign-in on and off, `/mcp` to `/mcp/`: the helper's and the static headers at `/mcp/`; a 403 (and, without
+    sign-in, a 401) there starting the refresh; a hop to another origin still failing before anything is sent there;
+  - a secret printed by a helper on its error output, and one in a redirect's path and query, never in the screen's
+    lines, `--json` events or a tool's error.
 - **The user's terminal checklist:** TradingView and MemPalace with `"host": true`, the sandbox and its network on; a
   small `npx` server inside the box; a helper that prints a header from a file.
 - CI runs it all on Windows for the pull request.
@@ -288,3 +317,19 @@ above:
    this already by default; the user chose to leave redirects within the server's own address to it.
 3. **A refresh that fails or is overtaken was left open.** Waiting calls now fail at once (the user approved the line),
    and a removal, restart, Reconnect or exit closes both connections and throws away a late refresh.
+
+An outside review of the implementation plan the same day (the plan review) made five findings. Each was checked
+against the code and the pinned MCP library, held, and changed the design above:
+
+1. **A failed stop in the box could leave two copies running.** If the kill failed, the server could still run in the
+   box while its `docker exec` had ended, and a Reconnect would start a second copy. The stop is now tried again first,
+   and a copy that still cannot be stopped keeps a new one from starting, with its line (the user approved it).
+2. **An old connection a refresh replaced was not closed by a teardown.** It now stays the server's own until it
+   closes, so a stop, the exit, a removal or a Reconnect closes it.
+3. **The library resends a request answered 403 `insufficient_scope`.** That would run a call twice. It is turned off
+   for connections with a helper.
+4. **A hop the library follows within the server's origin lost the entry's headers with sign-in on, and its 401 or
+   403 started no refresh.** Such a hop is now the same request.
+5. **Lines could carry secrets:** a helper's last error line, a failed start's whole error, and a redirect target's
+   path and query. A helper's reasons now give only its exit code or its error's code, and the redirect line names
+   only the origin (the user approved the forms).
