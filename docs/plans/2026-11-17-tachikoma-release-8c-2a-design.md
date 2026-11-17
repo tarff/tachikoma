@@ -21,10 +21,17 @@ follow the approval rule even in `never` mode.
    server copy per worker protects nothing until subagents write, which comes with delegation.
 3. **A project's `headersHelper` is not run with the sandbox on** ("Not run in the sandbox (Recommended)"), so nothing
    from the project runs on the user's machine while the sandbox is on.
-4. **In `never` mode a box server's call runs without asking** ("Run without asking (Recommended)"), as the box's
-   shell and file tools do: its effects stay in the copy, which the user reviews.
+4. **In `never` mode a box server's call runs without asking only while the box's network is off** (first "Run
+   without asking (Recommended)", then, after the design review's finding 3, "Only with the network off
+   (Recommended)"). With the network off everything it does lands in the copy, which the user reviews. With the
+   network on it can also change outside services, which the review never shows, and the dangerous-command check does
+   not look at server calls, so it asks.
+5. **A project server's question says where it runs, and a remote one's whether its helper runs** ("Approve as
+   written (Recommended)"; the design review's finding 1). The wording is in "A project's servers: the answer and
+   where it counts".
 
-The user approved each of the four sections below on 2026-11-17.
+The user approved each of the four sections below on 2026-11-17, and the changes from the design review the same day
+(see "After the design review").
 
 ## Where a local server runs
 
@@ -41,20 +48,44 @@ The user approved each of the four sections below on 2026-11-17.
   | off | start, with no web | don't start; one grey line says they can't be kept off the web | not reached (as in 8c) |
   | on | start | start | reached |
 
-- **Approval:** 8c's table, with one change: in `never` mode (copy mode only) a box server's call runs without asking.
-  `host` and remote servers still ask, as 8c's row says ("a server on the user's machine is outside the box").
+- **Approval:** 8c's table, with one change: in `never` mode (copy mode only) a box server's call runs without asking
+  while the box's network is off (choice 4). With the network on it asks, as `host` and remote servers do, as 8c's row
+  says ("a server on the user's machine is outside the box").
 
-  | Mode | Box server | `host` or remote server |
-  |---|---|---|
-  | `ask`, `project` | asks | asks |
-  | `auto` | the judge decides | the judge decides |
-  | `never` (copy mode) | runs | asks |
-  | `-p` | refused, except in `never` mode, where it runs | refused |
+  | Mode | Box server, network off | Box server, network on | `host` or remote server |
+  |---|---|---|---|
+  | `ask`, `project` | asks | asks | asks |
+  | `auto` | the judge decides | the judge decides | the judge decides |
+  | `never` (copy mode) | runs | asks | asks |
+  | `-p` | refused, except in `never` mode, where it runs | refused | refused |
 
   A tool the user trusts runs without asking in every mode, and a PreToolUse hook's allow skips the question, as in
   8c. Neither widens the network rule above.
 - **A box server's writes** land in the copy in copy mode, and show in the review like any other change; in live link
-  they land in the real files, as the box's shell commands do.
+  they land in the real files, as the box's shell commands do. With the box's network on, what it changes outside
+  (a post, a deletion, a purchase) is in no review, which is why `never` mode asks then.
+
+## A project's servers: the answer and where it counts
+
+8c keeps the user's answer for a project's server by its name and its entry as written (`src/mcp/answers.ts`). Part A
+adds where the server runs, so a yes given for the box never starts the server on the user's machine (the design
+review's finding 1):
+
+- **A local server's answer** records `box` or `host`: `box` while the sandbox is on, `host` while it is off.
+- **A remote server's answer** records whether its `headersHelper` runs: it does with the sandbox off, and not with
+  it on (choice 3). An entry without a helper records nothing more.
+- **Only an exact match counts,** a yes and a no alike: a change asks again in the window, and in `-p` the server is
+  skipped with 8c's line ("-p starts only the project's servers you said yes to in the window").
+- **Answers saved by 8c** count as `host`, as every server ran on the user's machine then. A remote entry with a
+  helper was left out in 8c, so it has no answer and is asked about.
+- **The question says which** (choice 5); the text after the colon is 8c's:
+  - `Start the MCP server "x" from this project's .mcp.json inside the sandbox: <command>? [y/n]`
+  - `Start the MCP server "x" from this project's .mcp.json on this computer: <command>? [y/n]`
+  - `Connect to the MCP server "x" from this project's .mcp.json at <url>, running its headersHelper on this
+    computer: <helper>? [y/n]`
+  - with the sandbox on: `Connect to the MCP server "x" from this project's .mcp.json at <url>, without its
+    headersHelper? [y/n]`
+  - a remote entry without a helper keeps 8c's question unchanged.
 - **The user's own setup:** TradingView (it talks to the desktop app) and MemPalace (its palace is in the home folder)
   both need `"host": true`. With the sandbox on and the box's network off neither starts, as no server starts in 8c
   with the network off.
@@ -71,8 +102,14 @@ The user approved each of the four sections below on 2026-11-17.
   network off that fails, and the red line carries the server's own error.
 - **What the server gets:** its entry's `env`, `CLAUDE_PROJECT_DIR=/work`, and the box's own settings (such as
   `HOME=/tmp`). Not the user's whole environment, whose paths mean nothing in the box. Provider keys are never passed,
-  as in 8c. Values are handed to `docker exec` by name (`-e NAME`, the value in the `docker` program's own
-  environment), so they never appear in the machine's list of running programs. `${VAR}` in an entry is still filled
+  as in 8c. The `docker` program itself gets the same environment as Tachikoma's other Docker calls, never the
+  entry's: Docker reads variables such as `DOCKER_HOST` and `DOCKER_CONFIG` itself
+  (<https://docs.docker.com/reference/cli/docker/#environment-variables>), so an entry's values there could point it
+  at another machine or settings (the design review's finding 2). The server's variables go over the server's own
+  input instead, as one block before the first message, which a small wrapper in the box reads and sets before it
+  starts the server; so they are neither on a command line (which the machine's list of running programs shows) nor
+  in a file on disk (`docker exec --env-file` would write one, and cannot carry a line break). `${VAR}` in an entry is
+  still filled
   from the user's environment when the settings are read (8c). The server's roots (MCP `roots/list`) say `/work`.
 - **Stop:** at `/mcp` Reconnect or a restart, the server's input is closed; if it still runs 300 ms later (8c's limit,
   `KILL_MS` in `src/mcp/server.ts`), its process group is killed inside the box. Killing the `docker exec` program on
@@ -88,8 +125,11 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
 (<https://code.claude.com/docs/en/mcp>, "Use dynamic headers for custom authentication", read 2026-11-17).
 
 - **When:** at each connection, at launch and at `/mcp` Reconnect, never cached (Claude Code's rule). A call answered
-  with 401 or 403 runs the helper again, reconnects and retries the call once (Claude Code's rule); if that fails too,
-  the call fails with the server's answer.
+  with 401 or 403 fails with the server's answer, and the helper runs again and the server reconnects, for the calls
+  after it. The call itself is not sent again (the design review's finding 4): a 401 or 403 is the server's own
+  answer, so the request reached it, and Tachikoma resends only a call that never reached its server (8c, choice 13;
+  `src/mcp/tools.ts`). Claude Code retries it once; this one rule differs on purpose. 8c's check still refuses a tool
+  that changed on the new connection.
 - **How:** by the shell hooks use (8b design, "The shell, as Claude Code's": Git Bash on Windows, Windows PowerShell
   when there is none, `sh -c` elsewhere). In `~/.tachikoma` for an entry in the user's settings, and in the project
   folder for a project's entry (Claude Code's table, with `~/.claude` as Tachikoma's `~/.tachikoma`). Stopped after
@@ -101,9 +141,10 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
   non-zero exit, the time running out, output that is not such an object, a value with a line break or NUL) means the
   server does not connect, and its red line says why. Claude Code's documentation does not say what it does here, so
   this is Tachikoma's own rule.
-- **A project's helper** runs only after the user's yes to that server, saved for the entry as written (8c), so a
-  changed helper asks again. It runs without any variable whose name looks like a credential (with TOKEN, SECRET,
-  PASSWORD, KEY or AUTH in it), as Claude Code does for a project's helper. With the sandbox on it does not run
+- **A project's helper** runs only after the user's yes to that server, saved for the entry as written (8c) and for
+  whether the helper runs (above), so a changed helper, or a first launch with the sandbox off, asks again. It runs
+  without any variable whose name looks like a credential (with TOKEN, SECRET, PASSWORD, KEY or AUTH in it), as
+  Claude Code does for a project's helper. With the sandbox on it does not run
   (choice 3): the server connects with its static headers, and one line says `<name>: its headersHelper was not run,
   as it comes from the project and the sandbox is on.`
 - **The user's own helper** runs on the user's machine in every mode. With the box's network off no remote server is
@@ -128,17 +169,22 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
 ## Testing
 
 - **Unit tests:** the `host` field, read from the user's file and ignored with a warning in a project's; where each
-  server runs for each sandbox and network setting; the approval table with its `never` row; the start command (no
-  `-t`, values passed by name only, `/work`); what the server's environment holds; roots saying `/work`; the "not found
-  in the box" line; the stop sequence.
+  server runs for each sandbox and network setting; the approval table with its `never` rows, network off and on; the
+  start command (no `-t`, no server value on it, `/work`); the `docker` program's own environment, with an entry that
+  sets `DOCKER_HOST` and `DOCKER_CONFIG` changing nothing there; the block on the server's input, and what the server's
+  environment holds, line breaks included; roots saying `/work`; the "not found in the box" line; the stop sequence.
+- **Answers:** a yes for the box asked again with the sandbox off, and the reverse, in the window and skipped in
+  `-p`; a remote answer without the helper asked again when the helper would run; an 8c answer counting as `host`;
+  the four questions' text.
 - **A stand-in Docker** whose `exec -i` runs a small fake server on the machine and records how it was called: start,
   stop and failure tests without Docker.
 - **Real Docker tests,** skipped where Docker is not running, as the sandbox's tests are: a fake server in the real box
   whose call writes a file that shows in copy mode's review; with the network off it still starts; a stop kills it
   inside the box.
 - **Helper tests** with small fake helper scripts: good output; the merge with static headers, letter case included;
-  `Authorization` turning off sign-in; a failing exit, the time running out, bad output; a 401, then a re-run and one
-  retry; the two variables it gets; credential-looking names removed from a project's helper; a project's helper with
+  `Authorization` turning off sign-in; a failing exit, the time running out, bad output; a 401 or 403 failing its
+  call, sent once only, with the helper run again and the next call on the new connection, and a tool changed there
+  refused; the two variables it gets; credential-looking names removed from a project's helper; a project's helper with
   the sandbox on, not run.
 - **The user's terminal checklist:** TradingView and MemPalace with `"host": true`, the sandbox and its network on; a
   small `npx` server inside the box; a helper that prints a header from a file.
@@ -148,3 +194,18 @@ such a server out with a "(planned)" line; part A runs it. What Claude Code does
 
 - The README's MCP and sandbox sections.
 - The 8c design's "Not in this release" table: each worker's own servers move to release 12.
+
+## After the design review
+
+An outside review of this design on 2026-11-17 made four findings. Each was checked against the code, held, and
+changed the design above:
+
+1. **A saved yes could move a project's server from the box to the user's machine** (`src/mcp/answers.ts` keys an
+   answer by name and entry only). Answers now record where the server runs, and whether a helper runs; the question
+   says which (choice 5).
+2. **Passing the server's variables through the `docker` program's environment** would let a project's entry steer
+   Docker itself. They now go over the server's input.
+3. **`never` mode's reason was wrong with the network on:** a box server can then change outside services that no
+   review shows. It now asks then (choice 4).
+4. **Retrying a call after a 401 or 403 could run it twice,** as the answer shows the request reached the server.
+   The helper's fresh headers serve the calls after it; the call is not sent again.
