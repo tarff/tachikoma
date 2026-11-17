@@ -1,12 +1,17 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { onTestFinished } from "vitest";
+import { gitBash, system32 } from "../../src/exec/env.js";
+import type { McpBox } from "../../src/mcp/box.js";
+import type { DockerRun } from "../../src/sandbox/docker.js";
+import { BoxState } from "../../src/sandbox/executor.js";
 
 // Fake MCP servers for the tests (release 8c plan, Task 4): a Node script speaking MCP's JSON-RPC by hand, so no server
 // package is needed and nothing of the user's is started. Over stdio it reads one message per line and writes one per
@@ -26,6 +31,24 @@ export interface FakeOptions {
   description?: string; // echo's description
   port?: number; // over HTTP, the port to listen on; any free one without it
   status?: number; // over HTTP, the status every POST is answered with
+  // Over HTTP (8c-2a plan, Task 10): `slash` answers a POST to /mcp with a 307 to /mcp/, which it serves; `redirect`
+  // answers every other POST with a 307 to this address.
+  slash?: true;
+  redirect?: string;
+  // Over HTTP (Task 11): `tokenFile`: a POST whose x-token header is not that file's text is answered `denyStatus`, or
+  // 401; `denyTool`: a call to that tool is answered 403; `holdSecond`: the second initialize is answered once that
+  // file exists; `redirectCall`: a tools/call is answered with a 307 to that address.
+  tokenFile?: string;
+  denyStatus?: number;
+  denyLength?: number; // that refusal's text, as many "x" in place of "refused"
+  denyTool?: string;
+  holdSecond?: string;
+  redirectCall?: string;
+  denyMethod?: string; // over HTTP, a request of that method is answered 403 once `gate` exists (Task 11's re-check)
+  // Over HTTP: the status a GET for the event stream is answered with in place of 405, held until the first tools/call
+  // comes, so it reaches a ready connection (Task 11's review).
+  getStatus?: number;
+  gate?: string; // the file whose existence the unlisted wait tool and `denyMethod` wait for, looked for every 20 ms
   tools?: object[]; // its tools/list, in place of its own tools (Task 5's names and schemas)
   added?: object[]; // what change adds, before the others, in place of "added"
   results?: Record<string, object>; // a call to a tool named here is answered with this result (Task 6's answers)
@@ -37,15 +60,18 @@ export interface FakeOptions {
   // Its prompts (Task 13): each listed without its messages, which prompts/get sends with each {argument} in a text
   // filled in, or answered an error with `fails` as its message.
   prompts?: { name: string; description?: string; arguments?: object[]; messages?: object[]; fails?: string }[];
+  show?: string[]; // variables whoami also tells, under `env` (8c-2a plan, Task 4)
 }
 
 // Its tools: echo says `text` back; error answers isError; picture answers a 1x1 PNG; structured answers structured
 // content only; slow never answers; progress sends progress and never answers; whoami tells its arguments, folder and
-// variables; ask sends the client a request (`method`, `params`) and answers with the client's answer, or with `cancel`
+// variables, with `show`'s under `env`; write makes an empty file at `path` in its folder (8c-2a plan, Task 4); ask
+// sends the client a request (`method`, `params`) and answers with the client's answer, or with `cancel`
 // cancels that request at once and answers "cancelled" (Task 12: a server that gives up on its form); change adds a
 // tool and says the list changed; exit prints `stderr` and exits with `code`. The tools are called by name whatever the
 // list says, so a fake with its own `tools` still answers change and exit, and the unlisted add-resource, which adds its
-// `resource` to the resources and says their list changed (Task 13). Over HTTP, which answers in JSON only, nothing
+// `resource` to the resources and says their list changed (Task 13), and wait, which answers "waited" once `gate`
+// exists (8c-2a plan, Task 11). Over HTTP, which answers in JSON only, nothing
 // reaches the client between answers, so progress, ask and the changes' notices need stdio.
 const SCRIPT = String.raw`
 const fs = require("node:fs");
@@ -60,7 +86,8 @@ const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwA
 const tool = (name, description = name) => ({ name, description, inputSchema: { type: "object" } });
 let tools = O.tools || [
   { ...tool("echo", O.description || "Says it back"), inputSchema: { type: "object", properties: { text: { type: "string" } } } },
-  ...["error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit"].map((name) => tool(name)),
+  ...["error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit", "write"]
+    .map((name) => tool(name)),
 ];
 let resources = O.resources || [];
 let notify = () => {};
@@ -110,7 +137,11 @@ function answer(m, reply) {
     }
     case "whoami":
       return text(JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), project: process.env.CLAUDE_PROJECT_DIR ?? null,
-        mine: process.env.MINE ?? null, key: process.env.ANTHROPIC_API_KEY ?? null }));
+        mine: process.env.MINE ?? null, key: process.env.ANTHROPIC_API_KEY ?? null,
+        ...(O.show && { env: Object.fromEntries(O.show.map((n) => [n, process.env[n] ?? null])) }) }));
+    case "write":
+      fs.writeFileSync(require("node:path").join(process.cwd(), String(args.path)), "");
+      return text("written");
     case "ask": {
       const id = request(args.method, args.params, args.cancel ? () => {} : (r) => text(JSON.stringify(r.result ?? r.error)));
       if (!args.cancel) return;
@@ -126,6 +157,10 @@ function answer(m, reply) {
       text("added");
       return notify({ method: "notifications/resources/list_changed" });
     case "exit": return process.stderr.write(args.stderr || "", () => process.exit(args.code));
+    case "wait": {
+      const poll = () => (fs.existsSync(O.gate) ? text("waited") : setTimeout(poll, 20));
+      return poll();
+    }
   }
   reply({ error: { code: -32602, message: "no such tool" } });
 }
@@ -176,28 +211,52 @@ function serveStdio() {
 function serveHttp() {
   const sessions = new Set();
   let next = 0;
+  let called = false;
+  const gets = []; // the GETs held for getStatus
   const server = require("node:http").createServer((req, res) => {
     let body = "";
     req.setEncoding("utf8");
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      log({ http: req.method, headers: req.headers, body: body ? JSON.parse(body) : null });
+      log({ http: req.method, path: req.url, headers: req.headers, body: body ? JSON.parse(body) : null });
       // Each connection ends with its answer, so no call goes out on an open one after the fake has stopped.
       res.setHeader("Connection", "close");
+      if (req.method === "GET" && O.getStatus) return called ? res.writeHead(O.getStatus).end() : gets.push(res);
       if (req.method !== "POST") return res.writeHead(405).end();
+      if (O.slash && req.url === "/mcp") return res.writeHead(307, { location: "/mcp/" }).end();
+      if (O.redirect) return res.writeHead(307, { location: O.redirect }).end();
       if (O.status) return res.writeHead(O.status).end("refused");
+      if (O.tokenFile && req.headers["x-token"] !== fs.readFileSync(O.tokenFile, "utf8")) {
+        return res.writeHead(O.denyStatus || 401).end(O.denyLength ? "x".repeat(O.denyLength) : "refused");
+      }
       const m = JSON.parse(body);
       if (m.method !== "initialize" && !sessions.has(req.headers["mcp-session-id"])) return res.writeHead(404).end();
       if (m.id === undefined) return res.writeHead(202).end();
       if (O.silent) return;
+      if (m.method === "tools/call" && !called) {
+        called = true;
+        for (const held of gets.splice(0)) held.writeHead(O.getStatus).end();
+      }
+      if (m.method === O.denyMethod) {
+        const poll = () => (fs.existsSync(O.gate) ? res.writeHead(403).end("refused") : setTimeout(poll, 20));
+        return poll();
+      }
       if (m.method === "tools/call" && m.params.name === "cut") return req.socket.destroy();
+      if (m.method === "tools/call" && m.params.name === O.denyTool) return res.writeHead(403).end("refused");
+      if (m.method === "tools/call" && O.redirectCall) return res.writeHead(307, { location: O.redirectCall }).end();
       const headers = { "content-type": "application/json" };
       if (m.method === "initialize") {
         const id = "session-" + ++next;
         sessions.add(id);
         headers["mcp-session-id"] = id;
       }
-      answer(m, (r) => res.writeHead(200, headers).end(JSON.stringify({ jsonrpc: "2.0", id: m.id, ...r })));
+      const send = () =>
+        answer(m, (r) => res.writeHead(200, headers).end(JSON.stringify({ jsonrpc: "2.0", id: m.id, ...r })));
+      if (m.method === "initialize" && next === 2 && O.holdSecond) {
+        const poll = () => (fs.existsSync(O.holdSecond) ? send() : setTimeout(poll, 20));
+        return poll();
+      }
+      send();
     });
   });
   server.listen(O.port || 0, "127.0.0.1", () => process.stdout.write(JSON.stringify({ port: server.address().port }) + "\n"));
@@ -252,8 +311,17 @@ export async function httpFake(dir: string, opts: FakeOptions = {}): Promise<{ u
 // sign-in details at all, and "elsewhere" publishes the service's metadata only at /elsewhere/metadata, for an entry's
 // authServerMetadataUrl; "challenge" names its discovery document only in the 401, at /challenge/resource, and the
 // service there is at /issuer, so nothing is found at the server's own well-known addresses (choice 70). `slow` holds
-// each code's tokens until `answer()`.
-export async function signInFake(opts: { refresh?: false; registration?: false | "refused"; metadata?: "none" | "elsewhere" | "challenge"; slow?: true } = {}) {
+// each code's tokens until `answer()`. `slash` answers a POST to /mcp with a 307 to /mcp/, its MCP endpoint then, whose
+// discovery document still names /mcp, the entry's address (8c-2a plan, Task 10). `scope403` answers the first
+// tools/call 403 with the insufficient-scope challenge, once, for the scope its tokens already have, so the library's
+// own step-up would only refresh the token and send the call again; `seen.calls` counts the tools/call requests (Task
+// 11).
+export async function signInFake(
+  opts: {
+    refresh?: false; registration?: false | "refused"; metadata?: "none" | "elsewhere" | "challenge"; slow?: true;
+    slash?: true; scope403?: true;
+  } = {},
+) {
   const clients = new Map<string, { redirect_uris: string[] }>();
   const codes = new Map<string, { client: string; challenge: string; redirect: string }>();
   const live = new Set<string>();
@@ -261,9 +329,10 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
   const held: (() => void)[] = [];
   const seen = {
     registered: 0, grants: [] as string[], bearer: [] as (string | null)[], authorized: [] as URLSearchParams[],
-    requests: [] as { path: string; headers: http.IncomingHttpHeaders }[],
+    requests: [] as { path: string; headers: http.IncomingHttpHeaders }[], calls: 0,
   };
   let issued = 0;
+  let scoped = false;
   const server = http.createServer((req, res) => {
     let body = "";
     req.setEncoding("utf8");
@@ -318,7 +387,8 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
           live.add(`access-${n}`);
           refresh.add(`refresh-${n}`);
           const again = opts.refresh === false ? {} : { refresh_token: `refresh-${n}` };
-          return json(200, { access_token: `access-${n}`, ...again, token_type: "Bearer", expires_in: 3600 });
+          const scope = opts.scope403 ? { scope: "more" } : {};
+          return json(200, { access_token: `access-${n}`, ...again, ...scope, token_type: "Bearer", expires_in: 3600 });
         };
         if (grant === "authorization_code") {
           const c = codes.get(form.get("code") ?? "");
@@ -331,16 +401,26 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
         if (grant === "refresh_token" && refresh.delete(form.get("refresh_token") ?? "")) return give();
         return json(400, { error: "invalid_grant" });
       }
-      if (url.pathname.endsWith("/mcp")) {
+      if (opts.slash && url.pathname === "/mcp" && req.method === "POST") {
+        return res.writeHead(307, { location: "/mcp/", connection: "close" }).end();
+      }
+      if (url.pathname.endsWith(opts.slash ? "/mcp/" : "/mcp")) {
         const bearer = req.headers.authorization ?? null;
         seen.bearer.push(bearer);
         if (!bearer || !live.has(bearer.replace(/^Bearer /, ""))) {
-          const resource = opts.metadata === "challenge" ? `${base}/challenge/resource` : `${base}/.well-known/oauth-protected-resource${url.pathname}`;
+          const named = `${base}/.well-known/oauth-protected-resource${opts.slash ? "/mcp" : url.pathname}`;
+          const resource = opts.metadata === "challenge" ? `${base}/challenge/resource` : named;
           return json(401, { error: "invalid_token" }, { "www-authenticate": `Bearer resource_metadata="${resource}"` });
         }
         if (req.method !== "POST") return res.writeHead(405, { connection: "close" }).end();
         const m = JSON.parse(body);
         if (m.id === undefined) return res.writeHead(202, { connection: "close" }).end();
+        if (m.method === "tools/call") seen.calls++;
+        if (m.method === "tools/call" && opts.scope403 && !scoped) {
+          scoped = true;
+          const challenge = 'Bearer error="insufficient_scope", scope="more"';
+          return json(403, { error: "insufficient_scope" }, { "www-authenticate": challenge });
+        }
         const result =
           m.method === "initialize"
             ? { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1.0.0" } }
@@ -380,6 +460,157 @@ export async function signInFake(opts: { refresh?: false; registration?: false |
           await fetch(back);
         })().catch(() => {}),
   };
+}
+
+// A remote entry's headersHelper (8c-2a plan, Task 9): a Node script in `dir`, the test's own folder. Each run adds to
+// `runs()` its process id, its working folder, CLAUDE_CODE_MCP_SERVER_NAME and _URL (`name`, `url`), CLAUDE_PROJECT_DIR
+// (`project`) and its variables' names, then prints `headersFile`, which `give` writes, unless `mode` says otherwise:
+// "fail" exits 3 after printing a made-up secret on its error output, "bad" prints a list, "slow" never ends, "stdin"
+// reads its stdin to the end first and records only then, with the bytes it got as `stdin`. `hold()` makes the runs
+// after it wait, looking every 20 ms, until `go()`, then do as the mode said, except "stdin", which then only prints
+// the headers. `command` starts it in the shell hooks use: Git Bash or sh, or Windows PowerShell when there is no Git
+// Bash (hooks/run.ts, shellOf).
+const HELPER = String.raw`
+const fs = require("node:fs");
+const env = process.env;
+const run = { pid: process.pid, cwd: process.cwd(), name: env.CLAUDE_CODE_MCP_SERVER_NAME ?? null,
+  url: env.CLAUDE_CODE_MCP_SERVER_URL ?? null, project: env.CLAUDE_PROJECT_DIR ?? null, names: Object.keys(env) };
+const record = (more) => fs.appendFileSync(O.runs, JSON.stringify({ ...run, ...more }) + "\n");
+const act = (mode) => {
+  if (mode === "fail") return process.stderr.write("no token today sk-fake-secret-1\n", () => process.exit(3));
+  if (mode === "bad") return process.stdout.write("[]\n");
+  if (mode === "slow") return setInterval(() => {}, 1000);
+  if (mode.startsWith("wait ")) {
+    const poll = () => (fs.existsSync(O.go) ? act(mode.slice(5)) : setTimeout(poll, 20));
+    return poll();
+  }
+  process.stdout.write(fs.readFileSync(O.headers));
+};
+const mode = fs.readFileSync(O.mode, "utf8");
+if (mode === "stdin") {
+  let stdin = 0;
+  process.stdin.on("data", (d) => (stdin += d.length)).on("end", () => {
+    record({ stdin });
+    act("ok");
+  });
+} else {
+  record({});
+  act(mode);
+}
+`;
+
+export type HelperMode = "ok" | "fail" | "bad" | "slow" | "stdin";
+
+export function fakeHelper(dir: string) {
+  const n = ++made;
+  const at = (ext: string) => path.join(dir, `helper-${n}.${ext}`);
+  const files = { runs: at("runs.jsonl"), headers: at("json"), mode: at("mode"), go: at("go") };
+  const script = at("cjs");
+  writeFileSync(script, `const O = ${JSON.stringify(files)};\n${HELPER}`);
+  writeFileSync(files.headers, "{}");
+  let current: HelperMode = "ok";
+  const mode = (m: HelperMode) => {
+    current = m;
+    writeFileSync(files.mode, m);
+  };
+  mode("ok");
+  // Each path in single quotes, a quote in it written as each shell takes one: '' for PowerShell, '\'' for sh and bash.
+  const powershell = process.platform === "win32" && !gitBash();
+  const q = (s: string) => `'${s.replaceAll("'", powershell ? "''" : "'\\''")}'`;
+  const line = `${q(process.execPath)} ${q(script)}`;
+  return {
+    command: powershell ? `& ${line}` : line,
+    runs: () => readLog(files.runs),
+    give: (headers: object) => writeFileSync(files.headers, JSON.stringify(headers)),
+    mode,
+    hold: () => {
+      rmSync(files.go, { force: true });
+      writeFileSync(files.mode, `wait ${current}`);
+    },
+    go: () => writeFileSync(files.go, ""),
+    headersFile: files.headers,
+  };
+}
+
+type Answer = Awaited<ReturnType<DockerRun>>;
+const STANDIN = fileURLToPath(new URL("../standin/dockerExec.mjs", import.meta.url));
+
+// A stand-in's server and everything it started, as the kill in the box ends the server's group: on Windows its tree,
+// elsewhere the group it leads (dockerExec.mjs).
+function killGroup(pid: number): void {
+  if (process.platform === "win32") {
+    spawnSync(system32("taskkill.exe"), ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
+  } else {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      // ESRCH: the group is gone
+    }
+  }
+}
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+// One start of the stand-in Docker: its own pid, its arguments and environment, and its server's pid once started.
+export interface Start {
+  self: number;
+  args: string[];
+  env: Record<string, string>;
+  child?: number;
+}
+
+// A stand-in for the session's box (8c-2a plan, Task 4), recording into a file in `dir`: an McpBox of id "b0x" whose
+// program is tests/standin/dockerExec.mjs, so its servers run on this machine, and whose DockerRun records each call
+// (`calls`) and answers it. `inspect` is answered as running, or, with `gone`, failing with those words, as Docker
+// answers for a box that is not there; `inspects` queues answers given before that, one given as a promise held until
+// it settles. The kill in the box (killLine) kills the server of the start whose group it names, with everything it
+// started, and exits 0, unless `kills` queues an answer, given in its place, one given as a promise held until it
+// settles. `started()` gives each start; `order()`
+// the calls and starts as they came, each call by its verb and the kill as "kill". `killAll()`, in a test's cleanup
+// once its servers are stopped and before its folder is removed, kills those still running, as a stop with `exit`, or
+// one whose kill in the box failed, ends only the stand-in.
+export function standinBox(dir: string, opts: { kind?: "live" | "copy"; gone?: string } = {}) {
+  const record = path.join(dir, `docker-${++made}.jsonl`);
+  const calls: string[][] = [];
+  const kills: (Answer | Promise<Answer>)[] = [];
+  const inspects: (Answer | Promise<Answer>)[] = [];
+  const started = (): Start[] => {
+    const lines = readLog(record);
+    return lines
+      .filter((l) => l.args)
+      .map((s) => ({ ...s, ...lines.find((l) => l.self === s.self && l.child) }) as Start);
+  };
+  const groupOf = (args: string[]) =>
+    args[0] === "exec" ? /^touch (\S+)\.stop;/.exec(args.at(-1) ?? "")?.[1] : undefined;
+  const order = () =>
+    readLog(record).flatMap((l) => (l.args ? ["start"] : l.run ? [groupOf(l.run) ? "kill" : l.run[0]] : []));
+  const inspect = (): Answer =>
+    opts.gone === undefined ? { code: 0, out: "true\n", err: "" } : { code: 1, out: "", err: opts.gone };
+  const run: DockerRun = async (args) => {
+    calls.push(args);
+    appendFileSync(record, `${JSON.stringify({ run: args })}\n`);
+    if (args[0] === "inspect") return inspects.shift() ?? inspect();
+    const group = groupOf(args);
+    if (group !== undefined) {
+      const queued = kills.shift();
+      if (queued) return queued;
+      const pid = started().find((s) => s.args.some((a) => a.includes(group)))?.child;
+      if (pid !== undefined && alive(pid)) killGroup(pid);
+    }
+    return { code: 0, out: "", err: "" };
+  };
+  const killAll = () => {
+    for (const { child } of started()) if (child !== undefined && alive(child)) killGroup(child);
+  };
+  const program = { file: process.execPath, args: [STANDIN, record] };
+  const box: McpBox = { id: "b0x", kind: opts.kind ?? "live", state: new BoxState("b0x", run), run, program };
+  return { box, calls, kills, inspects, started, order, killAll };
 }
 
 // The fake's log, one entry per line; none before its first message.

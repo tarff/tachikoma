@@ -20,7 +20,7 @@ import { readProjectFile, readServers } from "../src/mcp/config.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
 import { removeTree } from "./helpers.js";
-import { type FakeOptions, fakeServer, readLog, signInFake } from "./mcp/fake.js";
+import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog, signInFake } from "./mcp/fake.js";
 
 // Docker's answer for an image with no bash (node:22-alpine, as the quality review gave it).
 const NO_BASH = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "bash": executable file not found in $PATH: unknown';
@@ -1436,6 +1436,41 @@ describe("tachi's MCP servers", { timeout: 60_000 }, () => {
     expect(search.function.description).toContain("mcp__om__echo");
   });
 
+  // 8c-2a plan, Task 10 (decision 28): a helper's error output, the path and query of a redirect's address and the
+  // entry's headers reach no line: neither stdout, with every JSON event, mcp-note among them, nor stderr.
+  it("with -p --json, says a failed headersHelper and a redirect to another origin without their secrets", async () => {
+    const p = await project();
+    const top = path.dirname(p.proj);
+    const helper = fakeHelper(top);
+    helper.mode("fail"); // exits 3, printing sk-fake-secret-1 on its error output
+    const unused = await httpFake(top);
+    const elsewhereLog = path.join(top, "elsewhere.jsonl");
+    const elsewhere = await httpFake(top, { log: elsewhereLog });
+    const origin = `http://127.0.0.1:${elsewhere.port}`;
+    const moving = await httpFake(top, { redirect: `${origin}/sk-fake-secret-2/mcp?token=sk-fake-secret-3` });
+    const mcpServers = {
+      helped: { type: "http", url: unused.url, headersHelper: helper.command },
+      moved: { type: "http", url: moving.url, headers: { "X-Key": "sk-fake-secret-4" } },
+    };
+    const home = homeWith(JSON.stringify({ mcpServers }));
+    const r = await tachiLater("--lead", "openai:lead", "-p", "hi", "--json", { ...p.env, ...home });
+    expect(r.code).toBe(0);
+    const events = r.stdout.trim().split("\n").map((l) => JSON.parse(l));
+    const failures = events.filter((e) => e.event === "error").map((e) => e.data.message);
+    expect(failures.sort()).toEqual(
+      [
+        "MCP server helped failed to start: its headersHelper failed: it exited with code 3",
+        `MCP server moved failed to start: the server answered with a redirect to ${origin}; ` +
+          "Tachikoma does not follow a redirect with the entry's headers",
+      ].sort(),
+    );
+    for (const text of [r.stdout, r.stderr, ...events.map((e) => JSON.stringify(e))]) {
+      expect(text).not.toContain("sk-fake-secret");
+    }
+    expect(helper.runs()).toHaveLength(1);
+    expect(readLog(elsewhereLog)).toEqual([]);
+  });
+
   // Choices 23 and 24: one question per project server not yet answered, after the instruction files' question; a yes
   // starts it and a no does not, both kept, so the next launch asks nothing. At exit the window stops its servers.
   it("asks in the window about each project server, starts a yes and not a no, keeps both, and stops the server at exit", async () => {
@@ -1445,7 +1480,8 @@ describe("tachi's MCP servers", { timeout: 60_000 }, () => {
     p.mcpJson({ yes: yes.entry, no: no.entry });
     // Node's path holds a space where it is installed under C:\Program Files, so it is shown in quotes there.
     const node = process.execPath.includes(" ") ? `"${process.execPath}"` : process.execPath;
-    const question = (name: string, script: string) => `Start the MCP server "${name}" from this project's .mcp.json: ${node} ${script}? [y/n] `;
+    const question = (name: string, script: string) =>
+      `Start the MCP server "${name}" from this project's .mcp.json on this computer: ${node} ${script}? [y/n] `;
     const w = windowLater("--lead", "ollama:none", p.env);
     await vi.waitFor(() => expect(w.stdout()).toContain(question("yes", yes.script)), WAIT);
     w.write("y");
@@ -1456,7 +1492,11 @@ describe("tachi's MCP servers", { timeout: 60_000 }, () => {
     expect(w.stdout()).toContain(`${question("yes", yes.script)}y\n${question("no", no.script)}n\n`);
     expect(readLog(no.log)).toEqual([]);
     expect(alive(yes.pid())).toBe(false);
-    expect([p.answers().get("yes", p.written("yes")), p.answers().get("no", p.written("no"))]).toEqual([true, false]);
+    // Kept for this computer, as the sandbox is off (8c-2a plan, Task 8), not with no setup: a lookup with none finds
+    // only an answer kept with none.
+    const kept = ["yes", "no"].map((name) => p.answers().get(name, p.written(name), "host"));
+    expect(kept).toEqual([true, false]);
+    expect(["yes", "no"].map((name) => p.answers().get(name, p.written(name)))).toEqual([undefined, undefined]);
     // The next launch asks nothing and starts the yes again.
     const again = windowLater("--lead", "ollama:none", p.env);
     await vi.waitFor(() => expect(initializes(yes.log)).toBe(2), WAIT);
@@ -1981,15 +2021,17 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     expect(readdirSync(r.copies)).toEqual([]);
   });
 
-  // Release 8c plan, Task 9 (design, "Starting and stopping servers"): with the box's network off no server starts, as it
-  // would run on the user's machine with the web open; the line says so once. The server's program is not on the empty
-  // PATH either, so a start would fail with a line of its own.
+  // Release 8c plan, Task 9 (design, "Starting and stopping servers"): with the box's network off a server on the
+  // user's machine does not start, as it would run with the web open; the line says so once (8c-2a plan, Task 6, choice
+  // 3). The server's program is not on the empty PATH either, so a start would fail with a line of its own.
   it("says once that the MCP servers are off with the sandbox's network off, and starts none", async () => {
-    const settings = JSON.stringify({ mcpServers: { tv: { command: "node", args: ["server.js"] }, sanity: { command: "npx" } } });
+    const tv = { command: "node", args: ["server.js"], host: true };
+    const settings = JSON.stringify({ mcpServers: { tv, sanity: { command: "npx", host: true } } });
     const r = await copyRun("ok", false, homeWith(settings));
     expect(r.code).toBe(0);
     const off =
-      "note: MCP servers are off: the sandbox's network is off, and servers run outside the box until a later release. Start with --network on to use them.";
+      'note: MCP servers marked "host" and remote servers are off: the sandbox\'s network is off, and outside the ' +
+      "box nothing keeps them off the web. Start with --network on to use them.";
     expect(r.stderr.split("\n").filter((l) => l.includes("MCP"))).toEqual([off]);
   });
 });

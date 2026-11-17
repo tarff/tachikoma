@@ -25,14 +25,16 @@ import { writeFileTool } from "../../src/tools/files.js";
 import { defineTool } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
 import { Bus, callTool, collectErrors, FakeProvider, removeTree, reply, texts, usage } from "../helpers.js";
-import { type FakeOptions, fakeServer, httpFake, readLog } from "./fake.js";
+import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog, standinBox } from "./fake.js";
 
 // Release 8c plan, Task 6: MCP tools in the session, each call on the tool the model was shown, against the fake servers
 // of fake.ts and a stand-in model. Every request the model is sent is the stand-in's; none reaches a provider.
 
 // A wait on another process: a few seconds for a busy machine, well inside the test's 15 s.
 const WAIT = { timeout: 5_000 };
-const TEN = ["echo", "error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit"];
+const ELEVEN = [
+  "echo", "error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit", "write",
+];
 // The fake's own 1x1 PNG (fake.ts).
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const png = Buffer.from(PNG, "base64");
@@ -95,16 +97,20 @@ async function setup() {
     return { ...user, name, safe: name, entry, asWritten: entry };
   };
   const remote = (name: string, url: string): ServerConfig => ({ ...user, name, safe: name, entry: { kind: "http", url, headers: {} }, asWritten: { url, headers: {} } });
-  const make = (configs: ServerConfig[]) => {
+  // `more`: Servers' other options, such as the box's network and the box (8c-2a plan, Task 7).
+  type More = Partial<ConstructorParameters<typeof Servers>[1]>;
+  const make = (configs: ServerConfig[], more: More = {}) => {
     const answers = () => {
       throw new Error("no project server here, so no answers are read");
     };
-    const servers = new Servers(configs, { root: dir, env: process.env, bus, answers, network: "none", lead: () => "fake:a" });
+    const servers = new Servers(configs, {
+      root: dir, env: process.env, bus, answers, network: "none", lead: () => "fake:a", ...more,
+    });
     made.push(servers);
     return servers;
   };
-  const ready = async (configs: ServerConfig[]) => {
-    const servers = make(configs);
+  const ready = async (configs: ServerConfig[], more: More = {}) => {
+    const servers = make(configs, more);
     servers.startAll();
     await servers.ready();
     return servers;
@@ -142,7 +148,7 @@ describe("MCP tools in the session", () => {
     const servers = await t.ready([await t.local("s")]);
     const { session, model } = t.session(servers, [callTool("c1", "mcp__s__echo", { text: "hi" }), reply("done")]);
     await session.send("go");
-    expect(model.requests[0]!.tools).toEqual(["own", "tool_search", ...TEN.map((n) => `mcp__s__${n}`)]);
+    expect(model.requests[0]!.tools).toEqual(["own", "tool_search", ...ELEVEN.map((n) => `mcp__s__${n}`)]);
     expect(t.results(session)).toEqual([{ output: "hi", isError: false }]);
     expect(t.q.asked).toEqual(['mcp__s__echo {"text":"hi"}']);
     expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "hi" }]);
@@ -174,7 +180,7 @@ describe("MCP tools in the session", () => {
     await session.send("one");
     session.setLead(new OpenAIProvider("openai", "gpt-5"));
     await session.send("two");
-    const names = ["own", "tool_search", ...TEN.map((n) => `mcp__s__${n}`)];
+    const names = ["own", "tool_search", ...ELEVEN.map((n) => `mcp__s__${n}`)];
     expect((anthropic.mock.calls[0]![0] as unknown as { tools: { name: string }[] }).tools.map((x) => x.name)).toEqual(names);
     expect((openai.mock.calls[0]![0] as unknown as { tools: { function: { name: string } }[] }).tools.map((x) => x.function.name)).toEqual(names);
   });
@@ -296,7 +302,7 @@ describe("MCP tools in the session", () => {
   it("sends the turn's MCP tools with a shortening's summary request and with a fallback's request", async () => {
     const t = await setup();
     const servers = await t.ready([await t.local("s")]);
-    const names = ["own", "tool_search", ...TEN.map((n) => `mcp__s__${n}`)];
+    const names = ["own", "tool_search", ...ELEVEN.map((n) => `mcp__s__${n}`)];
     const folder = path.join(t.dir, "sessions", "project");
     const transcript = new Transcript(path.join(folder, "s1.jsonl"), path.join(folder, "s1", "pictures"), { inherits: true });
     const turns = [reply("noted"), new TooLong("prompt is too long"), reply("Summary."), reply("done")];
@@ -589,6 +595,232 @@ describe("MCP tools in the session: a remote server's drop", () => {
   });
 });
 
+// 8c-2a plan, Task 11 (decisions 19, 20, 23, 25 and 28; choice 6 (b)): a call approved while its server's connection is
+// refreshed waits for the refresh, then runs on the new connection, or fails without being sent.
+describe("MCP tools in the session: a refresh at a 401 or 403", () => {
+  const HELPER_FAILED = "its headersHelper failed, so the call was not sent: it exited with code 3";
+  // A ready remote server r whose every POST needs the x-token in its token file, which its user's helper gives; the
+  // fake's wait tool answers once `gate` exists. `begin()`, another call's 401 with the token turned, which begins the
+  // refresh, its helper held until `go()`.
+  async function refreshed(fake: FakeOptions = {}) {
+    const t = await setup();
+    const log = t.log();
+    const token = path.join(t.dir, "token.txt");
+    const gate = path.join(t.dir, "gate");
+    writeFileSync(token, "t1");
+    const f = await httpFake(t.dir, { log, tokenFile: token, gate, ...fake });
+    const helper = fakeHelper(t.dir);
+    helper.give({ "x-token": "t1" });
+    const base = t.remote("r", f.url);
+    const entry = { kind: "http" as const, url: f.url, headers: {}, headersHelper: helper.command };
+    // Out of the test's folder, which Windows keeps a moment for a killed program that worked in it.
+    const servers = await t.ready([{ ...base, entry, asWritten: entry }], { settingsDir: tmpdir() });
+    const begin = async () => {
+      helper.hold();
+      writeFileSync(token, "t2");
+      helper.give({ "x-token": "t2" });
+      await expect(servers.server("r")!.callTool("echo", { text: "other" }, {})).rejects.toThrow();
+      expect(servers.server("r")!.refreshing).toBeDefined();
+    };
+    // The model's own echo calls, by the token each was sent with.
+    const mine = () =>
+      readLog(log)
+        .filter((e) => e.body?.method === "tools/call" && e.body.params.arguments?.text === "mine")
+        .map((e) => e.headers["x-token"]);
+    const echo = callTool("c1", "mcp__r__echo", { text: "mine" });
+    const turn = (to: string) => {
+      writeFileSync(token, to);
+      helper.give({ "x-token": to });
+    };
+    return { t, log, gate, helper, servers, begin, mine, echo, turn, origin: new URL(f.url).origin };
+  }
+
+  // The user's choice, 2026-11-18, from the terminal check: the call whose own 401 or 403 began the refresh says so.
+  const NOTE = (status: number) =>
+    ` (the server answered ${status}; its headersHelper is being run again for a new connection, and the call ` +
+    "was not sent again: call it again if it should still run)";
+  it.each([401, 403])("fails a call answered %s with the server's words and the note, and refreshes", async (s) => {
+    const r = await refreshed({ denyStatus: s });
+    r.helper.hold();
+    r.turn("t2");
+    const { session } = r.t.session(r.servers, [r.echo, reply("ok")]);
+    await session.send("go");
+    expect(r.t.results(session)).toEqual([{ output: `Error POSTing to endpoint: refused${NOTE(s)}`, isError: true }]);
+    const refresh = r.servers.server("r")!.refreshing!;
+    r.helper.go();
+    expect(await refresh).toEqual({ is: "ready" });
+    expect(r.mine()).toEqual(["t1"]); // sent once, with the old token
+  });
+
+  // The session cuts a failure to MAX_TOOL_OUTPUT; the server's words are cut first, so the note stays whole.
+  it("keeps the note whole after a refusal longer than a tool's output may be", async () => {
+    const r = await refreshed({ denyStatus: 403, denyLength: MAX_TOOL_OUTPUT + 1000 });
+    r.helper.hold();
+    r.turn("t2");
+    const { session } = r.t.session(r.servers, [r.echo, reply("ok")]);
+    await session.send("go");
+    const { output } = (r.t.results(session) as { output: string }[])[0]!;
+    expect(output.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+    expect(output).toMatch(/^Error POSTing to endpoint: x+\n\[cut: \d+ more characters\] \(the server/);
+    expect(output.endsWith(NOTE(403))).toBe(true);
+    const refresh = r.servers.server("r")!.refreshing!;
+    r.helper.go();
+    expect(await refresh).toEqual({ is: "ready" });
+  });
+
+  it("fails a call answered 500 with the server's words alone, starting no refresh", async () => {
+    const r = await refreshed({ denyStatus: 500 });
+    r.turn("t2");
+    const { session } = r.t.session(r.servers, [r.echo, reply("ok")]);
+    await session.send("go");
+    expect(r.t.results(session)).toEqual([{ output: "Error POSTing to endpoint: refused", isError: true }]);
+    expect(r.servers.server("r")!.refreshing).toBeUndefined();
+    expect(r.helper.runs()).toHaveLength(1);
+  });
+
+  it("fails a call answered 403 by a server with no helper with the server's words alone", async () => {
+    const t = await setup();
+    const f = await httpFake(t.dir, { denyTool: "denied", tools: [tool("denied")] });
+    const servers = await t.ready([t.remote("s", f.url)]);
+    const { session } = t.session(servers, [callTool("c1", "mcp__s__denied", {}), reply("ok")]);
+    await session.send("go");
+    expect(t.results(session)).toEqual([{ output: "Error POSTing to endpoint: refused", isError: true }]);
+    expect(servers.server("s")!.refreshing).toBeUndefined();
+  });
+
+  it("waits for the refresh, then runs the call once on the new connection", async () => {
+    const r = await refreshed();
+    r.t.q.then = async () => {
+      await r.begin();
+      r.helper.go();
+    };
+    const { session } = r.t.session(r.servers, [r.echo, reply("ok")]);
+    await session.send("go");
+    expect(r.t.results(session)).toEqual([{ output: "mine", isError: false }]);
+    expect(r.mine()).toEqual(["t2"]);
+  });
+
+  it("fails the call unsent, saying why, when the refresh's helper fails, the server's red line said", async () => {
+    const r = await refreshed();
+    r.t.q.then = async () => {
+      r.helper.mode("fail");
+      await r.begin();
+      r.helper.go();
+    };
+    const { session } = r.t.session(r.servers, [r.echo, reply("ok")]);
+    await session.send("go");
+    expect(r.t.results(session)).toEqual([{ output: HELPER_FAILED, isError: true }]);
+    expect(r.mine()).toEqual([]);
+    expect(r.t.errors.map((e) => [e.kind, e.message])).toEqual([
+      ["mcp", "MCP server r failed to start: its headersHelper failed: it exited with code 3"],
+      ["tool", HELPER_FAILED],
+    ]);
+  });
+
+  // Choice 6 (b): the helper worked, but the token it gave is still refused.
+  it("fails the call unsent, saying why, when the refresh's new connection fails", async () => {
+    const r = await refreshed();
+    r.t.q.then = async () => {
+      await r.begin();
+      r.helper.give({ "x-token": "t3" });
+      r.helper.go();
+    };
+    const { session } = r.t.session(r.servers, [r.echo, reply("ok")]);
+    await session.send("go");
+    const line = `its new connection failed, so the call was not sent: ${r.origin} answered 401`;
+    expect(r.t.results(session)).toEqual([{ output: line, isError: true }]);
+    expect(r.mine()).toEqual([]);
+    expect(r.t.errors.map((e) => [e.kind, e.message])).toEqual([
+      ["mcp", `MCP server r failed to start: ${r.origin} answered 401`],
+      ["tool", line],
+    ]);
+  });
+
+  // Decision 19: the refresh keeps the connection number, and 8c's check refuses a tool changed on the new connection.
+  it("refuses the call with the changed line, unsent, when its tool changed on the new connection", async () => {
+    const r = await refreshed({ added: [tool("echo", echoSchema, "a new echo")] });
+    await r.servers.server("r")!.callTool("change", {}, {}); // over HTTP only a new connection's list shows it
+    r.t.q.then = async () => {
+      await r.begin();
+      r.helper.go();
+    };
+    const { session } = r.t.session(r.servers, [r.echo, reply("ok")]);
+    await session.send("go");
+    expect(r.t.results(session)).toEqual([{ output: changedLine("r", "echo"), isError: true }]);
+    expect(r.mine()).toEqual([]);
+  });
+
+  // Decisions 20 and 21: the refresh is dropped while the call waits for it.
+  it.each(["removed", "restarted"] as const)("a call waiting for a dropped refresh gets 8c's line: %s", async (how) => {
+    const r = await refreshed();
+    let begun = false;
+    r.t.q.then = async () => {
+      await r.begin();
+      begun = true;
+    };
+    const { session } = r.t.session(r.servers, [r.echo, reply("ok")]);
+    const turn = session.send("go");
+    await vi.waitFor(() => expect(begun).toBe(true), WAIT);
+    const refresh = r.servers.server("r")!.refreshing!;
+    const ended = how === "removed" ? r.servers.set([]) : r.servers.restart("r");
+    await turn;
+    const line = how === "removed" ? changedLine("r", "echo") : STOPPED("r");
+    expect(r.t.results(session)).toEqual([{ output: line, isError: true }]);
+    expect(await refresh).toEqual({ is: "dropped" });
+    expect(r.mine()).toEqual([]);
+    r.helper.go(); // for the restart's own start
+    await ended;
+  });
+
+  // Decision 25: a call draining on a connection a refresh replaced ends as one on a server stopped that way in 8c.
+  it.each(["removed", "reconnected"] as const)("ends a call on a replaced connection, %s, as 8c does", async (how) => {
+    const end = async (refresh: boolean) => {
+      const r = await refreshed({ denyTool: "denied", tools: [tool("wait"), tool("echo", echoSchema)] });
+      const { session } = r.t.session(r.servers, [callTool("c1", "mcp__r__wait", {}), reply("ok")]);
+      const turn = session.send("go");
+      await vi.waitFor(() => expect(r.t.calls(r.log, "wait")).toHaveLength(1), WAIT);
+      if (refresh) {
+        await expect(r.servers.server("r")!.callTool("denied", {}, {})).rejects.toThrow();
+        expect(await r.servers.server("r")!.refreshing).toEqual({ is: "ready" });
+      }
+      if (how === "removed") r.servers.set([]);
+      else await r.servers.restart("r");
+      await turn;
+      return r.t.results(session);
+    };
+    const was = await end(false);
+    expect(was).toEqual([{ output: expect.any(String), isError: true }]);
+    expect(await end(true)).toEqual(was);
+  });
+
+  // Decision 28: the helper prints sk-fake-secret-1 on its error output as it fails (fake.ts).
+  it("shows no secret in a result or on the bus: a helper's error output, a redirect's path and query", async () => {
+    const r = await refreshed();
+    r.t.q.then = async () => {
+      r.helper.mode("fail");
+      await r.begin();
+      r.helper.go();
+    };
+    const first = r.t.session(r.servers, [r.echo, reply("ok")]).session;
+    await first.send("go");
+    expect(r.t.results(first)).toEqual([{ output: HELPER_FAILED, isError: true }]);
+
+    r.t.q.then = undefined;
+    const other = await httpFake(r.t.dir);
+    const origin = `http://127.0.0.1:${other.port}`;
+    const moved = await httpFake(r.t.dir, { redirectCall: `${origin}/sk-fake-secret-2/x?token=sk-fake-secret-3` });
+    const entry = { kind: "http" as const, url: moved.url, headers: { "X-Key": "k" } };
+    const servers = await r.t.ready([{ ...r.t.remote("m", moved.url), entry, asWritten: entry }]);
+    const second = r.t.session(servers, [callTool("c2", "mcp__m__echo", { text: "x" }), reply("ok")]).session;
+    await second.send("go");
+    const redirected =
+      `the server answered with a redirect to ${origin}; Tachikoma does not follow a redirect with the entry's headers`;
+    expect(r.t.results(second)).toEqual([{ output: redirected, isError: true }]);
+    const everything = JSON.stringify([r.t.results(first), r.t.results(second), r.t.notes, r.t.errors]);
+    expect(everything).not.toContain("sk-fake-secret");
+  });
+});
+
 // Release 8c plan, Task 7 (design, "Approval"; choices 14-17 and 32): each call through the real gate, as cli.tsx makes
 // it, and approveOf, as the launch gives it; the fake server's log counts the calls that reached it.
 describe("MCP tools in the session: approval", () => {
@@ -837,6 +1069,86 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const { session } = lead(t, servers, gate, [callTool("c1", "mcp__s__echo", { text: "hi" })]);
     await session.send("go", stop.signal);
     expect([t.results(session), t.outcomes]).toEqual([[{ output: "Cancelled by the user.", isError: true }], ["cancelled"]]);
+    expect(t.calls(t.logs.get("s")!, "echo")).toEqual([]);
+  });
+
+  // 8c-2a plan, Task 7 (design, "Where a local server runs"; decision 12 and choice 7): a box server's call, through
+  // the stand-in box, a copy. The cleanup is registered before the start, so it runs even if the start throws: the
+  // servers are stopped before the stand-in's are killed, then the folder is removed (setup's, run after this, as
+  // vitest runs onTestFinished in reverse order).
+  async function boxed(t: Setup, network: "on" | "off") {
+    const fake = standinBox(t.dir, { kind: "copy" });
+    const servers = t.make([await t.local("s", { description: ECHO })], { network, box: fake.box });
+    onTestFinished(async () => {
+      await servers.stopAll();
+      fake.killAll();
+    });
+    servers.startAll();
+    await servers.ready();
+    expect(fake.started()).toHaveLength(1);
+    return servers;
+  }
+
+  it("runs a box server's call unasked in never with the box's network off, in the window and in -p", async () => {
+    const t = await setup();
+    const servers = await boxed(t, "off");
+    for (const o of [{}, { headless: true }] as const) {
+      const g = gated(t, "never", o);
+      const text = o.headless ? "p" : "window";
+      const { session } = lead(t, servers, g.gate, [callTool("c1", "mcp__s__echo", { text }), reply("ok")]);
+      await session.send("go");
+      expect([text, t.results(session), g.asked, g.judged]).toEqual([text, [{ output: text, isError: false }], [], []]);
+    }
+    const sent = t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments);
+    expect(sent).toEqual([{ text: "window" }, { text: "p" }]);
+  });
+
+  const hi = (text = "hi") => [callTool("c1", "mcp__s__echo", { text }), reply("ok")];
+  it("asks in never with the box's network on, a yes running the call, and refuses it in -p", async () => {
+    const t = await setup();
+    const servers = await boxed(t, "on");
+    const g = gated(t, "never", { answers: [true] });
+    await lead(t, servers, g.gate, hi("window")).session.send("go");
+    expect(g.asked).toEqual([asking("window")]);
+    const p = gated(t, "never", { headless: true });
+    const { session } = lead(t, servers, p.gate, hi("p"));
+    await session.send("go");
+    const refused = { output: `${P}: s: echo {"text":"p"}`, isError: true };
+    expect([t.results(session), p.asked]).toEqual([[refused], [asking("p")]]);
+    expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "window" }]);
+  });
+
+  it("shows auto's judge a box server's call with the network off as inside, and boxed", async () => {
+    const t = await setup();
+    const servers = await boxed(t, "off");
+    const g = gated(t, "auto", { allows: () => true });
+    const { session } = lead(t, servers, g.gate, hi());
+    await session.send("go");
+    const shown: Action = {
+      ...{ kind: "mcp", outside: false, boxed: true, summary: 's: echo {"text":"hi"}' },
+      ...{ description: ECHO, note: ECHO },
+    };
+    expect([t.results(session), g.judged, g.asked]).toEqual([[{ output: "hi", isError: false }], [shown], []]);
+  });
+
+  it.each(["ask", "project"] as const)("asks once in %s about a box server's call with the network off", async (m) => {
+    const t = await setup();
+    const servers = await boxed(t, "off");
+    const g = gated(t, m, { answers: [true] });
+    const { session } = lead(t, servers, g.gate, hi());
+    await session.send("go");
+    expect([t.results(session), g.asked]).toEqual([[{ output: "hi", isError: false }], [asking("hi")]]);
+  });
+
+  it("refuses a hook's ask on a box server's call in never with the network off, never reaching it", async () => {
+    const t = await setup();
+    const servers = await boxed(t, "off");
+    const g = gated(t, "never", { answers: [true] });
+    const { hooks } = hooked(t, g.gate, ASK);
+    const { session } = lead(t, servers, g.gate, hi(), { hooks });
+    await session.send("go");
+    const line = "Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).";
+    expect([t.results(session), g.asked]).toEqual([[{ output: line, isError: true }], []]);
     expect(t.calls(t.logs.get("s")!, "echo")).toEqual([]);
   });
 });

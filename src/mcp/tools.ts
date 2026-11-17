@@ -1,6 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/client";
 import type { Bus } from "../core/bus.js";
 import { visible } from "../core/permissions.js";
+import { truncateLeaving } from "../core/session.js";
 import type { Picture } from "../core/types.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import { typeOf } from "../tui/clipboard.js";
@@ -30,6 +31,17 @@ const stopped = (o: Offered) => `The MCP server ${visible(o.server)} has stopped
 const restarted = (o: Offered) => `Stopped: the MCP server ${visible(o.server)} restarted while the call ran.`;
 const untrusted = (o: Offered) =>
   `Not run: ${visible(o.server)}'s "${visible(o.tool, { tabs: true })}" is no longer trusted as read-only, and subagents only read.`;
+// A call that waited for a refresh which failed (8c-2a plan, Task 11; "Lines this plan adds"; choice 6 (b)).
+const helperFailed = (reason: string) => `its headersHelper failed, so the call was not sent: ${reason}`;
+const connectionFailed = (reason: string) => `its new connection failed, so the call was not sent: ${reason}`;
+// A call whose own 401 or 403 began a refresh, or came while one ran (Server.callTool): the user's choice, 2026-11-18,
+// from the terminal check. The server's words are cut first, so the session's cut of a failure leaves the note whole.
+const refused = (message: string, status: number) => {
+  const note =
+    ` (the server answered ${status}; its headersHelper is being run again for a new connection, ` +
+    "and the call was not sent again: call it again if it should still run)";
+  return `${truncateLeaving(message, note.length)}${note}`;
+};
 
 // The launch's question for every call, the lead's and its subagents' (release 8c plan, Task 7; design, "Approval";
 // choices 14-17). Trust is read here, from the entry in force, right before the gate would decide, so a live edit applies
@@ -37,14 +49,16 @@ const untrusted = (o: Offered) =>
 // subagent's call to a tool no longer trusted is refused, as subagents only read (choice 17). Else the gate decides:
 // the question is the server, the tool and its input as JSON, which the gate escapes, its grey note the first line of
 // the tool's own description, as the server sent it (choices 14 and 47), and the judge is shown the 4,096 cut (choice 15;
-// Task 6b). `outside` is true, as the server runs apart from the project; only the judge reads it, since the gate decides
-// an MCP call by its kind (release 8c plan, choice 32).
+// Task 6b). `outside` is true for a server on the user's machine or a remote one, false for a box server's, as it runs
+// in the box; only the judge reads it, since the gate decides an MCP call by its kind (release 8c plan, choice 32;
+// 8c-2a plan, decision 12). `boxed`: a box server's with the box's network off, which runs unasked in never (Task 7).
 export function approveOf(servers: Servers): Approve {
   return async (o, input, ctx) => {
     if (servers.trust(o.server, o.tool)) return;
     if (o.trustedOnly) throw new Error(untrusted(o));
     const summary = `${o.server}: ${o.tool} ${JSON.stringify(input)}`;
-    await ctx.gate.require({ kind: "mcp", outside: true, summary, description: o.forJudge, note: o.forNote }, ctx.signal);
+    const where = { outside: o.boxNetwork === undefined, ...(o.boxNetwork === "off" && { boxed: true }) };
+    await ctx.gate.require({ kind: "mcp", ...where, summary, description: o.forJudge, note: o.forNote }, ctx.signal);
   };
 }
 
@@ -90,7 +104,8 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
   async function call(o: Offered, input: Record<string, unknown>, ctx: ToolContext): Promise<CallToolResult> {
     const { signal, gate } = ctx;
     try {
-      return await servers.server(o.server)!.callTool(o.tool, input, { signal, ...(gate.owner && { owner: gate.owner }) });
+      const opts = { signal, noted: refused, ...(gate.owner && { owner: gate.owner }) };
+      return await servers.server(o.server)!.callTool(o.tool, input, opts);
     } catch (err) {
       if (!signal?.aborted && !(err instanceof NotReached) && servers.current(o) === "restarted") throw new Error(restarted(o));
       throw err;
@@ -121,6 +136,15 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
         // review). A subagent's view also calls a tool whose trust has gone "changed"; approve's own line says why.
         if (!o.trustedOnly && servers.current(o) === "changed") throw new Error(changed(o));
         await approve(o, input, ctx);
+        // A call approved while its server's connection is refreshed waits for the new one (8c-2a plan, Task 11;
+        // decision 20). A failed refresh fails it unsent; a dropped one gives 8c's line for a server replaced or
+        // stopped, or its sign-in's when the new connection needed one.
+        const refreshing = servers.server(o.server)?.refreshing;
+        if (refreshing) {
+          const r = await until(refreshing, ctx.signal);
+          if (r.is === "failed") throw new Error(r.helper ? helperFailed(r.reason) : connectionFailed(r.reason));
+          if (r.is === "dropped") throw new Error(servers.current(o) === "changed" ? changed(o) : notRunning(o));
+        }
         // Nothing reaches the server unless its tool is still the one shown, on the connection that showed it (finding 4).
         const now = servers.current(o);
         if (now === "changed" || now === "restarted") throw new Error(changed(o));

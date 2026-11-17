@@ -1,13 +1,16 @@
 import type { Tool } from "@modelcontextprotocol/client";
 import { openBrowser } from "../auth/chatgpt.js";
 import type { Bus } from "../core/bus.js";
+import { settingsDir } from "../core/datadir.js";
 import { visible } from "../core/permissions.js";
 import { errorText, type ToolSpec } from "../core/types.js";
 import type { Answers } from "./answers.js";
 import type { AuthStore, SignInIO } from "./auth.js";
+import type { McpBox, Unstopped } from "./box.js";
 import { Checker } from "./checker.js";
 import type { ServerConfig } from "./config.js";
 import { Forms } from "./forms.js";
+import { answerSetup, helperRuns, type McpSandbox, placeOf, starts } from "./place.js";
 import { Server, type State } from "./server.js";
 
 // The MCP servers together, and one table of tool names over them all (release 8c plan, Task 5; design, "Tools for the
@@ -30,7 +33,8 @@ const PROPERTY = /^[A-Za-z0-9_.-]{1,64}$/;
 // every server: a live edit's restart is a new Server, whose numbers start again. `trustedOnly`: offered in a subagent's
 // view, the tools trusted as read-only, which a rebind keeps (Task 6's spec review). `forJudge`: its description cut at
 // 4,096, as the judge is shown it however the tool was loaded (Task 6b; Task 7 shows it). `forNote`: the server's own
-// description, never a flattened schema's sentence, for the question's grey note (choice 47).
+// description, never a flattened schema's sentence, for the question's grey note (choice 47). `boxNetwork`: the box's
+// network, for a box server's tool only (8c-2a plan, Task 6; decision 12).
 export interface Offered {
   spec: ToolSpec;
   server: string;
@@ -40,6 +44,7 @@ export interface Offered {
   forJudge: string;
   forNote: string;
   trustedOnly?: true;
+  boxNetwork?: "on" | "off";
 }
 
 // What a request is offered (Task 6b; choices 37-42): `defined`, the tools it defines, those loaded upfront (alwaysLoad)
@@ -79,12 +84,21 @@ export class Servers {
   readonly #bus: Bus;
   readonly #makeAnswers: () => Answers;
   readonly #unread: Answers | undefined;
-  readonly #network: "on" | "off" | "none";
+  readonly #sandbox: McpSandbox; // the box's kind and the network, which place each server (8c-2a plan, Task 6)
   readonly #lead: () => string;
   readonly #startMs?: number;
   readonly #auth?: AuthStore;
   readonly #openBrowser: (url: string) => void;
   readonly #headless: boolean;
+  readonly #box: McpBox | undefined;
+  readonly #settingsDir: string;
+  // Each name's stops that failed in the box (8c-2a plan, Task 4, decision 24): one list per name, given to every copy
+  // of it, so a record outlives live edits, a removal and the entry added back. A list is never replaced, as a copy
+  // still stopping may yet add to it; one emptied by the retries stays, holding nothing.
+  readonly #unstopped = new Map<string, Unstopped[]>();
+  // Each name's stops in the box still running, given to every copy of it the same way, so a copy added back by a
+  // later edit waits for its old copy's (decision 24, as built; the PR review, 2026-11-18).
+  readonly #pendingStops = new Map<string, Set<Promise<void>>>();
   #slots: Slot[];
   #answers: Answers | null | undefined; // null: they could not be read, and none were given in their place; undefined: not read yet
   #unreadable: string | undefined; // why, until it is said
@@ -103,13 +117,17 @@ export class Servers {
   // then, kept for that launch only (Task 9). `network` is the sandbox's: "none" when it is off. `lead` names the model
   // leading, which every error on the bus carries. `startMs` is a server's start limit, 30 s unless a test gives one.
   // `auth` keeps the remote servers' sign-ins, and `openBrowser` opens a sign-in's page, the system's browser unless a test
-  // gives its own (Task 11); `headless` is -p, which cannot sign in, and says so of a server that needs it.
+  // gives its own (Task 11); `headless` is -p, which cannot sign in, and says so of a server that needs it. `box`: the
+  // session's box, needed with the sandbox on, given to every server then, its box servers started in it (8c-2a plan,
+  // Tasks 4 and 6; decision 10): a host or remote copy needs it too, to try a failed in-box stop of its name again.
+  // `settingsDir`: the folder a user's entry's headersHelper runs in, ~/.tachikoma unless a test gives its own (8c-2a
+  // plan, Task 10).
   constructor(
     configs: ServerConfig[],
     opts: {
       root: string; env: NodeJS.ProcessEnv; bus: Bus; answers: () => Answers; unread?: Answers;
       network: "on" | "off" | "none"; lead: () => string; startMs?: number;
-      auth?: AuthStore; openBrowser?: (url: string) => void; headless?: boolean;
+      auth?: AuthStore; openBrowser?: (url: string) => void; headless?: boolean; box?: McpBox; settingsDir?: string;
     },
   ) {
     this.#root = opts.root;
@@ -117,12 +135,15 @@ export class Servers {
     this.#bus = opts.bus;
     this.#makeAnswers = opts.answers;
     this.#unread = opts.unread;
-    this.#network = opts.network;
+    if (opts.network !== "none" && !opts.box) throw new Error("Servers: the sandbox is on, but no box was given");
+    this.#sandbox = opts.network === "none" ? null : { kind: opts.box!.kind, network: opts.network };
     this.#lead = opts.lead;
     this.#startMs = opts.startMs;
     this.#auth = opts.auth;
     this.#openBrowser = opts.openBrowser ?? openBrowser;
     this.#headless = opts.headless ?? false;
+    this.#box = opts.box;
+    this.#settingsDir = opts.settingsDir ?? settingsDir();
     this.forms = new Forms({ bus: this.#bus, headless: this.#headless, openBrowser: this.#openBrowser, lead: this.#lead });
     this.#slots = configs.map((c) => this.#slot(c));
   }
@@ -271,7 +292,9 @@ export class Servers {
   // in place. A stopped Server keeps the state it had, so it is forgotten, never read again. The names restarted, added
   // and removed are given back, for the live-edit line (Task 10, liveEdits.ts).
   set(configs: ServerConfig[]): { restarted: string[]; added: string[]; removed: string[] } {
-    const key = (c: ServerConfig) => JSON.stringify([c.where, c.entry, c.where === "project" ? c.written : ""]);
+    // Where it runs too, which `host` changes only with the sandbox on (8c-2a plan, Task 6).
+    const key = (c: ServerConfig) =>
+      JSON.stringify([c.where, c.entry, c.where === "project" ? c.written : "", placeOf(c, this.#sandbox)]);
     const old = new Map(this.#slots.map((s) => [s.config.name, s]));
     const before = new Set(old.keys());
     const now = new Set(configs.map((c) => c.name));
@@ -360,12 +383,13 @@ export class Servers {
     this.#changed(slot, server);
   }
 
-  // /mcp's Reset my answer (Task 10; choice 24): whether a project's server has an answer for its entry as written, and
-  // its reset, a line in the project's answers, which throws when it cannot be written. The server stays as it is until
-  // the next launch, which asks again.
+  // /mcp's Reset my answer (Task 10; choice 24): whether a project's server has an answer for its entry as written, in
+  // this launch's setup (8c-2a plan, Task 6), and its reset, a line in the project's answers, which throws when it
+  // cannot be written. The server stays as it is until the next launch, which asks again.
   answered(name: string): boolean {
     const config = this.#slots.find((s) => s.config.name === name)?.config;
-    return config?.where === "project" && this.#readAnswers()?.get(config.name, config.written) !== undefined;
+    if (config?.where !== "project") return false;
+    return this.#readAnswers()?.get(config.name, config.written, answerSetup(config, this.#sandbox)) !== undefined;
   }
   reset(name: string): void {
     this.#readAnswers()?.reset(name);
@@ -416,28 +440,40 @@ export class Servers {
   }
 
   // At Tachikoma's exit: every server stopped (choice 3), all forgotten, and those a live edit removed waited for too,
-  // as on Windows a running server holds the folder it works in (CI on PR #18's merge).
+  // as on Windows a running server holds the folder it works in (CI on PR #18's merge). A box server's `docker exec` is
+  // ended at once, as removing the box ends the server (8c-2a plan, decision 6).
   async stopAll(): Promise<void> {
     const slots = this.#slots;
     this.#slots = [];
     this.#wake();
-    await Promise.all([...slots.map((s) => s.server?.stop()), ...this.#stopping]);
+    await Promise.all([...slots.map((s) => s.server?.stop({ exit: true })), ...this.#stopping]);
   }
 
-  // A project's server starts only on the user's yes for its entry as written (choice 24; Task 9 asks); with the sandbox's
-  // network off none starts, as it would run on the user's machine with the web open (design, "Starting and stopping
-  // servers").
+  // A project's server starts only on the user's yes for its entry as written (choice 24; Task 9 asks), in this
+  // launch's setup (8c-2a plan, Task 6; decision 11); with the box's network off only a box server starts, as one on
+  // the user's machine would run with the web open (choice 3). Every copy gets the box with the sandbox on, so a host
+  // or remote copy can try a failed in-box stop of its name again; only a box server runs in it (Server). A remote
+  // entry's headersHelper that runs (helperRuns) does so in the settings folder for the user's entry, and in the
+  // project's for a project's (8c-2a plan, Task 10).
   #slot(config: ServerConfig): Slot {
     const slot: Slot = { config, said: new Set() };
-    if (this.#network === "off") return { ...slot, fixed: { is: "off" } };
+    if (!starts(config, this.#sandbox)) return { ...slot, fixed: { is: "off" } };
     if (config.where === "project") {
-      const yes = this.#readAnswers()?.get(config.name, config.written);
+      const yes = this.#readAnswers()?.get(config.name, config.written, answerSetup(config, this.#sandbox));
       if (yes === undefined) return { ...slot, fixed: { is: "waiting for your yes" } };
       if (!yes) return { ...slot, fixed: { is: "you said no" } };
     }
+    let unstopped = this.#unstopped.get(config.name);
+    if (!unstopped) this.#unstopped.set(config.name, (unstopped = []));
+    let pendingStops = this.#pendingStops.get(config.name);
+    if (!pendingStops) this.#pendingStops.set(config.name, (pendingStops = new Set()));
     const server = new Server(config, {
       root: this.#root, env: this.#env, auth: this.#auth, startMs: this.#startMs, onChange: () => this.#changed(slot, server),
       onForm: (form, ctx) => this.forms.answer(slot.config.name, form, ctx),
+      ...(this.#sandbox && { box: this.#box! }), unstopped, pendingStops,
+      ...(helperRuns(config, this.#sandbox) && {
+        helper: { cwd: config.where === "user" ? this.#settingsDir : this.#root, project: config.where === "project" },
+      }),
     });
     slot.server = server;
     return slot;
@@ -463,9 +499,19 @@ export class Servers {
     this.#unreadable = undefined;
   }
 
+  // A remote entry's headersHelper that does not run, a project's with the sandbox on, is said once for the slot as it
+  // starts: a Reconnect starts no new slot, and a live edit's restart does (8c-2a plan, Task 10; choice 9).
   #begin(slot: Slot): void {
     const server = slot.server;
-    if (server) void server.start().then(() => this.#changed(slot, server));
+    if (!server) return;
+    const { config } = slot;
+    const helper = config.entry.kind !== "stdio" && config.entry.headersHelper !== undefined;
+    if (helper && !helperRuns(config, this.#sandbox)) {
+      const line = `${visible(config.name)}: its headersHelper was not run, ` +
+        "as it comes from the project and the sandbox is on.";
+      this.#bus.emit("mcp-note", line);
+    }
+    void server.start().then(() => this.#changed(slot, server));
   }
 
   // A server started, failed, changed its list or stopped. One replaced or forgotten by set() or stopAll() is not read.
@@ -561,6 +607,7 @@ export class Servers {
           definition: JSON.stringify({ description: c.tool.description, inputSchema: c.tool.inputSchema }),
           forJudge: upfront,
           forNote: c.tool.description ?? "",
+          ...(placeOf(c.slot.config, this.#sandbox) === "box" && { boxNetwork: this.#sandbox!.network }),
         };
         return { offered, searched: cut(text, MAX_SEARCHED), upfront: c.slot.config.alwaysLoad || c.tool._meta?.["anthropic/alwaysLoad"] === true };
       });

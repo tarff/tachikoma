@@ -28,6 +28,11 @@ describe("needsApproval", () => {
     ["project", act("mcp"), true],
     ["auto", act("mcp"), true],
     ["never", act("mcp"), true],
+    // 8c-2a plan, Task 7: a box server's call with the box's network off runs unasked in never, and only there.
+    ["ask", { ...act("mcp"), boxed: true }, true],
+    ["project", { ...act("mcp"), boxed: true }, true],
+    ["auto", { ...act("mcp"), boxed: true }, true],
+    ["never", { ...act("mcp"), boxed: true }, false],
   ] as const)("%s mode, %o -> %s", (mode, action, expected) => {
     expect(needsApproval(mode, action)).toBe(expected);
   });
@@ -467,6 +472,24 @@ describe("the gate's MCP calls", () => {
     ]);
     const headless = "Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask.";
     for (const mode of ["never", "project"] as const) expect(gateIn(mode, true, { headless: true }).gate.hookCannotAsk("Sure?", true)).toBe(headless);
+  });
+
+  // 8c-2a plan, Task 7 and choice 7: a box server's call with the box's network off, which runs unasked in never.
+  const boxed: Action = { ...mcp("Says it back"), outside: false, boxed: true };
+  it("runs a boxed call in never unasked, in the window and headless", async () => {
+    const p = "Not allowed in -p mode, where nobody can approve it";
+    for (const options of [{}, { headless: true }]) {
+      const { gate, asked, judged } = gateIn("never", false, options, p);
+      await gate.require(boxed);
+      expect([options, asked, judged]).toEqual([options, [], []]);
+    }
+  });
+
+  it("refuses a hook's ask on a boxed call in never with never's line, as on the box's own actions", () => {
+    const line = "Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).";
+    for (const options of [{}, { headless: true }]) {
+      expect(gateIn("never", true, options).gate.hookCannotAsk("Sure?", true, true)).toBe(line);
+    }
   });
 
   it("skips the question and the judge for one call a hook allowed, in every mode", async () => {

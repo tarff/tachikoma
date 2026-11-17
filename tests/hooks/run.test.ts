@@ -184,7 +184,7 @@ setTimeout(() => {}, 60000);`);
     const root = await folder();
     const env = { SystemRoot: process.env.SystemRoot, PATH: root };
     const ran = await runHook(hookOf({ command: "tachi-no-such-program", args: [] }), {}, { cwd: root, env, limit: 30 });
-    expect(ran).toMatchObject({ code: null, failed: "start", startError: "not found on PATH" });
+    expect(ran).toMatchObject({ code: null, failed: "start", startError: "not found on PATH", startCode: "ENOENT" });
   }, 15_000);
 
   // The one test that uses the real Git Bash, found as Tachikoma finds it, never a bare `bash`, which on Windows can be

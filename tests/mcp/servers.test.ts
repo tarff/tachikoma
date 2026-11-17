@@ -6,19 +6,22 @@ import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/mes
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { projectFile, SETTINGS } from "../../src/core/datadir.js";
 import { running } from "../../src/exec/local.js";
-import { type Answers, answersFor } from "../../src/mcp/answers.js";
+import { type Answers, answersFor, launchAnswers } from "../../src/mcp/answers.js";
+import { type McpBox, unstoppedLine } from "../../src/mcp/box.js";
 import { readServers, type ServerConfig } from "../../src/mcp/config.js";
 import { NotReached } from "../../src/mcp/server.js";
 import { type Offered, Servers } from "../../src/mcp/servers.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import { Bus, collectErrors, removeTree } from "../helpers.js";
-import { type FakeOptions, fakeServer, httpFake, readLog } from "./fake.js";
+import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog, standinBox } from "./fake.js";
 
 // Release 8c plan, Task 5: the servers together, one table of unique names, against the fake servers of fake.ts.
 
 // A wait on another process: a few seconds for a busy machine, well inside the test's 15 s.
 const WAIT = { timeout: 5_000 };
-const TEN = ["echo", "error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit"];
+const ELEVEN = [
+  "echo", "error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit", "write",
+];
 const tool = (name: string, inputSchema: object = { type: "object" }, description = name) => ({ name, description, inputSchema });
 const plain = tool("plain", { type: "object", properties: { x: { type: "number" } } });
 const nobody = (): Answers => {
@@ -49,10 +52,20 @@ async function setup() {
     const entry = { kind: "stdio" as const, command: process.execPath, args: [script], env: {} };
     return { name, safe, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "", entry, asWritten: entry, ...over };
   };
-  const make = (configs: ServerConfig[], opts: { answers?: () => Answers; unread?: Answers; network?: "on" | "off" | "none" } = {}) => {
+  const make = (
+    configs: ServerConfig[],
+    opts: {
+      answers?: () => Answers; unread?: Answers; network?: "on" | "off" | "none"; box?: McpBox; settingsDir?: string;
+    } = {},
+  ) => {
     const answers = opts.answers ?? nobody;
     const unread = opts.unread ? { unread: opts.unread } : {};
-    const servers = new Servers(configs, { root: dir, env: process.env, bus, answers, ...unread, network: opts.network ?? "none", lead: () => "fake:a" });
+    const network = opts.network ?? "none";
+    const box = opts.box ? { box: opts.box } : {};
+    const settings = opts.settingsDir ? { settingsDir: opts.settingsDir } : {};
+    const servers = new Servers(configs, {
+      root: dir, env: process.env, bus, answers, ...unread, network, ...box, ...settings, lead: () => "fake:a",
+    });
     made.push(servers);
     return servers;
   };
@@ -133,8 +146,10 @@ describe("Servers: names", () => {
     await servers.ready();
     const offered = every(servers);
     expect(owner(offered, "mcp__x_y__echo")).toEqual(["x.y echo"]);
-    expect(offered).toHaveLength(10);
-    expect(notes).toEqual(TEN.map((t) => `MCP server x_y: "${t}" was left out: its name mcp__x_y__${t} is already x.y's "${t}"`));
+    expect(offered).toHaveLength(11);
+    expect(notes).toEqual(
+      ELEVEN.map((t) => `MCP server x_y: "${t}" was left out: its name mcp__x_y__${t} is already x.y's "${t}"`),
+    );
   });
 
   // Release 8c plan, choice 68 and Task 18: the screen names an MCP call by the server and the tool's own name the last
@@ -161,7 +176,9 @@ describe("Servers: names", () => {
     await gate.open();
     expect(await servers.ready()).toBe(true);
     expect(owner(every(servers), "mcp__x_y__echo")).toEqual(["x_y echo"]);
-    expect(notes).toEqual(TEN.map((t) => `MCP server x.y: "${t}" was left out: its name mcp__x_y__${t} is already x_y's "${t}"`));
+    expect(notes).toEqual(
+      ELEVEN.map((t) => `MCP server x.y: "${t}" was left out: its name mcp__x_y__${t} is already x_y's "${t}"`),
+    );
   });
 
   // Choice 7 for a changed list: the new tool comes first in the list, and still does not take the name in force.
@@ -364,7 +381,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const line = "MCP server bad failed to start: it exited with code 3: boom";
     expect(errors).toEqual([{ kind: "mcp", attempted: "MCP server bad", message: line, lead: "fake:a" }]);
     expect(notes).toEqual([]); // nobody waited past it, so no ready line
-    expect(every(servers)).toHaveLength(10);
+    expect(every(servers)).toHaveLength(11);
   });
 
   // The error log's `attempted` is printed by /errors, so a name from the file is escaped there too.
@@ -533,9 +550,10 @@ describe("Servers: starting, waiting and stopping", () => {
     expect(await waited).toBe(false);
     expect(notes).toEqual([]);
     await gate.open();
-    await vi.waitFor(() => expect(notes).toEqual(["MCP server late is ready: 10 tools."]), WAIT);
+    await vi.waitFor(() => expect(notes).toEqual(["MCP server late is ready: 11 tools."]), WAIT);
     await one.open();
-    await vi.waitFor(() => expect(notes).toEqual(["MCP server late is ready: 10 tools.", "MCP server single is ready: 1 tool."]), WAIT);
+    const ready = ["MCP server late is ready: 11 tools.", "MCP server single is ready: 1 tool."];
+    await vi.waitFor(() => expect(notes).toEqual(ready), WAIT);
     expect(await servers.ready()).toBe(true);
   });
 
@@ -549,7 +567,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const line = "MCP server s stopped: it exited with code 4: gone; reconnect it from /mcp.";
     await vi.waitFor(() => expect(errors.map((e) => e.message)).toEqual([line]), WAIT);
     expect(errors[0]).toMatchObject({ kind: "mcp", attempted: "MCP server s" });
-    expect(every(servers).map((o) => o.server)).toEqual(Array(10).fill("t"));
+    expect(every(servers).map((o) => o.server)).toEqual(Array(11).fill("t"));
     expect(servers.current(echo)).toBe("stopped");
     expect(errors).toHaveLength(1);
   });
@@ -671,6 +689,200 @@ describe("Servers: starting, waiting and stopping", () => {
   });
 });
 
+// 8c-2a plan, Task 4, decision 24: a box server's stop that failed is kept by its name, through the stand-in Docker
+// (tests/mcp/box.test.ts has its proofs), whatever then happens to its entry, until a retry confirms it.
+describe("Servers: a box server's stop that failed", () => {
+  const BOOM = { code: 1, out: "", err: "Error: boom\n" };
+  const BLOCKED = { is: "failed", reason: unstoppedLine("Error: boom") };
+  const WORKED = { code: 0, out: "", err: "" };
+  // A kill in the box held until the test answers it; answered as worked when the test ends, if it has not been, so the
+  // cleanup's stops, registered before it and so run after it, are not left waiting.
+  const held = () => {
+    let answer!: (got: typeof BOOM) => void;
+    const kill = new Promise<typeof BOOM>((resolve) => (answer = resolve));
+    onTestFinished(() => answer(WORKED));
+    return { kill, answer };
+  };
+  // The stand-in box, and a stubborn server in it, which keeps running when its input closes; each live edit gives its
+  // entry a new variable, so the edit restarts it. The servers are stopped before the stand-in's are killed, then the
+  // folder is removed (setup's, after this).
+  async function boxed() {
+    const s = await setup();
+    const fake = standinBox(s.dir);
+    const made: Servers[] = [];
+    onTestFinished(async () => {
+      await Promise.all(made.map((servers) => servers.stopAll()));
+      fake.killAll();
+    });
+    const a = await s.config("s", { stubborn: true, childPidFile: path.join(s.dir, "child-pid") });
+    const entry = a.entry as Extract<ServerConfig["entry"], { kind: "stdio" }>;
+    const edit = (v: string): ServerConfig => ({ ...a, entry: { ...entry, env: { V: v } } });
+    const make = (configs: ServerConfig[]) => {
+      const servers = s.make(configs, { network: "on", box: fake.box });
+      made.push(servers);
+      return servers;
+    };
+    const kills = () => fake.order().filter((o) => o === "kill").length;
+    return { ...s, fake, a, edit, make, kills };
+  }
+
+  it("blocks a live edit's restart and a second edit's while the kill fails, starting one once it works", async () => {
+    const { fake, a, edit, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    fake.kills.push(BOOM, BOOM); // A's stop, then B's retry
+    expect(servers.set([edit("b")]).restarted).toEqual(["s"]);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(kills()).toBe(2);
+    // C: its kill is tried again first, and fails.
+    fake.kills.push(BOOM);
+    servers.set([edit("c")]);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(kills()).toBe(3);
+    expect(fake.started()).toHaveLength(1);
+    // The kill works now: the next Reconnect starts exactly one copy.
+    await servers.restart("s");
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(fake.started()).toHaveLength(2);
+    expect(fake.order().slice(-2)).toEqual(["kill", "start"]);
+  });
+
+  it("keeps the record when the entry is removed and added back, blocking the copy until the kill works", async () => {
+    const { fake, a, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    fake.kills.push(BOOM);
+    expect(servers.set([]).removed).toEqual(["s"]);
+    await vi.waitFor(() => expect(kills()).toBe(1), WAIT);
+    fake.kills.push(BOOM);
+    expect(servers.set([a]).added).toEqual(["s"]);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(fake.started()).toHaveLength(1);
+    await servers.restart("s");
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(fake.started()).toHaveLength(2);
+  });
+
+  // The PR review (2026-11-18): an entry added back by a later edit while its removed copy's kill in the box still
+  // runs waits for that kill, which may yet fail and be kept, so the two never run at once.
+  it("holds an entry added back while its removed copy's kill runs, blocking it when that kill fails", async () => {
+    const { fake, a, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const hold = held();
+    fake.kills.push(hold.kill, BOOM); // A's stop, held; then the new copy's retry
+    expect(servers.set([]).removed).toEqual(["s"]);
+    await vi.waitFor(() => expect(kills()).toBe(1), WAIT);
+    expect(servers.set([a]).added).toEqual(["s"]);
+    hold.answer(BOOM);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(kills()).toBe(2);
+    expect(fake.started()).toHaveLength(1);
+  });
+
+  // The same, the held kill working: the copy starts once it has, with nothing left to try again. "t", added beside it,
+  // starts at once, so by its ready "s" has been held. The held answer stands in for the kill, so A's server is left
+  // running for the cleanup's killAll.
+  it("starts an entry added back while its removed copy's kill runs once that kill works", async () => {
+    const { fake, a, config, make, kills } = await boxed();
+    const t = await config("t");
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const hold = held();
+    fake.kills.push(hold.kill);
+    expect(servers.set([]).removed).toEqual(["s"]);
+    await vi.waitFor(() => expect(kills()).toBe(1), WAIT);
+    expect(servers.set([a, t]).added).toEqual(["s", "t"]);
+    await vi.waitFor(() => expect(stateOf(servers, "t")?.is).toBe("ready"), WAIT);
+    expect(stateOf(servers, "s")?.is).toBe("starting");
+    expect(fake.started()).toHaveLength(2); // A's and t's
+    hold.answer(WORKED);
+    await vi.waitFor(() => expect(stateOf(servers, "s")?.is).toBe("ready"), WAIT);
+    expect(fake.started()).toHaveLength(3);
+    expect(kills()).toBe(1);
+  });
+
+  // The same, added back at once, inside the stop's 300 ms, before its kill has begun: the whole stop is waited for,
+  // not only its kill.
+  it("holds an entry added back within its removed copy's 300 ms, blocking it when the kill then fails", async () => {
+    const { fake, a, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const hold = held();
+    fake.kills.push(hold.kill, BOOM); // A's stop, held; then the new copy's retry
+    expect(servers.set([]).removed).toEqual(["s"]);
+    expect(servers.set([a]).added).toEqual(["s"]);
+    await vi.waitFor(() => expect(kills()).toBe(1), WAIT);
+    hold.answer(BOOM);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(kills()).toBe(2);
+    expect(fake.started()).toHaveLength(1);
+  });
+
+  // The review of the PR review's fix (2026-11-18): two Reconnects close together. The first opens a copy, which the
+  // second closes, its process not yet spawned, so the second waits for that close's kill in the box, here failing.
+  // The first copy's own kill is answered as worked without killing it, and the held one so too, so both servers are
+  // left running for the cleanup's killAll.
+  it("blocks two Reconnects close together while the first one's copy cannot be killed", async () => {
+    const { fake, a, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const hold = held();
+    fake.kills.push(WORKED, hold.kill, BOOM); // the first copy's stop; the first Reconnect's copy's, held; the retry
+    const both = Promise.all([servers.restart("s"), servers.restart("s")]);
+    await vi.waitFor(() => expect(kills()).toBe(2), WAIT);
+    expect(fake.started()).toHaveLength(2); // the first copy and the first Reconnect's, none of the second's
+    hold.answer(BOOM);
+    await both;
+    expect(stateOf(servers, "s")).toEqual(BLOCKED);
+    expect(kills()).toBe(3);
+    expect(fake.started()).toHaveLength(2);
+  });
+
+  it("starts the second of two Reconnects close together once the first one's copy is killed", async () => {
+    const { fake, a, make, kills } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const hold = held();
+    fake.kills.push(WORKED, hold.kill);
+    const both = Promise.all([servers.restart("s"), servers.restart("s")]);
+    await vi.waitFor(() => expect(kills()).toBe(2), WAIT);
+    expect(stateOf(servers, "s")?.is).toBe("starting");
+    expect(fake.started()).toHaveLength(2);
+    hold.answer(WORKED);
+    await both;
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(fake.started()).toHaveLength(3);
+    expect(kills()).toBe(2);
+  });
+
+  // 8c-2a plan, Task 6: a host copy is given the box too, so it can try the record's kill again before it starts.
+  it("blocks a live edit's host copy while the box copy's kill fails, starting it here once it works", async () => {
+    const { fake, a, make, kills, logs } = await boxed();
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    fake.kills.push(BOOM, BOOM); // A's stop, then the host copy's retry
+    expect(servers.set([{ ...a, host: true }]).restarted).toEqual(["s"]);
+    await vi.waitFor(() => expect(stateOf(servers, "s")).toEqual(BLOCKED), WAIT);
+    expect(kills()).toBe(2);
+    expect(initializes(logs.get("s")!)).toBe(1); // the box copy's only
+    await servers.restart("s");
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(fake.order().slice(-1)).toEqual(["kill"]);
+    expect(fake.started()).toHaveLength(1);
+    expect(initializes(logs.get("s")!)).toBe(2);
+  });
+});
+
 describe("Servers: a project's servers and the network", () => {
   // Choice 24: an answer counts only for the entry it was given for (ServerConfig.written).
   const given = (yes: Record<string, [string, boolean]>): (() => Answers) => () => ({
@@ -744,14 +956,239 @@ describe("Servers: a project's servers and the network", () => {
     expect(errors.map((e) => e.message)).toEqual([expect.stringMatching(unreadable)]);
     expect(servers.list().map((s) => s.state.is)).toEqual(["ready", "you said no"]);
   });
+});
 
-  it("starts no server with the sandbox's network off, every one off", async () => {
-    const { config, make } = await setup();
-    const servers = make([await config("u"), await config("p", {}, { where: "project", written: "w" })], { network: "off" });
+// 8c-2a plan, Task 6 (design, "Where a local server runs"; choice 3): with the sandbox on, a local server runs in the
+// box, through the stand-in Docker, unless the user's entry says "host", and the box's network decides what starts.
+describe("Servers: where each server runs", () => {
+  // The stand-in box, a copy, and Servers on it with the box's network as given; the servers are stopped before the
+  // stand-in's are killed, then the folder is removed (setup's, after this).
+  async function placed(network: "on" | "off") {
+    const s = await setup();
+    const fake = standinBox(s.dir, { kind: "copy" });
+    const made: Servers[] = [];
+    onTestFinished(async () => {
+      await Promise.all(made.map((servers) => servers.stopAll()));
+      fake.killAll();
+    });
+    const make = (configs: ServerConfig[], answers?: () => Answers, settingsDir?: string) => {
+      const servers = s.make(configs, { network, box: fake.box, ...(answers && { answers }), settingsDir });
+      made.push(servers);
+      return servers;
+    };
+    const remote = (url: string): ServerConfig => ({
+      ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
+      entry: { kind: "http", url, headers: {} },
+      asWritten: { url, headers: {} },
+    });
+    return { ...s, fake, make, remote };
+  }
+  const boxNetworks = (servers: Servers) => every(servers).map((o) => `${o.server} ${o.boxNetwork}`);
+
+  it("starts a box server through the stand-in with the network off, keeping host and remote ones off", async () => {
+    const { config, fake, make, remote, logs } = await placed("off");
+    const b = await config("b", { tools: [plain] });
+    const servers = make([b, await config("h", {}, { host: true }), remote("https://127.0.0.1:9/mcp")]);
     servers.startAll();
     expect(await servers.ready()).toBe(true);
-    expect(servers.list().map((s) => s.state)).toEqual([{ is: "off" }, { is: "off" }]);
-    expect(every(servers)).toEqual([]);
+    expect(servers.list().map((s) => [s.name, s.state.is])).toEqual([["b", "ready"], ["h", "off"], ["r", "off"]]);
+    expect(fake.started()).toHaveLength(1);
+    expect(initializes(logs.get("h")!)).toBe(0);
+    expect(boxNetworks(servers)).toEqual(["b off"]);
+  });
+
+  it("starts every server with the network on, the box one in the box, and marks only its tools", async () => {
+    const { dir, config, fake, make, remote, logs } = await placed("on");
+    const http = await httpFake(dir, { tools: [tool("echo")] });
+    const b = await config("b", { tools: [plain] });
+    const servers = make([b, await config("h", { tools: [plain] }, { host: true }), remote(http.url)]);
+    servers.startAll();
+    expect(await servers.ready()).toBe(true);
+    expect(servers.list().map((s) => [s.name, s.state.is])).toEqual([["b", "ready"], ["h", "ready"], ["r", "ready"]]);
+    expect(fake.started()).toHaveLength(1); // the box server only; the host one ran on this computer
+    expect(initializes(logs.get("h")!)).toBe(1);
+    expect(boxNetworks(servers)).toEqual(["b on", "h undefined", "r undefined"]);
+  });
+
+  it("reads a project's box server's answer for box copy network off, and waits for a yes without one", async () => {
+    const { config, fake, make } = await placed("off");
+    const answers = launchAnswers();
+    answers.set("p", "w1", true); // an 8c yes counts for host only
+    answers.set("p", "w1", true, "box live network off");
+    answers.set("q", "w2", true, "box copy network off");
+    const p = { where: "project" as const };
+    const configs = [await config("p", {}, { ...p, written: "w1" }), await config("q", {}, { ...p, written: "w2" })];
+    const servers = make(configs, () => answers);
+    servers.startAll();
+    expect(await servers.ready()).toBe(true);
+    expect(servers.list().map((s) => [s.name, s.state.is])).toEqual([["p", "waiting for your yes"], ["q", "ready"]]);
+    expect([servers.answered("p"), servers.answered("q")]).toEqual([false, true]);
+    expect(fake.started()).toHaveLength(1);
+  });
+
+  it("restarts a box server on this computer at a live edit adding host, with no second start in the box", async () => {
+    const { config, fake, make, logs } = await placed("on");
+    const b = await config("s", { tools: [plain] });
+    const servers = make([b]);
+    servers.startAll();
+    await servers.ready();
+    expect(fake.started()).toHaveLength(1);
+    expect(every(servers).map((o) => o.boxNetwork)).toEqual(["on"]);
+    expect(servers.set([{ ...b, host: true }]).restarted).toEqual(["s"]);
+    expect(await servers.ready()).toBe(true);
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(fake.started()).toHaveLength(1);
+    expect(initializes(logs.get("s")!)).toBe(2); // once in the box, then once here
+    expect(every(servers).map((o) => o.boxNetwork)).toEqual([undefined]);
+  });
+
+  // With the sandbox off every local server runs on this computer, so host moves nothing.
+  it("restarts nothing at a live edit adding host with the sandbox off", async () => {
+    const { config, make, logs } = await setup();
+    const a = await config("s", { tools: [plain] });
+    const servers = make([a]);
+    servers.startAll();
+    await servers.ready();
+    const server = servers.server("s");
+    expect(servers.set([{ ...a, host: true }])).toEqual({ restarted: [], added: [], removed: [] });
+    expect(servers.server("s")).toBe(server);
+    expect(stateOf(servers, "s")?.is).toBe("ready");
+    expect(initializes(logs.get("s")!)).toBe(1);
+  });
+
+  // Decision 10: a sandbox's network with no box is a programming error.
+  it("throws when the sandbox's network is given with no box", async () => {
+    const { dir, bus } = await setup();
+    const opts = { root: dir, env: process.env, bus, answers: nobody, lead: () => "fake:a" };
+    const noBox = "Servers: the sandbox is on, but no box was given";
+    expect(() => new Servers([], { ...opts, network: "off" })).toThrow(noBox);
+    expect(() => new Servers([], { ...opts, network: "on" })).toThrow(noBox);
+    expect(() => new Servers([], { ...opts, network: "none" })).not.toThrow();
+  });
+
+  // 8c-2a plan, Task 10 (choice 9): a remote entry's headersHelper, in the folder the user's entry or the project's
+  // gives, and its line when a project's is not run.
+  const remoteWith = (name: string, url: string, helper: string, over: Partial<ServerConfig> = {}): ServerConfig => ({
+    ...{ name, safe: name, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
+    entry: { kind: "http", url, headers: { "X-Key": "static" }, headersHelper: helper },
+    asWritten: { url, headers: { "X-Key": "static" }, headersHelper: helper },
+    ...over,
+  });
+  const keys = (log: string) => new Set(readLog(log).filter((m) => m.http === "POST").map((m) => m.headers["x-key"]));
+  const NOT_RUN = "p: its headersHelper was not run, as it comes from the project and the sandbox is on.";
+
+  it("with the sandbox on runs the user's helper in its settings folder, not a project's, said once", async () => {
+    const { dir, notes, make } = await placed("on");
+    const settings = path.join(dir, "settings");
+    mkdirSync(settings);
+    const [userLog, projectLog] = [path.join(dir, "user.jsonl"), path.join(dir, "project.jsonl")];
+    const [user, project] = [await httpFake(dir, { log: userLog }), await httpFake(dir, { log: projectLog })];
+    const [mine, theirs] = [fakeHelper(dir), fakeHelper(dir)];
+    mine.give({ "x-key": "mine" });
+    theirs.give({ "x-key": "theirs" });
+    const answers = launchAnswers();
+    answers.set("p", "w1", true, "no helper");
+    const u = remoteWith("u", user.url, mine.command);
+    const p = remoteWith("p", project.url, theirs.command, { where: "project", written: "w1" });
+    const servers = make([u, p], () => answers, settings);
+    servers.startAll();
+    expect(await servers.ready()).toBe(true);
+    expect(servers.list().map((s) => [s.name, s.state.is])).toEqual([["u", "ready"], ["p", "ready"]]);
+    expect(mine.runs().map((run) => [run.cwd, run.project])).toEqual([[settings, dir]]);
+    expect(theirs.runs()).toEqual([]);
+    expect([keys(userLog), keys(projectLog)]).toEqual([new Set(["mine"]), new Set(["static"])]);
+    expect(notes).toEqual([NOT_RUN]);
+    await servers.restart("p"); // a Reconnect says nothing more
+    expect(stateOf(servers, "p")?.is).toBe("ready");
+    expect(notes).toEqual([NOT_RUN]);
+    // A live edit's restart is a start of its own, so it is said again.
+    answers.set("p", "w2", true, "no helper");
+    expect(servers.set([u, { ...p, written: "w2" }]).restarted).toEqual(["p"]);
+    expect(await servers.ready()).toBe(true);
+    expect(notes).toEqual([NOT_RUN, NOT_RUN]);
+    expect(theirs.runs()).toEqual([]);
+  });
+
+  it("runs a project's helper in the project's folder with the sandbox off, saying nothing of it", async () => {
+    const { dir, notes, make } = await setup();
+    const log = path.join(dir, "project.jsonl");
+    const project = await httpFake(dir, { log });
+    const theirs = fakeHelper(dir);
+    theirs.give({ "x-key": "theirs" });
+    const answers = launchAnswers();
+    answers.set("p", "w", true, "helper");
+    const servers = make([remoteWith("p", project.url, theirs.command, { where: "project", written: "w" })], {
+      answers: () => answers,
+      settingsDir: path.join(dir, "not-this-one"),
+    });
+    servers.startAll();
+    expect(await servers.ready()).toBe(true);
+    expect(stateOf(servers, "p")?.is).toBe("ready");
+    expect(theirs.runs().map((run) => [run.cwd, run.project])).toEqual([[dir, dir]]);
+    expect(keys(log)).toEqual(new Set(["theirs"]));
+    expect(notes).toEqual([]);
+  });
+});
+
+// 8c-2a plan, Task 11 (decisions 21 and 25): a removal, a restart and stopAll during a refresh, and after one while a
+// call still drains on the old connection.
+describe("Servers: a refresh at a 401 or 403", () => {
+  // A ready remote server r whose every POST needs the x-token in `token`, which its user's helper gives. The fake's
+  // wait tool answers once its gate exists, which no test makes, and a call to "denied" is answered 403.
+  async function refreshing() {
+    const t = await setup();
+    const log = path.join(t.dir, "r.jsonl");
+    const token = path.join(t.dir, "token.txt");
+    await writeFile(token, "t1");
+    const fake = await httpFake(t.dir, { log, tokenFile: token, gate: path.join(t.dir, "gate"), denyTool: "denied" });
+    const helper = fakeHelper(t.dir);
+    helper.give({ "x-token": "t1" });
+    const entry = { kind: "http" as const, url: fake.url, headers: {}, headersHelper: helper.command };
+    const config: ServerConfig = {
+      name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "", entry,
+      asWritten: entry,
+    };
+    // Out of the test's folder, which Windows keeps a moment for a killed program that worked in it.
+    const servers = t.make([config], { settingsDir: tmpdir() });
+    servers.startAll();
+    await servers.ready();
+    expect(stateOf(servers, "r")?.is).toBe("ready");
+    return { log, token, helper, servers, server: servers.server("r")! };
+  }
+  const ends = {
+    removal: (s: Servers) => void s.set([]),
+    restart: (s: Servers) => s.restart("r"),
+    stopAll: (s: Servers) => s.stopAll(),
+  };
+  const posts = (log: string) => readLog(log).filter((m) => m.http === "POST");
+
+  const three = ["removal", "restart", "stopAll"] as const;
+
+  it.each(three)("drops a refresh at a %s, after which only a restart connects", async (end) => {
+    const r = await refreshing();
+    r.helper.hold();
+    await writeFile(r.token, "t2");
+    r.helper.give({ "x-token": "t2" });
+    await expect(r.server.callTool("echo", { text: "x" }, {})).rejects.toThrow();
+    const refresh = r.server.refreshing!;
+    await vi.waitFor(() => expect(r.helper.runs()).toHaveLength(2), WAIT);
+    const ended = ends[end](r.servers);
+    expect(await refresh).toEqual({ is: "dropped" });
+    r.helper.go(); // for the restart's own start
+    await ended;
+    expect(posts(r.log).filter((m) => m.body.method === "initialize")).toHaveLength(end === "restart" ? 2 : 1);
+  });
+
+  it.each(three)("closes a connection a refresh replaced at a %s, its call failing", async (end) => {
+    const r = await refreshing();
+    const waiting = r.server.callTool("wait", {}, {});
+    await vi.waitFor(() => expect(posts(r.log).filter((m) => m.body.params?.name === "wait")).toHaveLength(1), WAIT);
+    await expect(r.server.callTool("denied", {}, {})).rejects.toThrow();
+    expect(await r.server.refreshing).toEqual({ is: "ready" });
+    // Taken before the teardown, which fails the call before a restart has ended.
+    const failing = expect(waiting).rejects.toThrow();
+    await ends[end](r.servers);
+    await failing;
   });
 });
 

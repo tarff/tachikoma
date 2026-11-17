@@ -2,8 +2,9 @@
 
 > **Work in progress.** Release 8c of 15 is done (the third of release 8's five parts), and
 > background commands, a new look for the screen, replies drawn as markdown and a fuller system
-> prompt after it; 8c's second half, 8c-2, servers inside the sandbox and allowed sites, comes
-> next, and the rest is being built.
+> prompt after it, then the first part of 8c's second half, 8c-2: MCP servers inside the sandbox,
+> and `headersHelper`. Its second part, the sandbox's list of allowed sites, comes next, and the
+> rest is being built.
 > Expect missing features and changes that break things, and don't rely on it for real work yet.
 
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
@@ -550,7 +551,10 @@ failed command's result gets one more line: `(The box's network is off, so nothi
 the internet. To allow it, launch with --network on.)` On, the box has Docker's ordinary network.
 Tachikoma's own requests to the model go from your machine either way. Without the sandbox,
 `--network` does nothing and says so: `--network acts only with the sandbox on; it was ignored`. A
-list of allowed sites is planned for release 8c-2. With the network off, MCP servers are off too
+list of allowed sites is planned for the second part of release 8c-2. With the network off, MCP
+servers in the box still start, with no web, and those marked `"host"` and remote ones are off,
+with one line: `MCP servers marked "host" and remote servers are off: the sandbox's network is
+off, and outside the box nothing keeps them off the web. Start with --network on to use them.`
 (see [MCP servers](#with-the-sandbox)).
 
 ### The box's limits
@@ -1375,8 +1379,9 @@ Event by event:
 MCP servers are programs that give the model more tools, such as a chart, a database or a design
 file; some also offer files, ready-made prompts and forms. You list them in Claude Code's format,
 so an entry copied from Claude Code works unchanged, and Tachikoma starts them with each session.
-Every server runs on your machine, or is reached from it; servers inside the sandbox are planned
-for release 8c-2.
+Without the sandbox, every server runs on your machine, or is reached from it. With the sandbox on,
+local servers run inside its box, unless your entry says `"host": true`
+([below](#with-the-sandbox)).
 
 ```json
 {
@@ -1400,25 +1405,30 @@ for release 8c-2.
   - for a local server, `command`, `args` and `env`: the program, its arguments, and variables
     added to its environment;
   - for a remote one, `url` and `headers`: its address, and headers sent with each request, such
-    as a key;
+    as a key; and `headersHelper`, a command that prints more of them ([below](#headershelper));
   - `timeout`, a whole number of milliseconds: a call's limit ([below](#answers));
   - `oauth`, for [signing in](#signing-in): `clientId`, `callbackPort`, `scopes` (one text, the
     scopes split by spaces) and `authServerMetadataUrl` (an `https://` address);
   - `alwaysLoad`, `true` or `false`: see [tool search](#tool-search).
 
-  Two are Tachikoma's own, `trusted` and `trustedTools` ([below](#trust-and-approval)).
+  Three are Tachikoma's own: `trusted` and `trustedTools` ([below](#trust-and-approval)), and
+  `host`, `true` or `false`, for a local server: `true` runs it on your machine with the sandbox
+  on. Only your settings file can give it; in a project's file it is ignored, with `.mcp.json:
+  "build-tools" has "host"; a server runs on this computer only from ~/.tachikoma/settings.json, so
+  it was ignored`.
 - **`${VAR}` and `${VAR:-default}`** in `command`, `args`, `env`, `url` and `headers` are filled
   in from your environment, as in Claude Code. Claude Code sends an unset one on as its own text;
   Tachikoma leaves that server out instead, so a key header never goes out as `${TICKETS_TOKEN}`:
   `settings.json: "mcpServers": "tickets" needs ${TICKETS_TOKEN}, which is not set; it was left
-  out`.
+  out`. `headersHelper` is a shell command, which reads its own variables, so it is kept as
+  written.
 - **Addresses** start with `https://`. `http://` is only for your own machine (`localhost`,
   `127.0.0.1` or `::1`), so a key or token never crosses the network unencrypted.
-- **A local server** is started by its program's full path, found on PATH, so a program of the same
-  name in the project folder is never started in its place. On Windows npm's `.cmd` wrappers, such
-  as `npx`, are found too. The server starts in the project folder, with the environment shell
-  commands get, so without the API keys, plus `CLAUDE_PROJECT_DIR` (the project folder, under
-  Claude Code's name) and the entry's `env`.
+- **A local server on your machine** is started by its program's full path, found on PATH, so a
+  program of the same name in the project folder is never started in its place. On Windows npm's
+  `.cmd` wrappers, such as `npx`, are found too. The server starts in the project folder, with the
+  environment shell commands get, so without the API keys, plus `CLAUDE_PROJECT_DIR` (the project
+  folder, under Claude Code's name) and the entry's `env`.
 - **Mistakes:** a server with a mistake in its entry is left out, with a line at the launch, and the
   rest start: `settings.json: "mcpServers": "notes" has no "command"; a local server needs one, such
   as {"command": "node", "args": ["server.js"]}; it was left out`. A field Tachikoma does not know
@@ -1433,11 +1443,14 @@ for release 8c-2.
 
 A project can list servers too, in a `.mcp.json` at its root, in the same shape. A repository you
 clone could start a program this way, so Tachikoma asks first, at the launch, before the window
-opens, once for each server:
+opens, once for each server, saying where it would run:
 
 ```
-Start the MCP server "build-tools" from this project's .mcp.json: node tools/mcp-server.js? [y/n]
+Start the MCP server "build-tools" from this project's .mcp.json on this computer: node tools/mcp-server.js? [y/n]
 ```
+
+With the sandbox on, `on this computer` is `inside the sandbox (copy, network off)`, with `copy` or
+`live link`, and `network off` or `network on`, as the launch's setup is.
 
 - **The question shows the entry as the file writes it,** `${VAR}` unfilled, so a key filled in
   from your environment never reaches the screen. When the entry sets variables, the question
@@ -1445,7 +1458,9 @@ Start the MCP server "build-tools" from this project's .mcp.json: node tools/mcp
   run the project's own code: `node tools/mcp-server.js (sets NODE_OPTIONS)? [y/n]`. A remote one
   asks `Connect to the MCP server "<name>" from this project's .mcp.json at <url>? [y/n]`, and
   names the variables its address and headers read, so you see what it would send:
-  `at https://tools.example.dev/mcp (sends TICKETS_TOKEN)? [y/n]`.
+  `at https://tools.example.dev/mcp (sends TICKETS_TOKEN)? [y/n]`. One with a `headersHelper` says
+  whether that runs, before the `? [y/n]`: `, running its headersHelper on this computer: <helper>`
+  without the sandbox, and `, without its headersHelper` with it on ([below](#headershelper)).
 - **A project's servers never get your provider keys:** an entry in `.mcp.json` whose `url`,
   `headers`, `command`, `args` or `env` reads `${ANTHROPIC_API_KEY}`, or another API key Tachikoma
   uses, is left out, with a line: `.mcp.json: "tools" reads ${ANTHROPIC_API_KEY}, a provider key,
@@ -1454,13 +1469,20 @@ Start the MCP server "build-tools" from this project's .mcp.json: node tools/mcp
   it in [`/mcp`](#mcp), or until the entry changes: a pulled change to its command, arguments,
   variables or address is asked about again (Claude Code asks once per name). A new value of a
   `${VAR}` asks nothing.
+- **An answer counts only where it was given:** on this computer, or in the box, in copy mode or
+  live link, with the network off or on; and for a remote server with a `headersHelper`, with the
+  helper run or not. Each new setup is asked about once, so a yes for the box never starts the
+  server on your machine, and a setup already answered asks nothing. Reset my answer forgets them
+  all. An answer saved by release 8c counts for this computer, where 8c ran every server.
+- **Only the servers that would start are asked about:** with the box's network off, only the
+  local ones, which run in the box.
 - **Trust in `.mcp.json` never counts:** `trusted` and `trustedTools` there are ignored, with a
   line.
 - **The same name in both files:** your own entry wins whole, so a repository cannot replace a
   server you trust with its own program. Claude Code ranks the project's entry higher.
 - **`.mcp.json` is read at the launch only,** and it is a [protected path](#protected-paths), so
   the model's file tools never write it without a check.
-- **In `-p`,** only the project's servers you said yes to in the window start
+- **In `-p`,** only the project's servers you said yes to in the window, for the same setup, start
   ([below](#mcp-in--p-runs)). Claude Code starts them all without asking.
 
 ### Starting and stopping
@@ -1476,18 +1498,21 @@ Start the MCP server "build-tools" from this project's .mcp.json: node tools/mcp
   Nothing restarts it on its own. A remote server whose connection drops is connected again once,
   at its next call, with `MCP server tickets was connected again.`; it stops only if that fails.
 - **At exit,** and at a restart, a local server's input is closed, and if it is still running
-  300 ms later it is killed, on Windows with everything it started.
+  300 ms later it is killed, on Windows with everything it started. A server in the box stops as
+  [With the sandbox](#with-the-sandbox) says.
 
 ### Trust and approval
 
-An MCP call is a new kind of action for the [permission modes](#permission-modes):
+An MCP call is a new kind of action for the [permission modes](#permission-modes). In `never`, a
+call to a server in the box runs while the box's network is off, as all it does then lands in the
+copy you review:
 
-| Mode | An MCP call |
-|---|---|
-| `ask`, `project` | asks |
-| `auto` | the judge decides, and is shown the tool's description |
-| `never` (copy mode) | asks: the server runs on your machine, outside the box |
-| `-p` | refused, as nobody can answer; in `auto` the judge decides |
+| Mode | A server in the box, network off | A server in the box, network on | A `host` or remote server, or no sandbox |
+|---|---|---|---|
+| `ask`, `project` | asks | asks | asks |
+| `auto` | the judge decides, and is shown the tool's description | the same | the same |
+| `never` (copy mode) | runs | asks: it can change things on the web, which the review never shows | asks: the server is outside the box |
+| `-p` | refused, as nobody can answer, except in `never`, where it runs; in `auto` the judge decides | refused; in `auto` the judge decides | the same |
 
 The question names the server, the tool and its input, with the tool's own description in grey:
 
@@ -1500,7 +1525,9 @@ Allow notes: search_notes {"query":"release plan"}? [y/n]
   question in every mode, `-p` included. Tachikoma cannot see what a tool does, so trust only tools
   you know only read. Trust counts only in your settings file.
 - **A PreToolUse hook's allow** skips the question, as for any tool. In `never`, a hook's ask on an
-  MCP call becomes your question. Neither trust nor a hook starts a server that
+  MCP call becomes your question, except on a call to a server in the box with the network off,
+  which is not asked about there, so the call is refused: `Not allowed in never mode: a PreToolUse
+  hook asked for this call to be approved (<reason>).` Neither trust nor a hook starts a server that
   [the sandbox's rule](#with-the-sandbox) keeps off.
 - **Subagents only read,** so they get only the tools you trust, under the same names, each with
   its own tool search. A subagent's call to a tool no longer trusted is refused.
@@ -1585,6 +1612,73 @@ not wait for it. To sign in:
   -p cannot do; sign in from /mcp in the window.` A server signed in from the window works in `-p`
   too.
 
+### `headersHelper`
+
+A remote entry's `headersHelper`, Claude Code's field, is a command that prints headers for the
+server, such as a fresh token. Here it prints a file that holds `{"Authorization": "Bearer
+<token>"}`:
+
+```json
+"tickets": {
+  "type": "http",
+  "url": "https://mcp.example.com/mcp",
+  "headersHelper": "cat ~/tickets-headers.json"
+}
+```
+
+- **When it runs:** at each connection, as in Claude Code: at the launch, at a Reconnect from
+  `/mcp`, at a restart after an edit, when a dropped connection is made again, and at a refresh
+  after a 401 or 403 (below). Its headers are never kept for the next connection.
+- **How it runs:** on your machine, in the shell hooks use ([Where hooks run](#where-hooks-run)):
+  Git Bash on Windows, or Windows PowerShell when there is none, and `/bin/sh -c` elsewhere. It
+  runs in `~/.tachikoma` for an entry in your settings file, and in the project folder for a
+  project's, with the environment shell commands get, so without the API keys, plus
+  `CLAUDE_PROJECT_DIR`, the project folder, and Claude Code's `CLAUDE_CODE_MCP_SERVER_NAME` and
+  `CLAUDE_CODE_MCP_SERVER_URL`, the server's name and address, so a helper written for Claude Code
+  works unchanged. It has 10 s, Claude Code's limit, before the server's own 30 s to connect begin.
+- **What it prints:** one JSON object whose values are all text. Its headers win over the entry's
+  `headers` of the same name, whatever the letter case. One with `Authorization` means that
+  connection does not sign in, as in Claude Code; each connection decides again. With sign-in, its
+  headers go only to the server's own address, as the entry's do.
+- **When it fails,** the server does not connect, and its red line says why, never quoting what
+  the helper printed, as a helper prints secrets: `MCP server tickets failed to start: its
+  headersHelper failed: it exited with code 1`. The other reasons are `it could not start
+  (<code>)`, with the error's code, such as `ENOENT`; `it was ended by signal <signal>`; `it did
+  not finish within 10 s`; `it printed something other than a JSON object of text values`; `it gave
+  a name that is not a header name`; and `it gave the header "<name>" a value with a line break or
+  NUL`.
+- **A 401 or 403** from the server, on a connection whose headers the helper gave, fails that call
+  with the server's answer; a tool call's error then ends `(the server answered <status>; its
+  headersHelper is being run again for a new connection, and the call was not sent again: call it
+  again if it should still run)`, except for an `"sse"` server. The call is not sent again, as the
+  server has seen it; Claude Code sends it once more. Then the helper runs again, and a new
+  connection opens beside the old one.
+  Calls already sent finish on the old one, which then closes; calls approved meanwhile wait, and
+  go on the new one, unless their tool changed there. On a connection that signs in, a 401 still
+  means `needs sign-in`, and only a 403 does this. Only a tool call, a resource read or a prompt
+  starts this, not a resource or prompt list Tachikoma asks for itself; a list the server refuses
+  stays empty.
+- **A refresh that fails** leaves the server failed, with its red line, as at a start. A call
+  waiting for it is not sent, and the model is told `its headersHelper failed, so the call was not
+  sent: <reason>`, or `its new connection failed, so the call was not sent: <reason>`. If the new
+  connection needs sign-in, the server shows `needs sign-in`, and a waiting call is told so. A
+  removal, a restart, a Reconnect or the exit during a refresh drops it, and a waiting call is
+  told the tool changed or the server stopped, as in 8c.
+- **No redirect to another site with the entry's headers,** the helper's or its own `headers`,
+  with sign-in or without: the request fails before anything is sent there, with `the server
+  answered with a redirect to <origin>; Tachikoma does not follow a redirect with the entry's
+  headers`. A redirect within the server's own scheme, host and port, such as `/mcp` to `/mcp/`,
+  is followed, with the headers, when it keeps the request's method. This holds for every remote
+  entry with headers, a helper or not.
+- **A project's helper** runs only after your yes to the question that names it, and without any
+  variable whose name holds `TOKEN`, `SECRET`, `PASSWORD`, `KEY` or `AUTH`, in any letter case, as
+  in Claude Code. With the sandbox on it never runs, so nothing from the project runs on your
+  machine: the server connects with its own `headers`, and the launch says `<name>: its
+  headersHelper was not run, as it comes from the project and the sandbox is on.`, and says it
+  again only after an edit restarts the server.
+- **Your own helper** runs with the sandbox on too, on your machine. With the box's network off no
+  remote server is reached, so no helper runs.
+
 ### Figma
 
 Figma's remote server, at `mcp.figma.com`, lets only apps on its own approved list register, so
@@ -1665,15 +1759,45 @@ number; type one, or Esc to decline the form.` Esc declines the whole form.
 
 ### With the sandbox
 
-Servers run on your machine, never in the box, until release 8c-2. So with the sandbox on:
+With the sandbox on, each local server starts inside the session's box, in `/work`, as the box's
+own user, unless your entry says `"host": true`. The box's network decides what starts:
 
-- **With the box's network off,** the default, no local server starts, as it would run outside the
-  box with the web open, and no remote one is reached: `MCP servers are off: the sandbox's network
-  is off, and servers run outside the box until a later release. Start with --network on to use
-  them.`
-- **With `--network on`,** servers work as they do without the sandbox, under the table above. A
-  server works in your real project folder, in copy mode too, so what it changes there is outside
-  the copy and its review.
+| The box's network | Servers in the box | `host` servers | Remote servers |
+|---|---|---|---|
+| off, the default | start, with no web | off | off |
+| on | start | start | reached |
+
+- **With the network off,** the launch says once: `MCP servers marked "host" and remote servers are
+  off: the sandbox's network is off, and outside the box nothing keeps them off the web. Start with
+  --network on to use them.` `/mcp` shows each of them as `off: the sandbox's network is off`.
+- **`"host": true`,** in your settings file only, runs a server on your machine, as without the
+  sandbox, for a server that needs it: one that talks to a desktop app on your machine, or
+  MemPalace's, whose palace is in your home folder. To run a project's server on
+  your machine, copy its entry into your settings file and add `"host": true`; your entry wins the
+  name. An edit that adds or removes `host` restarts the server where it now runs.
+- **The command is looked up in the box,** which has Node with `npx`, Python, uv with `uvx`, and
+  git. A program it lacks, or a Windows path, fails the start: `MCP server notes failed to start:
+  <command> was not found in the box; if it needs this computer, add "host": true to its entry in
+  ~/.tachikoma/settings.json`. A server started with `npx -y` or `uvx` downloads its package
+  first, which fails with the network off, its red line giving the server's own error.
+- **What it gets:** its entry's `env`, and `CLAUDE_PROJECT_DIR` as `/work`, sent over its input
+  before the first message, so they are on no command line and in no file. Not your environment,
+  whose paths mean nothing in the box, and never the API keys. The `docker` program that starts it
+  gets Tachikoma's own environment, never the entry's. A variable whose name the box cannot take
+  fails the start: `its env has the name "<name>", which the box cannot take: a name there is
+  letters, digits and _, not starting with a digit`. Its roots say `/work`.
+- **What it can reach** is what the box's commands reach: in copy mode its writes land in the copy
+  and show in the review, and in live link they land in your real files. With the network on it
+  can reach the whole web, and what it changes there is in no review, which is why `never` asks
+  then ([above](#trust-and-approval)).
+- **Stopping:** at a Reconnect or a restart, its input is closed, and if it still runs 300 ms
+  later, it is killed inside the box with everything it started. If that kill cannot run, no new
+  copy starts until it can: `MCP server notes failed to start: its earlier copy could not be
+  stopped in the box (<reason>), so it was not started again`. At exit nothing waits: removing the
+  box ends every server in it.
+- **If the box stops,** its servers show `the box stopped`, and their tools say so.
+- **A `host` server** works in your real project folder, in copy mode too, so what it changes
+  there is outside the copy and its review.
 
 ### `/mcp`
 
@@ -1711,9 +1835,10 @@ project's .mcp.json.`
 
 ### Not yet, for MCP
 
-- **Planned for release 8c-2:** servers inside the sandbox, the sandbox's list of allowed sites, and
-  `headersHelper`, a program that prints a server's headers (until then an entry with one is left
-  out, with a line).
+- **Planned for the second part of release 8c-2:** the sandbox's list of allowed sites, for the
+  box's network.
+- **Planned for release 12,** with subagents that write: each worker's own servers. Until then
+  subagents use the lead's servers, and only the tools you trust.
 - **Planned for release 14,** with `tachi setup`: importing the servers you set up for Claude Code.
 - **Not planned:** `ws` servers (MCP itself has no WebSocket transport), servers that need a client
   secret, and sampling, where a server asks Tachikoma's model to write for it, spending your
@@ -2572,17 +2697,17 @@ it says so.
 
 ### MCP servers' limits
 
-- **Servers run with your full permissions,** on your machine, outside the sandbox, until release
-  8c-2. In copy mode too they work in your real folder, so what one changes is outside the copy
-  and its review.
+- **`host` servers, and every server without the sandbox, run with your full permissions** on your
+  machine. In copy mode a `host` server works in your real folder, so what it changes is outside
+  the copy and its review.
 - **Trust is your word.** Tachikoma cannot see what a tool does, so a tool trusted as read-only
   that writes runs without a question.
 - **The numbers are Claude Code's,** from its documentation, and none was measured for Tachikoma:
-  a server's 30 s to start, a remote request's 60 s, the 300 ms before a server is killed, the
-  4,096 and 16,384-character description cuts, the 5 search results, and an `mcp_tool` hook's
-  600 s and 30 s. The 64-character name limit is OpenAI's; the 30,000-character cut is Claude
-  Code's, its cut for a command's output; the 60 s wait for a resource or prompt list is the MCP
-  library's.
+  a server's 30 s to start, a remote request's 60 s, the 300 ms before a server is killed, a
+  `headersHelper`'s 10 s, the 4,096 and 16,384-character description cuts, the 5 search results,
+  and an `mcp_tool` hook's 600 s and 30 s. The 64-character name limit is OpenAI's; the
+  30,000-character cut is Claude Code's, its cut for a command's output; the 60 s wait for a
+  resource or prompt list is the MCP library's.
 - **A yes covers the entry, not the files it runs,** as in Claude Code: a pulled change to the
   project's `server.js`, or an `npx` package named without a version, runs without a new question.
   A question's `(sets ...)` and `(sends ...)` name the variables, never their values.
@@ -2624,9 +2749,10 @@ it says so.
   an `updatedMCPToolOutput` that is not text and a later one gives text, the first in the file is
   kept, the text is lost, and Ctrl+O does not say so.
 - **Live edits:** the `MCP servers changed` line says `restarted` for a changed entry that then does
-  not start (the sandbox's network is off, or your entry was removed, uncovering a project's one
-  that waits for a yes). With the sandbox's network off, `/mcp` may read a project's answers for the
-  first time, so their notes, or the could-not-be-read line, can come then or at a later edit.
+  not start (a `host` or remote one with the sandbox's network off, or your entry was removed,
+  uncovering a project's one that waits for a yes). With the sandbox's network off, `/mcp` may
+  read a project's answers for the first time, so their notes, or the could-not-be-read line, can
+  come then or at a later edit.
 - **Sign-in:** Sign out does not ask the service to cancel the tokens. Two windows renewing one
   token at once, where the service hands out a new one each time, may lose that sign-in. Esc after
   the browser sent the code back may still save the sign-in, which counts from the next launch.
@@ -2635,10 +2761,9 @@ it says so.
   computer could open the printed start address first, as with `/login chatgpt`. Services that need
   a client secret are not supported. A wider scope a server asks for later (a 403
   `insufficient_scope`) is not asked for, as a sign-in never starts in the background. For an entry
-  that can sign in, its own `Accept` header gives way to the library's, and a redirect to another
-  path, or from http to https, carries none of its headers. Sign-in details gone between the launch
-  and Sign in give `Sign-in to <name> failed: ` with no reason. The MCP library's own `[mcp-sdk]`
-  warnings are kept off the screen for the whole run.
+  that can sign in, its own `Accept` header gives way to the library's. Sign-in details gone
+  between the launch and Sign in give `Sign-in to <name> failed: ` with no reason. The MCP
+  library's own `[mcp-sdk]` warnings are kept off the screen for the whole run.
 - **Forms:** a text field types only at its end, with no cursor to move. A text field's
   `minLength`, `maxLength` and `format`, and a pick-several's `minItems` and `maxItems`, are not
   checked by Tachikoma. A remote call's limit, 60 s by default, keeps counting while you fill in a
@@ -2666,11 +2791,42 @@ it says so.
   Tachikoma's console. Their stop lines say to reconnect from `/mcp`, which `-p` has no use for,
   and SessionEnd `mcp_tool` hooks then find them not running.
 - **A restart's gap:** a call that lands while a server restarts, a gap of up to 300 ms, gets the
-  MCP library's `Not connected`.
-- **`ws` servers and client secrets are not supported,** and `headersHelper` waits for release
-  8c-2: Claude Code's `ws` kind is left out with its line, as MCP itself has no WebSocket
-  transport, nor has its library. Claude in Chrome cannot be used: it is part of Claude Code, not a
-  server Tachikoma can start.
+  MCP library's `Not connected`. A server outside the box that is reconnected twice in quick
+  succession, or removed and added back, can start its new copy while the old one still has up to
+  300 ms before it is killed; for that moment both run, and can clash over a lock file or port.
+- **Servers in the box:** with the network on, one can reach the whole web, until the allowed sites
+  of 8c-2's second part, and in live link it writes your real files, as the box's commands do. A
+  program missing from the box shows only when the server starts. A command file that is there but
+  cannot be run is reported as not found in the box, whose advice about `host` does not fit then;
+  a command that is one of bash's own, such as `cd`, gives a less clear reason; and a command
+  starting with `-` reads as not found. Some `env` names are bash's own: bash refuses `SHELLOPTS`,
+  `BASHOPTS`, `PPID`, `UID` and `EUID`, and replaces or drops `_`, `RANDOM`, `SECONDS`, `LINENO`,
+  `SHLVL`, `OPTIND`, `BASHPID`, `FUNCNAME`, `GROUPS`, `BASH_SOURCE` and `PIPESTATUS`.
+- **A project's answers:** going back to release 8c after a yes given for the box, 8c reads it as
+  its own yes and starts the server on your machine. A newer answer given in 8c does not replace
+  this release's answer for this computer. An answers file edited by hand, with a setup that is
+  not text, counts that answer as release 8c's.
+- **`headersHelper`:** `"headersHelper": ""` is taken, and fails at each connection with `it
+  printed something other than a JSON object of text values`. A helper's output has no size limit
+  for its 10 s, as a hook's has none. A header value with a character beyond Latin-1, such as `€`,
+  passes the helper's check, then fails with Node's own error, which shows that character. With
+  sign-in, a 403 asking for a wider scope fails its call and runs the helper again, and the wider
+  scope is never asked for.
+- **Refreshes:** reading a resource or a prompt does not wait for a refresh, so a read during one
+  can fail. A call waits for one refresh at most. A connection that drops during a refresh is made
+  again beside it, and starts no refresh of its own on a 401 or 403 until the first one ends. A
+  call approved just after a refresh failed is told the server stopped, not why. A server that
+  says its tool, resource or prompt list changed after the helper's token ran out has the new list
+  refused, and no refresh starts, so the old list stays until the next tool call, resource read or
+  prompt refreshes. A 403 for a reason other than the token, such as a tool the server does not let
+  you use, runs the helper and reconnects at each such call.
+- **Redirects:** one from `http://` to `https://` at the same host counts as another site, so it
+  fails. An entry with no headers redirected to another site fails with the MCP library's own
+  words, which show the new address with its path. Once a connection has refused a redirect, a
+  start that then fails for another reason can still give the redirect line.
+- **`ws` servers and client secrets are not supported:** Claude Code's `ws` kind is left out with
+  its line, as MCP itself has no WebSocket transport, nor has its library. Claude in Chrome cannot
+  be used: it is part of Claude Code, not a server Tachikoma can start.
 
 ## What comes next
 
@@ -2697,8 +2853,8 @@ it says so.
      (done);
    - 8b: hooks, in Claude Code's format, from your settings file only (done);
    - 8c: MCP servers, in Claude Code's format, from your settings file and, after asking, a
-     project's `.mcp.json` (this release); then 8c-2: servers inside the sandbox, the sandbox's
-     list of allowed sites, and `headersHelper`;
+     project's `.mcp.json` (done); then 8c-2, in two parts: servers inside the sandbox and
+     `headersHelper` (this release), then the sandbox's list of allowed sites (next);
    - 8d: long-term memory (MemPalace), with a save before each shortening; lessons learned from the
      error log, recalled when the same error comes back;
    - 8e: more of Claude Code's hook events, the ones that have a place in Tachikoma already, such as

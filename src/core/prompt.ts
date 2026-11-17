@@ -46,7 +46,9 @@ export function systemPrompt(
           "`a; b` runs b even if a failed; to run b only if a succeeded, write `a; if ($?) { b }`."
         : `Shell commands run with ${shellFor(platform).name} on ${platform}.`,
     "Commands get no input, so do not start anything interactive.",
-    // "Of its own": an MCP server can offer a web tool. "Shell commands": MCP servers run outside the box (design).
+    // "Of its own": an MCP server can offer a web tool. "Shell commands": said of the model's own commands (design);
+    // with the box's network off only the MCP servers in the box start, and they have no web either (8c-2a plan,
+    // Task 6).
     setup.sandbox !== "off" && setup.network === "off"
       ? "The sandbox has no network, so shell commands cannot reach the web."
       : `Tachikoma has no web tool of its own, but shell commands can fetch web pages, such as with ${fetcher}.`,

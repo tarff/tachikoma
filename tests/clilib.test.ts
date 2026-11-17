@@ -19,6 +19,7 @@ import type { Hook } from "../src/hooks/config.js";
 import { Hooks } from "../src/hooks/hooks.js";
 import { type Answers, answersFor } from "../src/mcp/answers.js";
 import type { ServerConfig } from "../src/mcp/config.js";
+import type { McpSandbox } from "../src/mcp/place.js";
 import { KILL_MS } from "../src/mcp/server.js";
 import { Servers } from "../src/mcp/servers.js";
 import {
@@ -65,6 +66,7 @@ import { setupNote } from "../src/core/setup.js";
 import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "../src/tools/commands.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 import { callTool, FakeProvider, removeTree, reply, standInRun, tempContext, usage } from "./helpers.js";
+import { standinBox } from "./mcp/fake.js";
 
 describe("the instruction files on screen", () => {
   const home = path.resolve("/home/me");
@@ -129,44 +131,60 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
   }) satisfies ServerConfig;
   const local = (name: string, args: string[] = [], where: ServerConfig["where"] = "project", env: Record<string, string> = {}) =>
     server(name, { kind: "stdio", command: "npx", args, env }, where);
-  const servers = (configs: ServerConfig[], network: "on" | "off" | "none", answers: () => Answers) =>
-    new Servers(configs, { root: tmpdir(), env: {}, bus: new Bus(), answers, network, lead: () => "fake:a" });
+  // With the sandbox on, the stand-in box, in which nothing starts here (8c-2a plan, Task 6): live link, unless `kind`
+  // says copy.
+  const servers = (
+    configs: ServerConfig[], network: "on" | "off" | "none", answers: () => Answers, kind?: "live" | "copy",
+  ) => {
+    const box = network === "none" ? {} : { box: standinBox(tmpdir(), { kind }).box };
+    return new Servers(configs, {
+      root: tmpdir(), env: {}, bus: new Bus(), answers, network, ...box, lead: () => "fake:a",
+    });
+  };
   const none = (): Answers => ({ get: () => undefined, set: () => {}, reset: () => {} });
 
   it("asks about a project's local server with its command and arguments, and a remote one at its address, escaped", () => {
     const tv = local("tv", ["-y", "tradingview-mcp"]);
-    expect(serverQuestion(tv)).toBe('Start the MCP server "tv" from this project\'s .mcp.json: npx -y tradingview-mcp? [y/n]');
+    expect(serverQuestion(tv, null)).toBe(
+      'Start the MCP server "tv" from this project\'s .mcp.json on this computer: npx -y tradingview-mcp? [y/n]',
+    );
     // A command or argument that is empty or holds a space or a quote is shown in quotes, a quote in it as \", so where
     // each ends can be seen.
-    expect(serverQuestion(local("a\u001b[2Jb", ["C:\\my server\\x.js", "", 'say "hi"']))).toBe(
-      'Start the MCP server "a\\u001b[2Jb" from this project\'s .mcp.json: npx "C:\\my server\\x.js" "" "say \\"hi\\""? [y/n]',
+    expect(serverQuestion(local("a\u001b[2Jb", ["C:\\my server\\x.js", "", 'say "hi"']), null)).toBe(
+      'Start the MCP server "a\\u001b[2Jb" from this project\'s .mcp.json on this computer: ' +
+        'npx "C:\\my server\\x.js" "" "say \\"hi\\""? [y/n]',
     );
     const remote = server("sanity", { kind: "http", url: "https://mcp.sanity.io/\u202e", headers: {} });
-    expect(serverQuestion(remote)).toBe('Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.sanity.io/\\u202e? [y/n]');
+    expect(serverQuestion(remote, null)).toBe(
+      'Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.sanity.io/\\u202e? [y/n]',
+    );
   });
 
   // Choice 48: as .mcp.json writes it, so a key filled in from the environment never reaches the screen.
   it("shows the entry as written, ${VAR} unfilled, never the value filled in", () => {
     const filled = { kind: "stdio" as const, command: "npx", args: ["--key=sk-secret-123"], env: {} };
     const tv = server("tv", filled, "project", { command: "npx", args: ["--key=${TOKEN}"] });
-    expect(serverQuestion(tv)).toBe('Start the MCP server "tv" from this project\'s .mcp.json: npx --key=${TOKEN}? [y/n]');
+    expect(serverQuestion(tv, null)).toBe(
+      'Start the MCP server "tv" from this project\'s .mcp.json on this computer: npx --key=${TOKEN}? [y/n]',
+    );
     const url = { kind: "http" as const, url: "https://mcp.example.com/mcp?key=sk-secret-123", headers: {} };
     const sanity = server("sanity", url, "project", { url: "https://mcp.example.com/mcp?key=${TOKEN}", headers: {} });
-    expect(serverQuestion(sanity)).toBe(
+    expect(serverQuestion(sanity, null)).toBe(
       'Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.example.com/mcp?key=${TOKEN} (sends TOKEN)? [y/n]',
     );
-    for (const c of [tv, sanity]) expect(serverQuestion(c)).not.toContain("sk-secret-123");
+    for (const c of [tv, sanity]) expect(serverQuestion(c, null)).not.toContain("sk-secret-123");
   });
 
   // Choice 49: the variables a local entry sets, names only, in the file's order, escaped and quoted as the command is; a
   // remote server's headers are not named, only the variables they read (choice 64, below).
   it("names the variables a local server's entry sets, never their values, and no headers", () => {
     const env = { NODE_OPTIONS: "--require ./steal.js", "MY KEY\u001b": "sk-secret-123" };
-    expect(serverQuestion(local("tv", ["server.js"], "project", env))).toBe(
-      'Start the MCP server "tv" from this project\'s .mcp.json: npx server.js (sets NODE_OPTIONS, "MY KEY\\u001b")? [y/n]',
+    expect(serverQuestion(local("tv", ["server.js"], "project", env), null)).toBe(
+      'Start the MCP server "tv" from this project\'s .mcp.json on this computer: ' +
+        'npx server.js (sets NODE_OPTIONS, "MY KEY\\u001b")? [y/n]',
     );
     const headers = { kind: "http" as const, url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer sk-secret-123" } };
-    expect(serverQuestion(server("sanity", headers))).toBe(
+    expect(serverQuestion(server("sanity", headers), null)).toBe(
       'Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.example.com/mcp? [y/n]',
     );
   });
@@ -176,16 +194,47 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
   it("names the variables a remote server's address and headers read, never their values", () => {
     const filled = { kind: "http" as const, url: "https://tools.example.dev/mcp", headers: { Authorization: "Bearer sk-secret-123" } };
     const one = server("tools", filled, "project", { url: "https://tools.example.dev/mcp", headers: { Authorization: "Bearer ${TICKETS_TOKEN}" } });
-    expect(serverQuestion(one)).toBe('Connect to the MCP server "tools" from this project\'s .mcp.json at https://tools.example.dev/mcp (sends TICKETS_TOKEN)? [y/n]');
+    expect(serverQuestion(one, null)).toBe(
+      'Connect to the MCP server "tools" from this project\'s .mcp.json at https://tools.example.dev/mcp ' +
+        "(sends TICKETS_TOKEN)? [y/n]",
+    );
     const headers = { Authorization: "Bearer ${TICKETS_TOKEN}", "X-Team": "${TEAM}", "X-Key": "${MY KEY\u001b:-none}" };
     const several = server("tools", filled, "project", { url: "https://${HOST:-tools.example.dev}/mcp?team=${TEAM}", headers });
-    expect(serverQuestion(several)).toBe(
+    expect(serverQuestion(several, null)).toBe(
       'Connect to the MCP server "tools" from this project\'s .mcp.json at https://${HOST:-tools.example.dev}/mcp?team=${TEAM} ' +
         '(sends HOST, TEAM, TICKETS_TOKEN, "MY KEY\\u001b")? [y/n]',
     );
     const none = server("tools", filled, "project", { url: "https://tools.example.dev/mcp", headers: { "X-Team": "core" } });
-    expect(serverQuestion(none)).toBe('Connect to the MCP server "tools" from this project\'s .mcp.json at https://tools.example.dev/mcp? [y/n]');
-    for (const c of [one, several, none]) expect(serverQuestion(c)).not.toContain("sk-secret-123");
+    expect(serverQuestion(none, null)).toBe(
+      'Connect to the MCP server "tools" from this project\'s .mcp.json at https://tools.example.dev/mcp? [y/n]',
+    );
+    for (const c of [one, several, none]) expect(serverQuestion(c, null)).not.toContain("sk-secret-123");
+  });
+
+  // 8c-2a plan, Task 8 (design, "A project's servers"; choice 8): the question says where a local server runs, and
+  // whether a remote one's headersHelper runs, after 8c's address and its (sends ...); the helper escaped.
+  it("says where a local server runs, and whether a remote one's headersHelper runs on this computer", () => {
+    const tv = local("tv", ["server.js"]);
+    expect(serverQuestion(tv, { kind: "copy", network: "off" })).toBe(
+      'Start the MCP server "tv" from this project\'s .mcp.json inside the sandbox (copy, network off): ' +
+        "npx server.js? [y/n]",
+    );
+    expect(serverQuestion(tv, { kind: "live", network: "on" })).toBe(
+      'Start the MCP server "tv" from this project\'s .mcp.json inside the sandbox (live link, network on): ' +
+        "npx server.js? [y/n]",
+    );
+    const filled = { kind: "http" as const, url: "https://x/mcp", headers: { Authorization: "Bearer sk-secret-123" } };
+    const helper = "get-token \u001b[2J";
+    const written = { url: "https://x/mcp", headers: { Authorization: "Bearer ${TOKEN}" }, headersHelper: helper };
+    const far = server("far", { ...filled, headersHelper: helper }, "project", written);
+    expect(serverQuestion(far, null)).toBe(
+      'Connect to the MCP server "far" from this project\'s .mcp.json at https://x/mcp (sends TOKEN), ' +
+        "running its headersHelper on this computer: get-token \\u001b[2J? [y/n]",
+    );
+    expect(serverQuestion(far, { kind: "live", network: "on" })).toBe(
+      'Connect to the MCP server "far" from this project\'s .mcp.json at https://x/mcp (sends TOKEN), ' +
+        "without its headersHelper? [y/n]",
+    );
   });
 
   it("asks about each project server not yet answered for its entry, in order, and keeps a yes and a no for the next launch", async () => {
@@ -197,14 +246,20 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
     const replies = [true, false];
     const configs = [local("mine", [], "user"), local("old"), local("yes"), local("no")];
     const failed: string[] = [];
-    await askServers(configs, () => answersFor(top, data), async (question) => (asked.push(question), replies.shift()!), (line) => failed.push(line));
-    expect(asked).toEqual([serverQuestion(local("yes")), serverQuestion(local("no"))]);
+    const ask = async (question: string) => (asked.push(question), replies.shift()!);
+    await askServers(configs, null, () => answersFor(top, data), ask, (line) => failed.push(line));
+    expect(asked).toEqual([serverQuestion(local("yes"), null), serverQuestion(local("no"), null)]);
     expect(failed).toEqual([]);
     const kept = answersFor(top, data);
-    expect(["old", "yes", "no"].map((name) => kept.get(name, `as written: ${name}`))).toEqual([true, true, false]);
+    const kept3 = ["old", "yes", "no"].map((name) => kept.get(name, `as written: ${name}`, "host"));
+    expect(kept3).toEqual([true, true, false]);
+    // Kept for this computer, not with no setup: a lookup with none finds only an answer kept with none, as old's is.
+    const noSetup = ["old", "yes", "no"].map((name) => kept.get(name, `as written: ${name}`));
+    expect(noSetup).toEqual([true, undefined, undefined]);
     // Nothing read nor asked without a project server.
     const never = async () => expect.unreachable();
-    await askServers([local("mine", [], "user")], () => expect.unreachable("no project server, so no answers are read"), never, never);
+    const unread = () => expect.unreachable("no project server, so no answers are read");
+    await askServers([local("mine", [], "user")], null, unread, never, never);
   });
 
   // Choice 50: an answer that cannot be written holds for this launch, with one red line each, and the launch goes on. The
@@ -223,24 +278,89 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
     };
     const failed: string[] = [];
     const replies = [true, false];
-    await askServers([local("yes"), local("no\u001b")], blocked, async () => replies.shift()!, (line) => failed.push(line));
+    const ask = async () => replies.shift()!;
+    await askServers([local("yes"), local("no\u001b")], null, blocked, ask, (line) => failed.push(line));
     const unsaved = (name: string) => new RegExp(`^Your answer for ${name} could not be saved \\(.+\\); Tachikoma asks again at the next launch\\.$`);
     expect(failed).toEqual([expect.stringMatching(unsaved("yes")), expect.stringMatching(unsaved("no\\\\u001b"))]);
-    expect([answers!.get("yes", "as written: yes"), answers!.get("no\u001b", "as written: no\u001b")]).toEqual([true, false]);
+    const kept = ["yes", "no\u001b"].map((name) => answers!.get(name, `as written: ${name}`, "host"));
+    expect(kept).toEqual([true, false]);
+    // Kept for this computer, not with no setup: a lookup with none finds only an answer kept with none.
+    const noSetup = ["yes", "no\u001b"].map((name) => answers!.get(name, `as written: ${name}`));
+    expect(noSetup).toEqual([undefined, undefined]);
+  });
+
+  // 8c-2a plan, Task 8 (design, "A project's servers"; choice 2 (b)): one answer per server and setup. Each new setup
+  // is asked about once, going back to one answered asks nothing, and each answer counts where Servers reads it. With
+  // the network off the remote server does not start, so it is not asked about; with the sandbox on its helper does not
+  // run, so it is asked about again without it.
+  it("asks about each project server once per setup, and the answer counts where Servers reads it", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-mcp-"));
+    onTestFinished(() => removeTree(top));
+    const data = path.join(top, "data", "tachikoma");
+    const tv = local("tv", ["server.js"]);
+    const entry = { kind: "http" as const, url: "https://x/mcp", headers: {}, headersHelper: "get-token" };
+    const far = server("far", entry, "project", { url: "https://x/mcp", headers: {}, headersHelper: "get-token" });
+    const copyOff: McpSandbox = { kind: "copy", network: "off" };
+    const liveOff: McpSandbox = { kind: "live", network: "off" };
+    const copyOn: McpSandbox = { kind: "copy", network: "on" };
+    const runs: [McpSandbox, string[]][] = [
+      [null, [serverQuestion(tv, null), serverQuestion(far, null)]],
+      [null, []],
+      [copyOff, [serverQuestion(tv, copyOff)]],
+      [liveOff, [serverQuestion(tv, liveOff)]],
+      [copyOn, [serverQuestion(tv, copyOn), serverQuestion(far, copyOn)]],
+      [null, []],
+    ];
+    for (const [sandbox, questions] of runs) {
+      const asked: string[] = [];
+      await askServers([tv, far], sandbox, () => answersFor(top, data), async (q) => (asked.push(q), true), () => {});
+      expect(asked).toEqual(questions);
+      // Each yes starts its server in this setup: none is left waiting; the remote one is off with the network off.
+      const network = sandbox?.network ?? "none";
+      const listed = servers([tv, far], network, () => answersFor(top, data), sandbox?.kind).list();
+      expect(listed.map((s) => s.state.is)).toEqual(["starting", network === "off" ? "off" : "starting"]);
+    }
+    // With the sandbox off, the remote server's yes is kept for its helper running.
+    expect(answersFor(top, data).get("far", far.written, "helper")).toBe(true);
+  });
+
+  // Decision 11: a line saved by 8c, without a setup, counts on this computer, and not for live link with the network
+  // on.
+  it("counts an 8c answer on this computer, and asks again for live link with the network on", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-mcp-"));
+    onTestFinished(() => removeTree(top));
+    const data = path.join(top, "data", "tachikoma");
+    const tv = local("tv", ["server.js"]);
+    answersFor(top, data).set("tv", tv.written, true);
+    const asked: string[] = [];
+    const ask = async (q: string) => (asked.push(q), true);
+    await askServers([tv], null, () => answersFor(top, data), ask, () => {});
+    expect(asked).toEqual([]);
+    await askServers([tv], { kind: "live", network: "on" }, () => answersFor(top, data), ask, () => {});
+    expect(asked).toEqual([serverQuestion(tv, { kind: "live", network: "on" })]);
   });
 
   // In -p every project server without a yes, one answered no included (the plan's line, Task 9's spec review).
-  it("says once that the sandbox's network keeps every server off, and in -p names each project server without a yes", () => {
-    const configs = [local("mine", [], "user"), local("yes"), local("no"), local("new")];
-    expect(mcpLines(servers(configs, "off", none), { print: true })).toEqual([
-      "MCP servers are off: the sandbox's network is off, and servers run outside the box until a later release. Start with --network on to use them.",
-    ]);
+  // 8c-2a plan, Task 6 (choice 3): with the network off, the line once for the host and remote servers it keeps off,
+  // then in -p the skip lines, as the project's servers now run in the box.
+  it("says once that host and remote servers are off, and in -p names each project server without a yes", () => {
+    const off =
+      'MCP servers marked "host" and remote servers are off: the sandbox\'s network is off, and outside the box ' +
+      "nothing keeps them off the web. Start with --network on to use them.";
+    const skipped = (name: string) =>
+      `MCP server ${name} from .mcp.json was skipped: -p starts only the project's servers ` +
+      "you said yes to in the window.";
+    const mine = { ...local("mine", [], "user"), host: true as const };
+    const far = server("far", { kind: "http", url: "https://mcp.example.com/mcp", headers: {} }, "user");
+    const configs = [mine, far, local("yes"), local("no"), local("new")];
     const given = (): Answers => ({ get: (name) => ({ yes: true, no: false })[name], set: () => {}, reset: () => {} });
-    expect(mcpLines(servers(configs, "none", given), { print: true })).toEqual([
-      "MCP server no from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.",
-      "MCP server new from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.",
-    ]);
+    expect(mcpLines(servers(configs, "off", given), { print: true })).toEqual([off, skipped("no"), skipped("new")]);
+    expect(mcpLines(servers(configs, "off", given), { print: false })).toEqual([off]);
+    expect(mcpLines(servers([far], "off", given), { print: true })).toEqual([off]);
+    expect(mcpLines(servers(configs, "none", given), { print: true })).toEqual([skipped("no"), skipped("new")]);
+    // Nothing in the window when nothing is off, and no line with no servers.
     expect(mcpLines(servers(configs, "none", given), { print: false })).toEqual([]);
+    expect(mcpLines(servers(configs.slice(2), "off", given), { print: false })).toEqual([]);
     expect(mcpLines(servers([], "off", none), { print: true })).toEqual([]);
   });
 });

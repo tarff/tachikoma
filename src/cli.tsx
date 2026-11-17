@@ -74,12 +74,14 @@ import { readKeybindings } from "./keybindings.js";
 import { type Answers, answersFor, launchAnswers } from "./mcp/answers.js";
 import { AuthStore } from "./mcp/auth.js";
 import { mergeServers, readProjectFile } from "./mcp/config.js";
+import type { McpSandbox } from "./mcp/place.js";
 import { Servers } from "./mcp/servers.js";
 import { approveOf, mcpTools } from "./mcp/tools.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
 import { boxCheck, dropIfNothing, reviewCommand } from "./sandbox/copies.js";
+import { docker } from "./sandbox/docker.js";
 import { sandboxCommand } from "./sandbox/image.js";
 import { ignoresCase } from "./sandbox/mounts.js";
 import { copyLock } from "./sandbox/snapshot.js";
@@ -581,10 +583,12 @@ const instructions = await readInstructions(instructionsAt, async (reached) => {
   return yes;
 });
 // The MCP servers, the user's entry winning a name both files give (release 8c design, "A project's servers"). The
-// sandbox's network is "none" with the sandbox off; with it on and its network off, no server starts (design, "Starting
-// and stopping servers").
+// sandbox's network is "none" with the sandbox off; with it on and its network off, only the servers in the box start
+// (8c-2a plan, Task 6). mcpSandbox is the same with the box's kind, as Servers makes it: where each server runs, and
+// which of a project server's answers counts (Task 8).
 const mcpConfigs = mergeServers(loaded.settings.mcpServers ?? [], projectServers);
 const mcpNetwork = sandbox === "off" ? "none" : options.network;
+const mcpSandbox: McpSandbox = sandbox === "off" ? null : { kind: sandbox, network: options.network };
 // The project's answers (choice 24), read once, when a project's server needs one; readPrivate's note that it made the
 // file private is grey, as the launch's other notes are. A file that cannot be read leaves every project server
 // unanswered: Servers says why in red (Task 5), and in the window each is asked about again, its answer kept for this
@@ -601,12 +605,12 @@ const projectAnswers = (): Answers => {
   }
 };
 const launchOnly = launchAnswers();
-// In the window, after the instruction files' question, one question per project server not yet answered (choice 23);
-// none with the network off, as none could start. -p asks nothing: it starts only those already said yes to. An answer
-// that could not be saved still holds for this launch; its red line is said in the window, as the unreadable answers'
-// is (choice 50).
+// In the window, after the instruction files' question, one question per project server that starts in this sandbox
+// and is not yet answered for it (choice 23; 8c-2a plan, Task 8): with the box's network off, only those in the box.
+// -p asks nothing: it starts only those already said yes to. An answer that could not be saved still holds for this
+// launch; its red line is said in the window, as the unreadable answers' is (choice 50).
 const unsaved: string[] = [];
-if (interactive && mcpNetwork !== "off") {
+if (interactive) {
   const answersNow = () => {
     try {
       return projectAnswers();
@@ -614,7 +618,7 @@ if (interactive && mcpNetwork !== "off") {
       return launchOnly;
     }
   };
-  await askServers(mcpConfigs, answersNow, askAtStart, (line) => unsaved.push(line));
+  await askServers(mcpConfigs, mcpSandbox, answersNow, askAtStart, (line) => unsaved.push(line));
 }
 // Then the box: leftover boxes removed, the box started and its node checked (sandboxStart). From here the model works in
 // it, on /work (choice 19). Its launch lines are grey in the interface, and on stderr with -p.
@@ -641,8 +645,11 @@ const leadPrompt = (date: string, setup: Setup, leadId: string) =>
 const first = leadPrompt(today, launchSetup, lead.id);
 const system = [first, instructions.text].filter(Boolean).join("\n\n");
 // The MCP servers, made once the sandbox has started, and started once the bus has its listeners (release 8c plan, Task
-// 9). They work in the project's own folder, as they run outside the box until a later release (design, "Starting and
-// stopping servers").
+// 9). With the sandbox on they are given its box, where its local servers start, unless marked "host" (8c-2a plan, Task
+// 6); a server on this computer works in the project's own folder. A project's server starts on a yes for this
+// launch's setup, where it runs or whether its headersHelper runs, as askServers keeps it (Task 8).
+const mcpBox =
+  box && sandbox !== "off" ? { id: box.box.id, kind: sandbox, state: box.box.state, run: docker } : undefined;
 const servers = new Servers(mcpConfigs, {
   root,
   env: process.env,
@@ -650,6 +657,7 @@ const servers = new Servers(mcpConfigs, {
   answers: projectAnswers,
   unread: launchOnly,
   network: mcpNetwork,
+  ...(mcpBox && { box: mcpBox }),
   // Read only when a line is said, from startAll on, once the session below exists.
   lead: () => session.lead.id,
   // The remote servers' sign-ins, kept in the data folder (release 8c plan, Task 11); readPrivate's note that it made the
@@ -940,9 +948,9 @@ if (parsed.print !== undefined) {
   // The start-up box (TUI design pass, Task 6), from what the launch has gathered, laid out for the columns a line's text
   // has in the mode the window starts in: 80 where the terminal does not say, the last of Ink's getWindowSize's fallbacks
   // (it asks terminal-size first; a window has a terminal, which says). The MCP servers counted are those starting, read
-  // before startAll: none with the network off, nor a project's one not said yes to. The instruction files go by path,
-  // which the box shortens to their names where they differ. A resumed conversation's replies are laid out for the same
-  // columns (Task 16).
+  // before startAll: with the network off only those in the box, and no project's one not said yes to for this setup
+  // (8c-2a plan, Task 8). The instruction files go by path, which the box shortens to their names where they differ. A
+  // resumed conversation's replies are laid out for the same columns (Task 16).
   const width = textWidth(process.stdout.columns || 80, screen.full);
   const startLines = startBox(
     {

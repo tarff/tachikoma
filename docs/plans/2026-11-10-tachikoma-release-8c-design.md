@@ -322,10 +322,12 @@ option chosen: "As the main design says").
 
 | Left out of 8c | When |
 |---|---|
-| Servers inside the sandbox; each worker's own servers; the list of allowed sites and its proxy; the name-lookup measurement (main design, "Still to measure" 15) | 8c-2 |
+| Servers inside the sandbox; `headersHelper` | 8c-2 part A |
+| Each worker's own servers | Release 12, with the subagents that write (the 8c-2 part A design's choice 2) |
+| The list of allowed sites and its proxy; the name-lookup measurement (main design, "Still to measure" 15) | 8c-2 part B |
 | Tool search | Decided from the first task's measurement |
 | MemPalace as Tachikoma's own server | 8d |
-| `headersHelper`, `ws`, client secrets, sampling | Not planned: the user's servers do not use them |
+| `ws`, client secrets, sampling | Not planned: the user's servers do not use them |
 | Claude in Chrome | Not planned: it is built into Claude Code |
 
 ## As built

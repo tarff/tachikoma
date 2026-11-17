@@ -13,7 +13,10 @@ import { API_KEYS } from "../exec/env.js";
 
 export type ServerEntry =
   | { kind: "stdio"; command: string; args: string[]; env: Record<string, string>; timeout?: number }
-  | { kind: "http" | "sse"; url: string; headers: Record<string, string>; timeout?: number; oauth?: OAuthEntry };
+  | {
+    kind: "http" | "sse"; url: string; headers: Record<string, string>; timeout?: number; oauth?: OAuthEntry;
+    headersHelper?: string; // as written, ${VAR} unfilled (8c-2a plan, decision 9)
+  };
 // scopes: one string, scopes split by spaces, as OAuth's scope parameter is (Claude Code's MCP page; RFC 6749, 3.3).
 export interface OAuthEntry { clientId?: string; callbackPort?: number; scopes?: string; authServerMetadataUrl?: string }
 export interface ServerConfig {
@@ -21,14 +24,19 @@ export interface ServerConfig {
   entry: ServerEntry; where: "user" | "project";
   trusted: "read-only" | null; trustedTools: string[]; // always none for a project's
   alwaysLoad: boolean; // its tools defined in every request, not found through tool_search (release 8c plan, choice 42)
+  // A local server the user's own entry runs on this computer, never in the sandbox's box; a project's file cannot set
+  // it (8c-2a plan, decision 9 and choice 4).
+  host?: true;
   // The SHA-256 of the entry as written, before ${VAR} is filled, which a project server's answer holds (choice 24): a
   // git pull that changes its command cannot start it unasked, while a variable's new value asks nothing, and no value
   // is kept.
   written: string;
-  // The command and arguments, or the address and headers, as written, ${VAR} unfilled, which the project's question
-  // shows, so a key filled in from the environment never reaches the screen (release 8c plan, choice 48); of the headers,
-  // only the variables they read (choice 64).
-  asWritten: { command: string; args: string[] } | { url: string; headers: Record<string, string> };
+  // The command and arguments, or the address, headers and headersHelper, as written, ${VAR} unfilled, which the
+  // project's question shows, so a key filled in from the environment never reaches the screen (release 8c plan, choice
+  // 48); of the headers, only the variables they read (choice 64).
+  asWritten:
+    | { command: string; args: string[] }
+    | { url: string; headers: Record<string, string>; headersHelper?: string };
 }
 
 const PROJECT = ".mcp.json";
@@ -69,9 +77,9 @@ const MAX_TIMER_MS = 2_147_483_647;
 const MIN_TIMEOUT_MS = 1_000;
 const TIMEOUT = `a whole number of milliseconds no more than ${MAX_TIMER_MS.toLocaleString("en-US")}, such as 600000`;
 
-// Each server's own fields, by kind; a field of the other kind is Claude Code's too and does nothing for this server, so
-// it is passed over without a line. Any other name is not a server field, and is ignored with one.
-const OWN = { stdio: ["command", "args", "env"], remote: ["url", "headers", "oauth", "headersHelper"] };
+// Each server's own fields, by kind; a field of the other kind is a server field too and does nothing for this server,
+// so it is passed over without a line. Any other name is not a server field, and is ignored with one.
+const OWN = { stdio: ["command", "args", "env", "host"], remote: ["url", "headers", "oauth", "headersHelper"] };
 
 // Thrown with a left-out line's words after the server's place; "; it was left out" ends each.
 class Left extends Error {}
@@ -144,7 +152,6 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
   if (safe.includes("__")) throw new Left(' has a name that holds "__" once its characters are made safe, which tool names cannot carry');
   const kind = kindOf(raw);
   const remote = kind !== "stdio";
-  if (remote && raw.headersHelper !== undefined) throw new Left(' has "headersHelper", which Tachikoma does not run yet (planned)');
   if (!remote && raw.command === undefined) throw new Left(` has no "command"; a local server needs one, such as ${LOCAL_EXAMPLE}`);
   if (remote && raw.url === undefined) throw new Left(' has no "url"; an "http" or "sse" server needs one');
 
@@ -179,7 +186,15 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
   const fill = filler(env);
   let entry: ServerEntry;
   let asWritten: ServerConfig["asWritten"];
+  let host = false;
   if (kind === "stdio") {
+    // Only the user's own entry may run a server on this computer, as only it gives trust (8c-2a plan, choice 4).
+    if (raw.host !== undefined) {
+      const ignored = ` has "host"; a server runs on this computer only from ${USER_FILE}, so it was ignored`;
+      if (where === "project") say(ignored);
+      else if (typeof raw.host !== "boolean") throw badValue("host", "true or false, without quotes", raw.host);
+      else host = raw.host;
+    }
     if (typeof raw.command !== "string") throw bad("command", TEXT, raw.command);
     if (raw.args !== undefined && !texts(raw.args)) throw bad("args", LIST, raw.args);
     const vars = textMap("env", raw.env, '{"KEY": "value"}');
@@ -199,16 +214,26 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
     const filled = mapValues(headers, fill);
     for (const [key, v] of Object.entries(filled)) if (BREAKS.test(v) || v.includes(NUL)) throw bad(`headers.${key}`, NO_BREAKS, v);
     address(raw.url, url);
-    entry = { kind, url, headers: filled, ...(timeout !== undefined && { timeout }), ...(oauth && { oauth }) };
-    asWritten = { url: raw.url, headers };
+    // A shell command, which reads its own variables, so ${VAR} is not filled: Claude Code's MCP page fills only
+    // command, args, env, url and headers (8c-2a plan, decision 9).
+    const helper = raw.headersHelper;
+    if (helper !== undefined && typeof helper !== "string") throw bad("headersHelper", TEXT, helper);
+    entry = {
+      kind, url, headers: filled, ...(timeout !== undefined && { timeout }), ...(oauth && { oauth }),
+      ...(helper !== undefined && { headersHelper: helper }),
+    };
+    asWritten = { url: raw.url, headers, ...(helper !== undefined && { headersHelper: helper }) };
   }
   const written = createHash("sha256").update(JSON.stringify(raw)).digest("hex");
-  return { name, safe, entry, where, trusted, trustedTools, alwaysLoad, written, asWritten };
+  return {
+    name, safe, entry, where, trusted, trustedTools, alwaysLoad, written, asWritten,
+    ...(host && { host: true as const }),
+  };
 }
 
 // A field of the wrong type, its value named by its type, as it may hold a key (typeOf); badValue shows the value, for the
-// short fields that carry none: type, timeout, alwaysLoad, trusted, trustedTools and oauth.callbackPort. `got` says what
-// text of the right type is wrong with, for an address.
+// short fields that carry none: type, timeout, alwaysLoad, trusted, trustedTools, host and oauth.callbackPort. `got`
+// says what text of the right type is wrong with, for an address.
 const bad = (field: string, what: string, value: unknown, got = typeOf(value)) => new Left(`: ${quoted(field)} must be ${what} (got ${got})`);
 const NOT_ADDRESS = "text that is not an address";
 // Values Node refuses when the server starts, in an error that quotes them, and one may be a key: a header value with a

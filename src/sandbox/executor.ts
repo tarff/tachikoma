@@ -164,6 +164,9 @@ export class BoxState {
   // The box's last count of kills by its memory limit: null when the box has no memory.events (cgroup v1), undefined
   // while it could not be read.
   oomKills: number | null | undefined;
+  // Set once Tachikoma's own removal of the box succeeded (DockerExecutor.stop's rm -f exited 0), so nothing runs in it
+  // (8c-2a plan, Task 4, decision 24).
+  removed = false;
 
   constructor(
     readonly id: string,
@@ -185,6 +188,15 @@ export class BoxState {
     const state = await this.run(["inspect", "--format", "{{.State.Running}}", this.id]);
     if (state === "missing") return NO_DOCKER;
     return state.code !== 0 || state.out.trim() !== "true" ? state.err.trim() : undefined;
+  }
+
+  // Whether the box is known to run nothing, so a box server's stop that failed is confirmed (decision 24): Tachikoma
+  // removed it, or `inspect` exits 0 and says it is not running. No docker program, an inspect that fails or cannot be
+  // run, and an unreachable daemon prove nothing, as gone() would give words for each.
+  async stopped(): Promise<boolean> {
+    if (this.removed) return true;
+    const state = await this.run(["inspect", "--format", "{{.State.Running}}", this.id]).catch(() => undefined);
+    return !!state && state !== "missing" && state.code === 0 && state.out.trim() === "false";
   }
 
   // The memory limit's line, for a failure the limit caused.
@@ -325,10 +337,11 @@ export class DockerExecutor implements Executor {
   }
 
   // Removes the box. What it held that is kept lives in /work, a host folder (choice 18). A removal that fails leaves the
-  // box to the next launch's sweep.
+  // box to the next launch's sweep; one that worked is recorded in the state (BoxState.removed).
   async stop(): Promise<void> {
     boxes.delete(this.id);
-    await this.run(["rm", "-f", this.id]).catch(() => {});
+    const got = await this.run(["rm", "-f", this.id]).catch(() => undefined);
+    if (got && got !== "missing" && got.code === 0) this.state.removed = true;
   }
 }
 
@@ -358,11 +371,7 @@ export async function inGroup(
   // words, or undefined when it reached the box. A kill that cannot reach the box stops the sandbox (choice 87).
   let kill: Promise<string | undefined> | undefined;
   const onAbort = () => {
-    const line = `touch ${group}.stop; kill -KILL -- -"$(cat ${group} 2>/dev/null)" 2>/dev/null; exit 0`;
-    kill = run(["exec", id, "bash", "-c", line]).then(
-      (r) => (r === "missing" ? NO_DOCKER : r.code !== 0 ? r.err.trim() || "the box stopped" : undefined),
-      (err: Error) => err.message,
-    );
+    kill = killInBox(run, id, group);
   };
   signal?.addEventListener("abort", onAbort, { once: true });
   let got: Awaited<ReturnType<DockerRun>>;
@@ -379,6 +388,21 @@ export async function inGroup(
     signal?.removeEventListener("abort", onAbort);
   }
   return got === "missing" ? { unreached: NO_DOCKER } : got;
+}
+
+// inGroup's kill of a group in the box, shared with a box's MCP server (8c-2a plan, Task 3, decision 24): it writes the
+// group's `.stop` file, then kills the group named in its file, and ends with exit 0 once it ran in the box.
+export function killLine(group: string): string {
+  return `touch ${group}.stop; kill -KILL -- -"$(cat ${group} 2>/dev/null)" 2>/dev/null; exit 0`;
+}
+
+// The kill, run in the box: undefined once it ran there, else why it could not: NO_DOCKER, Docker's error output (the
+// box stopped when it gave none), or the error's message.
+export function killInBox(run: DockerRun, id: string, group: string): Promise<string | undefined> {
+  return run(["exec", id, "bash", "-c", killLine(group)]).then(
+    (r) => (r === "missing" ? NO_DOCKER : r.code !== 0 ? r.err.trim() || "the box stopped" : undefined),
+    (err: Error) => err.message,
+  );
 }
 
 // At the launch, before a box starts: removes the boxes of this process space whose Tachikoma process is gone, as one that

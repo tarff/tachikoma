@@ -6,14 +6,17 @@ import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { PermissionGate } from "../../src/core/permissions.js";
 import { commandEnv, system32 } from "../../src/exec/env.js";
+import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import { launchAnswers } from "../../src/mcp/answers.js";
 import { listen } from "../../src/auth/oauth.js";
 import { AuthStore, McpAuth } from "../../src/mcp/auth.js";
 import type { OAuthEntry, ServerConfig } from "../../src/mcp/config.js";
 import { Servers } from "../../src/mcp/servers.js";
+import { type Approve, mcpTools } from "../../src/mcp/tools.js";
 import { Bus, removeTree } from "../helpers.js";
-import { signInFake } from "./fake.js";
+import { fakeHelper, httpFake, readLog, signInFake } from "./fake.js";
 
 // Release 8c plan, Task 11: signing in to a remote server, against the fake sign-in service of fake.ts on 127.0.0.1, the
 // browser a function of the test's own.
@@ -22,9 +25,12 @@ const windows = process.platform === "win32";
 // A wait on a request to the fake: a few seconds for a busy machine, well inside the test's 15 s.
 const WAIT = { timeout: 5_000 };
 
-const remote = (name: string, url: string, oauth?: OAuthEntry, headers: Record<string, string> = {}): ServerConfig => ({
+const remote = (
+  name: string, url: string, oauth?: OAuthEntry, headers: Record<string, string> = {}, headersHelper?: string,
+): ServerConfig => ({
   name, safe: name, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "",
-  entry: { kind: "http", url, headers, ...(oauth && { oauth }) }, asWritten: { url, headers },
+  entry: { kind: "http", url, headers, ...(oauth && { oauth }), ...(headersHelper !== undefined && { headersHelper }) },
+  asWritten: { url, headers },
 });
 
 // The test's own folder, the data folder two levels inside it, the fake, and Servers that use that data folder's
@@ -45,7 +51,7 @@ async function setup(fakeOpts: Parameters<typeof signInFake>[0] = {}) {
   const opened: string[] = [];
   const damaged: string[] = [];
   let browser: (url: string) => void = fake.browser;
-  const make = (configs: ServerConfig[], opts: { headless?: boolean } = {}) => {
+  const make = (configs: ServerConfig[], opts: { headless?: boolean; settingsDir?: string } = {}) => {
     const servers = new Servers(configs, {
       root: dir, env: process.env, bus, answers: launchAnswers, network: "none", lead: () => "fake:a",
       auth: new AuthStore(data, () => {}, (line) => damaged.push(line)), openBrowser: (url) => (opened.push(url), browser(url)), ...opts,
@@ -457,6 +463,180 @@ describe("signing in to a remote MCP server", () => {
     client.tokens(step);
     await client.invalidateCredentials("tokens");
     expect(store.get("om", t.fake.url)?.tokens).toBeUndefined();
+  });
+});
+
+// 8c-2a plan, Task 10 (decisions 16, 17 and 27): sign-in chosen for each connection once its helper has run, the
+// headers kept from the sign-in service, and no redirect to another origin. Each helper is the user's, run in the
+// test's folder as its settings folder.
+describe("signing in, with a headersHelper", () => {
+  const redirected = (origin: string) =>
+    `the server answered with a redirect to ${origin}; Tachikoma does not follow a redirect with the entry's headers`;
+
+  it("never signs in on a connection whose helper gives Authorization, and signs in once it gives none", async () => {
+    const t = await setup();
+    const helper = fakeHelper(t.dir);
+    helper.give({ Authorization: "Bearer from-the-helper" });
+    const servers = t.make([remote("om", t.fake.url, undefined, {}, helper.command)], { settingsDir: t.dir });
+    await servers.ready();
+    expect(servers.list()[0]!.state).toEqual({ is: "failed", reason: `${t.fake.base} answered 401` });
+    expect(t.fake.seen.requests.filter((r) => r.path !== "/mcp")).toEqual([]);
+    expect(new Set(t.fake.seen.bearer)).toEqual(new Set(["Bearer from-the-helper"]));
+    expect(t.fake.seen.registered).toBe(0);
+    helper.give({});
+    await servers.restart("om");
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    expect(helper.runs()).toHaveLength(2);
+  });
+
+  it("sends the helper's headers to the server's own address alone, never to the sign-in service", async () => {
+    const t = await setup();
+    const helper = fakeHelper(t.dir);
+    helper.give({ "X-Region": "eu" });
+    const servers = t.make([remote("om", t.fake.url, undefined, {}, helper.command)], { settingsDir: t.dir });
+    await servers.ready();
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    expect(await servers.signIn("om", t.io())).toBe(true);
+    expect(t.states(servers)).toEqual(["om ready"]);
+    const toServer = t.fake.seen.requests.filter((r) => r.path === "/mcp");
+    const signIn = t.fake.seen.requests.filter((r) => r.path !== "/mcp");
+    expect(signIn.map((r) => r.path)).toEqual(expect.arrayContaining(["/register", "/authorize", "/token"]));
+    expect(signIn.filter((r) => "x-region" in r.headers)).toEqual([]);
+    expect(toServer.length).toBeGreaterThan(0);
+    expect(new Set(toServer.map((r) => r.headers["x-region"]))).toEqual(new Set(["eu"]));
+    expect(toServer.at(-1)!.headers.authorization).toMatch(/^Bearer access-\d+$/);
+  });
+
+  it("fails on a redirect to another origin on a connection that signs in, sending nothing there", async () => {
+    const t = await setup();
+    const otherLog = path.join(t.dir, "elsewhere.jsonl");
+    const other = await httpFake(t.dir, { log: otherLog });
+    const origin = `http://127.0.0.1:${other.port}`;
+    const fake = await httpFake(t.dir, { redirect: `${origin}/mcp` });
+    const servers = t.make([remote("om", fake.url, undefined, { "X-Region": "eu" })]);
+    await servers.ready();
+    expect(servers.list()[0]!.state).toEqual({ is: "failed", reason: redirected(origin) });
+    expect(readLog(otherLog)).toEqual([]);
+  });
+
+  // Decision 27, with sign-in: /mcp answers with a 307 to /mcp/, whose requests are hops of the request redirected.
+  it("sends the helper's and the static headers on the hops to /mcp/, and none to the sign-in service", async () => {
+    const t = await setup({ slash: true });
+    const helper = fakeHelper(t.dir);
+    helper.give({ "X-Region": "eu" });
+    const config = remote("om", t.fake.url, undefined, { "X-Team": "a" }, helper.command);
+    const servers = t.make([config], { settingsDir: t.dir });
+    await servers.ready();
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    expect(await servers.signIn("om", t.io())).toBe(true);
+    expect(t.states(servers)).toEqual(["om ready"]);
+    const hops = t.fake.seen.requests.filter((r) => r.path === "/mcp/");
+    const service = t.fake.seen.requests.filter((r) => !r.path.startsWith("/mcp"));
+    expect(hops.length).toBeGreaterThan(0);
+    expect(new Set(hops.map((r) => `${r.headers["x-region"]} ${r.headers["x-team"]}`))).toEqual(new Set(["eu a"]));
+    expect(hops.at(-1)!.headers.authorization).toMatch(/^Bearer access-\d+$/);
+    expect(service.length).toBeGreaterThan(0);
+    expect(service.filter((r) => "x-region" in r.headers || "x-team" in r.headers)).toEqual([]);
+  });
+
+  // 8c-2a plan, Task 11 (decisions 18, 26 and 27): a signed-in server whose helper gives X-Region.
+  const signedIn = async (opts: Parameters<typeof signInFake>[0] = {}) => {
+    const t = await setup(opts);
+    const helper = fakeHelper(t.dir);
+    helper.give({ "X-Region": "eu" });
+    const servers = t.make([remote("om", t.fake.url, undefined, {}, helper.command)], { settingsDir: t.dir });
+    await servers.ready();
+    expect(await servers.signIn("om", t.io())).toBe(true);
+    expect(t.states(servers)).toEqual(["om ready"]);
+    return { t, helper, servers, server: servers.server("om")!, runs: helper.runs().length };
+  };
+  const signIns = (t: Awaited<ReturnType<typeof setup>>) =>
+    t.fake.seen.requests.filter((r) => r.path === "/authorize" || r.path === "/token").length;
+
+  it("keeps an expired token's 401 on a connection that signs in as sign-in's, running no helper again", async () => {
+    const s = await signedIn({ refresh: false });
+    s.t.fake.expire();
+    const call = s.server.callTool("echo", {}, {});
+    await expect(call).rejects.toThrow(new Error("The MCP server om needs sign-in, which the user does from /mcp."));
+    expect(s.t.states(s.servers)).toEqual(["om needs sign-in"]);
+    expect(s.server.refreshing).toBeUndefined();
+    expect(s.helper.runs()).toHaveLength(s.runs);
+  });
+
+  // Decision 26: the library would sign in again and send the call once more; the 403 fails it, and a refresh follows.
+  it("fails a call answered 403 insufficient_scope, sent once with no new sign-in, and refreshes once", async () => {
+    const s = await signedIn({ scope403: true });
+    const before = signIns(s.t);
+    await expect(s.server.callTool("echo", {}, {})).rejects.toThrow();
+    expect(s.t.fake.seen.calls).toBe(1);
+    const refresh = s.server.refreshing;
+    expect(refresh).toBeDefined();
+    expect(await refresh).toEqual({ is: "ready" });
+    expect(signIns(s.t)).toBe(before);
+    expect(s.helper.runs()).toHaveLength(s.runs + 1);
+    expect(await s.server.callTool("echo", {}, {})).toMatchObject({ content: [{ type: "text", text: "echoed" }] });
+    expect(s.t.fake.seen.calls).toBe(2);
+    expect(s.t.states(s.servers)).toEqual(["om ready"]);
+  });
+
+  // A refresh whose new connection is refused for want of a sign-in, as at a start: the server needs sign-in, and a
+  // call waiting for the refresh is told so, unsent (Task 11's review). Its tokens go stale with no refresh while the
+  // helper is held.
+  it("needs sign-in when a refresh's new connection does, and a call waiting for it says so", async () => {
+    const s = await signedIn({ scope403: true });
+    const named = s.servers.offer({ loaded: new Set() }).named.flatMap((n) => n.tools);
+    const offered = named.find((o) => o.tool === "echo")!;
+    const approve: Approve = async () => {
+      s.helper.hold();
+      await expect(s.server.callTool("echo", {}, {})).rejects.toThrow();
+      expect(s.server.refreshing).toBeDefined();
+      s.t.fake.expire();
+      s.t.fake.revoke();
+      s.helper.go();
+    };
+    const ctx = {
+      root: s.t.dir, executor: new LocalExecutor(), workspace: new LocalWorkspace(s.t.dir),
+      gate: new PermissionGate("never", async () => false),
+    };
+    const run = mcpTools(s.servers, new Bus(), approve).tool(offered).run({}, ctx);
+    await expect(run).rejects.toThrow(new Error("The MCP server om needs sign-in, which the user does from /mcp."));
+    expect(s.t.states(s.servers)).toEqual(["om needs sign-in"]);
+    expect(s.t.fake.seen.calls).toBe(1);
+  });
+
+  // The user's choice, 2026-11-18, from the terminal check: a call whose own 403 began the refresh says so; a 401 on a
+  // connection that signs in is sign-in's, its line as before.
+  it.each([401, 403])("says a call's %s with sign-in as before, the note at a 403 only", async (status) => {
+    const s = await signedIn(status === 401 ? { refresh: false } : { scope403: true });
+    if (status === 401) s.t.fake.expire();
+    s.helper.hold();
+    const named = s.servers.offer({ loaded: new Set() }).named.flatMap((n) => n.tools);
+    const offered = named.find((o) => o.tool === "echo")!;
+    const ctx = {
+      root: s.t.dir, executor: new LocalExecutor(), workspace: new LocalWorkspace(s.t.dir),
+      gate: new PermissionGate("never", async () => false),
+    };
+    const run = mcpTools(s.servers, new Bus(), async () => {}).tool(offered).run({}, ctx);
+    const note =
+      " (the server answered 403; its headersHelper is being run again for a new connection, and the call was not " +
+      "sent again: call it again if it should still run)";
+    const signIn = "The MCP server om needs sign-in, which the user does from /mcp.";
+    const said = status === 401 ? signIn : `Insufficient scope: required "more"${note}`;
+    await expect(run).rejects.toMatchObject({ message: said });
+    expect(s.server.refreshing === undefined).toBe(status === 401);
+    s.helper.go();
+    await s.server.refreshing;
+  });
+
+  // Decision 27: the hop to /mcp/ is the same request, so its 403 starts the refresh.
+  it("refreshes once at a 403 on the hop to /mcp/", async () => {
+    const s = await signedIn({ slash: true, scope403: true });
+    await expect(s.server.callTool("echo", {}, {})).rejects.toThrow();
+    expect(s.t.fake.seen.requests.at(-1)!.path).toBe("/mcp/");
+    const refresh = s.server.refreshing;
+    expect(refresh).toBeDefined();
+    expect(await refresh).toEqual({ is: "ready" });
+    expect(s.helper.runs()).toHaveLength(s.runs + 1);
   });
 });
 
