@@ -702,9 +702,10 @@ folder: `tachi-8d-build\tamper` and the snapshots.
 
 In short: MemPalace 3.12.0 takes all-MiniLM-L6-v2 through chromadb 1.5.9. chromadb downloads one archive from a fixed
 Amazon S3 address, holds its SHA-256, and puts it under the home folder. The archive was downloaded once, by hand,
-and matched that hash. Copied into the build home, it let MemPalace add one entry and find it again with every
-download blocked: no connection left Python for anywhere but this computer, and the dead-end proxy received nothing.
-The user approved the address, the hash and the size below on 2026-11-19, to be fixed in the code.
+and matched that hash. Copied into the build home, it let MemPalace add one entry and find it again, with its
+connections watched and a dead-end proxy in place. Python's own socket, HTTP and process calls reached nothing but
+this computer, and the dead-end proxy received nothing. What that does not cover is under "Known limits" below. The
+user approved the address, the hash and the size below on 2026-11-19, to be fixed in the code.
 
 Script: `scripts/8d/model-check.mjs`, run as `node scripts/8d/model-check.mjs place` and then `run`. Source read in
 the installed packages in `tachi-8d-build\env\Lib\site-packages` (not on the web).
@@ -717,8 +718,11 @@ chromadb's Rust module does not name it.
 
 **Version: none fixed.** The address names no commit, version or S3 version id. The download's headers say
 `x-amz-version-id: null` (S3 keeps no version id for the object), `ETag: "c319dd36af997be17ffb4669076b13a0-5"` (a
-multipart upload, so not the file's MD5) and `Last-Modified: Thu, 30 Mar 2023 23:38:52 GMT`. The user accepted the
-hash check alone on 2026-11-19. Tachikoma does not download the model itself.
+multipart upload, so not the file's MD5) and `Last-Modified: Thu, 30 Mar 2023 23:38:52 GMT`. So the address has no
+exact unchanging version. On 2026-11-19 the user accepted the hash check alone in place of the design's "an exact
+unchanging version" (section 2, "The model is locked like the packages") and "an exact version" (the summary's
+item 4). The installer (plan step 19) downloads the archive from this address, checks it against this SHA-256, and
+unpacks it into `memory/home`.
 
 **SHA-256:** `913d7300ceae3b2dbc2c50d1de4baacab4be7b9380491c27fab7418616a16ec3`, the archive's hash
 (`onnx_mini_lm_l6_v2.py:45`, `_MODEL_SHA256`). The download's hash (`Get-FileHash -Algorithm SHA256`) is the same.
@@ -767,53 +771,83 @@ function (`mempalace/backends/embedding_wrapper.py:30-32`, `:83-87`; `mempalace/
   outside address in its add, search and server path (`https://pypi.org/pypi/mempalace/json`,
   `mempalace/update_awareness.py:84`), runs only when that file says enabled (`:139-143`, `:221-226`; folder
   `mempalace/paths.py:34-37`). It is started at server start (`mempalace/mcp_server/runtime.py:392-397`), on
-  `mempalace_status` (`mempalace/mcp_server/protocol.py:694-698`) and in `mempalace/mcp_proxy.py:38`. It is off by
+  `mempalace_status` (`mempalace/mcp_server/protocol.py:694-698`) and in `mempalace/mcp_proxy.py:141-142`. It is off by
   default, and no variable turns it off.
 - No `ANONYMIZED_TELEMETRY` set to true. MemPalace sets it to `False` unless it is already set
   (`mempalace/__init__.py:70`) and passes `anonymized_telemetry=False` to its clients (`mempalace/backends/chroma.py:
-  111`). chromadb's telemetry client is an empty stub anyway (`chromadb/telemetry/product/posthog.py:8-10`).
+  113`). chromadb's telemetry client is an empty stub anyway (`chromadb/telemetry/product/posthog.py:8-10`).
 - No `CHROMA_OTEL_COLLECTION_ENDPOINT` or `CHROMA_OTEL_GRANULARITY`: the defaults, an empty address and `"none"`, send
   no spans (`chromadb/config.py:229-232`; `chromadb/telemetry/opentelemetry/__init__.py:51-58`, `:83-84`). That
   chromadb's pydantic `Settings` (`chromadb/config.py:112`) would read these names from the environment is inferred,
   not traced.
 - Not settings, but they bear on downloads. `MEMPALACE_EAGER_WARMUP` moves the model load, and any download, to start
-  up (`mempalace/mcp_server/protocol.py:1096-1127`). The proxy variables decide where a download would go
+  up (`mempalace/mcp_server/protocol.py:1176`). The proxy variables decide where a download would go
   (`httpx/_utils.py:31-54`; on Windows, with none set, `urllib.request.getproxies` falls back to the system's proxy
   setting, build Python `Lib/urllib/request.py:2764-2771`).
 
-**The run with downloads blocked** (`run`, 2026-11-19, exit 0, "model check: passed"):
-- It used the build's own server, `tachi-8d-build\env\Scripts\python.exe -I -c <wrapper> <audit log> --palace
-  tachi-8d-build\install\home\palaces\model-check --backend sqlite_exact --transport stdio`. The wrapper runs
-  `mempalace.mcp_server`, the server that `mempalace-mcp` loads. It ran in a new palace, with step 1's `install`
+**The run, connections watched and a dead-end proxy in place** (`run`, 2026-11-19, after the review fixes; exit 0,
+"model check: passed"):
+- It used the build's own server: `tachi-8d-build\env\Scripts\python.exe -I -c <wrapper> <audit log>
+  mempalace.mcp_server --palace tachi-8d-build\install\home\palaces\model-check-2026-11-18T21-31-28-961Z --backend
+  sqlite_exact --transport stdio`. The wrapper runs `mempalace.mcp_server` directly. That is the path the
+  `mempalace-mcp` front end (`mempalace.mcp_proxy:main`) takes when it finds no hub for the palace
+  (`mempalace/mcp_proxy.py:415-418`); its proxy to a hub was not used. It ran in a new palace, with step 1's `install`
   environment (every `MEMPALACE_*` of the user's dropped).
-- The settings above were in force: `HF_HUB_OFFLINE=1`, `MEMPALACE_EMBEDDING_MODEL=minilm`, no `updates.json`, no
+- Before starting, the script checked that the installed chromadb file still names the approved address and hash.
+- The settings above were in force: `HF_HUB_OFFLINE=1`, `MEMPALACE_EMBEDDING_MODEL=minilm`, no `updates.json`, and no
   `ANONYMIZED_TELEMETRY`, `CHROMA_*` or `PYTHON*`. `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` pointed at the script's
   dead-end listener on `127.0.0.1`, with `NO_PROXY=127.0.0.1,localhost,::1`.
-- Over MCP: `initialize` (protocol 2025-06-18). `mempalace_add_drawer` with wing `check`, room `model`, a one-line
-  entry and `source_file` gave `"success": true`, `"chunks": 1`. `mempalace_search` on that wing and room found the
-  entry. The server's log says "Embedding function initialized (model=minilm device=cpu
-  providers=['CPUExecutionProvider'])", and it shut down on the end of input with exit 0.
-- chromadb unpacked the placed archive into `onnx\` itself: the six files, each the size the archive lists. The
-  archive was still as approved afterwards. The palace is `sqlite_exact.sqlite3`.
-- The connection log: the wrapper's own loopback check was seen (`socket.getaddrinfo 127.0.0.1`,
-  `socket.connect 127.0.0.1`), so the hook was working. Python's urllib and httpx both reported the dead-end proxy,
-  with the loopback names left out. From the server: **0 name lookups, connections, sends or HTTP requests, to any
-  address**, and **0 child processes**.
-- The dead-end listener: **0 connections**.
+- Over MCP:
+  - `initialize` (protocol 2025-06-18);
+  - `mempalace_add_drawer` with wing `check`, room `model`, a one-line entry and `source_file` gave
+    `"success": true`, `"chunks": 1`;
+  - `mempalace_search` on that wing and room found the entry.
+  The server shut down on the end of input with exit 0.
+- The model: the first run, before the review fixes, found only the placed archive. chromadb unpacked it into `onnx\`
+  itself: the six files, each the size the archive lists, and that server's log says "Embedding function initialized
+  (model=minilm device=cpu providers=['CPUExecutionProvider'])". The run after the fixes found those files already
+  there. The archive was still as approved after both runs. Each palace is a `sqlite_exact.sqlite3`.
+- The connection log, the same in both runs:
+  - the wrapper's own loopback check was seen (`socket.getaddrinfo 127.0.0.1`, `socket.connect 127.0.0.1`), so the
+    hook was working;
+  - Python's urllib and httpx both reported the dead-end proxy, with the loopback names exempt;
+  - from the server: **0 name lookups, connections, sends or HTTP requests through Python's own code, to any
+    address**, and **0 child processes**.
+- The dead-end listener: **0 connections** in both runs.
 - What appeared under the build home: the model's folder, `.config\mempalace\wal\write_log.jsonl`,
-  `.mempalace\locks\mine_palace_<16 hex>.lock`, `palaces\.model-check.mempalace.lock` and the palace. Nothing new
-  appeared at the top of the user's Temp folder during the run.
-- **Known limit:** the connection log and the proxy see only connections made from Python code. Connections opened
-  by native code (onnxruntime, chromadb's Rust part, gRPC) bypass both. Seeing those on Windows needs admin rights or a
-  system change (`pktmon`, `netsh trace`, a firewall rule), which the build does not make. The source shows no such
-  connection on this path.
+  `.mempalace\locks\mine_palace_<16 hex>.lock`, a `.<palace>.mempalace.lock` beside each palace, and the palaces.
+  Nothing new appeared at the top of the user's Temp folder during the first run.
+- The server dying: `run tachi_8d_no_such_module` points the wrapper at a module that does not exist. Python stopped
+  with "ImportError: No module named tachi_8d_no_such_module" and exit 1. Every call got "the server is gone:
+  exit 1" in place of an answer. The listener closed, and the run ended "model check: FAILED" with exit 1, without
+  hanging. The run ends on the server's exit, or on its failing to start; it has no time limit. A server that fails
+  to start at all takes the same path in the code, but that was not run.
+- **Known limits:**
+  - The dead-end proxy stops only code that honours the proxy variables (httpx and urllib do).
+  - The connection log sees only what goes through Python's own socket, HTTP and urllib code and its process calls.
+  - Connections opened by native code (onnxruntime, chromadb's Rust part, gRPC) bypass both. Seeing those on Windows
+    needs admin rights or a system change (`pktmon`, `netsh trace`, a firewall rule), which the build does not make.
+    The source shows no such connection on this path.
 - Seen for later steps: the environment from step 1's helper still holds the user's own `HOMEDRIVE` and `HOMEPATH`.
-  Python uses them only when `USERPROFILE` is unset (`ntpath.py:362-368`), which the helper never leaves it.
+  Python uses them only when `USERPROFILE` is unset (`ntpath.py:362-368`), and the helper always sets it.
 
-The snapshot of the user's folders (`step5-before`, `step5-after`): "no change", apart from the set-apart line of the
-user's own MemPalace daemon folder `daemon/<palace key>8ab5b11d`.
+The snapshots of the user's folders:
+- Around the first run (`step5-before` to `step5-after`): "no change", apart from the set-apart line of the user's own
+  MemPalace daemon folder `daemon/<palace key>8ab5b11d`.
+- Around the run after the fixes (`step5-fix-before` to `step5-fix-after`): the same.
+- Between the two (`step5-after` to `step5-fix-before`, about 11 minutes): not clean. The user's own `~/.mempalace`
+  changed outside the set-apart places:
+  - `palace/sqlite_exact.sqlite3` and its `-wal`;
+  - `wal/write_log.jsonl`;
+  - `locks` and `locks/mine_palace_<palace key>.lock`;
+  - `hook_state/last_checkpoint`, and two `hook_state/<session>_last_save` files, one named after this build's own
+    Claude Code session.
+
+  Every one of these changes is timed from 21:25:05 to 21:29:10 UTC. That was before the only Python the build ran in
+  that gap, the stand-in run above, which started at 21:30:51 UTC and stopped before MemPalace was imported. By their
+  names and times, they come from the user's own MemPalace plugin saving this and another Claude Code session. This
+  is inferred, not traced. Under the user's rule (step 1) they still count as a difference.
 
 Kept for later steps: the model in `tachi-8d-build\install\home\.cache\chroma\onnx_models\all-MiniLM-L6-v2` and the
-download in `tachi-8d-build\model-download`. For step 31 to remove with the build folder: the palace
-`install\home\palaces\model-check`, and the run's logs, `install\model-check-<time>.audit.jsonl` and
-`.stderr.log`.
+download in `tachi-8d-build\model-download`. For step 31 to remove with the build folder: the palaces in
+`install\home\palaces`, and each run's logs, `install\model-check-<time>.audit.jsonl` and `.stderr.log`.
