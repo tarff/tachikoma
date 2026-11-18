@@ -1081,6 +1081,17 @@ describe("resolve", () => {
     expect(resolve({}, {}, {}).judge).toBeUndefined();
   });
 
+  // 8c-2b plan, Step 11 (decision 15; the design's choice 2): `sites` is offered now, the flag winning over the file as
+  // for off and on. The list is its own entry, which the network's value never changes, so switching between on and
+  // sites keeps it.
+  it("the flag wins over the settings file, and switching between on and sites keeps the list", () => {
+    const file = { network: "on" as const, allowedSites: [{ name: "github.com", port: 443 }] };
+    expect(resolve({ network: "sites" }, {}, file).network).toBe("sites");
+    expect(resolve({}, {}, { ...file, network: "sites" }).network).toBe("sites");
+    expect(resolve({ network: "on" }, {}, { ...file, network: "sites" }).network).toBe("on");
+    expect(file.allowedSites).toEqual([{ name: "github.com", port: 443 }]);
+  });
+
   it("takes auto mode from the flag or the file", () => {
     expect(resolve({ mode: "auto" }, {}, { mode: "ask" }).mode).toBe("auto");
     expect(resolve({}, {}, { mode: "auto" }).mode).toBe("auto");
@@ -1113,7 +1124,9 @@ describe("resolve", () => {
     // `never` is offered and read, as copy mode is built (release 7 plan, Task 21); the launch says it needs copy mode.
     expect(resolve({ mode: "never" }, {}, {}).mode).toBe("never");
     expect(() => resolve({ sandbox: "x" }, {}, { sandbox: "off" })).toThrow('--sandbox must be one of: off, live, copy (got "x")');
-    expect(() => resolve({ network: "x" }, {}, { network: "off" })).toThrow('--network must be one of: off, on (got "x")');
+    expect(() => resolve({ network: "x" }, {}, { network: "off" })).toThrow(
+      '--network must be one of: off, on, sites (got "x")',
+    );
     expect(() => resolve({ effort: "x" }, {}, {})).toThrow('--effort must be one of: low, medium, high, xhigh, max (got "x")');
     expect(() => resolve({ "max-tasks": "1e1" }, {}, { maxTasks: 2 })).toThrow('--max-tasks must be a whole number from 1 (got "1e1")');
     expect(() => resolve({ status: "nope" }, {}, { status: ["lead"] })).toThrow(

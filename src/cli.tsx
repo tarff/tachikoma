@@ -134,7 +134,8 @@ Options:
                           and dangerous commands ask you
                     never: never ask; only with --sandbox copy, where you review changes at the end
   --sandbox <how>   off | live | copy (default: off): commands run in Docker on this folder or a copy
-  --network <net>   off | on (default: off): whether commands in the sandbox can reach the internet
+  --network <net>   off | on | sites (default: off): whether commands in the sandbox can reach the internet; \
+sites allows only the settings' "allowedSites"
   --judge <spec>    the model that judges in auto mode; the lead's model unless set
   --effort <level>  Anthropic models only: ${EFFORTS.join(" | ")}
   --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
@@ -587,8 +588,17 @@ const instructions = await readInstructions(instructionsAt, async (reached) => {
 // (8c-2a plan, Task 6). mcpSandbox is the same with the box's kind, as Servers makes it: where each server runs, and
 // which of a project server's answers counts (Task 8).
 const mcpConfigs = mergeServers(loaded.settings.mcpServers ?? [], projectServers);
+// The allowed sites in force, as the settings file gave them at the launch, given alike to the servers, the box's start
+// and every build of the lead's prompt (launch, /clear, each shortening), each of which reads them only with the
+// network "sites" (8c-2b plan, Step 11).
+const sites = loaded.settings.allowedSites ?? [];
 const mcpNetwork = sandbox === "off" ? "none" : options.network;
-const mcpSandbox: McpSandbox = sandbox === "off" ? null : { kind: sandbox, network: options.network };
+const mcpSandbox: McpSandbox =
+  sandbox === "off"
+    ? null
+    : options.network === "sites"
+      ? { kind: sandbox, network: "sites", sites }
+      : { kind: sandbox, network: options.network };
 // The project's answers (choice 24), read once, when a project's server needs one; readPrivate's note that it made the
 // file private is grey, as the launch's other notes are. A file that cannot be read leaves every project server
 // unanswered: Servers says why in red (Task 5), and in the window each is asked about again, its answer kept for this
@@ -625,7 +635,8 @@ if (interactive) {
 let box: Started | undefined;
 if (ready) {
   console.error(styleText("gray", "Starting the sandbox...", { stream: process.stderr })); // the user's words: the start takes seconds
-  const started = await sandboxStart(root, ready, { network: options.network, limits: loaded.settings.sandboxLimits, session: sessionId }, {
+  const startOpts = { network: options.network, sites, limits: loaded.settings.sandboxLimits, session: sessionId };
+  const started = await sandboxStart(root, ready, startOpts, {
     err: (line) => console.error(line),
   });
   process.off("SIGINT", quit);
@@ -641,7 +652,7 @@ const setupNow = () => setupOf(root, sandbox, options.network);
 const launchSetup = setupNow();
 const today = localDate();
 const leadPrompt = (date: string, setup: Setup, leadId: string) =>
-  systemPrompt({ root: where.root, date, setup, lead: leadId });
+  systemPrompt({ root: where.root, date, setup, lead: leadId, sites });
 const first = leadPrompt(today, launchSetup, lead.id);
 const system = [first, instructions.text].filter(Boolean).join("\n\n");
 // The MCP servers, made once the sandbox has started, and started once the bus has its listeners (release 8c plan, Task
@@ -657,6 +668,7 @@ const servers = new Servers(mcpConfigs, {
   answers: projectAnswers,
   unread: launchOnly,
   network: mcpNetwork,
+  sites,
   ...(mcpBox && { box: mcpBox }),
   // Read only when a line is said, from startAll on, once the session below exists.
   lead: () => session.lead.id,

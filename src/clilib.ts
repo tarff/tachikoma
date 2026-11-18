@@ -171,7 +171,8 @@ export interface Flags {
 // Where commands run, and whether the box reaches the internet (release 7 design, "Launching"): both off unless asked for.
 export const SANDBOXES = ["off", "live", "copy"] as const;
 export type Sandbox = (typeof SANDBOXES)[number];
-export const NETWORKS = ["off", "on"] as const;
+// `sites` (the box held to the settings file's allowedSites) is offered once proven (8c-2b plan, Step 11; decision 15).
+export const NETWORKS = ["off", "on", "sites"] as const;
 export type Network = (typeof NETWORKS)[number];
 
 // Each launch option from its flag, then its TACHI_ variable, then the settings file, then the default (release 6 design,
@@ -611,7 +612,7 @@ export async function sandboxStart(
       }
       net = made.net;
     }
-    const network = net ?? (opts.network as Network);
+    const network = net ?? (opts.network as "off" | "on");
     box = await DockerExecutor.start({ image: ready.tag, folder, network, limits: got.limits, unlimited, mounts, env, session, user, ...labels }, run);
   } catch (err) {
     return net ? dropSites(errorText(err), net) : refuse(errorText(err));

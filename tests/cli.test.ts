@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -368,10 +368,11 @@ describe("tachi", { timeout: 15_000 }, () => {
   });
 
   // Release 7 plan, choice 22: the network setting acts only in the sandbox, so --network without it is said once at
-  // launch, and the session starts. The file's entry is not warned of, as only a flag is typed for this launch. Four starts.
+  // launch, and the session starts. The file's entry is not warned of, as only a flag is typed for this launch.
+  // Five starts.
   it("warns that --network was ignored without the sandbox, and starts", { timeout: 60_000 }, () => {
     const started = 'Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.\n'; // the stand-in terminal stops it there
-    for (const net of ["on", "off"]) {
+    for (const net of ["on", "off", "sites"]) {
       const r = tachi("--lead", "ollama:none", "--network", net);
       expect(r.code).toBe(1);
       expect(r.stderr).toBe(`--network acts only with the sandbox on; it was ignored\n${started}`);
@@ -379,7 +380,7 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(tachi("--lead", "ollama:none", homeWith('{"network": "on"}')).stderr).toBe(started);
     const r = tachi("--lead", "ollama:none", "--network", "x", "-p", "hi");
     expect(r.code).toBe(1);
-    expect(r.stderr).toBe('--network must be one of: off, on (got "x")\n');
+    expect(r.stderr).toBe('--network must be one of: off, on, sites (got "x")\n');
   });
 
   // Release 7 plan, Task 7: the judge is made at launch, as --worker is, so a bad one stops it in its own words.
@@ -404,7 +405,9 @@ describe("tachi", { timeout: 15_000 }, () => {
         "                          and dangerous commands ask you",
         "                    never: never ask; only with --sandbox copy, where you review changes at the end",
         "  --sandbox <how>   off | live | copy (default: off): commands run in Docker on this folder or a copy",
-        "  --network <net>   off | on (default: off): whether commands in the sandbox can reach the internet",
+        // W11 (8c-2b plan, Step 11): one line in the help.
+        "  --network <net>   off | on | sites (default: off): whether commands in the sandbox can reach the internet;" +
+          ' sites allows only the settings\' "allowedSites"',
         "  --judge <spec>    the model that judges in auto mode; the lead's model unless set",
         "",
       ].join("\n"),
@@ -1927,8 +1930,13 @@ describe("dropOnExit", () => {
 // served on the loopback address, which answers at once with no tool call.
 describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000 }, () => {
   // `change`: the lead's stand-in writes a file into the copy's work/ before it answers, as the box would.
-  // `more`: the run's own variables besides, such as a pretend home folder's.
-  async function copyRun(standin: "ok" | "start-fails" | "stuck", change = false, more: Record<string, string> = {}) {
+  // `more`: the run's own variables besides, such as a pretend home folder's. `flags`: the run's own flags besides.
+  async function copyRun(
+    standin: "ok" | "start-fails" | "stuck" | "sites-leak",
+    change = false,
+    more: Record<string, string> = {},
+    flags: string[] = [],
+  ) {
     const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-e2e-")));
     onTestFinished(() => removeTree(top));
     const proj = path.join(top, "proj");
@@ -1937,7 +1945,12 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     mkdirSync(proj);
     mkdirSync(empty);
     writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
-    const sent: { tools: { function: { name: string; description: string } }[] }[] = []; // each request, for its tools
+    // Each request, for its tools and its system prompt.
+    type Sent = {
+      tools: { function: { name: string; description: string } }[];
+      messages: { role: string; content: string }[];
+    };
+    const sent: Sent[] = [];
     const server = http.createServer((req, res) => {
       let asked = "";
       req.setEncoding("utf8");
@@ -1958,7 +1971,7 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
     const env = { cwd: proj, PATH: empty, Path: empty, TACHI_DATA_DIR: data, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, TACHI_TEST_STANDIN_DOCKER: standin };
     Object.assign(env, more);
-    const { argv, options } = launch(["--lead", "openai:lead", "--sandbox", "copy", "-p", "hi", env]);
+    const { argv, options } = launch(["--lead", "openai:lead", "--sandbox", "copy", ...flags, "-p", "hi", env]);
     argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/register.mjs")).href); // after tsx's loader
     const child = spawn(process.execPath, argv, options);
     onTestFinished(() => void child.kill());
@@ -2033,6 +2046,165 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
       'note: MCP servers marked "host" and remote servers are off: the sandbox\'s network is off, and outside the ' +
       "box nothing keeps them off the web. Start with --network on to use them.";
     expect(r.stderr.split("\n").filter((l) => l.includes("MCP"))).toEqual([off]);
+  });
+
+  // 8c-2b plan, Step 11: `sites` switched on. The stand-in Docker answers the sites launch's commands (docker.mjs) and
+  // logs each one, so a case reads what was made and removed. With -p every launch line is on stderr, none on stdout.
+  describe("with the allowed sites", () => {
+    const logged = () => {
+      const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-docker-"));
+      onTestFinished(() => removeTree(top));
+      const file = path.join(top, "calls.jsonl");
+      const calls = () => readFileSync(file, "utf8").trimEnd().split("\n").map((l) => JSON.parse(l) as string[]);
+      return { env: { TACHI_TEST_STANDIN_LOG: file }, calls };
+    };
+    const system = (r: { sent: { messages: { role: string; content: string }[] }[] }) =>
+      r.sent[0]!.messages.find((m) => m.role === "system")!.content;
+    const LINE2 = 'The sandbox\'s network allows no sites; add them to "allowedSites" in ~/.tachikoma/settings.json.';
+
+    // The lead's prompt names the sites in force (the design's line 7), as the launch line counts them.
+    it("a sites launch prints the left-out lines, then the launch line with its count", async () => {
+      const settings = JSON.stringify({ network: "sites", allowedSites: ["github.com", "*.github.com", "pypi.org"] });
+      const r = await copyRun("ok", false, homeWith(settings));
+      expect(r.code).toBe(0);
+      expect(r.stdout).toBe("done\n");
+      const lines = r.stderr.trimEnd().split("\n");
+      expect(lines[0]).toBe("allowedSites entry 2 (*.github.com) was left out: a wildcard; list each name");
+      expect(lines.slice(1, 3)).toEqual([`Copying ${r.proj} for the sandbox...`, "Starting the sandbox..."]);
+      expect(lines[3]).toMatch(/^Sandbox: copy of .+ \(1 file, \d+\.\d s\), network sites \(2\), limits /);
+      expect(r.stderr).not.toContain(LINE2);
+      expect(system(r)).toContain(
+        "The sandbox's network reaches only these sites: github.com, pypi.org. Other sites and local addresses are " +
+          "refused, and only the user can add a site.",
+      );
+    });
+
+    it("with no list it prints line 2 and starts, and the prompt says no site is allowed", async () => {
+      const r = await copyRun("ok", false, {}, ["--network", "sites"]);
+      expect(r.code).toBe(0);
+      expect(r.stdout).toBe("done\n");
+      const lines = r.stderr.trimEnd().split("\n");
+      expect(lines[2]).toMatch(/^Sandbox: copy of .+, network sites \(0\), limits /);
+      expect(lines[3]).toBe(LINE2);
+      expect(system(r)).toContain(
+        "The sandbox's network allows no sites, so shell commands cannot reach the web; only the user can add a site.",
+      );
+    });
+
+    it("a failed check ends with line 8 and exit 1, and removes what it made", async () => {
+      const log = logged();
+      const settings = JSON.stringify({ allowedSites: ["github.com"] });
+      const r = await copyRun("sites-leak", false, { ...homeWith(settings), ...log.env }, ["--network", "sites"]);
+      expect(r.code).toBe(1);
+      expect(r.stdout).toBe("");
+      expect(r.stderr).toContain(
+        "The sandbox's allowed sites cannot be held on this machine: the box connected straight to an outside " +
+          "address. Use --network off or --network on.\n",
+      );
+      expect(r.stderr).not.toContain("Left in Docker");
+      expect(r.sent).toEqual([]); // the lead was never asked
+      const calls = log.calls();
+      const network = calls.find((c) => c[0] === "network" && c[1] === "create")!.at(-1)!;
+      const proxyRun = calls.find((c) => c[0] === "run" && c.includes("/proxy/proxy.cjs"))!;
+      const proxy = proxyRun[proxyRun.indexOf("--name") + 1]!;
+      const folder = proxyRun[proxyRun.indexOf("-v") + 1]!.replace(/:\/proxy:ro$/, "");
+      const after = calls.slice(calls.findIndex((c) => c[0] === "exec" && c[1] === "-i"));
+      const removals = [["rm", "-f", "b0x"], ["rm", "-f", proxy], ["network", "rm", network]];
+      expect(after).toEqual(expect.arrayContaining(removals));
+      expect(existsSync(folder)).toBe(false);
+      expect(readdirSync(r.copies)).toEqual([]);
+    });
+
+    // The window, with the stand-in terminal and the stand-in Docker both: /clear's prompt is built by the same maker
+    // as each shortening's (systemAgain, cli.tsx), so it names the sites as the launch's did.
+    it("in the window, the prompt after /clear names the sites too", async () => {
+      const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-e2e-")));
+      onTestFinished(() => removeTree(top));
+      const proj = path.join(top, "proj");
+      mkdirSync(proj);
+      const prompts: string[] = [];
+      const server = http.createServer((req, res) => {
+        let asked = "";
+        req.setEncoding("utf8");
+        req.on("data", (d: string) => (asked += d));
+        req.on("end", () => {
+          const body = JSON.parse(asked) as { messages: { role: string; content: string }[] };
+          prompts.push(body.messages.find((m) => m.role === "system")!.content);
+          const message = { role: "assistant", content: "done" };
+          const choice = { index: 0, finish_reason: "stop", message };
+          const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+          const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      onTestFinished(() => {
+        server.close();
+        server.closeAllConnections();
+      });
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+      const settings = homeWith(JSON.stringify({ network: "sites", allowedSites: ["github.com"] }));
+      const env = { cwd: proj, TACHI_DATA_DIR: path.join(top, "data"), OPENAI_API_KEY: "x", OPENAI_BASE_URL: url };
+      const { argv, options } = launch(["--lead", "openai:lead", "--sandbox", "copy", { ...env, ...settings }]);
+      // Both after tsx's loader; the terminal's variables as windowLater gives them.
+      for (const hook of ["terminal", "register"]) {
+        argv.splice(2, 0, "--import", pathToFileURL(path.resolve(`tests/standin/${hook}.mjs`)).href);
+      }
+      const terminal = {
+        TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"), CI: "0", CONTINUOUS_INTEGRATION: "0", TACHI_CLASSIC: "1",
+        WT_SESSION: "", TACHI_TEST_STANDIN_DOCKER: "ok",
+      };
+      const child = spawn(process.execPath, argv, { ...options, env: { ...options.env, ...terminal } });
+      onTestFinished(() => void child.kill());
+      const closed = new Promise<number | null>((resolve) => child.on("close", resolve));
+      let stdout = "";
+      child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+      child.stderr.resume();
+      // Each line typed, then Enter as a key of its own, as windowLater's exit types /exit.
+      const type = async (text: string) => {
+        child.stdin.write(text);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        child.stdin.write("\r");
+      };
+      const WAIT = { timeout: 15_000 };
+      // The window may wrap the launch line at any space, so its spaces and line ends are read as one.
+      await vi.waitFor(() => expect(stdout.replace(/\s+/g, " ")).toContain("network sites (1)"), WAIT);
+      await type("hi");
+      await vi.waitFor(() => expect(prompts).toHaveLength(1), WAIT);
+      await type("/clear");
+      await type("hi");
+      await vi.waitFor(() => expect(prompts).toHaveLength(2), WAIT);
+      await type("/exit");
+      expect(await closed).toBe(0);
+      const line7 =
+        "The sandbox's network reaches only these sites: github.com. Other sites and local addresses are refused, " +
+        "and only the user can add a site.";
+      for (const prompt of prompts) expect(prompt).toContain(line7);
+    });
+
+    // The servers get the list too: a remote server at a listed name starts, and its checked request is refused, as
+    // the name is this computer's own (its addresses read at the launch), before any connection. Unlisted, it would
+    // stay off and say nothing. A computer's name the list cannot hold (an underscore, say) skips the case.
+    const name = hostname().toLowerCase();
+    it.skipIf(!/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(name))(
+      "a remote server at a listed name starts, and its request to a local address is refused",
+      async () => {
+        const far = { type: "http", url: `https://${name}/mcp` };
+        const settings = JSON.stringify({ network: "sites", allowedSites: [name], mcpServers: { far } });
+        const r = await copyRun("ok", false, homeWith(settings));
+        expect(r.code).toBe(0);
+        expect(r.stderr).toContain(`\nmcp: MCP server far failed to start: ${name}:443 points at a local address\n`);
+      },
+    );
+
+    it("says once that the host servers are off with the allowed sites", async () => {
+      const tv = { command: "node", args: ["server.js"], host: true };
+      const settings = JSON.stringify({ network: "sites", mcpServers: { tv } });
+      const r = await copyRun("ok", false, homeWith(settings));
+      expect(r.code).toBe(0);
+      const line = 'note: MCP servers marked "host" are off: the sandbox\'s network is limited to its allowed sites.';
+      expect(r.stderr.split("\n").filter((l) => l.includes("MCP"))).toEqual([line]);
+    });
   });
 });
 
