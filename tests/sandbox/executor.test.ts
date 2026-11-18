@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readlinkSync } from "node:fs";
-import { mkdtemp, rmdir } from "node:fs/promises";
+import { existsSync, readlinkSync } from "node:fs";
+import { mkdtemp, rmdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,6 +15,7 @@ import {
   BoxState,
   DockerExecutor,
   dockerRoom,
+  exitCalls,
   type Limits,
   sweepBoxes,
   type Unlimited,
@@ -247,6 +248,50 @@ describe("DockerExecutor with a stand-in Docker", () => {
     const fake = answering(() => ok());
     await (await DockerExecutor.start({ ...OPTS, network: "on" }, fake.run)).stop();
     expect(fake.calls[0]!.slice(fake.calls[0]!.indexOf("--network"), fake.calls[0]!.indexOf("--network") + 2)).toEqual(["--network", "bridge"]);
+  });
+
+  // 8c-2b plan, Step 5: the launch's own network, its proxy as the lookup server, and the proxy variables by address,
+  // with Node's own (decision 11, measured at Step 1).
+  const SITES = { network: "tachikoma-sites-aaa", proxy: "tachikoma-proxy-aaa", address: "172.23.0.2", port: 40103 };
+  it("a sites box gets the network, the lookup address and the proxy variables by address", async () => {
+    const fake = answering(() => ok());
+    const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-sites-test-"));
+    onTestFinished(() => rmdir(folder).catch(() => {}));
+    await (await DockerExecutor.start({ ...OPTS, network: { ...SITES, folder, check: "c.invalid" } }, fake.run)).stop();
+    const run = fake.calls[0]!;
+    const at = run.indexOf("--network");
+    expect(run.slice(at, at + 4)).toEqual(["--network", "tachikoma-sites-aaa", "--dns", "172.23.0.2"]);
+    const home = run.indexOf("HOME=/tmp");
+    const proxy = "http://172.23.0.2:40103";
+    expect(run.slice(home + 1, home + 11)).toEqual([
+      "-e", `HTTPS_PROXY=${proxy}`, "-e", `HTTP_PROXY=${proxy}`, "-e", `https_proxy=${proxy}`,
+      "-e", `http_proxy=${proxy}`, "-e", "NODE_USE_ENV_PROXY=1",
+    ]);
+  });
+
+  it("a stop removes the box, the proxy, then the network, and the proxy's folder", async () => {
+    const fake = answering(() => ok());
+    const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-sites-test-"));
+    for (const f of ["proxy.cjs", "settings.json"]) await writeFile(path.join(folder, f), "");
+    const box = await DockerExecutor.start({ ...OPTS, network: { ...SITES, folder, check: "c.invalid" } }, fake.run);
+    await box.stop();
+    expect(fake.calls.slice(-3)).toEqual([
+      ["rm", "-f", "b0x"], ["rm", "-f", SITES.proxy], ["network", "rm", SITES.network],
+    ]);
+    expect(existsSync(folder)).toBe(false);
+    expect(box.state.removed).toBe(true);
+  });
+
+  it("a stop whose network removal fails leaves it to the sweep", async () => {
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args[0] === "network") return { code: 1, out: "", err: "Error response from daemon: has active endpoints\n" };
+      return ok(args[0] === "exec" ? "oom_kill 0\n" : "");
+    });
+    const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-sites-test-"));
+    const box = await DockerExecutor.start({ ...OPTS, network: { ...SITES, folder, check: "c.invalid" } }, fake.run);
+    await expect(box.stop()).resolves.toBeUndefined();
+    expect(fake.calls.at(-1)).toEqual(["network", "rm", SITES.network]);
   });
 
   it("says so when the box cannot start", async () => {
@@ -600,7 +645,74 @@ describe("sweepBoxes (the boxes of sessions whose process is gone)", () => {
     expect(fake.calls).toEqual([
       ["ps", "-a", "--filter", "label=tachikoma.session", "--format", '{{.ID}}\t{{.Label "tachikoma.host"}}\t{{.Label "tachikoma.pid"}}'],
       ["rm", "-f", "aaa"],
+      // 8c-2b plan, Step 5: then the network part's listing, which finds none here.
+      ["network", "ls", "--filter", "label=tachikoma.session", "--format",
+        '{{.ID}}\t{{.Label "tachikoma.host"}}\t{{.Label "tachikoma.pid"}}'],
     ]);
+  });
+
+  // 8c-2b plan, Step 5 and decision 10b: the networks of launches whose process is gone, after their containers (a
+  // proxy carries the box's labels, so the part above removes it), under the sweep's own limit.
+  const LS = ["network", "ls", "--filter", "label=tachikoma.session", "--format",
+    '{{.ID}}\t{{.Label "tachikoma.host"}}\t{{.Label "tachikoma.pid"}}'];
+  const gonePid = () =>
+    new Promise<number>((resolve) => {
+      const child = spawn(process.execPath, ["-e", ""]);
+      child.on("close", () => resolve(child.pid!));
+    });
+  const hang = (o: Parameters<DockerRun>[1]) =>
+    new Promise<Answer>((_, reject) => {
+      const stopped = () => reject(new Error("docker was stopped"));
+      if (o?.signal?.aborted) stopped();
+      o?.signal?.addEventListener("abort", stopped);
+    });
+
+  it("removes a dead launch's proxy and network, containers first, and leaves a live one's and another's", async () => {
+    const gone = await gonePid();
+    const containers = [`pr0xy\t${HOST}\t${gone}`, `l1ve\t${HOST}\t${process.pid}`];
+    const nets = [`n3t\t${HOST}\t${gone}`, `l1venet\t${HOST}\t${process.pid}`, `0thernet\tanother-pc\t${gone}`];
+    const fake = fakeDocker((args) =>
+      args[0] === "ps" ? ok(`${containers.join("\n")}\n`) : args[1] === "ls" ? ok(`${nets.join("\n")}\n`) : ok());
+    await sweepBoxes(fake.run);
+    expect(fake.calls.slice(1)).toEqual([["rm", "-f", "pr0xy"], LS, ["network", "rm", "n3t"]]);
+  });
+
+  it("gives its network commands the sweep's own signal, its container commands none, as today", async () => {
+    const gone = await gonePid();
+    const fake = fakeDocker((args) =>
+      args[0] === "ps" ? ok(`c1\t${HOST}\t${gone}\n`) : args[1] === "ls" ? ok(`n1\t${HOST}\t${gone}\n`) : ok());
+    await sweepBoxes(fake.run);
+    expect(fake.options.slice(0, 2)).toEqual([undefined, undefined]);
+    const signal = fake.options[2]?.signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(fake.options[3]?.signal).toBe(signal);
+  });
+
+  it("a network listing that never returns is cut at the limit, and the sweep ends", async () => {
+    const fake = fakeDocker(() => ok());
+    const run: DockerRun = (args, o) => (args[1] === "ls" ? (fake.run(args, o), hang(o)) : fake.run(args, o));
+    await sweepBoxes(run, 50);
+    expect(fake.calls.at(-1)).toEqual(LS);
+    expect(fake.options.at(-1)?.signal?.aborted).toBe(true);
+  });
+
+  it("a network removal that never returns is cut at the limit, and the networks after it are left", async () => {
+    const gone = await gonePid();
+    const fake = fakeDocker((args) => (args[1] === "ls" ? ok(`n1\t${HOST}\t${gone}\nn2\t${HOST}\t${gone}\n`) : ok()));
+    const run: DockerRun = (args, o) => (args[1] === "rm" ? (fake.run(args, o), hang(o)) : fake.run(args, o));
+    await sweepBoxes(run, 50);
+    expect(fake.calls.filter((c) => c[1] === "rm")).toEqual([["network", "rm", "n1"]]);
+  });
+
+  it("a listing or a removal that fails says nothing, and the rest is given up", async () => {
+    const gone = await gonePid();
+    const failing = fakeDocker((args) => (args[1] === "ls" ? { code: 1, out: "", err: "boom\n" } : ok()));
+    await expect(sweepBoxes(failing.run)).resolves.toBeUndefined();
+    const nets = `n1\t${HOST}\t${gone}\nn2\t${HOST}\t${gone}\n`;
+    const fake = fakeDocker((args) =>
+      args[1] === "ls" ? ok(nets) : args[1] === "rm" ? { code: 1, out: "", err: "x" } : ok());
+    await expect(sweepBoxes(fake.run)).resolves.toBeUndefined();
+    expect(fake.calls.filter((c) => c[1] === "rm")).toEqual([["network", "rm", "n1"]]);
   });
 
   it("loads on a Linux whose /proc/self/ns/pid cannot be read (WSL1), labelling boxes without it", async () => {
@@ -622,6 +734,24 @@ describe("sweepBoxes (the boxes of sessions whose process is gone)", () => {
     const fake = fakeDocker((args) => ok(args[0] === "run" ? "b0x\n" : "oom_kill 0\n"));
     await (await fresh.DockerExecutor.start(OPTS, fake.run)).stop();
     expect(fake.calls[0]).toContain(`tachikoma.host=${os.hostname()}/linux`);
+  });
+});
+
+// 8c-2b plan, decision 10a: the exit handler's two synchronous calls, apart from stop()'s tests.
+describe("exitCalls", () => {
+  it("with a sites launch gives two calls, in order: rm -f with the box and the proxy, then network rm", () => {
+    expect(exitCalls(["b0x"], ["tachikoma-proxy-aaa"], ["tachikoma-sites-aaa"])).toEqual([
+      ["rm", "-f", "b0x", "tachikoma-proxy-aaa"],
+      ["network", "rm", "tachikoma-sites-aaa"],
+    ]);
+  });
+
+  it("with an on or off box gives today's one call, rm -f with the box, and no network call", () => {
+    expect(exitCalls(["b0x"], [], [])).toEqual([["rm", "-f", "b0x"]]);
+  });
+
+  it("with nothing started gives no call", () => {
+    expect(exitCalls([], [], [])).toEqual([]);
   });
 });
 

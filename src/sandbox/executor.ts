@@ -3,8 +3,9 @@
 // exit, which cannot wait for one.
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readlinkSync } from "node:fs";
+import { readlinkSync, rmdirSync, rmSync } from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { commandEnv, onPath } from "../exec/env.js";
 import type { ExecResult, Executor, Running } from "../exec/executor.js";
 import { CommandLog } from "../exec/log.js";
@@ -17,11 +18,12 @@ import type { Mount } from "./mounts.js";
 export interface Limits { memory: number; cpus: number; pids: number }
 // `mounts` are live link's (mounts.ts); `user` is boxUser's; `env` are variables every command in the box gets, as live
 // link's git settings (choice 100); `labels` are added to the box's own; `unlimited` are the limits Docker cannot apply
-// (dockerRoom), whose flags are left out.
+// (dockerRoom), whose flags are left out. `network` is off, on, or the launch's own network with its proxy
+// (sitesNet.ts).
 export interface BoxOptions {
   image: string;
   folder: string;
-  network: "off" | "on";
+  network: "off" | "on" | SitesNet;
   limits: Limits;
   mounts: Mount[];
   session: string;
@@ -30,6 +32,38 @@ export interface BoxOptions {
   labels?: Record<string, string>;
   unlimited?: Unlimited[];
 }
+// The launch's own network and its proxy (8c-2b plan, Step 5; sitesNet.ts made them): the network's and the proxy's
+// names, the proxy's address on the network and its port, its folder on this computer and the check's made-up name.
+export interface SitesNet {
+  network: string;
+  proxy: string;
+  address: string;
+  port: number;
+  folder: string;
+  check: string;
+}
+// The proxy's folder's two files (decision 1), removed by name with the folder.
+export const PROXY_FILES = ["proxy.cjs", "settings.json"] as const;
+// Whether it is gone; one that is not stays held for the exit handler's try (the step's review).
+export function removeProxyFolder(folder: string): boolean {
+  try {
+    for (const f of PROXY_FILES) rmSync(path.join(folder, f), { force: true });
+    rmdirSync(folder);
+    return true;
+  } catch (e) {
+    // Left in the system's temp folder; it holds the list and this computer's addresses, nothing secret.
+    return (e as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+// The two limits of a sites launch (8c-2b plan, question 4: the user's pick after Step 1, 2026-11-18): 10 s for the
+// set-up (also each failed launch's cleanup and the sweep's network part) and 10 s for the launch check. The design's
+// "Measured while building" section has the source: of ten runs on this PC, the slowest set-up took 1.06 s, the
+// slowest cleanup 1.13 s and the slowest check 0.60 s, so these are about 9 and 17 times them. The one slowdown
+// measured for this project on a busier machine is CI's 3.1 to 3.4 times (vitest.config.ts).
+export const SETUP_LIMIT_MS = 10_000;
+export const CHECK_LIMIT_MS = 10_000;
+
 // The limits Docker can be asked for but may not apply (choice 83), as its line names them.
 export type Unlimited = "memory" | "CPUs" | "processes";
 // What Docker has: its CPUs and its memory in bytes, whether it is rootless, and the limits it cannot apply (`docker
@@ -132,6 +166,11 @@ const pidSpace = () => {
   }
 };
 const HOST = [os.hostname(), process.platform, ...(process.platform === "linux" ? pidSpace() : [])].join("/");
+// The box's three labels, for what a sites launch makes beside it (8c-2b plan, Step 5), so the sweep finds those too.
+export const tachiLabels = (session: string) => [
+  "--label", `tachikoma.session=${session}`, "--label", `tachikoma.host=${HOST}`,
+  "--label", `tachikoma.pid=${process.pid}`,
+];
 // The box's cgroup's memory events, as the box sees them. Only cgroup v2 has the file (Docker Desktop's, and most Linux
 // today); cgroup v1, Ubuntu 20.04's and RHEL 8's default, has none, and OOMKilled is read instead (exec, below).
 const EVENTS = "/sys/fs/cgroup/memory.events";
@@ -140,11 +179,23 @@ const newline = (text: string) => (text && !text.endsWith("\n") ? "\n" : "");
 
 // Boxes still to remove when Tachikoma ends. "exit" handlers cannot wait, so this one removal runs docker synchronously,
 // by its full path, with the environment commands get, as docker.ts does. cli.tsx's signal handlers end through
-// process.exit, so a signal exit runs it too; a crash runs it as well.
+// process.exit, so a signal exit runs it too; a crash runs it as well. A sites launch's proxy and network are held here
+// from when they are made (8c-2b plan, decision 10a): the containers go first, as Docker refuses to remove a network a
+// container is still joined to; a call that fails leaves its things to the next launch's sweep. The proxy's folder is
+// removed directly.
 const boxes = new Set<string>();
+export const atExit = { boxes, proxies: new Set<string>(), networks: new Set<string>(), folders: new Set<string>() };
+export function exitCalls(boxIds: string[], proxies: string[], networks: string[]): string[][] {
+  return [
+    ...(boxIds.length || proxies.length ? [["rm", "-f", ...boxIds, ...proxies]] : []),
+    ...(networks.length ? [["network", "rm", ...networks]] : []),
+  ];
+}
 process.on("exit", () => {
-  const exe = boxes.size ? onPath("docker") : undefined;
-  if (exe) spawnSync(exe, ["rm", "-f", ...boxes], { env: commandEnv(), windowsHide: true, stdio: "ignore" });
+  const calls = exitCalls([...boxes], [...atExit.proxies], [...atExit.networks]);
+  const exe = calls.length ? onPath("docker") : undefined;
+  if (exe) for (const args of calls) spawnSync(exe, args, { env: commandEnv(), windowsHide: true, stdio: "ignore" });
+  for (const folder of atExit.folders) removeProxyFolder(folder);
 });
 
 // Who runs the box, always given, so an image cannot choose. Choice 14: the image's tachi user on Windows and macOS; on
@@ -237,6 +288,8 @@ export class DockerExecutor implements Executor {
     readonly id: string,
     readonly limits: Limits,
     private readonly run: DockerRun,
+    // A sites box's network and proxy, removed after it (8c-2b plan, Step 5).
+    readonly sites?: SitesNet,
   ) {
     this.state = new BoxState(id, run, limits);
   }
@@ -251,10 +304,19 @@ export class DockerExecutor implements Executor {
     const unlimited = opts.unlimited ?? [];
     const limit = (what: Unlimited, flags: string[]) => (unlimited.includes(what) ? [] : flags);
     const mounts = opts.mounts.flatMap((m) => ("hidden" in m ? ["--tmpfs", m.box] : ["-v", `${m.host}:${m.box}${m.readOnly ? ":ro" : ""}`]));
+    // A sites box (8c-2b plan, Step 5): the launch's own network, the proxy as its lookup server, and the proxy
+    // variables by its address, Node's own included (decision 11, measured at Step 1).
+    const sites = typeof opts.network === "object" ? opts.network : undefined;
+    const proxy = sites && `http://${sites.address}:${sites.port}`;
+    const proxyEnv = proxy
+      ? ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].flatMap((name) => ["-e", `${name}=${proxy}`])
+      : [];
+    const network = sites ? [sites.network, "--dns", sites.address] : [opts.network === "on" ? "bridge" : "none"];
     const got = await run([
       "run", "-d", "--pull", "never", "--init", "--user", opts.user, "-e", `HOME=${BOX_HOME}`,
+      ...proxyEnv, ...(sites ? ["-e", "NODE_USE_ENV_PROXY=1"] : []),
       ...Object.entries(opts.env ?? {}).flatMap(([name, value]) => ["-e", `${name}=${value}`]), "--cap-drop", "ALL",
-      "--security-opt", "no-new-privileges", "--network", opts.network === "on" ? "bridge" : "none",
+      "--security-opt", "no-new-privileges", "--network", ...network,
       ...limit("memory", ["--memory", String(memory), "--memory-swap", String(memory)]), ...limit("CPUs", ["--cpus", String(cpus)]),
       ...limit("processes", ["--pids-limit", String(pids)]),
       "-v", `${opts.folder}:/work`, ...mounts, "-w", "/work",
@@ -263,7 +325,7 @@ export class DockerExecutor implements Executor {
       opts.image, "sleep", "infinity",
     ]);
     if (got === "missing" || got.code !== 0) throw new Error(`The sandbox could not start: ${got === "missing" ? NO_DOCKER : got.err.trim()}`);
-    const box = new DockerExecutor(got.out.trim(), opts.limits, run);
+    const box = new DockerExecutor(got.out.trim(), opts.limits, run, sites);
     boxes.add(box.id);
     box.state.oomKills = await box.state.oomKillCount();
     return box;
@@ -342,6 +404,16 @@ export class DockerExecutor implements Executor {
     boxes.delete(this.id);
     const got = await this.run(["rm", "-f", this.id]).catch(() => undefined);
     if (got && got !== "missing" && got.code === 0) this.state.removed = true;
+    // Then the proxy, then the network, which Docker refuses while a container is joined to it (8c-2b plan, Step 5).
+    // One that fails is left to the next launch's sweep.
+    const sites = this.sites;
+    if (!sites) return;
+    const gone = (r: Awaited<ReturnType<DockerRun>> | undefined) => !!r && r !== "missing" && r.code === 0;
+    const proxyGone = gone(await this.run(["rm", "-f", sites.proxy]).catch(() => undefined));
+    if (proxyGone) atExit.proxies.delete(sites.proxy);
+    const networkGone = gone(await this.run(["network", "rm", sites.network]).catch(() => undefined));
+    if (networkGone) atExit.networks.delete(sites.network);
+    if (removeProxyFolder(sites.folder)) atExit.folders.delete(sites.folder);
   }
 }
 
@@ -410,12 +482,33 @@ export function killInBox(run: DockerRun, id: string, group: string): Promise<st
 // remote Docker, or WSL beside Windows on Docker Desktop's one Docker, with the computer's name but pids of its own), or
 // with no labels to tell, is left alone. A process id the system has given to another program reads as alive, so that box
 // waits for a later launch.
-export async function sweepBoxes(run: DockerRun = docker): Promise<void> {
-  const got = await run(["ps", "-a", "--filter", "label=tachikoma.session", "--format", '{{.ID}}\t{{.Label "tachikoma.host"}}\t{{.Label "tachikoma.pid"}}']);
+export async function sweepBoxes(run: DockerRun = docker, limitMs = SETUP_LIMIT_MS): Promise<void> {
+  const format = '{{.ID}}\t{{.Label "tachikoma.host"}}\t{{.Label "tachikoma.pid"}}';
+  const dead = (line: string) => {
+    const [id, host, pid] = line.trim().split("\t");
+    return id && host === HOST && pid && /^\d+$/.test(pid) && !alive(Number(pid)) ? id : undefined;
+  };
+  const got = await run(["ps", "-a", "--filter", "label=tachikoma.session", "--format", format]);
   if (got === "missing" || got.code !== 0) return;
   for (const line of got.out.split("\n")) {
-    const [id, host, pid] = line.trim().split("\t");
-    if (id && host === HOST && pid && /^\d+$/.test(pid) && !alive(Number(pid))) await run(["rm", "-f", id]);
+    const id = dead(line);
+    if (id) await run(["rm", "-f", id]);
+  }
+  // A sites launch's network, after its containers (a proxy has the box's labels, so the part above removed it), under
+  // one limit of the set-up's length (8c-2b plan, decision 10b). If it runs out, or a command fails, the rest is given
+  // up without a line, and the launch goes on: a dead launch's network has a name of its own, so it is in nobody's way.
+  const signal = AbortSignal.timeout(limitMs);
+  try {
+    const nets = await run(["network", "ls", "--filter", "label=tachikoma.session", "--format", format], { signal });
+    if (nets === "missing" || nets.code !== 0) return;
+    for (const line of nets.out.split("\n")) {
+      const id = dead(line);
+      if (!id) continue;
+      const removed = await run(["network", "rm", id], { signal });
+      if (removed === "missing" || removed.code !== 0 || signal.aborted) return;
+    }
+  } catch {
+    // Cut by the limit, or docker could not be started: given up, as above.
   }
 }
 
