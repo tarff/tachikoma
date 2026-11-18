@@ -9,7 +9,9 @@ The rules come from the main design ([2026-10-22](2026-10-22-tachikoma-design.md
 enforced" and "MCP tools"): an `--internal` Docker network with a filtering proxy written as part of Tachikoma; one
 check shared by the proxy and the MCP client, "so the two can never disagree"; exact host and port; a lookup made at
 connect time and the checked address used; local addresses never reached through an allowed name; nothing widening
-the list; only web traffic; "not offered until proven"; and only the user grants network access.
+the list; only web traffic; "not offered until proven"; and only the user grants network access. "Only web traffic"
+narrows here to what the proxy can check: a TLS connection opened to a listed name and port, or a plain http request
+to one. What is carried inside TLS is not checked (section 2, and the second design review).
 
 ## The user's choices (2026-11-18)
 
@@ -38,10 +40,11 @@ the list; only web traffic; "not offered until proven"; and only the user grants
     start (Recommended)").
 11. **A refused entry is named by its position and the name part only** (the design review's finding 5, "Name and
     position only (Recommended)").
+12. **No IP address entries** (the second design review, "Drop IP entries (Recommended)"): TLS forbids an IP
+    address as a greeting's server name (RFC 6066, section 3), so under choice 10 no https client could use one.
 
 The user approved each of the five sections below on 2026-11-18, the wording drafts in "What the user and the model
-see" among them. The design review's five findings changed sections 2-5 the same day (see "After the design
-review").
+see" among them. The design reviews changed sections 1-5 the same day (see "After the design review").
 
 ## Measured (2026-11-18): name lookups on an `--internal` network
 
@@ -78,11 +81,10 @@ it runs on.
   - `github.com` allows `https://github.com` on port 443 only;
   - `api.example.com:8443` allows that port only;
   - plain `http://` needs its port written, such as `example.com:80`.
-- **Letter case and a trailing dot are ignored**: `GitHub.com.` and `github.com` are one entry. An outside IP address
-  can be listed exactly, such as `203.0.113.5:443`.
+- **Letter case and a trailing dot are ignored**: `GitHub.com.` and `github.com` are one entry.
 - **Refused entries:** a wildcard, a path, a scheme written in front (`https://`), a password, anything that is not
-  a name and port, and a local address. Each is left out with one launch line naming it (below), and the launch goes
-  on.
+  a name and port, a local address, and an IP address (choice 12). Each is left out with one launch line naming it
+  (below), and the launch goes on.
 - **No list, or an empty one:** `sites` starts, its launch line says no site is allowed, and the box works as with
   the network off.
 - **Elsewhere:** the launch line shows `network sites (3)`, the count of entries in force. A session saved with
@@ -115,8 +117,10 @@ it runs on.
 - **https** is a tunnel (CONNECT). Before passing any bytes, the proxy reads the tunnel's first message: it must be a
   TLS greeting (ClientHello) whose server name is the checked name, or the tunnel is refused (choice 10; the design
   review's finding 3). What is sent after the greeting is passed through unread. **Plain http** is checked per
-  request, by its address. A redirect is a new request, checked again. So what passes is TLS to a listed name and
-  port, or plain http to one: `git` over SSH fails, and so does any other protocol, on any port.
+  request, by its address. A redirect is a new request, checked again. So what passes is a TLS connection opened to a
+  listed name and port, or a plain http request to one. Anything that does not open that way fails, `git` over SSH
+  among them. A protocol carried inside TLS, such as mail over TLS to a listed name and port, is not checked and
+  passes (a known limit).
 - **The launch check.** Before anything runs:
   - the network is confirmed to have no gateway address (Docker's own description of it);
   - from the box, three things must fail: a direct connection to an outside address, a request through the proxy for
@@ -173,7 +177,7 @@ column matching `on`.
 1. A refused entry, at launch, one line each, naming its position and only the name part that could be read, never a
    password, path or query (choice 11): `allowedSites entry 3 (*.github.com) was left out: a wildcard; list each
    name`. With no readable name: `allowedSites entry 4 was left out: not a name and port`. The other reasons:
-   `a path`, `a local address`, `a password`.
+   `a path`, `a local address`, `a password`, `an IP address; list its name` (choice 12).
 2. No site, at launch: `The sandbox's network allows no sites; add them to "allowedSites" in
    ~/.tachikoma/settings.json.`
 3. `host` servers off, at launch: `MCP servers marked "host" are off: the sandbox's network is limited to its allowed
@@ -208,7 +212,7 @@ with the worker servers).
   - a listed site passes;
   - an unlisted one is refused with line 5;
   - a listed name that resolves somewhere local is refused;
-  - only https tunnels and plain http pass;
+  - only a tunnel opening with a TLS greeting that names the checked site, and a plain http request, pass;
   - a tunnel that opens with something other than a TLS greeting (an SSH greeting among them), or with a greeting
     naming another site, is refused;
   - a redirect is checked again.
@@ -235,7 +239,8 @@ with the worker servers).
   Node's own `fetch`, unless the box can turn it on (to be checked).
 - The user's own `headersHelper` runs on the user's computer and is not held to the list.
 - An https tunnel is checked by its name, its port and its TLS greeting's server name; what is sent after the greeting
-  is not read, so a site that serves several names behind one greeting name is reached as that site chooses.
+  is not read, so a site that serves several names behind one greeting name is reached as that site chooses, and a
+  protocol other than the web carried inside TLS to a listed name and port, such as mail over TLS, passes.
 - The user's computer's own addresses are read at launch: one it gains later, and the router's public IPv4 address
   (which only an outside service could tell), are not counted as local.
 
@@ -254,3 +259,11 @@ A review of this design found five problems, all confirmed; findings 1 and 2 wer
    as local, with a known limit for ones gained later and the router's public address.
 5. **A refused entry's line could show a pasted password or token.** Fixed (choice 11): the line names the entry's
    position and only its readable name part.
+
+A second review of the fixes (49fef4b) found that they hold, and two more problems:
+
+1. **An IP address entry could never pass the TLS greeting rule,** as TLS forbids an IP address as the server name
+   (RFC 6066, section 3). Fixed (choice 12): IP address entries are refused, with their own reason.
+2. **"Only web traffic" still promised more than the check gives:** another protocol carried inside TLS, with a
+   matching greeting, passes unchecked. Fixed: the opening, section 2, the tests and the known limits all say TLS
+   opened to a listed name and port, or plain http to one.
