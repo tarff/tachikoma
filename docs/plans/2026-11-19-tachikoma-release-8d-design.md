@@ -847,6 +847,19 @@ The snapshots of the user's folders:
   that gap, the stand-in run above, which started at 21:30:51 UTC and stopped before MemPalace was imported. By their
   names and times, they come from the user's own MemPalace plugin saving this and another Claude Code session. This
   is inferred, not traced. Under the user's rule (step 1) they still count as a difference.
+- The cause, found on 2026-11-19: the user's MemPalace plugin saves the build's Claude Code session every time the
+  build's main session finishes a reply. Its save marker for this session,
+  `hook_state/<session>_last_save`, is in both snapshots. The changes in the gap came
+  from that, not from the build.
+- The user's choice, 2026-11-19: **check around each run.**
+  - From now on, only the listings taken just before and just after each build run are compared. Those must show no
+    change outside the set-apart places.
+  - Changes in the gaps between runs are listed in the record and do not fail.
+  - The palace files are not set apart: a change to them around a run still fails.
+  - The snapshot script's rules are unchanged; the choice only decides which pairs of listings are compared.
+  - Under this choice, step 5 passes. Both pairs taken around a run (`step5-before` to `step5-after`, and
+    `step5-fix-before` to `step5-fix-after`) show no change. The gap pair (`step5-after` to `step5-fix-before`) is the
+    one listed above.
 
 Kept for later steps: the model in `tachi-8d-build\install\home\.cache\chroma\onnx_models\all-MiniLM-L6-v2` and the
 download in `tachi-8d-build\model-download`. For step 31 to remove with the build folder: the palaces in
