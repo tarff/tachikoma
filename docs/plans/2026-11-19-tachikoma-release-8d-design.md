@@ -1303,7 +1303,8 @@ not its own, and the script's work is done.
 
 In short: a first set-up downloads three things: the packages (86 to 111 MB, by system), the model (83.2 MB, the
 same everywhere) and a Python of uv's own (22.0 to 35.4 MB, by system). With Python, the largest is Linux x86-64 at
-229.5 MB and the smallest Windows at 191.3 MB; this PC's 191.3 MB matches, to the byte, what step 4's install really
+229.2 to 229.6 MB (by which of its four builds uv takes) and the smallest Windows at 191.3 MB; this PC's 191.3 MB
+matches, to the byte, what step 4's install really
 fetched here plus the model. **N = 230** (the user's choice and rounding rule, at the end of this part).
 
 Script: `scripts/8d/measure-download.mjs`, run as `node scripts/8d/measure-download.mjs`, exit 0, "measure-download:
@@ -1336,7 +1337,7 @@ The table, in MB:
 | System | Packages | Model | Python | Without Python | With Python |
 |---|---|---|---|---|---|
 | Windows x86-64 (this PC) | 86.1 | 83.2 | 22.0 | 169.3 | 191.3 |
-| Linux x86-64 | 111.0 | 83.2 | 35.4 | 194.2 | 229.5 |
+| Linux x86-64 | 111.0 | 83.2 | 35.0 to 35.4 | 194.2 | 229.2 to 229.6 |
 | Linux arm64 | 104.7 | 83.2 | 29.5 | 187.9 | 217.4 |
 | macOS arm64 | 92.0 | 83.2 | 25.3 | 175.2 | 200.5 |
 | Intel Macs | known limit | | | | |
@@ -1345,7 +1346,8 @@ The table, in MB:
 In bytes: packages 86,095,655 (Windows), 111,009,574 (Linux x86-64), 104,749,343 (Linux arm64), 92,011,082 (macOS
 arm64); model 83,178,821; Python 21,986,637 (Windows), 35,356,674 (Linux x86-64), 29,455,505 (Linux arm64),
 25,286,365 (macOS arm64). With Python: 191,261,113 (Windows), 229,545,069 (Linux x86-64), 217,383,669 (Linux arm64),
-200,476,268 (macOS arm64; 200,575,841 on macOS 14, below).
+200,476,268 (macOS arm64; 200,575,841 on macOS 14, below). For Linux x86-64 these are the plain build's; its four
+builds give 229,215,972 to 229,601,900 (under "The x86-64 build").
 
 The table's packages, model and without-Python columns, and Windows' Python, are the script's output. The other three
 Python sizes, and so their with-Python totals, are from the size-only requests under "Python on the other systems",
@@ -1423,21 +1425,50 @@ does show, offline as before: `uv python list 3.13.17 --all-platforms --only-dow
 json -vv`, without `--all-arches`, lists for Linux on this PC only `cpython-3.13.17-linux-x86_64-gnu` (the plain
 build) and `...-linux-x86_64-musl`, none of `x86_64_v2` to `v4`. This PC's processor is an Intel Core i9-12900K, and
 Windows reports AVX2 present (`IsProcessorFeaturePresent(40)`: True), so it could run a newer-processor build; uv
-still names the plain one for it. That is uv's output on a Windows PC, not its code, and not a run on Linux. The
-figure uses the plain build's size; the newer-processor builds' sizes were not asked for (a fourth request needs the
-user's yes).
+still names the plain one for it. That is uv's output on a Windows PC, not its code, and not a run on Linux. So the
+user asked for the sizes of all four Linux x86-64 builds, and N is taken over all four.
+
+The second size-only requests (2026-11-19, after the user's second yes; no sfw): exactly 3 more, the same curl flags
+and the same way, in one PowerShell command between two snapshots, one per address. Each address is the `url` uv's
+offline listing with `--all-arches` gives for `cpython-3.13.17-linux-x86_64_v2-gnu`, `...-x86_64_v3-gnu` and
+`...-x86_64_v4-gnu`: the same release folder, `cpython-3.13.17+20261021-<system>-install_only_stripped.tar.gz`. Each
+exited 0 and answered `HTTP/1.1 200 OK`, with no redirect and a `Content-Length`; headers in
+`tachi-8d-build\python-sizes\<system>.headers.txt`.
+
+| Linux x86-64 build | Address's `<system>` | Content-Length (bytes) | Last-Modified | Total with Python |
+|---|---|---|---|---|
+| plain (first requests) | `x86_64-unknown-linux-gnu` | 35,356,674 | Wed, 21 Oct 2026 19:31:11 GMT | 229,545,069 |
+| v2 | `x86_64_v2-unknown-linux-gnu` | 35,027,577 | Wed, 21 Oct 2026 19:31:22 GMT | 229,215,972 |
+| v3 | `x86_64_v3-unknown-linux-gnu` | 35,393,614 | Wed, 21 Oct 2026 19:31:32 GMT | 229,582,009 |
+| v4 | `x86_64_v4-unknown-linux-gnu` | 35,413,505 | Wed, 21 Oct 2026 19:31:54 GMT | 229,601,900 |
+
+Each total is 111,009,574 (packages) + 83,178,821 (model) + the build's size.
 
 The snapshot of the user's folders:
 - `step7-run-before` and `step7-run-after`, around the script's run, "no change"; `step7-before` (before the first uv
   command of this step) against `step7-all` (after the last of the first part), "no change".
-- `step7b-head-before` and `step7b-head-after`, around the 3 requests (all in one PowerShell command), "no change".
-- `step7b-list-before` and `step7b-list-after`, around the second offline listing above: **not clean**. The user's
-  own `~/.mempalace` changed outside the set-apart places: `palace/sqlite_exact.sqlite3` and its `-wal` (23:08:05.3
-  UTC) and the folder `locks` (23:08:05.6), with the set-apart daemon queue (23:08:05.6). The listing ran at about
-  23:08:04.6 UTC. uv ran with `USERPROFILE` and `HOME` in `tachi-8d-build\download\home` and ran no MemPalace. These
-  are the same files as in step 6's run 4, whose cause was traced to the user's own MemPalace plugin saving on the
-  main Claude Code session's Stop hook; that this pair has the same cause is an inference from the files and times,
-  not traced. Under the user's rule this pair fails.
+- `step7b-head-before` and `step7b-head-after`, around the first 3 requests (all in one PowerShell command), "no
+  change".
+- `step7c-head-before` and `step7c-head-after`, around the second 3 requests (likewise), "no change".
+- `step7b-list-before` and `step7b-list-after`, around the second offline listing above: **not clean, and counts as
+  explained.** The user's own `~/.mempalace` changed outside the set-apart places: `palace/sqlite_exact.sqlite3` and
+  its `-wal` (23:08:05.3 UTC) and the folder `locks` (23:08:05.6), with the set-apart daemon queue (23:08:05.6). The
+  listing ran at about 23:08:04.6 UTC. uv ran with `USERPROFILE` and `HOME` in `tachi-8d-build\download\home` and ran
+  no MemPalace.
+  - The trace (the coordinator's, from the session log, and the snapshot files' times, converted with Node):
+    1. the main Claude Code session's reply ended at 23:07:33.4 UTC (session log);
+    2. in the gap before the pair, the plugin's files changed, as `step7b-list-before.json` shows:
+       `hook_state/last_checkpoint` 23:07:34.998, `hook_state/hook.log` 23:07:35.070,
+       `hook_state/<session>_last_save` 23:07:35.074 and
+       `locks/mine_palace_<palace key>.lock` 23:07:35.092, about 2 s after the reply; none of them changed
+       inside the pair;
+    3. the user's palace, `palace/sqlite_exact.sqlite3`, changed at 23:08:05.300 inside the pair (its `-wal` at
+       23:08:05.272), about 30 s later: the same pattern as step 6's run 4.
+  - The folder `locks` changed at 23:08:05.628, with the palace write, as it did in run 4 (22:17:35). The user's rule
+    names the lock file, not the folder's own time; it is recorded here as part of the same write.
+  - Under the user's rule of 2026-11-19 (a pair that fails only because of the plugin's save counts as explained when
+    this full chain shows in the times: a reply ends, the plugin's files change about 2 s later, the palace about 30 s
+    later), this pair counts as explained.
 - Each clean pair has only the set-apart line of the user's own MemPalace daemon folder.
 
 The user's choice (step 7), 2026-11-19:
@@ -1446,6 +1477,11 @@ The user's choice (step 7), 2026-11-19:
 2. N is one figure for all systems: the largest system's total, counting Python.
 3. The approved line stays word for word: "MemPalace 3.12.0 and its packages (about N MB)".
 
+4. Yes, the same day, to 3 more size-only requests, for the Linux x86-64 `x86_64_v2`, `v3` and `v4` builds; N is the
+   largest Linux x86-64 total over the plain build and these three.
+5. The failed pair `step7b-list-before` to `step7b-list-after` counts as explained, with the trace above.
+
 **N = 230.** The rule: the largest with-Python total, in MB of 1,000,000 bytes, rounded up to a whole number. The
-largest is Linux x86-64: 111,009,574 (packages) + 83,178,821 (model) + 35,356,674 (Python) = 229,545,069 bytes, 229.5
-MB, rounded up to 230. It holds while uv picks the plain x86-64 build (above).
+largest is Linux x86-64 with the `x86_64_v4` build: 111,009,574 (packages) + 83,178,821 (model) + 35,413,505 (Python)
+= 229,601,900 bytes, 229.6 MB, rounded up to 230. Each of the four Linux x86-64 builds gives 230 too (229.2 to 229.6
+MB), so N does not depend on which one uv takes.
