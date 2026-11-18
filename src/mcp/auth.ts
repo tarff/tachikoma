@@ -166,7 +166,7 @@ export class McpAuth implements OAuthClientProvider {
   #discovery: OAuthDiscoveryState | undefined;
   #refreshRead: string | undefined; // the refresh token last read, so a refused one drops only itself (invalidateCredentials)
   // With the allowed sites (8c-2b plan, Step 9; decision 13a), the checked fetch its own request uses (discoveryState):
-  // the connection's, which the server sets at each new one, or a sign-in attempt's own. Node's otherwise.
+  // a sign-in attempt's own; a connection's comes through withFetch. Node's otherwise.
   fetch: FetchLike | undefined;
 
   // `checked`: with the allowed sites, the maker of each sign-in attempt's own checked fetch.
@@ -267,12 +267,30 @@ export class McpAuth implements OAuthClientProvider {
   // of discovery (choice 58), read without the entry's headers; one that cannot be read, or is not OAuth's metadata, is a
   // server with no sign-in details.
   async discoveryState(): Promise<OAuthDiscoveryState | undefined> {
+    return this.#discover(this.fetch);
+  }
+
+  // One connection's view of this client (the outside review of PR #25, finding 2): the same sign-ins and state, but
+  // discoveryState through that connection's own checked fetch, so a request still finishing on an old connection is
+  // never checked, nor refused, by a newer one's.
+  withFetch(send: FetchLike): OAuthClientProvider {
+    const discoveryState = () => this.#discover(send);
+    return new Proxy(this, {
+      get: (target, key) => {
+        if (key === "discoveryState") return discoveryState;
+        const value: unknown = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  async #discover(send: FetchLike | undefined): Promise<OAuthDiscoveryState | undefined> {
     quiet();
     const at = this.#oauth?.authServerMetadataUrl;
     if (this.#discovery || at === undefined) return this.#discovery;
     // One that cannot be reached (no such host, refused, a redirect) is the same: not the server's own failure. One
     // the allowed sites refuse is that refusal (8c-2b plan, decision 13a).
-    const res = await (this.fetch ?? fetch)(at, { headers: { accept: "application/json" }, redirect: "error" }).catch(
+    const res = await (send ?? fetch)(at, { headers: { accept: "application/json" }, redirect: "error" }).catch(
       (err: unknown) => {
         if (err instanceof SiteRefused) throw err;
         return undefined;

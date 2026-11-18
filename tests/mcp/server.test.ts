@@ -7,6 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { running } from "../../src/exec/local.js";
+import { AuthStore } from "../../src/mcp/auth.js";
 import type { ServerConfig, ServerEntry } from "../../src/mcp/config.js";
 import { type CheckedFetch, connectionFetch, NotReached, Server } from "../../src/mcp/server.js";
 import { sitesFetch } from "../../src/mcp/sitesFetch.js";
@@ -47,12 +48,12 @@ async function setup() {
     config: ServerConfig,
     opts: {
       env?: NodeJS.ProcessEnv; startMs?: number; root?: string; helper?: { cwd: string; project: boolean };
-      checked?: CheckedFetch;
+      checked?: CheckedFetch; auth?: AuthStore;
     } = {},
   ) => {
     const server = new Server(config, {
       root: opts.root ?? dir, env: opts.env ?? process.env, onChange, startMs: opts.startMs, helper: opts.helper,
-      ...(opts.checked && { checked: opts.checked }),
+      ...(opts.checked && { checked: opts.checked }), ...(opts.auth && { auth: opts.auth }),
     });
     servers.push(server);
     return server;
@@ -620,6 +621,84 @@ describe("a remote server with the allowed sites", () => {
     const local = `mcp.example:${fake.port} points at a local address`;
     await expect(server.callTool("echo", { text: "x" }, {})).rejects.toThrow(local);
     expect(server.state).toEqual({ is: "failed", reason: local });
+  });
+
+  // The outside review of PR #25, finding 1: a refusal that comes only on the library's own event-stream request, in
+  // the background, fails the ready server too, with no call made. That GET looks its name up once the server is
+  // ready, and finds it local; every other request goes on as before.
+  it("fails a ready server with W5 when only its background event stream is refused", async () => {
+    const { dir, make } = await setup();
+    const fake = await httpFake(dir);
+    let release = () => {};
+    const later = new Promise<void>((done) => (release = done));
+    const connect = (_address: string, port: number) => net.connect(port, "127.0.0.1");
+    const checked: CheckedFetch = (refused) => {
+      const sites = listed(fake.port);
+      const plain = sitesFetch({ sites, own: [], refused, lookup: async () => [PUBLIC], connect });
+      const held = sitesFetch({ sites, own: [], refused, lookup: async () => (await later, ["10.0.0.5"]), connect });
+      return (input, init) => (init?.method === "GET" ? held : plain)(input, init);
+    };
+    const server = make(remote(named(fake.port)), { checked });
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    release();
+    const local = `mcp.example:${fake.port} points at a local address`;
+    await vi.waitFor(() => expect(server.state).toEqual({ is: "failed", reason: local }), WAIT);
+  });
+
+  // The outside review of PR #25, finding 2: a call still on an old connection, whose 401 sends the library to the
+  // entry's authServerMetadataUrl once a refresh has opened a new connection, is refused on its own connection; the
+  // new one stays ready. A server of its own: `wait` is held, `deny` answered 403, which starts the refresh.
+  it("refuses an old connection's sign-in lookup on that connection, the new one staying ready", async () => {
+    let held: http.ServerResponse | undefined;
+    let sessions = 0;
+    const tools = ["wait", "deny", "echo"].map((name) => ({ name, inputSchema: { type: "object" } }));
+    const own = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (d) => (body += d));
+      req.on("end", () => {
+        if (req.method !== "POST") return void res.writeHead(405).end();
+        const m = JSON.parse(body);
+        if (m.id === undefined) return void res.writeHead(202).end();
+        const reply = (result: object, headers: Record<string, string> = {}) =>
+          res.writeHead(200, { "content-type": "application/json", ...headers })
+            .end(JSON.stringify({ jsonrpc: "2.0", id: m.id, result }));
+        if (m.method === "initialize") {
+          const info = { capabilities: { tools: {} }, serverInfo: { name: "own", version: "1" } };
+          return reply({ protocolVersion: m.params.protocolVersion, ...info }, { "mcp-session-id": `s-${++sessions}` });
+        }
+        if (m.method === "tools/list") return reply({ tools });
+        if (m.params.name === "wait") return void (held = res);
+        if (m.params.name === "deny") return void res.writeHead(403).end("refused");
+        reply({ content: [{ type: "text", text: "on the new one" }] });
+      });
+    });
+    await new Promise<void>((resolve) => own.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => (own.closeAllConnections(), void own.close()));
+    const port = (own.address() as AddressInfo).port;
+    const { dir, make } = await setup();
+    const store = new AuthStore(path.join(dir, "data", "tachi"));
+    const url = named(port);
+    await store.change("fake", url, () => ({ tokens: { access_token: "a1", token_type: "Bearer" } }));
+    const helper = fakeHelper(dir);
+    helper.give({ "x-token": "t1" });
+    const oauth = { authServerMetadataUrl: `https://meta.example:${port}/metadata` };
+    const entry = { kind: "http" as const, url, headers: {}, headersHelper: helper.command, oauth };
+    const server = make({ ...base, entry, asWritten: { url, headers: {} } }, {
+      ...checking(listed(port)), auth: store, helper: { cwd: tmpdir(), project: false },
+    });
+    await server.start();
+    expect(names(server)).toEqual(["wait", "deny", "echo"]);
+    const waiting = server.callTool("wait", {}, {});
+    await vi.waitFor(() => expect(held).toBeDefined(), WAIT);
+    await expect(server.callTool("deny", {}, {})).rejects.toThrow();
+    expect(await server.refreshing).toEqual({ is: "ready" });
+    held!.writeHead(401).end();
+    const w5 =
+      `meta.example:${port} is not on the allowed sites; add it to "allowedSites" in ~/.tachikoma/settings.json`;
+    await expect(waiting).rejects.toThrow(w5);
+    expect(server.state.is).toBe("ready");
+    expect(textOf(await server.callTool("echo", {}, {}))).toBe("on the new one");
   });
 
   it("starts clean at a new connection after a refusal", async () => {

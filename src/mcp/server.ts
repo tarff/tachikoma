@@ -670,10 +670,12 @@ export class Server {
     // With the allowed sites, this connection's own checked fetch (8c-2b plan, Step 9; decision 13a), which its sign-in
     // client's own requests use too (auth.ts, discoveryState).
     const checked = this.#checked?.((err) => (conn.refused ??= err));
-    if (checked && this.#auth) this.#auth.fetch = checked;
+    // Its own view of the server's sign-in client, so a later connection's fetch never takes its place (the outside
+    // review of PR #25, finding 2).
+    const auth = checked && this.#auth ? this.#auth.withFetch(checked) : this.#auth;
     const own = checked ? { fetch: checked } : {};
     const send = connectionFetch({ url, endpoint, headers, signs, answered, redirected, ...own });
-    const opts = signs ? { authProvider: this.#auth!, fetch: send } : { requestInit: { headers }, fetch: send };
+    const opts = signs ? { authProvider: auth!, fetch: send } : { requestInit: { headers }, fetch: send };
     // With a helper, a 403 asking for more scope fails its request, which the library would otherwise send again after
     // signing in again, and the refresh follows (Task 11; decision 26). The SSE transport sends nothing again.
     const scope = prepared.helped ? { onInsufficientScope: "throw" as const } : {};
@@ -744,8 +746,11 @@ export class Server {
         .catch(() => undefined)
         .then((gone) => this.#dropped(conn, () => (gone === undefined ? exitReason(local) : BOX_STOPPED)));
     };
+    // A refusal of the checked fetch on a request of the library's own, such as its event stream's, fails the server
+    // as a call's does (the outside review of PR #25, finding 1).
     client.onerror = (err) => {
-      if (conn.signs && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
+      if (conn.refused) this.#refusedOn(conn, conn.refused);
+      else if (conn.signs && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
       else if (!conn.local && isDrop(err)) this.#dropped(conn, () => remoteReason(this.#address(), err));
     };
     return client;
