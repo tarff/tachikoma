@@ -597,7 +597,10 @@ holds `MEMPALACE_MCP_ALLOW_PEER_WRITER=1` and `MEMPALACE_MCP_IDLE_HOURS=0`. Step
 In short: uv installed MemPalace 3.12.0 and the 84 other packages Windows needs from `memory/uv.lock` into the build
 folder, with a Python 3.13 of its own that it downloaded there. The installed `mempalace --version` prints
 `MemPalace 3.12.0`. A copy of the lock with only the MemPalace wheel's hash altered was refused: uv stopped on a hash
-mismatch for that wheel and installed nothing. The user's own folders were not changed.
+mismatch for that wheel and installed nothing. The snapshot of the user's folders showed no change apart from one
+set-apart item: the user's own MemPalace's daemon folder `daemon/<palace key>8ab5b11d`, whose time moved (from
+about 07:50:49 to 07:55:49 local) during the step. The build never ran the user's programs; the user has another
+Claude Code terminal running their MemPalace plugin.
 
 Script: `scripts/8d/install-throwaway.mjs`, run as `node scripts/8d/install-throwaway.mjs <dirs install | install |
 version | report install | tamper | report tamper>`. Tools: uv 0.13.5 (`uv 0.13.5 (46776a95d 2026-10-21
@@ -676,9 +679,13 @@ Python 3.13.17:
                sha256:3832534f377f3a81a324f741f90bf3c1ec277d49404608257cde1b5b0d52626f
     hint: `mempalace` (v3.12.0) was included because `tachikoma-memory` (v0) depends on `mempalace`
 
-- The message names the package and version, `mempalace==3.12.0`, not the file name; the file is the lock's one
-  wheel for it, and the log shows that file's address
-  (`.../mempalace-3.12.0-py3-none-any.whl`) fetched just before. "Computed" is the real wheel's hash.
+- uv's refusal names the package and version, not the wheel's file name. Its text (`tamper\sync.log`, lines 1103 and
+  1104) is "error: Failed to download `mempalace==3.12.0`" and "cause: Hash mismatch for `mempalace==3.12.0`". The
+  wheel's file name, `mempalace-3.12.0-py3-none-any.whl`, is in the request lines for its address just before
+  (`tamper\sync.log`, lines 354 to 359 and 665 to 666). The lock has one mempalace wheel (`memory/uv.lock` line
+  1314; its only other mempalace file is the source package on line 1312, which neither run's log names), so the
+  package and version identify that wheel, and "Computed" is its real hash. The user accepted this as
+  meeting the check on 2026-11-19.
 - Nothing was installed: `tamper\env\Lib\site-packages` is empty, and no name in `tamper\env` starts with
   `mempalace`. The only mempalace entry in the tamper cache is an empty lock file
   (`wheels-v7\pypi\mempalace\3.12.0-py3-none-any.lock`).

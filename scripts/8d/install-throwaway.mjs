@@ -142,7 +142,10 @@ function sync(run) {
     console.log(`tamper: log holds the altered hash: ${text.includes(TAMPERED)}; the real one: ${text.includes(HASH)}`);
     console.log(`tamper: names starting "mempalace" in ${s.venv}: ${found.length ? found.join(", ") : "none"}`);
   }
-  process.exitCode = r.status === 0 ? 0 : 1;
+  // The install passes when uv exits 0. The tamper run passes only when uv refuses: a non-zero exit, not a failed
+  // start.
+  const ok = run === "tamper" ? Number.isInteger(r.status) && r.status !== 0 : r.status === 0;
+  process.exitCode = ok ? 0 : 1;
 }
 
 function version() {
