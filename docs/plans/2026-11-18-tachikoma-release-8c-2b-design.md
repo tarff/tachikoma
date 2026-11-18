@@ -268,3 +268,325 @@ A second review of the fixes (49fef4b) found that they hold, and two more proble
 2. **"Only web traffic" still promised more than the check gives:** another protocol carried inside TLS, with a
    matching greeting, passes unchecked. Fixed: the opening, section 2, the tests and the known limits all say TLS
    opened to a listed name and port, or plain http to one.
+
+## Measured while building (8c-2b plan, Step 1)
+
+Measured on 2026-11-18 on the user's computer: Windows 11, Docker Desktop with Docker 29.9.3 (client and server; the
+earlier measurement above said 29.9.2), the box's image `tachikoma-sandbox:5879e9863c31` (its Node is v24.22.2) and
+this computer's Node v24.22.1. Unless said otherwise a box was run as the launch runs it: `--pull never --init --user
+1000:1000 -e HOME=/tmp --cap-drop ALL --security-opt no-new-privileges`. Every network and container was named
+`tachi-8c2b-measure-…`, labelled `tachi.8c2b.measure=1`, and removed by that name. The only use of the internet was
+one lookup of `example.com` and one connection to it on port 443, from the proxy's container (the plan's question 1).
+The scripts were throwaway files: `nl.py` (reads the routing rules and tables through Python's netlink socket),
+`standin.js` (a stand-in proxy: it reads its mounted settings file, listens on a port the system gives and on port 53
+over UDP and TCP, prints its port first, logs and refuses every lookup and request, and for the check's made-up name
+answers 200 and then closes unless the tunnel opens with a TLS record), `tries.js` (timed TCP tries),
+`check-script.js` (a stand-in for the launch check's script), `timing.mjs`, `programs.sh`, `host-proxy.mjs` and
+`prompt-len.mjs`.
+
+### In plain words
+
+- **The isolated network holds on this computer.** Docker accepts the option, the network has no gateway, and a box
+  on it has no route out: a connection to an outside address fails at once (1 to 5 ms) as "network is unreachable",
+  and a listener on Docker's host side is not reached, while an ordinary container reaches it.
+- **The proxy can stand on both networks.** Started on the isolated network and then joined to Docker's ordinary
+  network, it looked up `example.com` and connected to it. The box reaches the proxy, and the proxy's settings file,
+  mounted read-only from a folder under the system's temp folder, is readable by the box's user.
+- **The box's lookups reach the proxy over UDP and over TCP**, each as the box sent it. So the proxy must answer on
+  both (decision 8 left this to be measured). The box's user, with no capabilities, may listen on port 53.
+- **Node in the box uses the proxy only with `NODE_USE_ENV_PROXY=1`**; without it, it looks the name up itself, which
+  the proxy refuses. git, pip, uv, npm and Python's urllib all use the proxy variables. So decision 11's case holds:
+  the box gets the variable.
+- **On this computer, with `NODE_USE_ENV_PROXY=1` set, Node's shared connection pool sends a request through the
+  proxy even when the request brings its own lookup;** a request with its own pool (`new https.Agent()`, or `agent:
+  false`) goes straight to the address. Without that variable nothing goes through the proxy. So Step 8's checked
+  `fetch` needs its own pool.
+- **The route files differ in three ways from what the plan's question 3 expects** (see "Against the plan" below):
+  every box's IPv6 list holds two "everything" entries that are the kernel's own refusals; the IPv4 list shows its
+  main and local tables with the same entries; and the routing rules themselves can be read in the shipped image,
+  with Python, as the box's user, with no capability.
+- **Times** (ten runs each): the set-up takes about 1 s (slowest 1.06 s), the launch check about 0.5 s (slowest
+  0.60 s), the cleanup after a failure about 1.1 s (slowest 1.13 s), and the sweep's network listing 0.1 s and one
+  network removal 0.3 s. The box's own start, today's code, takes about 0.4 s beside them.
+- **The prompt line** with 10 sites as long as `api.example.com` is 296 characters, beside a whole prompt of 1,054
+  today with the network on; with 25 it is 551 and with 50 it is 976.
+
+### The network
+
+`docker network create --internal -o com.docker.network.bridge.gateway_mode_ipv4=isolated --label
+tachi.8c2b.measure=1 tachi-8c2b-measure-net` exited 0, and so did the same with `--ipv6=false` added. `docker network
+inspect` printed, in short:
+
+```
+"EnableIPv6": false, "IPAM": {"Config": [{"Subnet": "172.23.0.0/16"}]}, "Internal": true,
+"Options": {"com.docker.network.bridge.gateway_mode_ipv4": "isolated", "com.docker.network.enable_ipv4": "true",
+"com.docker.network.enable_ipv6": "false"}, "Labels": {"tachi.8c2b.measure": "1"}
+```
+
+The config has no `Gateway` key at all. For contrast, a plain `--internal` network printed
+`[{"Subnet":"172.25.0.0/16","Gateway":"172.25.0.1"}]`, and `bridge` `[{"Subnet":"172.17.0.0/16",
+"Gateway":"172.17.0.1"}]`. With no gateway, Docker gave the first container on the network the address `.1`.
+
+`docker inspect --format '{{json .NetworkSettings.Networks}}'` of a box on it printed one network only, in short:
+`{"tachi-8c2b-measure-net":{…,"Gateway":"","IPAddress":"172.23.0.1",…,"IPPrefixLen":16,"IPv6Gateway":"",…}}`.
+Its `HostConfig.NetworkMode` was `"tachi-8c2b-measure-net"`.
+
+`docker network rm tachi-8c2b-measure-net` with that box running exited 1: `Error response from daemon: error while
+removing network: network tachi-8c2b-measure-net has active endpoints (name:"tachi-8c2b-measure-box"
+id:"e6c88a0c24fc")`. `docker network ls --filter label=tachi.8c2b.measure=1 --format '{{.ID}}\t{{.Name}}\t{{.Label
+"tachi.8c2b.measure"}}'` printed one line, `ecab4b7c18e5<tab>tachi-8c2b-measure-net<tab>1`.
+
+So the network the design asks for can be made here, Docker's description shows it has no gateway, and the network
+cannot be removed before its containers.
+
+### The box's routes
+
+Read inside a box on the isolated network (`cat` of each file, as the box's user): all three files could be read.
+`/proc/net/fib_trie`, whole:
+
+```
+Main:
+  +-- 0.0.0.0/0 2 0 2
+     +-- 127.0.0.0/8 2 0 2
+        +-- 127.0.0.0/31 1 0 0
+           |-- 127.0.0.0
+              /8 host LOCAL
+           |-- 127.0.0.1
+              /32 host LOCAL
+        |-- 127.255.255.255
+           /32 link BROADCAST
+     +-- 172.23.0.0/16 2 0 2
+        +-- 172.23.0.0/31 1 0 0
+           |-- 172.23.0.0
+              /16 link UNICAST
+           |-- 172.23.0.1
+              /32 host LOCAL
+        |-- 172.23.255.255
+           /32 link BROADCAST
+Local:
+  (the same 17 lines again, line for line)
+```
+
+`/proc/net/route` (tabs between fields; each line is padded with spaces to 127 characters in the file):
+
+```
+Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT
+eth0	000017AC	00000000	0001	0	0	0	0000FFFF	0	0	0
+```
+
+`/proc/net/ipv6_route`, three lines, each broken here at a space for width (one line each in the file):
+
+```
+00000000000000000000000000000000 00 00000000000000000000000000000000 00
+  00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo
+00000000000000000000000000000001 80 00000000000000000000000000000000 00
+  00000000000000000000000000000000 00000000 00000004 00000000 80200001       lo
+00000000000000000000000000000000 00 00000000000000000000000000000000 00
+  00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo
+```
+
+The two `::/0` lines carry the flags `00200200`, a refusal with no "up" flag, metric `ffffffff`, on `lo`: these are
+the kernel's built-in "unreachable" entries, not a way out. `::1/128` is loopback.
+`/proc/sys/net/ipv6/conf/eth0/disable_ipv6` is `1` (IPv6 is off on the box's network card) and `0` for `all`,
+`default` and `lo`, so the file exists; a box whose kernel has no IPv6, and so no such file, was not seen.
+`/proc/net/if_inet6` lists `::1` only.
+
+For contrast, a box on `bridge` shows the same files with a route out. Its `/proc/net/fib_trie` holds, under each of
+`Main:` and `Local:`, a leaf `|-- 0.0.0.0` followed by `/0 universe UNICAST`; its `/proc/net/route` starts with
+`eth0	00000000	010011AC	0003	…	00000000` (everything, through 172.17.0.1); its `/proc/net/ipv6_route` is the same
+three lines. In the trie, lines such as `+-- 0.0.0.0/0 2 0 2` are the list's inner nodes and are in every box; only a
+leaf (`|--`) followed by its `/<length> <scope> <type>` line is a route.
+
+**Reading the rules.** The image has no `ip`, `ss`, `iptables`, `nft`, `route`, `netstat`, `curl` or `wget`; it has
+`python3` and `node`. Python's netlink socket (`nl.py`, run with `docker exec -i <box> python3 -I - < nl.py`) read the
+rules and every table's routes as the box's user with no capability:
+
+```
+ipv4 rule: priority 0 table 255 ...          ipv6 rule: priority 0 table 255 ...
+ipv4 rule: priority 32766 table 254 ...      ipv6 rule: priority 32766 table 254 ...
+ipv4 rule: priority 32767 table 253 ...
+ipv4 route: table 254 172.23.0.0/16 dev eth0 type 1 scope 253
+ipv4 route: table 255 127.0.0.0/8 dev lo type 2 scope 254       (and 127.0.0.1/32, 127.255.255.255/32,
+ipv4 route: table 255 172.23.0.1/32 dev eth0 type 2 scope 254    172.23.255.255/32 in table 255)
+ipv6 route: table 255 ::1/128 dev lo type 2 scope 0
+```
+
+On `bridge` the same, with `ipv4 route: table 254 0.0.0.0/0 via 172.17.0.1 dev eth0`. These are the kernel's three
+standard IPv4 rules (local 255, main 254, default 253) and its two IPv6 ones. Node cannot open a netlink socket.
+
+**A second table.** In one throwaway container of the box's image on the isolated network, run as `--user 0:0
+--cap-drop ALL --cap-add NET_ADMIN`, `nl.py add` added `10.99.0.0/16 dev eth0` in table 100 (the image has no `ip`;
+Python's netlink socket did it). `/proc/net/fib_trie` then began with a third table, before `Main:`:
+
+```
+Id 100:
+  |-- 10.99.0.0
+     /16 universe UNICAST
+```
+
+`/proc/net/route` did not show it (it shows the main table only), and `nl.py` showed `table 100 10.99.0.0/16`.
+
+So: in a passing box the trie shows only the network's block, the box's own address, the block's broadcast and
+loopback; a route out shows as a `0.0.0.0` leaf; and a route in another table is listed under its own `Id` heading.
+
+### The proxy on two networks
+
+**Started on the isolated network, then joined to `bridge`** (`docker run -d … --network tachi-8c2b-measure-net -v
+<temp folder>:/proxy:ro … node /proxy/standin.js`, then `docker network connect bridge tachi-8c2b-measure-proxy`,
+exit 0): its first output line was `{"port":40103,"sites":1}`; `/etc/resolv.conf` named `nameserver 127.0.0.11`
+(Docker's own resolver, `ExtServers: [host(192.168.65.7)]`); its routes were a default route through `bridge`
+(`eth1	00000000	010011AC	0003`) and the two networks' blocks. Its address on the isolated network was read with
+`docker inspect --format '{{(index .NetworkSettings.Networks "tachi-8c2b-measure-net").IPAddress}}'`: `172.23.0.2`.
+From inside it, one `dns.lookup("example.com", {all: true})` gave `104.20.23.154` and `172.66.147.243` in 22 ms, and
+one connection to `104.20.23.154:443` opened at 36 ms (then closed at once).
+
+**The other order** (started on `bridge`, then `docker network connect tachi-8c2b-measure-net …`, exit 0): it also
+printed its port, read `nameserver 127.0.0.11`, had a default route through `bridge`, got `172.23.0.3`, and the box
+reached its port. Its reach outside was not tried, so as to make only one lookup and one connection.
+
+**The mounted file**: `ls -l /proxy` as the box's user showed `-rwxrwxrwx 1 root root` for both files, `cat` read
+them, and `touch /proxy/x` failed with `Read-only file system`.
+
+**A container that has exited**: the same `docker inspect` format printed `invalid IP`, not an empty line.
+
+So the order of decision 10 (the isolated network first, then `bridge`) works here; the address is read by the
+network's name.
+
+### Lookups
+
+The stand-in proxy, run as the box's user with no capability, listened on port 53 over UDP and TCP
+(`/proc/sys/net/ipv4/ip_unprivileged_port_start` is `0` in the box). A box run with `--dns 172.23.0.2` (the proxy)
+had `nameserver 127.0.0.11`. Then, from the box:
+
+- `getent hosts udpq.m1check7f3a.invalid` exited 2 in 4 ms; the proxy logged that name four times, `via udp`, from
+  `172.23.0.1` (the box's own address);
+- a query sent by Python over TCP to `127.0.0.11:53` came back with answer code 2 in 10 ms; the proxy logged it
+  `via tcp`;
+- the same over UDP came back with answer code 2 in 1 ms; the proxy logged it `via udp`.
+
+So Docker's resolver forwards a query the way it came, UDP or TCP, and to the box it turns the proxy's "refused"
+(code 5) into "server failure" (code 2): Node's `dns.lookup` in the box gives `EAI_AGAIN`. The launch check therefore
+reads the proxy's own log, as planned, not the code the box gets.
+
+### The direct connection
+
+`docker exec -i <box> node - 192.0.2.1:443 < tries.js`, three times: `error ENETUNREACH` after 4.6, 1.5 and 1.3 ms.
+The proxy's `bridge` address `172.17.0.2` from the box: `ENETUNREACH` after 1.2 ms.
+
+A listener in a container with `--network host` (Docker's host side; port 39857, given by the system) had the
+addresses `127.0.0.1`, `192.168.65.6`, `192.168.65.3` and `172.17.0.1`, and none on the isolated network. From the
+box: `172.17.0.1`, `192.168.65.6` and `192.168.65.3` each `ENETUNREACH` in about 1 ms; `172.23.0.254` (an unused
+address in the network's block, where a gateway might be) no answer within the try's 3 s. The control, a container
+on `bridge`: `172.17.0.1:39857` and `192.168.65.3:39857` both connected and got `hello-from-host-side`.
+
+So an outside address is refused at once by the box's own system, and the host side cannot be reached.
+
+### The limits' figures
+
+`node timing.mjs 10`: ten runs of the set-up, a box, the check, the sweep's new part and the cleanup, each run with
+its own names. Each figure is fastest, middle (the mean of the two middle runs) and slowest, in ms.
+
+| What | fastest | middle | slowest |
+|---|---|---|---|
+| set-up: `network create` (with `--ipv6=false`) | 139 | 144 | 161 |
+| set-up: the proxy's `run -d` | 402 | 423 | 459 |
+| set-up: `network connect bridge` | 178 | 195 | 211 |
+| set-up: `logs --follow` to the first line | 104 | 115 | 123 |
+| set-up: `inspect` for the address | 116 | 121 | 133 |
+| **set-up, whole, to the first line** | 850 | 872 | 925 |
+| **set-up, whole, to the address read** (the set-up limit's span) | 970 | 996 | 1056 |
+| for context: the box's `run -d` (today's code) | 391 | 412 | 443 |
+| check: `network inspect` | 115 | 121 | 128 |
+| check: the box's `inspect` | 112 | 115 | 139 |
+| check: the script in the box (route reads and four tries) | 171 | 172 | 199 |
+| check: `logs` of the proxy | 116 | 124 | 155 |
+| **check, whole** | 516 | 535 | 601 |
+| cleanup: `rm -f` the box | 330 | 351 | 375 |
+| cleanup: `rm -f` the proxy | 447 | 462 | 498 |
+| cleanup: `network rm` | 255 | 272 | 321 |
+| **cleanup, whole** | 1073 | 1091 | 1132 |
+| sweep: `network ls` with the label filter | 111 | 118 | 135 |
+| sweep: `network rm` of one network | 244 | 258 | 292 |
+
+In all ten runs the check's script saw `ENETUNREACH` for the direct connection, a 403 for the unlisted site, the
+tunnel closed after its 200 when it opened with an SSH greeting, `EAI_AGAIN` for the lookup, and the proxy's log held
+the check's name. The computer was otherwise idle; Docker Desktop waking from idle and a busier or smaller machine
+were not measured.
+
+### Programs and the proxy variables
+
+`docker exec -i <box> bash -s http://172.23.0.2:40103 < programs.sh`, which sets `HTTPS_PROXY`, `HTTP_PROXY` and
+their lowercase forms to the stand-in, whose log shows what each program sent (it refuses every request with a 403
+whose reason is line 5):
+
+| Program | What reached the stand-in | What the program said |
+|---|---|---|
+| `node --version` | | `v24.22.2` |
+| Node `fetch`, the variables alone | two lookups of `example.com` | `EAI_AGAIN` |
+| Node `fetch`, with `NODE_USE_ENV_PROXY=1` | `CONNECT example.com:443 HTTP/1.1` | `Request was cancelled.` |
+| `https.get`, the variables alone | two lookups of `example.com` | `EAI_AGAIN` |
+| `https.get`, with `NODE_USE_ENV_PROXY=1` | `CONNECT example.com:443 HTTP/1.1` | `ERR_PROXY_TUNNEL` |
+| `git ls-remote https://github.com/git/git HEAD` | `CONNECT github.com:443 HTTP/1.1` | `CONNECT tunnel failed, …` |
+| pip (from a venv), `download … idna` | `CONNECT pypi.org:443 HTTP/1.0`, no `Host` | `No matching distribution …` |
+| `uv pip install --system --dry-run … idna` | four `CONNECT pypi.org:443 HTTP/1.1` | `tunnel error: unsuccessful` |
+| `npm view idna version` | two `CONNECT registry.npmjs.org:443` | `403 Tachikoma's sandbox refused …` |
+| Python `urllib`, https | `CONNECT pypi.org:443 HTTP/1.0`, no `Host` | `… 403 Tachikoma's sandbox refused …` |
+| Python `urllib`, `http://example.com/` | `GET http://example.com/ …`, `Host: example.com` | `HTTP Error 403: …` |
+
+In full: git said `fatal: unable to access 'https://github.com/git/git/': CONNECT tunnel failed, response 403`; pip
+`ERROR: No matching distribution found for idna`; npm `npm error 403 403 Tachikoma's sandbox refused
+registry.npmjs.org:443: not on the allowed sites - GET https://registry.npmjs.org/idna`; urllib `Tunnel connection
+failed: 403 Tachikoma's sandbox refused pypi.org:443: not on the allowed sites`. So git, npm and urllib show the
+proxy's reason; pip and uv do not.
+
+Nothing reached any site: the box has no route out and the stand-in answers every request itself.
+
+### This computer's Node and the proxy variables
+
+`node host-proxy.mjs`: two listeners on 127.0.0.1, a "proxy" that logs and refuses and a "target" that logs the first
+byte it gets (`0x16`, a TLS greeting), and each request made in a child process with only the variables named (none
+were set in the shell). No name was looked up anywhere: the requests named `127.0.0.1`, or `site.test` with a lookup
+of their own that answers `127.0.0.1`.
+
+| Variables | `fetch` | `https.request`, shared pool | own lookup, shared pool | own lookup, own pool |
+|---|---|---|---|---|
+| `HTTPS_PROXY` alone | target | target | target | target |
+| with `NODE_USE_ENV_PROXY=1` | proxy | proxy | proxy (`CONNECT site.test:…`) | target |
+| and `NO_PROXY=127.0.0.1,site.test` | target | target | target | target |
+
+"Own pool" is both `agent: new https.Agent()` and `agent: false`. So Node's global `fetch` and its shared pool follow
+`HTTPS_PROXY` only with `NODE_USE_ENV_PROXY=1`, they honour `NO_PROXY`, and a request with a pool of its own goes to
+its own lookup's address in every case.
+
+### The prompt line
+
+`node --import <the repo's tsx> prompt-len.mjs` (today's `systemPrompt`, on `win32`, the date 2026-11-18): the whole
+prompt is 1,109 characters with no sandbox, 1,014 with the box's network off and 1,054 with it on (its web line is
+107 of those). The design's line 7 with names of 15 characters, as `api.example.com`:
+
+| Names | 2 | 5 | 10 | 25 | 50 |
+|---|---|---|---|---|---|
+| Line 7's length | 160 | 211 | 296 | 551 | 976 |
+
+### Against the plan
+
+- **Decision 6** holds: the stand-in's port came as its first line, `docker logs --follow` gave it in about 0.1 s, and
+  the address is read by the network's name. A builder should know that an exited container's address reads
+  `invalid IP`.
+- **Decision 8** holds, and the measurement settles its open point: Docker forwards over UDP and over TCP, so the
+  proxy answers on both. The box sees "server failure", not "refused", and one lookup can reach the proxy several
+  times (four for one `getent`), so the proxy prints a few lines per check, not one.
+- **Decision 10** holds: the isolated network first, then `bridge`, reaches outside.
+- **Decision 11** holds: the box's Node uses the proxy with `NODE_USE_ENV_PROXY=1`, so the box gets that variable.
+- **Decision 9a and question 3** do not hold as written, in three places:
+  1. Every box's IPv6 list holds two `::/0` entries, the kernel's own refusals (flags `00200200`, metric `ffffffff`,
+     on `lo`). The rule "nothing beyond loopback, link-local and multicast" would stop every launch unless such
+     refusal entries are accepted. A box whose kernel has no IPv6 file was not seen, so under question 3 a missing
+     file stops the launch.
+  2. With the kernel's standard rules the trie lists `Main:` and `Local:` with the same entries, so the main table
+     shows local entries too (the box's own address, loopback, the two broadcasts); the rule's "nothing beyond the
+     network's own block, the box's own address and loopback" holds for them. A table that is not main or local
+     shows as `Id <number>:`.
+  3. The routing rules can be read inside the shipped image, with `python3`'s netlink socket, as the box's user with
+     no capability; question 3's known limit says they cannot. A project's own image may have no `python3`, and Node
+     cannot read them.
