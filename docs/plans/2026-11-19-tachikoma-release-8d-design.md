@@ -1303,24 +1303,28 @@ not its own, and the script's work is done.
 
 In short: a first set-up downloads three things: the packages (86 to 111 MB, by system), the model (83.2 MB, the
 same everywhere) and a Python of uv's own (22.0 to 35.4 MB, by system). With Python, the largest is Linux x86-64 at
-229.2 to 229.6 MB (by which of its four builds uv takes) and the smallest Windows at 191.3 MB; this PC's 191.3 MB
-matches, to the byte, what step 4's install really
-fetched here plus the model. **N = 230** (the user's choice and rounding rule, at the end of this part).
+229.2 to 229.6 MB (by which of its four builds uv takes) and the smallest Windows at 191.3 MB. On this PC the script
+picks the same 85 files step 4's install really fetched. **N = 230**, printed by the script, and approved by the user
+(the rule and the approval at the end of this part).
 
 Script: `scripts/8d/measure-download.mjs`, run as `node scripts/8d/measure-download.mjs`, exit 0, "measure-download:
-passed". Its output is kept as `tachi-8d-build\download\measure-download.txt`. Nothing was fetched: the script reads
-`memory/uv.lock`, step 4's log `install\sync.log`, step 4's kept Python archive and step 5's model archive, and runs
-uv only for its offline listing (below). Unit: **MB = 1,000,000 bytes** (uv's own log prints MiB, 1,048,576 bytes).
+passed", printing "N = 230". Its output is kept as `tachi-8d-build\download\measure-download.txt` (the run after the
+reviewer's fixes; the first run's output was replaced). Nothing was fetched by it: the script reads `memory/uv.lock`,
+step 4's log `install\sync.log`, step 4's kept Python archive, step 5's model archive and the saved headers of the
+size-only requests (below), and runs uv only for its offline listing. Unit: **MB = 1,000,000 bytes** (uv's own log
+prints MiB, 1,048,576 bytes).
 
 How the packages are counted, for Python 3.13.17 (the version step 4's uv installed, "Using CPython 3.13.17"):
 - Which packages: for each system, the lock's dependencies are followed from the project with their markers and
-  extras, as `scripts/8d/lock-check.mjs` does (step 3). Each package is counted once per system: 85 on each of the four
-  systems below.
+  extras, as `scripts/8d/lock-check.mjs` does (step 3). Each package is counted once per system: 85 on each system
+  below, but not the same 85. Windows gets colorama 0.4.6 (`memory/uv.lock` line 369, `os_name == 'nt'`), and Linux
+  and macOS get uvloop 0.23.0 instead (`memory/uv.lock` line 3649, `sys_platform != 'win32'`); the script prints
+  each system's difference from Windows, and there is no other.
 - Which wheel: the one uv picks. That is the first in the tag order of PEP 425 as `packaging.tags` gives it for
   CPython 3.13: `cp313-cp313`, `cp313-abi3`, `cp313-none`, then `cp312-abi3` down to `cp32-abi3`, then `py313-none`,
   `py3-none`, `py312-none` down to `py30-none` with a platform tag, then the same with `any`. Within one of those, the
-  newest platform tag (the newest glibc or macOS), as on a system new enough for every wheel. Free-threaded (`cp313t`)
-  wheels never count.
+  newest platform tag (the newest glibc or macOS), as on a system new enough for every wheel; for "macOS arm64
+  (macOS 14)", the newest tag macOS 14 allows. Free-threaded (`cp313t`) wheels never count.
 - Its size: the `size` the lock records for that file (for example `memory/uv.lock` line 1314,
   `mempalace-3.12.0-py3-none-any.whl`, `size = 1140726`).
 - The spread: the script also gives the smallest and largest the packages could come to over every wheel that fits the
@@ -1339,19 +1343,22 @@ The table, in MB:
 | Windows x86-64 (this PC) | 86.1 | 83.2 | 22.0 | 169.3 | 191.3 |
 | Linux x86-64 | 111.0 | 83.2 | 35.0 to 35.4 | 194.2 | 229.2 to 229.6 |
 | Linux arm64 | 104.7 | 83.2 | 29.5 | 187.9 | 217.4 |
-| macOS arm64 | 92.0 | 83.2 | 25.3 | 175.2 | 200.5 |
+| macOS arm64, macOS 15 or newer | 92.0 | 83.2 | 25.3 | 175.2 | 200.5 |
+| macOS arm64, macOS 14 | 92.1 | 83.2 | 25.3 | 175.3 | 200.6 |
 | Intel Macs | known limit | | | | |
 | Windows on ARM | known limit | | | | |
 
 In bytes: packages 86,095,655 (Windows), 111,009,574 (Linux x86-64), 104,749,343 (Linux arm64), 92,011,082 (macOS
-arm64); model 83,178,821; Python 21,986,637 (Windows), 35,356,674 (Linux x86-64), 29,455,505 (Linux arm64),
-25,286,365 (macOS arm64). With Python: 191,261,113 (Windows), 229,545,069 (Linux x86-64), 217,383,669 (Linux arm64),
-200,476,268 (macOS arm64; 200,575,841 on macOS 14, below). For Linux x86-64 these are the plain build's; its four
-builds give 229,215,972 to 229,601,900 (under "The x86-64 build").
+15 or newer), 92,110,655 (macOS 14); model 83,178,821; Python 21,986,637 (Windows), 35,027,577 to 35,413,505 (Linux
+x86-64's four builds), 29,455,505 (Linux arm64), 25,286,365 (macOS arm64). With Python: 191,261,113 (Windows),
+229,215,972 to 229,601,900 (Linux x86-64), 217,383,669 (Linux arm64), 200,476,268 (macOS 15 or newer), 200,575,841
+(macOS 14).
 
-The table's packages, model and without-Python columns, and Windows' Python, are the script's output. The other three
-Python sizes, and so their with-Python totals, are from the size-only requests under "Python on the other systems",
-not from the script.
+The whole table is the script's output. Its Python sizes are this PC's archive's bytes on disk and, for every other
+system, the Content-Length the script reads from the saved headers of the size-only requests under "Python on the
+other systems"; a missing header file prints "not measured" and fails the run (checked: with the `x86_64_v3` file
+renamed for one run, the script printed "not measured" for it, "N: not measured" and "measure-download: FAILED",
+exit 1; the file was then renamed back). The script computes the totals and N.
 
 Where each figure comes from:
 - Packages: the script's output, above.
@@ -1360,6 +1367,8 @@ Where each figure comes from:
   archive from one address for every system (step 5).
 - Python on this PC: `cpython-3.13.17+20261021-x86_64-pc-windows-msvc-install_only_stripped.tar.gz`, 21,986,637 bytes,
   the copy step 4's uv kept in `install\python-cache` (this file's step 4 part).
+- Python on the other systems: the Content-Length of each size-only request (below), read by the script from the
+  saved header files.
 - Linux arm64 is not in the brief's three systems. It is in the table because the lock covers it (step 3), so it bears
   on "the largest".
 - Intel Macs and Windows on ARM: known limits (step 3: some packages have no ready-built file for 3.13 there, so the
@@ -1374,23 +1383,26 @@ How much the systems' own versions move the figures (from the script's per-packa
 - macOS arm64: the spread is 91.0 to 97.8 MB. The top of it comes from numpy's `macosx_11_0_arm64` file (10,744,599
   bytes against 5,508,218 for `macosx_14_0_arm64`), which uv picks only below macOS 14, where the install fails anyway
   (step 3: macOS 14 or newer). On macOS 14, orjson's `macosx_15_0_arm64` file (123,319 bytes) is not allowed, and uv
-  picks its combined file (222,892 bytes): 92,110,655 bytes, 92.1 MB of packages, 175.3 MB without Python.
+  picks its combined file (222,892 bytes): 92,110,655 bytes, 92.1 MB of packages, 175.3 MB without Python. The
+  table's "macOS 14" row is the script's run with macOS 14 as the newest tag allowed; the other macOS row is macOS 15
+  or newer (orjson's newest file needs 15).
 
-This PC's measured total against its computed total:
-- Measured: 191,261,113 bytes (191.3 MB): the 85 files step 4's install fetched (86,095,655 bytes), its kept Python
-  archive (21,986,637) and step 5's model archive (83,178,821).
+This PC's figure from step 4's install against its computed figure:
+- From step 4: 191,261,113 bytes (191.3 MB): the lock-recorded sizes of the 85 files uv downloaded (86,095,655
+  bytes), plus its kept Python archive (21,986,637) and step 5's model archive (83,178,821), both bytes on disk.
 - Computed: 191,261,113 bytes (191.3 MB). The gap is 0 bytes.
-- Why there is no gap, and what that does and does not prove. The package files are sized by the lock on both sides:
-  uv checks each file's SHA-256 against the lock, so a file it took is the one the lock describes, and the log holds
-  no sizes of its own. The Python and model figures are the same files on both sides. So the test is that the script
-  picks the same 85 files uv fetched; it does. The figures leave out the requests' own overhead (headers, TLS), and the
-  tamper run's second download, which a first set-up does not make.
+- The 0-byte gap is true by construction for the packages: both sides take each file's size from the lock (script:
+  `measuredHere`, and the computed side's `chosen.size`), because uv's log holds no sizes of its own. uv checks each
+  file's SHA-256 against the lock, so a file it took is the one the lock describes. The Python and model figures are
+  the same files on both sides. So the real test is that the script picks the same 85 files uv fetched; it does. The
+  figures leave out the requests' own overhead (headers, TLS), and the tamper run's second download, which a first
+  set-up does not make.
 
 Python on the other systems, from uv's own listing:
 - Command: `uv python list 3.13.17 --all-platforms --all-arches --only-downloads --show-urls --output-format json -vv`
   (uv 0.13.5), exit 0. It lists 20 downloads. Their fields are key, version, version_parts, path, symlink, url, os,
-  variant, implementation, arch and libc. **No size**, so the script gives Linux and macOS as "not measured", and
-  their sizes come from the size-only requests below.
+  variant, implementation, arch and libc. **No size**, so the other systems' sizes come from the size-only requests
+  below. The script takes each build's address from this listing and reads that build's saved header file.
 - The files uv would download (its `url` field): `cpython-3.13.17+20261021-<system>-install_only_stripped.tar.gz`,
   with `<system>` `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` or `aarch64-apple-darwin`, all from
   `https://releases.astral.sh/github/python-build-standalone/releases/download/20261021/`. uv also lists x86-64 builds
@@ -1450,6 +1462,8 @@ The snapshot of the user's folders:
 - `step7b-head-before` and `step7b-head-after`, around the first 3 requests (all in one PowerShell command), "no
   change".
 - `step7c-head-before` and `step7c-head-after`, around the second 3 requests (likewise), "no change".
+- `step7d-run-before` and `step7d-run-after`, around the script's runs after the reviewer's fixes (the run with one
+  header file renamed, and the source run, in one PowerShell command), "no change".
 - `step7b-list-before` and `step7b-list-after`, around the second offline listing above: **not clean, and counts as
   explained.** The user's own `~/.mempalace` changed outside the set-apart places: `palace/sqlite_exact.sqlite3` and
   its `-wal` (23:08:05.3 UTC) and the folder `locks` (23:08:05.6), with the set-apart daemon queue (23:08:05.6). The
@@ -1484,4 +1498,8 @@ The user's choice (step 7), 2026-11-19:
 **N = 230.** The rule: the largest with-Python total, in MB of 1,000,000 bytes, rounded up to a whole number. The
 largest is Linux x86-64 with the `x86_64_v4` build: 111,009,574 (packages) + 83,178,821 (model) + 35,413,505 (Python)
 = 229,601,900 bytes, 229.6 MB, rounded up to 230. Each of the four Linux x86-64 builds gives 230 too (229.2 to 229.6
-MB), so N does not depend on which one uv takes.
+MB), so N does not depend on which one uv takes. The script computes N by this rule and prints "N = 230: the largest
+total with Python, Linux x86-64, 229,601,900 bytes (229.6 MB), rounded up to a whole MB".
+
+The user approved N = 230 on 2026-11-19. The first-use ask reads "about 230 MB": "MemPalace 3.12.0 and its packages
+(about 230 MB)", the approved line word for word with N filled in.

@@ -8,16 +8,20 @@
 //    records for that file. The wheel is the one uv picks: the first in the tag order of PEP 425 as `packaging.tags`
 //    gives it for CPython 3.13 (cp313-cp313, then cp313-abi3, cp313-none, cp312-abi3 down to cp32-abi3, then
 //    py313-none, py3-none, py312-none down to py30-none with a platform tag, then the same with `any`), and within
-//    one of those, the newest platform tag (the newest glibc or macOS), as on a system new enough for every wheel.
-//    The smallest and largest the packages could come to, over every wheel that fits the system at any glibc or
-//    macOS version, are given too;
+//    one of those, the newest platform tag (the newest glibc or macOS), as on a system new enough for every wheel;
+//    for "macOS arm64 (macOS 14)", the newest tag macOS 14 allows. The smallest and largest the packages could come
+//    to, over every wheel that fits the system at any glibc or macOS version, are given too;
 //  - the model: the archive approved at step 5, at tachi-8d-build\model-download\onnx.tar.gz (its SHA-256 checked);
-//  - Python: this PC's archive as step 4's uv kept it in install\python-cache. For other systems, uv's own listing
-//    (`uv python list --output-format json`), run with UV_OFFLINE=1, the build's environment (step 1's `throwaway`,
-//    every uv folder inside the build folder) and a proxy of this script's that records and refuses every
-//    connection; a system whose listing gives no size is "not measured".
-// This PC's computed figure is checked against what step 4's install fetched (install\sync.log): the same files, one
-// by one.
+//  - Python: the builds uv's own listing names for each system (`uv python list --output-format json`, run with
+//    UV_OFFLINE=1, the build's environment from step 1's `throwaway`, every uv folder inside the build folder, and a
+//    proxy of this script's that records and refuses every connection). This PC's size is its archive's bytes on
+//    disk, as step 4's uv kept it in install\python-cache. Every other system's is the Content-Length of the
+//    size-only request the user approved, saved as tachi-8d-build\python-sizes\<build>.headers.txt; the script only
+//    reads those files. A missing one is "not measured" and fails the run.
+// N is the largest total with Python, in MB (1,000,000 bytes), rounded up to a whole number (the user's rule, step 7).
+// This PC's figure is checked against what step 4's install fetched (install\sync.log): the same files, one by one.
+// Its package bytes are the lock-recorded sizes of those files, so that side equals the computed side by
+// construction; the model and Python are bytes on disk.
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -101,16 +105,20 @@ function evalMarker(marker, env) {
 
 // The systems. Intel Macs and Windows on ARM are known limits (step 3: no ready-built file for every package on
 // Python 3.13), so they are not counted. Linux arm64 is covered by the lock (step 3) and counted too.
-// uvKey is the system's part of the key in uv's listing (cpython-<version>-<uvKey>).
+// uvKeys are the system's parts of the keys in uv's listing (cpython-<version>-<uvKey>), one per Python build uv
+// may take there: on Linux x86-64, the plain build and the newer-processor ones. maxMac is the newest macOS allowed.
+const linuxX64 = ["linux-x86_64-gnu", "linux-x86_64_v2-gnu", "linux-x86_64_v3-gnu", "linux-x86_64_v4-gnu"];
+const mac = { sys_platform: "darwin", platform_machine: "arm64", os_name: "posix", os: "mac",
+  uvKeys: ["macos-aarch64-none"] };
 const systems = {
   "Windows x86-64": { sys_platform: "win32", platform_machine: "AMD64", os_name: "nt", os: "win",
-    uvKey: "windows-x86_64-none" },
+    uvKeys: ["windows-x86_64-none"] },
   "Linux x86-64": { sys_platform: "linux", platform_machine: "x86_64", os_name: "posix", os: "linux", arch: "x86_64",
-    uvKey: "linux-x86_64-gnu" },
+    uvKeys: linuxX64 },
   "Linux arm64": { sys_platform: "linux", platform_machine: "aarch64", os_name: "posix", os: "linux", arch: "aarch64",
-    uvKey: "linux-aarch64-gnu" },
-  "macOS arm64": { sys_platform: "darwin", platform_machine: "arm64", os_name: "posix", os: "mac",
-    uvKey: "macos-aarch64-none" },
+    uvKeys: ["linux-aarch64-gnu"] },
+  "macOS arm64 (macOS 15+)": mac,
+  "macOS arm64 (macOS 14)": { ...mac, maxMac: 14 },
 };
 
 function installSet(sys) {
@@ -171,7 +179,7 @@ function platformRank(tag, sys) {
     return null;
   }
   const m = tag.match(/^macosx_(\d+)_(\d+)_(arm64|universal2)$/);
-  if (!m || (m[3] === "arm64" && Number(m[1]) < 11)) return null;
+  if (!m || (m[3] === "arm64" && Number(m[1]) < 11) || Number(m[1]) > (sys.maxMac ?? Infinity)) return null;
   return ((100 - Number(m[1])) * 100 + (100 - Number(m[2]))) * 2 + (m[3] === "universal2" ? 1 : 0);
 }
 // A wheel's place in the order for this system, or null when it does not fit.
@@ -278,8 +286,7 @@ async function uvListing() {
   const list = JSON.parse(r.out);
   const fields = [...new Set(list.flatMap((x) => Object.keys(x)))];
   console.log(`uv's listing: ${list.length} downloads; fields: ${fields.join(", ")}`);
-  const sizeFields = fields.filter((f) => /size|length|bytes/i.test(f));
-  return { status: r.status, connections: connections.length, network: network.length, list, sizeFields };
+  return { status: r.status, connections: connections.length, network: network.length, list };
 }
 
 const fmt = (n) => n.toLocaleString("en-US");
@@ -304,6 +311,13 @@ for (const [n, r] of Object.entries(results)) {
       `${x.choices}, ${fmt(x.min)} to ${fmt(x.max)}`);
   }
 }
+const names = (r) => new Set(r.rows.map((x) => `${x.pkg.name} ${x.pkg.version}`));
+const winNames = names(results["Windows x86-64"]);
+for (const [n, r] of Object.entries(results).slice(1)) {
+  const own = names(r);
+  console.log(`${n} against Windows x86-64: only here ${[...own].filter((x) => !winNames.has(x)).join(", ") ||
+    "none"}; only on Windows ${[...winNames].filter((x) => !own.has(x)).join(", ") || "none"}`);
+}
 
 const win = results["Windows x86-64"];
 const chosen = new Set(win.rows.map((r) => r.chosen.url));
@@ -319,35 +333,62 @@ for (const p of here.python) {
     : `${fmt(p.size)} bytes`} (${p.file})`);
 }
 
+// The Content-Length in a saved header file, or null when the file or the header is missing.
+function headerSize(build) {
+  const file = path.join(BUILD, "python-sizes", `${build}.headers.txt`);
+  if (!existsSync(file)) return null;
+  const m = [...readFileSync(file, "utf8").matchAll(/^content-length:\s*(\d+)\s*$/gim)].pop();
+  return m ? Number(m[1]) : null;
+}
+
 console.log("\nPython downloads uv would make, from its listing:");
 const python = {};
 for (const [n, s] of Object.entries(systems)) {
-  const entry = listing.list.find((x) => x.key === `cpython-${PYTHON}-${s.uvKey}`);
-  const file = entry ? decodeURIComponent(entry.url.split("/").pop()) : "not listed";
-  const sizeField = entry && listing.sizeFields.find((f) => typeof entry[f] === "number");
-  let size = sizeField ? entry[sizeField] : null, source = sizeField ? `uv's listing, field ${sizeField}` : null;
-  if (n === "Windows x86-64") {
-    const p = here.python.find((x) => decodeURIComponent(x.url) === decodeURIComponent(entry?.url ?? ""));
-    if (p?.size) { size = p.size; source = "measured here (step 4's kept archive)"; }
-  }
-  python[n] = size;
-  console.log(`${n}: ${file}: ${size === null ? "not measured (uv's listing gives no size)" : `${fmt(size)} bytes, ${
-    source}`}`);
+  python[n] = s.uvKeys.map((key) => {
+    const entry = listing.list.find((x) => x.key === `cpython-${PYTHON}-${key}`);
+    const file = entry ? decodeURIComponent(entry.url.split("/").pop()) : null;
+    const build = file?.replace(/^cpython-[^-]+-/, "").replace(/-install_only_stripped\.tar\.gz$/, "");
+    let size = null, source = null;
+    if (n === "Windows x86-64") {
+      const p = here.python.find((x) => decodeURIComponent(x.url) === decodeURIComponent(entry?.url ?? ""));
+      if (p?.size) { size = p.size; source = "bytes on disk (step 4's kept archive)"; }
+    } else if (build) {
+      size = headerSize(build);
+      source = `Content-Length in python-sizes\\${build}.headers.txt`;
+    }
+    console.log(`${n}: ${file ?? `${key} not listed`}: ${size === null ? "not measured" : `${fmt(size)} bytes, ${
+      source}`}`);
+    return size;
+  });
 }
 
+const range = (a, b) => (mb(a) === mb(b) ? mb(a) : `${mb(a)} to ${mb(b)}`);
 console.log("\nTable, MB (1,000,000 bytes):");
 console.log("system | packages | model | Python | without Python | with Python");
+let largest = null;
 for (const [n, r] of Object.entries(results)) {
-  const py = python[n];
-  console.log(`${n} | ${mb(r.total)} | ${mb(m.size)} | ${py === null ? "not measured" : mb(py)} | ${
-    mb(r.total + m.size)} | ${py === null ? "not measured" : mb(r.total + m.size + py)}`);
+  const sizes = python[n];
+  const known = !sizes.includes(null);
+  const lo = known ? Math.min(...sizes) : null, hi = known ? Math.max(...sizes) : null;
+  const base = r.total + m.size;
+  console.log(`${n} | ${mb(r.total)} | ${mb(m.size)} | ${known ? range(lo, hi) : "not measured"} | ${mb(base)} | ${
+    known ? range(base + lo, base + hi) : "not measured"}`);
+  if (known && (!largest || base + hi > largest.bytes)) largest = { system: n, bytes: base + hi };
 }
+const allKnown = Object.values(python).every((s) => !s.includes(null));
+const N = allKnown ? Math.ceil(largest.bytes / MB) : null;
+console.log(allKnown
+  ? `N = ${N}: the largest total with Python, ${largest.system}, ${fmt(largest.bytes)} bytes (${
+    mb(largest.bytes)} MB), rounded up to a whole MB`
+  : "N: not measured (a Python size is missing)");
 const pyHere = here.python[0]?.size ?? 0;
-const measuredTotal = here.packages + m.size + pyHere;
-const computedTotal = win.total + m.size + (python["Windows x86-64"] ?? 0);
-console.log(`This PC: measured ${fmt(measuredTotal)} bytes (${mb(measuredTotal)} MB); computed ${fmt(computedTotal)} ` +
-  `bytes (${mb(computedTotal)} MB); gap ${fmt(measuredTotal - computedTotal)} bytes`);
+const hereTotal = here.packages + m.size + pyHere;
+const computedTotal = win.total + m.size + (python["Windows x86-64"][0] ?? 0);
+console.log(`This PC: lock-recorded sizes of the ${here.urls.length} files uv downloaded ${fmt(here.packages)}, ` +
+  `plus the model and ` +
+  `Python as bytes on disk: ${fmt(hereTotal)} bytes (${mb(hereTotal)} MB); computed ${fmt(computedTotal)} bytes ` +
+  `(${mb(computedTotal)} MB); gap ${fmt(hereTotal - computedTotal)} bytes (equal by construction for the packages)`);
 const fine = listing.status === 0 && listing.connections === 0 && listing.network === 0 && m.sha256 === MODEL_SHA256 &&
-  !here.notInLock.length && !onlyChosen.length && !onlyFetched.length;
+  !here.notInLock.length && !onlyChosen.length && !onlyFetched.length && allKnown;
 console.log(fine ? "measure-download: passed" : "measure-download: FAILED");
 process.exitCode = fine ? 0 : 1;
