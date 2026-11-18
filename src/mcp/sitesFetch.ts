@@ -16,7 +16,8 @@ export class SiteRefused extends Error {}
 export interface SitesFetchOptions {
   sites: Site[];
   own: string[]; // this computer's addresses, read at launch (the design review's finding 4)
-  // Hears the first refusal, once (decision 13a), as connectionFetch's `redirected` hears a refused redirect.
+  // Hears the first refusal of a site, once (decision 13a), as connectionFetch's `redirected` hears a refused
+  // redirect. A compressed answer (W14) is not one.
   refused?: (err: SiteRefused) => void;
   // Decision 12: tests give the lookup, the plain TCP connect and extra trusted certificates. Nothing else sets them.
   lookup?: (name: string) => Promise<string[]>;
@@ -130,8 +131,10 @@ export function sitesFetch(o: SitesFetchOptions): (input: string | URL, init?: R
           signal?.removeEventListener("abort", stop);
           res.destroy();
           wire.destroy();
+          // W14 fails this request only: it is not a refusal of the site, so it neither ends the attempt nor is told
+          // to the owner (the user's decision after Step 8, 2026-11-18).
           const why = `the server sent a compressed answer (${encoding}), which Tachikoma does not read with the`;
-          return reject(refuse(`${why} allowed sites in force`));
+          return reject(new SiteRefused(`${why} allowed sites in force`));
         }
         const status = res.statusCode ?? 502;
         // A status a Response cannot hold is a failed request, as with Node's fetch (the step's review).

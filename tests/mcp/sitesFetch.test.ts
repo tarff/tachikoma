@@ -394,10 +394,20 @@ describe("the checked fetch: the contract (decision 17)", () => {
       const e = await f.fetch(URL_).catch((x: unknown) => x);
       expect(e).toEqual(new SiteRefused(W14("gzip")));
       expect(e).not.toBeInstanceOf(TypeError);
-      expect(f.refusals).toHaveLength(1);
       await new Promise((r) => setTimeout(r, 50));
       expect(s.sockets.size).toBe(0);
     }
+  });
+
+  // The user's decision after Step 8 (2026-11-18): a compressed answer fails that one request only. It is not a
+  // refusal of the site, so it does not end the attempt (decision 13a) and the owner is not told.
+  it("after a compressed answer the next request on the same fetch still goes through", async () => {
+    const s = await standIn((req, res) =>
+      req.url === "/gz" ? (res.writeHead(200, { "Content-Encoding": "gzip" }), res.end("x")) : json(res, { ok: 1 }));
+    const f = made([SITE], s.port);
+    await expect(f.fetch("http://mcp.example:8080/gz")).rejects.toThrow(W14("gzip"));
+    expect(await (await f.fetch(URL_)).json()).toEqual({ ok: 1 });
+    expect(f.refusals).toEqual([]);
   });
 
   it("an answer marked identity, or not marked, is read as it is", async () => {
