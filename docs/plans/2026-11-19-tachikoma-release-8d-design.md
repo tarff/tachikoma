@@ -1280,11 +1280,21 @@ or the whole wing.
 - Q8: every hub starts with `MEMPALACE_MCP_WRITER_WAIT_SECONDS=0`. Exit code 2 counts as a failed start: another window
   holds the palace.
 - Q19: the room's code is 8 hex characters.
-- Q24: the window starts `mempalace.mcp_server --transport http` directly, with `-I`, and stops it by the serving
-  process's id. This exact start and stop was not run in step 6 (see Q24 above), so step 20 must test it before
-  relying on it.
+- Q24: the window starts `mempalace.mcp_server --transport http` directly with `python.exe -I`, not through
+  MemPalace's launcher (`_proc.py:97-102`), and stops it by the serving process's id. This exact start and stop was
+  not run in step 6 (see Q24 above), so step 20 must test it before relying on it.
 - Q25: every hub starts with `MEMPALACE_MCP_IDLE_HOURS=0`.
 - Q26: a turn over 100,000 characters is saved in parts. This is the user's choice, not the option recommended above;
   the plan's later steps will say how.
 - Q27: two searches at once, the project's room and `lessons`, their matches merged by distance.
 - Run 4's pair of listings: accepted as explained, with the cause traced under "The user's folders".
+
+#### Known limits of scripts/8d/mempalace-checks.mjs
+
+Found in the review of the fixes, 2026-11-19, and left as they are: neither can make the script stop a process that is
+not its own, and the script's work is done.
+- `tree()` (lines 207-208) keeps an old record when a recorded id has been reused by a new child of the script. The
+  child's start time then differs from the record, so `stop()` refuses it ("id now used by another process: not
+  stopped"), and the run fails with that confusing reason rather than a clear one.
+- The `reused` list (line 813), children of a recorded id that the start-time rule does not prove to be the script's,
+  does not count toward `clean` (line 820). Such a child is listed in `results.json` but does not fail the run.
