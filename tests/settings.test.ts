@@ -208,6 +208,34 @@ describe("readSettings", () => {
     });
   });
 
+  // 8c-2b plan, Step 3: the sandbox's allowed sites, read by the shared rules (src/sandbox/sites.ts); a left-out entry
+  // is a warning, as any left-out entry is, and the rest are kept.
+  describe("allowedSites", () => {
+    it("allowedSites is read, its bad entries left out with their lines and the rest kept", () => {
+      expect(read({ allowedSites: ["github.com", "*.github.com", "Example.com:8443", "https://pypi.org"] })).toEqual({
+        settings: { allowedSites: [{ name: "github.com", port: 443 }, { name: "example.com", port: 8443 }] },
+        warnings: [
+          "allowedSites entry 2 (*.github.com) was left out: a wildcard; list each name",
+          "allowedSites entry 4 (pypi.org) was left out: a scheme in front; write the name and port only",
+        ],
+      });
+    });
+
+    it("allowedSites that is not a list is a problem for the file", () => {
+      const w2 = 'settings.json: "allowedSites" must be a list of names, such as ["github.com", "example.com:8443"]';
+      expect(problem({ allowedSites: "github.com" })).toBe(`${w2} (got "github.com")`);
+      expect(problem({ allowedSites: { github: true } })).toBe(`${w2} (got {"github":true})`);
+    });
+
+    it("an empty list is read as no sites", () => {
+      expect(read({ allowedSites: [] })).toEqual({ settings: { allowedSites: [] }, warnings: [] });
+    });
+
+    it("network still takes only off and on", () => {
+      expect(problem({ network: "sites" })).toBe('settings.json: "network" must be one of: off, on (got "sites")');
+    });
+  });
+
   // Release 7 plan, Task 12 and choice 75: the box's limits, each optional, kept as written; Docker's figures are checked
   // at the launch (src/sandbox/executor.ts, boxLimits).
   describe("sandboxLimits", () => {

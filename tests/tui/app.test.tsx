@@ -9275,6 +9275,24 @@ describe("App's live settings", () => {
     for (const key of ["sandbox", "network", "judge"]) await sees(c.app, `settings.json's "${key}" was left as --${key} set it for this session`);
   });
 
+  // 8c-2b plan, Step 3 and question 9 (W3): the allowed sites are read at the launch only, as the network is.
+  it("an edit to allowedSites says it waits for the next launch, and nothing when unchanged", async () => {
+    const line = '"allowedSites" changes in settings.json take effect at the next launch';
+    // As watching() does, but the file holds the list as the user writes it and the launch's settings hold it as read.
+    const home = freshHome();
+    const where = path.join(settingsDir(home), "settings.json");
+    mkdirSync(settingsDir(home), { recursive: true });
+    writeFileSync(where, JSON.stringify({ allowedSites: ["github.com", "pypi.org"] }));
+    const settings: Settings = { allowedSites: [{ name: "github.com", port: 443 }, { name: "pypi.org", port: 443 }] };
+    const { app } = await mount([], { home, live: { loaded: { settings, warnings: [] }, given: {} } });
+    // Written differently and in another order: the same sites (the step's review).
+    writeFileSync(where, JSON.stringify({ allowedSites: ["pypi.org", "GitHub.com"], theme: "dark" }));
+    await sees(app, '"theme" changes in settings.json');
+    expect(flat(app)).not.toContain(line);
+    writeFileSync(where, JSON.stringify({ allowedSites: ["github.com"], theme: "dark" }));
+    await sees(app, line);
+  });
+
   // TUI design pass, Task 1: the theme is read at the launch only, so a live edit says so with the same kind of line.
   it("keeps the theme as at launch on a live edit, and says so", async () => {
     const stays = (value: string) => `"theme" changes in settings.json take effect at the next launch; it stays ${value}`;

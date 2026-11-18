@@ -8,6 +8,7 @@ import { errorText } from "./core/types.js";
 import { type Hook, type HooksConfig, readHooks } from "./hooks/config.js";
 import { readServers, type ServerConfig } from "./mcp/config.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
+import { rules, type Site } from "./sandbox/sites.js";
 import { type Kind, KINDS, type UserRules } from "./safety/rules.js";
 import type { Segment } from "./tui/StatusLine.js";
 
@@ -52,6 +53,9 @@ export interface Settings {
   dangerousCommands?: UserRules;
   sandbox?: Sandbox;
   network?: Network;
+  // The sandbox's allowed sites in force, each once (8c-2b plan, Step 3); a left-out entry is a warning. Read at the
+  // launch only, as network is, so a live edit says it waits for the next one.
+  allowedSites?: Site[];
   judge?: string;
   sandboxLimits?: SandboxLimits;
   // The user's hooks, in Claude Code's shape (release 8b design, "The settings entry"); disableAllHooks turns them off,
@@ -111,6 +115,15 @@ export function readSettings(text: string, env: NodeJS.ProcessEnv = process.env)
       } else if (name === "vimInsertModeRemaps") settings.vimInsertModeRemaps = remaps(entry, value, warnings);
       else if (name === "dangerousCommands") settings.dangerousCommands = userRules(entry, value, warnings);
       else if (name === "sandboxLimits") settings.sandboxLimits = sandboxLimits(entry, value, warnings);
+      else if (name === "allowedSites") {
+        // W2: not a list stops the launch, as any wrong type does; its entries are read by the shared rules.
+        if (!Array.isArray(value)) {
+          throw wrongType(entry, 'a list of names, such as ["github.com", "example.com:8443"]', value);
+        }
+        const read = rules.readList(value);
+        warnings.push(...read.left);
+        settings.allowedSites = read.sites;
+      }
       else if (name === "hooks") settings.hooks = readHooks(entry, value, warnings, (hooksLeftOut = []));
       else if (name === "disableAllHooks") {
         if (typeof value !== "boolean") throw wrongType(entry, "true or false, without quotes", value);
