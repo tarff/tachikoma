@@ -227,6 +227,11 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
       'Start the MCP server "tv" from this project\'s .mcp.json inside the sandbox (live link, network on): ' +
         "npx server.js? [y/n]",
     );
+    // 8c-2b plan, Step 10 (W12).
+    expect(serverQuestion(tv, { kind: "copy", network: "sites", sites: [] })).toBe(
+      'Start the MCP server "tv" from this project\'s .mcp.json inside the sandbox (copy, network sites): ' +
+        "npx server.js? [y/n]",
+    );
     const filled = { kind: "http" as const, url: "https://x/mcp", headers: { Authorization: "Bearer sk-secret-123" } };
     const helper = "get-token \u001b[2J";
     const written = { url: "https://x/mcp", headers: { Authorization: "Bearer ${TOKEN}" }, headersHelper: helper };
@@ -859,6 +864,7 @@ describe("setupOf", () => {
     const d = folder("plain");
     expect(setupOf(d, "off", "on")).toEqual({ sandbox: "off", git: "none" });
     expect(setupOf(d, "live", "off")).toEqual({ sandbox: "live", network: "off", git: "none" });
+    expect(setupOf(d, "live", "sites")).toEqual({ sandbox: "live", network: "sites", git: "none" }); // 8c-2b, Step 10
     expect(setupOf(d, "copy", "on")).toEqual({ sandbox: "copy", network: "on", git: "copy" });
   });
 

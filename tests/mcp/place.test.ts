@@ -118,4 +118,14 @@ describe("answerSetup", () => {
     for (const s of SANDBOXES) expect(answerSetup(remote("k", "get-key", project), s)).toBe("no helper");
     for (const s of [null, ...SANDBOXES]) expect(answerSetup(remote("r", undefined, project), s)).toBeUndefined();
   });
+
+  // 8c-2b plan, Step 10 (decision 14): network sites has answers of its own, whatever the list holds.
+  it("keeps a project's box server's answer for network sites, the list not part of it", () => {
+    const one: McpSandbox = { kind: "copy", network: "sites", sites: [{ name: "github.com", port: 443 }] };
+    const none: McpSandbox = { kind: "copy", network: "sites", sites: [] };
+    expect(answerSetup(local("p", project), one)).toBe("box copy network sites");
+    expect(answerSetup(local("p", project), none)).toBe("box copy network sites");
+    const live: McpSandbox = { kind: "live", network: "sites", sites: [] };
+    expect(answerSetup(local("p", project), live)).toBe("box live network sites");
+  });
 });

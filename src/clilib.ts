@@ -497,7 +497,7 @@ export function boxBranch(name: string | null): string | undefined {
 // it; in live link only a `.git` in the project folder itself, as only that folder is mounted at /work, and "outside"
 // when that `.git` names a git folder outside the project (choice 107); copy mode's /work is always a repository of one
 // commit (choice 24).
-export function setupOf(root: string, sandbox: Sandbox, network: Network): Setup {
+export function setupOf(root: string, sandbox: Sandbox, network: Network | "sites"): Setup {
   if (sandbox === "off") return { sandbox, git: gitBranch(root) === null ? "none" : "repo" };
   if (sandbox === "copy") return { sandbox, network, git: "copy" };
   // PR #23's review: a `.git` that cannot be read, or that git would refuse (such as a file not naming a git folder),

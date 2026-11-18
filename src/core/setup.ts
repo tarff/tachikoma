@@ -20,14 +20,16 @@ export interface Told {
 
 const GITS: readonly unknown[] = ["repo", "none", "outside", "copy"] satisfies Git[];
 
-// A setup as a saved line or note holds it: a known git and "off", or "live" or "copy" with a network of "on" or "off"
-// (extra keys are not checked, as nothing reads them), so a damaged value tells nothing.
+// A setup as a saved line or note holds it: a known git and "off", or "live" or "copy" with a network of "on", "off"
+// or "sites" (8c-2b plan, Step 10; extra keys are not checked, as nothing reads them), so a damaged value tells
+// nothing.
 export function isSetup(v: unknown): v is Setup {
   const s = (v ?? {}) as Record<string, unknown>;
   if (!GITS.includes(s.git)) return false;
   return (
     s.sandbox === "off" ||
-    ((s.sandbox === "live" || s.sandbox === "copy") && (s.network === "on" || s.network === "off"))
+    ((s.sandbox === "live" || s.sandbox === "copy") &&
+      (s.network === "on" || s.network === "off" || s.network === "sites"))
   );
 }
 
@@ -81,9 +83,24 @@ export function setupNote(
   }
   const was = reaches(before);
   const is = reaches(now) === true;
-  if (was === undefined) {
+  // W6 (8c-2b plan, Step 10): the allowed sites on either side; sites on both, nothing is said of the web.
+  const sitesBefore = "network" in before && before.network === "sites";
+  const sitesNow = "network" in now && now.network === "sites";
+  const ONLY = "Shell commands can reach only the sandbox's allowed sites now";
+  const WERE = "earlier they could reach only the sandbox's allowed sites.";
+  if (sitesNow && !sitesBefore) {
+    if (was !== undefined) known = true;
+    said.push(
+      was === undefined
+        ? `${ONLY}.`
+        : `${ONLY}; earlier they ${was ? "could reach the whole web" : "could not reach the web"}.`,
+    );
+  } else if (sitesBefore && !sitesNow) {
+    known = true;
+    said.push(`Shell commands ${is ? "can" : "cannot"} reach the web now; ${WERE}`);
+  } else if (!sitesNow && was === undefined) {
     said.push(is ? "Shell commands can reach the web now." : "Shell commands cannot reach the web now.");
-  } else if (was !== is) {
+  } else if (!sitesNow && was !== is) {
     known = true;
     said.push(
       is

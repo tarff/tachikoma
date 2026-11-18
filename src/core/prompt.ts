@@ -1,4 +1,5 @@
 import { shellFor } from "../exec/local.js";
+import { rules, type Site } from "../sandbox/sites.js";
 import type { Git, Setup } from "./types.js";
 
 // The git line (system prompt design, "Git"; the user's words, 2026-11-17), for the case setupOf finds (clilib.ts). A
@@ -23,8 +24,10 @@ const MAKER_LINES: Record<string, readonly string[]> = {};
 // The lead's prompt (design, "The lead's prompt"; the user's words, 2026-11-17), built at the launch and again at
 // /clear and each shortening, and never changed in between (see SessionOptions.system). `root` is where the model's
 // commands run: /work in the box, where they run with bash (release 7 plan, choice 19); `platform` is the host's.
+// `sites`: the entries in force with the network "sites", beside the setup, as the setup is saved and compared and the
+// list is not part of it (8c-2b plan, Step 10; decision 16).
 export function systemPrompt(
-  o: { root: string; date: string; setup: Setup; lead: string },
+  o: { root: string; date: string; setup: Setup; lead: string; sites?: Site[] },
   platform: NodeJS.Platform = process.platform,
 ): string {
   const { setup } = o;
@@ -51,7 +54,9 @@ export function systemPrompt(
     // Task 6).
     setup.sandbox !== "off" && setup.network === "off"
       ? "The sandbox has no network, so shell commands cannot reach the web."
-      : `Tachikoma has no web tool of its own, but shell commands can fetch web pages, such as with ${fetcher}.`,
+      : setup.sandbox !== "off" && setup.network === "sites"
+        ? sitesLine(o.sites ?? [])
+        : `Tachikoma has no web tool of its own, but shell commands can fetch web pages, such as with ${fetcher}.`,
     // Says who decides (design, "Approvals": Gemini CLI's fix), keeping the refusal rule; it promises no question, as
     // -p and never refuse what would ask and auto's judge decides (user's choice, the plan's review).
     "Use tools without asking first. Tachikoma decides whether a risky action may run, asking the user when it can, " +
@@ -65,6 +70,24 @@ export function systemPrompt(
       "not its output, so put what they need from it in your reply.",
     ...(Object.hasOwn(MAKER_LINES, kind) ? MAKER_LINES[kind]! : []), // `in` would take "constructor" (registry.ts)
   ].join("\n");
+}
+
+// How many sites the prompt names before "…and N more": the user's pick after the 8c-2b plan's Step 1, where 10 names
+// of 15 characters made the line 296 characters, beside a whole prompt of 1,054 (the design's "Measured while
+// building", "The prompt line").
+const SITES_NAMED = 10;
+
+// The design's line 7, or W7 with no site (8c-2b plan, Step 10): each entry as the user writes it.
+function sitesLine(sites: Site[]): string {
+  if (!sites.length) {
+    return (
+      "The sandbox's network allows no sites, so shell commands cannot reach the web; only the user can add a site."
+    );
+  }
+  const named = sites.slice(0, SITES_NAMED).map(rules.siteText);
+  if (sites.length > SITES_NAMED) named.push(`…and ${sites.length - SITES_NAMED} more`);
+  return `The sandbox's network reaches only these sites: ${named.join(", ")}. Other sites and local addresses are ` +
+    "refused, and only the user can add a site.";
 }
 
 // A subagent's own prompt, also fixed for its whole conversation (release 4 design, "What a subagent
