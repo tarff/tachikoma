@@ -401,7 +401,10 @@ export async function checkSites(net: SitesNet, box: string, run: DockerRun = do
     if (direct?.connected) return "the box connected straight to an outside address";
     if (direct?.error !== "ENETUNREACH") return "the box has a route out";
     const unlisted = a.unlisted as { status?: string } | undefined;
-    if (!unlisted?.status?.startsWith("HTTP/1.1 403 ")) return "the proxy let through a site that is not listed";
+    if (/^HTTP\/1\.1 2\d\d( |$)/.test(unlisted?.status ?? "")) return "the proxy let through a site that is not listed";
+    if (!unlisted?.status?.startsWith("HTTP/1.1 403 ")) {
+      return "the proxy did not answer as it should for a site that is not listed";
+    }
     const tunnel = a.tunnel as { status?: string; after?: number } | undefined;
     if (!tunnel?.status?.startsWith("HTTP/1.1 200 ")) {
       return cannot(tunnel?.status || "the check's tunnel was not opened");

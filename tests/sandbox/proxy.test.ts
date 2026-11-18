@@ -507,7 +507,9 @@ describe("the proxy: lookups and the file", () => {
     let out = "";
     child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
     const code = await new Promise((done) => child.on("exit", done));
-    expect([code, out]).toEqual([1, '{"error":"EADDRINUSE"}\n']);
+    // On Windows the proxy's UDP bind, made before its TCP listen, can get EACCES on a port a TCP listener holds (seen
+    // three times in the 8c-2b review), so either code is its line.
+    expect([code, out]).toEqual([1, expect.stringMatching(/^\{"error":"(EADDRINUSE|EACCES)"\}\n$/)]);
   });
 
   it("every lookup is refused, and only the check's name is printed", async () => {

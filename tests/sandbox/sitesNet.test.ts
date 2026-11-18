@@ -391,6 +391,13 @@ describe("checkSites", () => {
     stops("the proxy let through a site that is not listed", {
       unlisted: { status: "HTTP/1.1 200 Connection established" },
     }));
+  // The review after Step 12: only a 2xx answer let the site through; no answer, or another one, is said as such.
+  it("an unlisted site with no answer, no status or a status other than 403 and 2xx", async () => {
+    const odd = "the proxy did not answer as it should for a site that is not listed";
+    await stops(odd, { unlisted: undefined });
+    await stops(odd, { unlisted: {} });
+    await stops(odd, { unlisted: { status: "HTTP/1.1 502 Bad Gateway" } });
+  });
   it("a tunnel without a greeting that got bytes back", () =>
     stops("the proxy let through a tunnel that did not open with a TLS greeting", {
       tunnel: { status: "HTTP/1.1 200 Connection established", after: 21 },

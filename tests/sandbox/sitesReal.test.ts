@@ -9,10 +9,12 @@ import { docker, dockerState } from "../../src/sandbox/docker.js";
 import {
   boxLimits,
   boxUser,
+  CHECK_LIMIT_MS,
   DockerExecutor,
   dockerRoom,
   exitCalls,
   type Limits,
+  SETUP_LIMIT_MS,
 } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
 import type { Site } from "../../src/sandbox/sites.js";
@@ -26,6 +28,12 @@ import { checkSites, routesVerdict, removeSitesNet, startSitesNet } from "../../
 const TEST_LABEL = { "tachikoma.test": "1" };
 const LABEL_ARGS = ["--label", "tachikoma.test=1"];
 const HARD = ["--pull", "never", "--init", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", ...LABEL_ARGS];
+// Each test's limit: the most the product waits for the set-up (SETUP_LIMIT_MS, 30 s) and for the check
+// (CHECK_LIMIT_MS, 10 s), plus the slowest test here whole, 8,888 ms with Docker awake (this file alone, 2026-11-18),
+// times 3.4, CI's measured slowdown (vitest.config.ts): 30 + 10 + 30.2 = 70.2 s. A launch's cleanup gets it too, and
+// a cut-off launch's longest path fits it: the set-up and its own failed set-up's cleanup, 30 s each, then the box's
+// start and stop, 443 and 1,169 ms at their slowest (the design's "Measured while building"), times 3.4: 65.5 s.
+const LIMIT_MS = SETUP_LIMIT_MS + CHECK_LIMIT_MS + 8_888 * 3.4;
 
 async function ready(ctx: TestContext): Promise<{ image: string; limits: Limits; user: string }> {
   const state = await dockerState();
@@ -43,26 +51,33 @@ async function ready(ctx: TestContext): Promise<{ image: string; limits: Limits;
   return { image: info.tag, limits: got.limits, user: boxUser(space) };
 }
 
-// A sites launch's network, proxy and box, as the launch makes them (Steps 5 and 6), removed when the test ends.
+// A sites launch's network, proxy and box, as the launch makes them (Steps 5 and 6), removed when the test ends. The
+// removal is set before the launch starts, so a test cut off by its limit mid-launch still waits for the launch and
+// removes, by name, what it made.
 async function launch(ctx: TestContext, sites: Site[], addHosts: string[] = []) {
   const o = await ready(ctx);
   const session = `test-${randomUUID()}`;
-  const made = await startSitesNet({ ...o, session, sites, labels: TEST_LABEL, addHosts });
-  if (!("net" in made)) throw new Error(made.line);
   const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-sites-work-"));
   onTestFinished(() => rmdir(folder).catch(() => {}));
-  let box: DockerExecutor;
-  try {
-    box = await DockerExecutor.start(
-      { ...o, folder, network: made.net, mounts: [], session, labels: TEST_LABEL },
-      docker,
-    );
-  } catch (e) {
-    await removeSitesNet(made.net);
-    throw e;
-  }
-  onTestFinished(() => box.stop());
-  return { ...o, net: made.net, box, session };
+  const going = (async () => {
+    const made = await startSitesNet({ ...o, session, sites, labels: TEST_LABEL, addHosts });
+    if (!("net" in made)) throw new Error(made.line);
+    try {
+      const box = await DockerExecutor.start(
+        { ...o, folder, network: made.net, mounts: [], session, labels: TEST_LABEL },
+        docker,
+      );
+      return { net: made.net, box };
+    } catch (e) {
+      await removeSitesNet(made.net);
+      throw e;
+    }
+  })();
+  onTestFinished(async () => {
+    const got = await going.catch(() => undefined);
+    await got?.box.stop();
+  }, LIMIT_MS);
+  return { ...o, ...(await going), session };
 }
 
 // A container of the box's image, labelled, removed when the test ends.
@@ -108,7 +123,7 @@ const subnet = async (network: string) =>
   (await out(["network", "inspect", "--format", "{{(index .IPAM.Config 0).Subnet}}", network])).out.trim();
 const PIP = "python3 -m venv /tmp/v && /tmp/v/bin/pip download --no-deps --dest /tmp/d idna";
 
-describe("the allowed sites in real Docker", () => {
+describe("the allowed sites in real Docker", { timeout: LIMIT_MS }, () => {
   it("the launch check passes", async (ctx) => {
     const { net, box } = await launch(ctx, [{ name: "github.com", port: 443 }]);
     expect(await checkSites(net, box.id)).toBeUndefined();
