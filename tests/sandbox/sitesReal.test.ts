@@ -80,12 +80,17 @@ async function launch(ctx: TestContext, sites: Site[], addHosts: string[] = []) 
   return { ...o, ...(await going), session };
 }
 
-// A container of the box's image, labelled, removed when the test ends.
+// A container of the box's image, labelled, removed by its name when the test ends; the removal is set before the run
+// and waits for it, so a test cut off during `docker run` leaves nothing.
 async function container(args: string[], command: string[], o: { image: string }) {
   const name = `tachi-test-${randomUUID().slice(0, 8)}`;
-  const got = await docker(["run", "-d", ...HARD, "--name", name, ...args, o.image, ...command]);
+  const run = docker(["run", "-d", ...HARD, "--name", name, ...args, o.image, ...command]);
+  onTestFinished(async () => {
+    await run.catch(() => undefined);
+    await docker(["rm", "-f", name]);
+  }, LIMIT_MS);
+  const got = await run;
   if (got === "missing" || got.code !== 0) throw new Error(got === "missing" ? "no docker" : got.err);
-  onTestFinished(async () => void (await docker(["rm", "-f", name])));
   return name;
 }
 const out = async (args: string[], input?: string) => {

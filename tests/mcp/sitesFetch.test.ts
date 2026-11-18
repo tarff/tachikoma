@@ -270,6 +270,22 @@ describe("the checked fetch: the contract (decision 17)", () => {
     expect(s.sockets.size).toBe(0);
   });
 
+  // Codex's finding after the review: an abort during the lookup ends the request before any connection, even to an
+  // address that never answers; it settles before a timer of no delay fires, so it waits on nothing.
+  it("an abort while the name is looked up ends the request at once, no connection tried", async () => {
+    const stop = new AbortController();
+    const reason = new Error("stopped");
+    const connects: string[] = [];
+    const f = made([SITE], 0, {}, {
+      lookup: async () => (stop.abort(reason), [PUBLIC]),
+      connect: (address, p) => (connects.push(`${address}:${p}`), new net.Socket()), // never connects nor fails
+    });
+    const got = f.fetch(URL_, { signal: stop.signal }).catch((e: unknown) => e);
+    const settled = await Promise.race([got, new Promise((r) => setTimeout(() => r("still waiting"), 0))]);
+    expect(settled).toBe(reason);
+    expect(connects).toEqual([]);
+  });
+
   it("a body cut in the middle is a TypeError, as Node's fetch gives it", async () => {
     const s = await standIn((req, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });

@@ -675,6 +675,10 @@ Steps 1-11 are 80d98ce to 3ad2690, one commit each, with 653e8d4 for the user's 
   tables alone are checked (the user's choice after Step 1, a known limit). This replaces the plan's "cannot read the
   routing rules themselves". The direct connection must fail with `ENETUNREACH` and nothing else. The script in the
   box only reports what it found; Tachikoma judges it.
+- **Line 8's endings** (the user's choice after the review): line 8 has a further ending,
+  `the proxy did not answer as it should for a site that is not listed`, for an answer to the unlisted-site check
+  that is neither a refusal nor a pass-through; `the proxy let through a site that is not listed` is kept for a 2xx
+  answer only.
 - **Time limits** (question 4): the set-up, from the network's creation to the proxy's address read, has 30 s, and so
   do a failed launch's cleanup and the leftover sweep's network part; the check has 10 s. The set-up's was 10 s after
   Step 1 and became 30 s by the user's choice after Step 7, when the first network Docker made after a rest took

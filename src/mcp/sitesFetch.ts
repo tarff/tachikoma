@@ -81,6 +81,8 @@ export function sitesFetch(o: SitesFetchOptions): (input: string | URL, init?: R
     } catch (e) {
       throw networkError(e);
     }
+    // An abort during the lookup has fired already, so the listener below would never hear it (Codex's finding).
+    if (signal?.aborted) throw signal.reason;
     if (addresses.some((a) => rules.isLocal(a, o.own))) throw refuse(`${shown} points at a local address`);
     if (first) throw first; // a refusal that came while this one looked up
     let socket: net.Socket | undefined;
