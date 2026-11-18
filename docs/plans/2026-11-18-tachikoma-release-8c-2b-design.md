@@ -637,3 +637,67 @@ The user then picked 30 s for the set-up limit (8.9 s times CI's measured slowdo
 also for the cleanup and the sweep's network part; the check's stays 10 s. **The cleanup just after a rest**
 (`idle-cleanup.mts`: a network, proxy and box made, six minutes with no Docker command, then the cleanup of decision
 10a, 14:07 to 14:13): 1,117 ms, nothing left. So a rest slows the first network Docker makes, not its removals.
+
+## As built
+
+Where the build differs from this design, or settles what it left open. The build plan's decisions and questions are
+cited by number; "the user's choice" marks an answer the user gave during the build, on 2026-11-18. Every number is
+from the measured sections above. The README's "The allowed sites' limits" gathers the rarer cases left as limits.
+Steps 1-11 are 80d98ce to 3ad2690, one commit each, with 653e8d4 for the user's choice on compressed answers.
+
+- **What counts as local** (section 3's open item; decision 4): every block of IANA's IPv4 and IPv6 Special-Purpose
+  Address Registries that is not globally reachable, multicast, an address in `64:ff9b::/96` whose last 32 bits are a
+  local IPv4 address, and this computer's interface addresses read at launch. The table was checked against the two
+  registries' files on 2026-11-18 (src/sandbox/sites.ts names them). Another network's own NAT64 prefix is not read,
+  a known limit.
+- **Entries** (decision 3; choice 11): read with Node's own URL host reader, so short IPv4 forms such as `127.1` are
+  refused as local addresses. The reasons are tried in the order a password, a wildcard, a path, a scheme in front, a
+  local address, an IP address, not a name and port. A value that is not a list stops the launch in the settings
+  file's existing wrong-type form, which shows the value as written, `(got "github.com")` (the user's approval).
+- **The network and the proxy** (section 2): the network is `tachikoma-sites-<id>`, made with `--internal
+  --ipv6=false -o com.docker.network.bridge.gateway_mode_ipv4=isolated`; the proxy is `tachikoma-proxy-<id>`, run
+  from the box's image with the box's user, limits and hardening, its code and settings mounted read-only from a new
+  folder under the system's temp folder. It starts on the launch's network, then joins `bridge`, and says its port
+  in its first output line. It answers lookups over UDP and over TCP, as Docker forwards both (measured), refuses
+  every one, and prints only the check's made-up name.
+- **The box's variables:** `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase forms, by the proxy's address;
+  `NODE_USE_ENV_PROXY=1`, as Node in the box uses the proxy only with it (section 2's open point, measured); and, a
+  change to this design by the user's choice after Step 7, `NO_PROXY` and `no_proxy` set to
+  `localhost,127.0.0.1,::1`, so a program reaches a server inside the box directly instead of being sent to the
+  proxy and refused.
+- **The launch check** (section 2; choice 8) does more than section 2 lists. Docker's description must show the box
+  joined to the launch's network alone. The box's `/proc/net/fib_trie` must show only the main and local tables,
+  holding only the network's block, the box's own address and loopback. Its `/proc/net/ipv6_route` may hold only
+  loopback, link-local and multicast routes and exactly the kernel's own refusal entries for `::/0` (flags `00200200`,
+  metric `ffffffff`, on `lo`), which every box has (the user's choice after Step 1). A route file that is missing or
+  cannot be read stops the launch. The routing rules are read through `python3`'s netlink socket where the image has
+  `python3`, and must be exactly the kernel's five standard ones (measured above); without `python3`, the route
+  tables alone are checked (the user's choice after Step 1, a known limit). This replaces the plan's "cannot read the
+  routing rules themselves". The direct connection must fail with `ENETUNREACH` and nothing else. The script in the
+  box only reports what it found; Tachikoma judges it.
+- **Time limits** (question 4): the set-up, from the network's creation to the proxy's address read, has 30 s, and so
+  do a failed launch's cleanup and the leftover sweep's network part; the check has 10 s. The set-up's was 10 s after
+  Step 1 and became 30 s by the user's choice after Step 7, when the first network Docker made after a rest took
+  7.9 s (above).
+- **Cleanup** (decision 10a): a network Docker says is not found counts as removed. At exit the handler also removes
+  the proxy's temp folder, which the plan did not say.
+- **Remote MCP servers** (section 3; decisions 13 and 13a): each connection and each sign-in attempt gets its own
+  checked `fetch`, on `node:http` and `node:https` with a connection pool of its own, as Node's shared pool sends
+  through `HTTPS_PROXY` when `NODE_USE_ENV_PROXY=1` is set (measured). Its first refusal (not listed, or a local
+  address) refuses everything after it in that connection or attempt. A ready server whose request is refused fails
+  with the refusal and its connection is closed; Reconnect starts afresh. The connection's sign-in client's own
+  request, such as an entry's `authServerMetadataUrl`, is checked too.
+- **A compressed answer** (W14; decision 17): the checked `fetch` asks for answers that are not compressed and does
+  not read one that is. By the user's choice after Step 8, such an answer fails only the request it answered: unlike a
+  site refusal it does not end the connection or the sign-in attempt, and it is never read as a dropped connection. A
+  server whose first answer is compressed fails to start with W14. So the plan's limit "cannot be used with `sites`"
+  became "each compressed answer fails its own request".
+- **The prompt** (section 4, line 7): it names the first 10 sites, the user's pick after Step 1 (10 names of 15
+  characters make the line 296 characters, beside a whole prompt of 1,054), then `…and N more`, joined with `, ` as
+  the names are. It is built with the list in force at the launch, at `/clear` and at each shortening. A resume
+  compares the setup, which does not hold the list, so a changed list says nothing on resume (a known limit).
+- **The launch's time**, with Docker awake: 3.1 s with `sites` against 1.4 s with the network off, the middle of ten
+  runs each (above).
+- **Reached for real:** the test that uses the internet (git, pip and a curl-style request, the plan's question 1)
+  runs only with `TACHI_TEST_INTERNET=1`. [To fill in after Step 12's terminal check: which of that test and the
+  terminal check was run, and whether it passed.]
