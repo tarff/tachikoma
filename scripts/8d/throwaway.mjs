@@ -44,7 +44,11 @@ export function throwaway(name, { root = BUILD, env = process.env } = {}) {
     UV_NO_CONFIG: "1",
   };
   // Windows treats names without regard to case, so another spelling of one of these is dropped, not kept beside it.
-  const kept = Object.entries(commandEnv(env)).filter(([k]) => !(k.toUpperCase() in set));
+  // Every other MEMPALACE_ variable is the user's own MemPalace's setting and is dropped too (the user's choice at
+  // step 3).
+  const kept = Object.entries(commandEnv(env)).filter(
+    ([k]) => !(k.toUpperCase() in set) && !k.toUpperCase().startsWith("MEMPALACE_"),
+  );
   return { dir, env: { ...Object.fromEntries(kept), ...set } };
 }
 

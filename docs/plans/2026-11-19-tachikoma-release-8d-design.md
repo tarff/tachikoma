@@ -473,3 +473,121 @@ For step 17, which builds the lock:
   fetching anything: with a Node 22 already on this PC or in the sandbox image if there is one; otherwise it records
   that this could not be run. If any line would reach the user's screen, step 17 stops for the user, as that wording
   is not approved.
+
+### Step 3 The lock file (2026-11-19)
+
+In short: uv worked out MemPalace 3.12.0 and every package it needs, for Python 3.10 and newer on every system, and
+wrote them into `memory/uv.lock` with a SHA-256 hash for every file. On Windows (x86_64), Linux (x86_64 and arm64) and
+Macs with Apple chips, every package has a ready-built file for each Python from 3.10 to 3.14. Intel Macs have one only
+on Python 3.10, and Windows on ARM on none.
+
+Tools: uv 0.13.5 (`uv 0.13.5 (46776a95d 2026-10-21 x86_64-pc-windows-msvc)`, the user's own `~/.local/bin/uv.exe`,
+run and not changed) and sfw (`Socket Firewall Free, version 1.15.4`). The user said yes to this PyPI fetch on
+2026-11-19.
+
+How it was run:
+- In `C:\Users\<user>\AppData\Local\Temp\tachi-8d-build\lock\project`, holding only `pyproject.toml`, with step 1's
+  `throwaway("lock")` environment. On the command only, four more variables: `UV_PYTHON_DOWNLOADS=never`, and
+  `UV_TOOL_DIR`, `UV_PYTHON_BIN_DIR`, `UV_PYTHON_CACHE_DIR` set to `lock\uv-tools`, `lock\python-bin`,
+  `lock\python-cache`. All four are in uv's list (https://docs.astral.sh/uv/reference/environment/: added in 0.3.2,
+  0.2.16, 0.4.29 and 0.7.0).
+- Before locking, through sfw with that environment: `uv cache dir` gave `...\tachi-8d-build\lock\uv-cache`,
+  `uv python dir` gave `...\lock\python`, `uv python dir --bin` gave `...\lock\python-bin`. `uv tool dir` was not run,
+  as task.md allows no `uv tool` command; locking does not use the tool folder.
+- `sfw uv lock --python C:\Users\<user>\AppData\Local\Programs\Python\Python311\python.exe -v`: exit 0 in 19 s;
+  "Using CPython 3.11.4 interpreter at: ...\Python311\python.exe", "Solved your requirements for 5 environments",
+  "Resolved 112 packages in 18.69s". The Python was named so that uv would not look along PATH, where `~/.local/bin`
+  holds links to the user's own uv-managed Pythons. It is the Python 3.11 already on PATH, used only for its version.
+- No Python was downloaded, no `.venv` was made, and no source package was built (the verbose log has no build line).
+  The log names no folder outside the build folder except that Python's own. Requests went to `pypi.org` and
+  `files.pythonhosted.org` only (212 of them). sfw gives its child `HTTPS_PROXY=http://127.0.0.1:<port>` and
+  `SSL_CERT_FILE=<its own certificate file>` (seen with `sfw node -e` printing those names), so uv went through it.
+  sfw printed nothing and blocked nothing.
+- One warning from uv, about one package's metadata: "Fixing invalid version specifier by removing stray quotes
+  (before: `>= '2.7'`; after: `>= 2.7`)".
+- The snapshot of the user's folders (`step3-before`, `step3-after`): "no change", apart from the set-apart lines of
+  the user's own MemPalace daemon.
+
+UV_NO_CONFIG and `[tool.uv]`: uv 0.13.5's own `uv lock --help` says "--no-config  Avoid discovering configuration
+files (`pyproject.toml`, `uv.toml`) [env: UV_NO_CONFIG=1]", and the configuration page says it "disables the discovery
+of any persistent configuration", where a project's configuration is the `[tool.uv]` table of its `pyproject.toml`
+(https://docs.astral.sh/uv/concepts/configuration-files/). So with UV_NO_CONFIG=1 a `[tool.uv]` table is to be taken
+as not read; the docs do not say whether project fields such as `environments` are skipped too. Not tried:
+`memory/pyproject.toml` has no `[tool.uv]` table, and anything uv needs goes on its command line.
+
+All systems: "uv's lockfile (`uv.lock`) is created with a universal resolution and is portable across platforms"
+(https://docs.astral.sh/uv/concepts/resolution/). On the same page, `environments` only narrows the systems, and
+`required-environments` makes uv require wheels for named systems. Neither is set. So the lock covers every system,
+and a package with no ready-built file for a system is still locked; the install would fail there.
+
+The files:
+- `memory/pyproject.toml`: `requires-python = ">=3.10"` (MemPalace 3.12.0's own floor, "What MemPalace 3.12.0
+  offers" above), one dependency `mempalace==3.12.0`, no build system (so uv installs only the dependencies). CRLF.
+- `memory/uv.lock`: as uv wrote it, 991,468 bytes, SHA-256
+  `50ab3261020767f5c95ead0389a5e83050a92f934c7c40d9bae89da519025d1d`, LF endings (4,207 lines, no CR). 3,014 lines
+  are longer than 120 columns; that is uv's format and is not rewrapped. git here has `core.autocrlf=true`, so
+  `.gitattributes` gains `memory/uv.lock text eol=lf` (the user's choice at step 3): the lock is kept and checked out
+  with LF, byte for byte as uv wrote it. Step 16 hashes it read with LF.
+
+What the lock holds (script: `scripts/8d/lock-check.mjs`, run as `node scripts/8d/lock-check.mjs memory/uv.lock`):
+- 112 package entries: 111 from PyPI and the project itself. 99 names; 12 have one version per Python range
+  (annotated-doc, filelock, httpcore2, httpx2, multidict, numpy, onnxruntime, pydantic-settings, python-dateutil,
+  rpds-py, typer, websockets).
+- 2,978 files (source packages and wheels). Every one has a SHA-256 hash, every package has at least one file, and
+  every package comes from `https://pypi.org/simple`.
+- mempalace 3.12.0: `mempalace-3.12.0-py3-none-any.whl`,
+  `sha256:3832534f377f3a81a324f741f90bf3c1ec277d49404608257cde1b5b0d52626f`, the hash the research recorded. Its
+  source package's hash, `f54cd31d050fc8c76ba822bc30be93580ecbb838a7a50a335d9a1192bd27d335`, matches too.
+- No source package at all: flatbuffers 25.12.19, onnxruntime 1.23.2 and onnxruntime 1.32.0.
+
+Ready-built files, by system and Python. For each, the script follows the lock's dependencies, markers and extras from
+the project, and checks each package's wheel names against CPython's tags. "All" means every package has one; the
+figure after it is the oldest system version on which every package has one.
+
+| System | 3.10 | 3.11 | 3.12 | 3.13 | 3.14 |
+|---|---|---|---|---|---|
+| Windows x86_64 | all | all | all | all | all |
+| Linux x86_64 | all, glibc 2.27 | all, glibc 2.28 | all, glibc 2.28 | all, glibc 2.28 | all, glibc 2.28 |
+| Linux arm64 | all, glibc 2.28 | all, glibc 2.28 | all, glibc 2.28 | all, glibc 2.28 | all, glibc 2.28 |
+| macOS arm64 | all, macOS 13 | all, macOS 14 | all, macOS 14 | all, macOS 14 | all, macOS 14 |
+| macOS x86_64 | all, macOS 13 | not onnxruntime (1) | not onnxruntime (1) | not onnxruntime (1) | not onnxruntime (1) |
+| Windows arm64 | 8 packages missing (2) | 3 missing (3) | 2 missing (4) | 2 missing (4) | 2 missing (4) |
+
+1. onnxruntime 1.32.0, which uv chose for Python 3.11 and newer, has no Intel Mac file and no source package. Its
+   files are for macOS arm64 (14.0), Linux x86_64 and aarch64 (glibc 2.28), and Windows x86_64 and arm64.
+2. chromadb 1.5.9, grpcio 1.85.3, rpds-py 0.30.0, pydantic-core 2.50.4, pyyaml 6.0.3, numpy 2.2.6, orjson 3.13.0, and
+   onnxruntime 1.23.2 (which has no source package either).
+3. chromadb 1.5.9, grpcio 1.85.3, pyyaml 6.0.3.
+4. chromadb 1.5.9, grpcio 1.85.3.
+
+Not in the table: Linux with musl (Alpine; onnxruntime has no musllinux file), free-threaded Python builds, and other
+processors.
+
+Python versions with a ready-built file for every package on all three systems:
+- Windows x86_64, Linux x86_64 and arm64 (glibc 2.28 or newer), and Macs with Apple chips (macOS 14 or newer; 13 for
+  3.10): 3.10, 3.11, 3.12, 3.13 and 3.14.
+- Counting Intel Macs too: 3.10 only, with this lock.
+- Counting Windows on ARM: none.
+
+The user's choice (step 3), 2026-11-19: Python 3.13. The reasons:
+- With this lock, every package has a ready-built file for 3.13 on Windows x86_64, Linux x86_64 and arm64, and Macs
+  with Apple chips.
+- It is supported until October 2029 (https://devguide.python.org/versions/; a scheduled date). 3.10 has been past
+  its end of life since 2026-10-01; 3.11 and 3.12 end in October 2027 and 2028. Packages are leaving older versions:
+  this lock already takes numpy 2.5 only for 3.12 and newer.
+- Over 3.14: the older onnxruntime in this lock (1.23.2) has Intel Mac files up to 3.13 and none for 3.14, so Intel
+  Macs could still be added later on 3.13.
+
+How it is pinned: `requires-python` in `memory/pyproject.toml` stays `">=3.10"`, and the lock stays as made: it already
+covers 3.13, so pinning needs no new lock. The install (step 4 in the build, step 19 in Tachikoma) asks uv for 3.13, a
+Python uv manages itself in its own folder (`memory/python`; in the build, the throwaway folder's `python`), never one
+already on the computer.
+
+Known limits for the README (step 30): on Intel Macs and on Windows on ARM, some packages have no ready-built file for
+3.13 (onnxruntime on Intel Macs; chromadb and grpcio on Windows on ARM), so the install fails with its reason and
+memory stays off.
+
+For step 16: the user's own MemPalace settings must never reach Tachikoma's own MemPalace. The user's environment here
+holds `MEMPALACE_MCP_ALLOW_PEER_WRITER=1` and `MEMPALACE_MCP_IDLE_HOURS=0`. Step 1's helper now drops every
+`MEMPALACE_` variable of the environment it is given, in any spelling, except the ones it sets itself
+(`MEMPALACE_CONFIG_DIR`), and step 16 applies the same rule to Tachikoma's own MemPalace environment.

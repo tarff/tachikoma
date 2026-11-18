@@ -52,6 +52,22 @@ describe("throwaway", () => {
     expect(env.APPDATA).toBe("C:\\a");
   });
 
+  // The user's choice at step 3: the user's own MemPalace settings in their environment never reach the build's
+  // MemPalace, in any spelling; MEMPALACE_CONFIG_DIR is the build's own.
+  it("drops every MEMPALACE_ variable of the given environment but the one it sets", () => {
+    const given = {
+      PATH: "/bin",
+      MEMPALACE_MCP_ALLOW_PEER_WRITER: "1",
+      mempalace_mcp_idle_hours: "0",
+      MemPalace_Palace_Path: "C:\\mine",
+      mempalace_config_dir: "C:\\mine",
+    };
+    const { dir, env } = throwaway("four", { root: made(), env: given });
+    expect(Object.keys(env).filter((k) => k.toUpperCase().startsWith("MEMPALACE_"))).toEqual(["MEMPALACE_CONFIG_DIR"]);
+    expect(inside(dir, env.MEMPALACE_CONFIG_DIR ?? "")).toBe(true);
+    expect(env.PATH).toBe("/bin");
+  });
+
   it("leaves no API key, in any case", () => {
     const keys = Object.fromEntries(API_KEYS.flatMap((k) => [[k, "sk-1"], [k.toLowerCase(), "sk-2"]]));
     const { env } = throwaway("two", { root: made(), env: { PATH: "/bin", ...keys } });

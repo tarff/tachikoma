@@ -1,1 +1,2 @@
 sandbox/Dockerfile text eol=lf
+memory/uv.lock text eol=lf
