@@ -44,7 +44,8 @@ to one. What is carried inside TLS is not checked (section 2, and the second des
     address as a greeting's server name (RFC 6066, section 3), so under choice 10 no https client could use one.
 
 The user approved each of the five sections below on 2026-11-18, the wording drafts in "What the user and the model
-see" among them. The design reviews changed sections 1-5 the same day (see "After the design review").
+see" among them. The design reviews changed sections 1-5 the same day (see "After the design review"), and the user
+approved the whole design after them ("approved", 2026-11-18).
 
 ## Measured (2026-11-18): name lookups on an `--internal` network
 
