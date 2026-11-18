@@ -2535,6 +2535,9 @@ it says so.
 - **Listed sites have been reached for real only on Windows 11 with Docker Desktop,** by the test
   that runs only when asked for (`TACHI_TEST_INTERNET=1`) and by hand: github.com, and PyPI's two
   sites for pip. The other automated tests reach no public site.
+- **A cancel while a remote server's name is being looked up waits for the lookup to end,** and if
+  the lookup then fails, the request fails as one that could not reach the server, not as
+  cancelled.
 
 ### Live link's limits
 
