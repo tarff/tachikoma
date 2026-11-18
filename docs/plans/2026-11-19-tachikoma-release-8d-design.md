@@ -351,3 +351,122 @@ A second review, also passed on by the user, found two more; both taken ("Apply 
    so an older one never reopens it, and an old folder is removed only when no hub runs from it (section 2).
 
 ## Found and measured in the build (8d plan)
+
+### Q2 Which operating-system lock Node can hold (step 2, 2026-11-19)
+
+The question: a lock for joining, stopping, installing and saving that frees itself when its holder dies.
+
+Script: `scripts/8d/lock-probe.mjs`, run as `node scripts/8d/lock-probe.mjs run --runs 10 --child-runs 3`. For each
+candidate it starts a holder process that takes the lock and keeps it, then a second process that tries to take it
+over and over with no pause. It records whether the second process's first try is refused, then kills the holder
+outright (Windows: `taskkill /F /PID <pid>` from Node; Linux: `SIGKILL`) and records how long after that the second
+process took the lock. 10 runs per candidate, plus 3 runs in which the holder first starts a detached process of its
+own that stays alive, as a window starts the hub while holding the join lock. A second process still refused 10 s
+after the kill is cut off (the probe's own cut-off, so a run ends; not a figure for Tachikoma).
+
+Where it ran:
+- Windows: this PC, Windows 11 Pro 10.0.26200, Node v24.22.1 (libuv 1.52.1).
+- Linux: the sandbox image already built here, `tachikoma-sandbox:5879e9863c31` (the shipped Dockerfile's tag, as
+  `src/sandbox/image.ts:69` makes it; Debian 12, Node v24.22.2), in a container named `tachi-8d-lock-probe`, run with
+  `--init --network none` and removed by that name. Nothing was pulled or built.
+- macOS: not run. Its cells are from documentation.
+
+The candidates:
+- A. Named pipe: `net` listen on `\\?\pipe\<name>` (Windows; on Linux and macOS the same call makes B).
+- B. Socket file: `net` listen on a file path (Linux and macOS; on Windows the same call makes A).
+- C. Linux abstract socket: `net` listen on `\0<name>`.
+- D. Loopback TCP port: `net` listen on `127.0.0.1` and one fixed port.
+- E. `node:sqlite`: `BEGIN EXCLUSIVE` on a lock file, with SQLite's busy wait off (`timeout: 0`).
+- F. `fs.openSync` with libuv's `UV_FS_O_EXLOCK` flag, which Node does not offer.
+- G. The npm package `proper-lockfile` (named only; not fetched).
+- H. The npm package `fs-ext`, its `flock` (named only; not fetched).
+
+"Works" means: the second process was refused while the lock was held, and took it after the hard kill with no
+clean-up of any kind. "None" means the system has no such thing.
+
+| Candidate | Windows | Linux | macOS | New package |
+|---|---|---|---|---|
+| A. Named pipe | works: run here (1) | none, it is B: from docs (3) | none, it is B: from docs (3) | no |
+| B. Socket file | none, it is A: from docs (1) | not freed: run here (2) | not freed: from docs (3) | no |
+| C. Abstract socket | none: from docs (3) | works: run here (4) | none: from docs (3) | no |
+| D. TCP port | works: run here (5) | works: run here (5) | not run: from docs (6) | no |
+| E. `node:sqlite` | works: run here (7) | works: run here (7) | not run: from docs (8) | no (in Node) |
+| F. `UV_FS_O_EXLOCK` | works: run here (9) | none: from docs (9) | not run: from docs (9) | no; not Node's API |
+| G. `proper-lockfile` | not freed: from docs (10) | not freed: from docs (10) | not freed: from docs (10) | yes |
+| H. `fs-ext` | unclear: from docs (11) | unclear: from docs (11) | unclear: from docs (11) | yes |
+
+The existing `src/auth/lock.ts` is a pid file, not on the list: its own comment says a hard kill leaves the file
+behind.
+
+On Windows the kill call itself (`taskkill /F /PID`) took 0.78 s to 0.92 s in every run. The figures below are
+counted from the moment the runner saw the holder's exit; a minus means the second process had already taken the lock
+before the runner saw the exit.
+
+Notes, with sources:
+1. Named pipe, Windows, run here: first try refused with `EADDRINUSE`; after the kill, taken 10 of 10 by plain retry,
+   from 3.2 ms before to 2.2 ms before the exit was seen (middle 2.6 ms before). With the holder's child alive (3 of
+   3): taken 3 of 3, 3.5 ms to 3.0 ms before. Node: "Windows will close and remove the pipe when the owning process
+   exits" (https://nodejs.org/docs/latest-v24.x/api/net.html, "Identifying paths for IPC connections").
+2. Socket file, Linux, run here: first try refused with `EADDRINUSE`; after the kill, plain retry never took it (10 of
+   10 still refused at the 10 s cut-off; 3 of 3 with the child). It was taken only by connecting first (refused with
+   `ECONNREFUSED`), then deleting the file and listening again. Two waiters doing that at once could each delete the
+   other's new socket; not tried.
+3. Node, same section as (1): "a Unix domain socket will be visible in the file system and will persist until
+   unlinked", including when "the program then crashes"; and "On Linux, You can use Unix abstract socket ... it will
+   disappear automatically when all open references to the socket are closed." So macOS has the socket file only, and
+   no abstract socket.
+4. Abstract socket, Linux, run here: first try refused with `EADDRINUSE`; after the kill, taken 10 of 10 by plain
+   retry, 0.2 ms to 0.7 ms after the exit was seen (middle 0.5 ms), 1.6 ms to 2.0 ms after the kill began. With the
+   child alive: 3 of 3, 0.4 ms to 0.8 ms.
+5. Loopback TCP port (`127.0.0.1`, a port the probe found free), run here. Windows: refused with `EADDRINUSE`; taken
+   10 of 10, 2.7 ms to 1.9 ms before the exit was seen; with the child 3 of 3. Linux: refused with `EADDRINUSE`; taken
+   10 of 10, 0.4 ms to 1.1 ms after (middle 0.7 ms); with the child 3 of 3, 0.2 ms to 0.7 ms. Each lock needs one
+   fixed port number, which has no source, and any other program on that port would look like a held lock.
+6. Not run. Node sets every socket to `SO_REUSEADDR`, and `reusePort` (several listeners on one port) is off by
+   default (https://nodejs.org/docs/latest-v24.x/api/net.html, `server.listen()`). That a second listener is refused
+   on macOS too is expected from this, not confirmed.
+7. `node:sqlite` (`new DatabaseSync(file, { timeout: 0 })`, then `BEGIN EXCLUSIVE`), run here. Windows: refused with
+   `database is locked` (SQLite code 5); taken 10 of 10, 0.3 ms to 10.6 ms after the exit was seen (middle 5.8 ms);
+   with the child 3 of 3, 1.3 ms before to 2.7 ms after. On Windows each failed try took about 30 ms (28 tries during
+   the 0.8 s kill), which bounds these figures. Linux: refused the same way; taken 10 of 10, 0.5 ms to 1.2 ms after
+   (middle 0.7 ms); with the child 3 of 3, 0.5 ms to 0.8 ms.
+   Also found here: the lock is let go when the `DatabaseSync` object is collected as garbage (a check with
+   `--expose-gc`: refused before `gc()`, taken after), so the holder must keep a reference to it.
+   Node: added in v22.5.0, no flag since v22.13.0; Stability 1.1 "Active development" in the v22 docs, 1.2 "Release
+   candidate" since v24.15.0; the `timeout` option was added in v22.16.0, default 0
+   (https://nodejs.org/docs/latest-v22.x/api/sqlite.html, https://nodejs.org/docs/latest-v24.x/api/sqlite.html).
+   Tachikoma needs Node 22.20 or newer (`package.json`). No warning was printed on Node 24.22; Node 22 was not run.
+8. Not run. SQLite: "The default locking mechanism used by SQLite on unix platforms is POSIX advisory locking", and
+   "the close() system call will cancel all POSIX advisory locks on the same file for all threads and all file
+   descriptors in the process" (https://www.sqlite.org/howtocorrupt.html, section 2.2). macOS is a unix platform here,
+   as Linux was; the lock file must never be opened in the process other than through SQLite.
+9. Run here on Windows: refused with `EBUSY`; taken 10 of 10, 2.4 ms to 1.3 ms before the exit was seen; with the
+   child 3 of 3. But Node does not offer it: Node's list of flags available on Windows does not include it
+   (https://nodejs.org/docs/latest-v24.x/api/fs.html, "File open constants"), so the probe passes libuv's raw value
+   `0x10000000` (libuv `include/uv/win.h`), which makes libuv open the file with no sharing (`share = 0`,
+   `src/win/fs.c`). libuv: "UV_FS_O_EXLOCK is only supported on macOS and Windows"
+   (https://docs.libuv.org/en/v1.x/fs.html).
+10. Its README: "This library utilizes the `mkdir` strategy"; `stale` "defaults to `10000`"; locks are removed on exit
+    "except if the process is killed with SIGKILL or it crashes"
+    (https://github.com/moxystudio/node-proper-lockfile). A killed holder's lock stands until it counts as stale.
+11. Its README: "Asynchronous flock(2)". It does not say which systems it supports or whether it needs a native build
+    (https://github.com/baudehlo/node-fs-ext).
+
+With the holder's detached child still alive, every candidate that works was freed by the holder's death alone (3 of
+3 each, both systems run): starting the hub while holding the join lock does not keep the lock held.
+
+None of the candidates tells a waiting process when the lock frees: a waiter tries again after a wait (step 8's
+figure). SQLite can do that waiting itself through its `timeout`.
+
+The user's choice (Q2), 2026-11-19: option 1, `node:sqlite`: an exclusive SQLite transaction on one lock file per
+lock, on Windows, Linux and macOS.
+
+For step 17, which builds the lock:
+- The `DatabaseSync` object must stay referenced for as long as the lock is held. A collected object closes and lets
+  the lock go (note 7: with `--expose-gc`, refused before `gc()`, taken after).
+- The lock file is never opened in the process except through SQLite (note 8).
+- Open: Tachikoma supports Node 22.20 or newer (`package.json`, `engines`), but only Node 24 was run here. Step 17
+  checks whether Node 22.20 prints an `ExperimentalWarning`, or any other line, when `node:sqlite` is loaded, without
+  fetching anything: with a Node 22 already on this PC or in the sandbox image if there is one; otherwise it records
+  that this could not be run. If any line would reach the user's screen, step 17 stops for the user, as that wording
+  is not approved.
