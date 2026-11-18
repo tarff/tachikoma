@@ -2,6 +2,9 @@
 // the sandbox image already built here, and its output goes into the build record.
 //
 //   node scripts/8d/lock-probe.mjs run [--runs N] [--child-runs N] [--dir <folder>]
+//   node --expose-gc scripts/8d/lock-probe.mjs gc [--dir <folder>]
+//
+// `gc` checks whether a node:sqlite lock is let go once nothing refers to its database object and it is collected.
 //
 // For each candidate this platform has, `run` starts a holder process that takes the lock and keeps it, then a waiter
 // process that tries to take it over and over with no pause. It records whether the waiter's first try is refused,
@@ -11,7 +14,7 @@
 // it starts is stopped by its own process id before it ends. Its files and pipe names live in --dir, which it makes;
 // it deletes only its own files there, by exact name. CUT_MS is the probe's own cut-off for a waiter that never takes
 // the lock, so a run always ends; it is not a figure for Tachikoma.
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, constants as fsc, rmdirSync, unlinkSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -199,7 +202,8 @@ async function once(kind, target, child) {
   const waiter = start(["wait", kind, target], true);
   const result = next(waiter, (o) => "took" in o);
   result.catch(() => {}); // awaited below; this only stops an early failure from ending the process unhandled
-  const first = await new Promise((resolve) => lines(waiter, (o) => "first" in o && resolve(o.first)));
+  // A waiter that ends before its first line rejects this, so `run`'s clean-up still runs.
+  const first = (await next(waiter, (o) => "first" in o)).first;
   const exited = new Promise((r) => holder.once("exit", () => r(now())));
   const killAt = now();
   killHard(h.pid);
@@ -236,13 +240,34 @@ function freePort() {
   });
 }
 
+const opt = (argv, name, d) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : d);
+
+// Makes --dir and returns the folders this call created, deepest first, by exact path: `mkdirSync` gives the first
+// folder it made, and every folder from there down to --dir is new. On Windows it gives that folder with a `\\?\`
+// prefix, so both sides are compared in that form.
+function makeDir(argv) {
+  const dir = path.resolve(opt(argv, "--dir", path.join(tmpdir(), "tachi-8d-build", "lock-probe")));
+  const first = mkdirSync(dir, { recursive: true });
+  const made = [];
+  if (first !== undefined) for (let d = dir; ; d = path.dirname(d)) {
+    made.push(d);
+    if (path.toNamespacedPath(d) === path.toNamespacedPath(first)) break;
+    if (path.dirname(d) === d) throw new Error(`cannot find ${first} above ${dir}`);
+  }
+  return { dir, made };
+}
+
+// Removes the probe's own files in --dir, by exact name, then the folders `makeDir` created (each must be empty).
+function cleanDir({ dir, made }) {
+  for (const name of [...FILES, "probe.sock"]) if (existsSync(path.join(dir, name))) unlinkSync(path.join(dir, name));
+  for (const d of made) rmdirSync(d);
+}
+
 async function run(argv) {
-  const opt = (name, d) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : d);
-  const runs = Number(opt("--runs", "10"));
-  const childRuns = Number(opt("--child-runs", "3"));
-  const dir = path.resolve(opt("--dir", path.join(tmpdir(), "tachi-8d-build", "lock-probe")));
-  const made = !existsSync(dir);
-  mkdirSync(dir, { recursive: true });
+  const runs = Number(opt(argv, "--runs", "10"));
+  const childRuns = Number(opt(argv, "--child-runs", "3"));
+  const where = makeDir(argv);
+  const { dir } = where;
   console.log(`platform ${process.platform} ${process.arch}, node ${process.version}, uv ${process.versions.uv}`);
   console.log(`folder ${dir}; runs ${runs} plain and ${childRuns} with a child per candidate; cut-off ${CUT_MS} ms`);
   try {
@@ -270,11 +295,43 @@ async function run(argv) {
     }
   } finally {
     for (const pid of started) if (alive(pid)) killHard(pid);
-    for (const name of FILES) if (existsSync(path.join(dir, name))) unlinkSync(path.join(dir, name));
-    const sock = path.join(dir, "probe.sock");
-    if (existsSync(sock)) unlinkSync(sock);
-    if (made) rmdirSync(dir);
+    cleanDir(where);
     console.log(`\nleft running: ${[...started].filter(alive).length}`);
+  }
+}
+
+// One try by a separate process, which ends at once: "took" or the refusal's code.
+function tryOnce(kind, target) {
+  const r = spawnSync(process.execPath, [SCRIPT, "try", kind, target], { encoding: "utf8", windowsHide: true });
+  return JSON.parse(r.stdout).result;
+}
+
+// Whether a node:sqlite lock is let go when nothing refers to its database object any more. Run with --expose-gc.
+// First a held lock kept in a variable, through a collection; then one nobody refers to, before and after one.
+async function gcCheck(argv) {
+  if (typeof globalThis.gc !== "function") {
+    console.error("run as: node --expose-gc scripts/8d/lock-probe.mjs gc [--dir <folder>]");
+    process.exitCode = 1;
+    return;
+  }
+  const where = makeDir(argv);
+  const file = KINDS.sqlite.target(where.dir);
+  console.log(`platform ${process.platform} ${process.arch}, node ${process.version}; file ${file}`);
+  try {
+    const kept = await sqlite(file);
+    globalThis.gc();
+    await new Promise((r) => setImmediate(r));
+    console.log(`kept in a variable, after gc(): second process ${tryOnce("sqlite", file)}`);
+    kept.release();
+    await (async () => {
+      await sqlite(file); // taken, and the result dropped
+    })();
+    console.log(`nothing refers to it, before gc(): second process ${tryOnce("sqlite", file)}`);
+    globalThis.gc();
+    await new Promise((r) => setImmediate(r));
+    console.log(`nothing refers to it, after gc(): second process ${tryOnce("sqlite", file)}`);
+  } finally {
+    cleanDir(where);
   }
 }
 
@@ -282,5 +339,10 @@ const [cmd, ...rest] = process.argv.slice(2);
 if (cmd === "run") await run(rest);
 else if (cmd === "hold") await hold(rest[0], rest[1], rest[2] === "child");
 else if (cmd === "wait") await wait(rest[0], rest[1]);
-else if (cmd === "sleeper") setInterval(() => {}, 1 << 30);
+else if (cmd === "gc") await gcCheck(rest);
+else if (cmd === "try") {
+  const got = await KINDS[rest[0]].take(rest[1]);
+  say({ result: got.ok ? "took" : `refused: ${got.code}` });
+  if (got.ok) got.release();
+} else if (cmd === "sleeper") setInterval(() => {}, 1 << 30);
 else console.error("usage: node scripts/8d/lock-probe.mjs run [--runs N] [--child-runs N] [--dir <folder>]");

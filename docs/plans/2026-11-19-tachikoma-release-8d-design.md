@@ -430,8 +430,11 @@ Notes, with sources:
    with the child 3 of 3, 1.3 ms before to 2.7 ms after. On Windows each failed try took about 30 ms (28 tries during
    the 0.8 s kill), which bounds these figures. Linux: refused the same way; taken 10 of 10, 0.5 ms to 1.2 ms after
    (middle 0.7 ms); with the child 3 of 3, 0.5 ms to 0.8 ms.
-   Also found here: the lock is let go when the `DatabaseSync` object is collected as garbage (a check with
-   `--expose-gc`: refused before `gc()`, taken after), so the holder must keep a reference to it.
+   Also found here: the lock is let go when the `DatabaseSync` object is collected as garbage, so the holder must
+   keep a reference to it. Script: `scripts/8d/lock-probe.mjs`, run as
+   `node --expose-gc scripts/8d/lock-probe.mjs gc`, run here on Windows and on Linux (the same image and container
+   name as above). A lock kept in a variable: a second process still refused after `gc()`. A lock nothing refers
+   to: refused before `gc()`, taken after it. Both systems gave the same three results.
    Node: added in v22.5.0, no flag since v22.13.0; Stability 1.1 "Active development" in the v22 docs, 1.2 "Release
    candidate" since v24.15.0; the `timeout` option was added in v22.16.0, default 0
    (https://nodejs.org/docs/latest-v22.x/api/sqlite.html, https://nodejs.org/docs/latest-v24.x/api/sqlite.html).
