@@ -836,21 +836,36 @@ The snapshots of the user's folders:
   MemPalace daemon folder `daemon/<palace key>8ab5b11d`.
 - Around the run after the fixes (`step5-fix-before` to `step5-fix-after`): the same.
 - Between the two (`step5-after` to `step5-fix-before`, about 11 minutes): not clean. The user's own `~/.mempalace`
-  changed outside the set-apart places:
+  changed in these places outside the set-apart ones:
   - `palace/sqlite_exact.sqlite3` and its `-wal`;
   - `wal/write_log.jsonl`;
   - `locks` and `locks/mine_palace_<palace key>.lock`;
-  - `hook_state/last_checkpoint`, and two `hook_state/<session>_last_save` files, one named after this build's own
-    Claude Code session.
+  - `hook_state/last_checkpoint`;
+  - two `hook_state/<session>_last_save` files. One is
+    `hook_state/<session>_last_save`. Its name matches the session folder in the build's
+    scratchpad path (`...\Temp\claude\<id>\<session>\scratchpad`), so it is
+    taken to be this build's Claude Code session. The commit trailers carry a different session ID
+    (`session_011HyFwUUVRarEnjhRmMcKdH`).
 
-  Every one of these changes is timed from 21:25:05 to 21:29:10 UTC. That was before the only Python the build ran in
-  that gap, the stand-in run above, which started at 21:30:51 UTC and stopped before MemPalace was imported. By their
-  names and times, they come from the user's own MemPalace plugin saving this and another Claude Code session. This
-  is inferred, not traced. Under the user's rule (step 1) they still count as a difference.
-- The cause, found on 2026-11-19: the user's MemPalace plugin saves the build's Claude Code session every time the
-  build's main session finishes a reply. Its save marker for this session,
-  `hook_state/<session>_last_save`, is in both snapshots. The changes in the gap came
-  from that, not from the build.
+  These set-apart items changed too (they do not fail):
+  - `hook_state/hook.log` at 21:28:37 UTC;
+  - `daemon/<palace key>8ab5b11d/queue.sqlite3` at 21:29:10 UTC;
+  - the folder `daemon/<palace key>8ab5b11d` itself, at 21:30:58 UTC. Its time moves in every pair of listings in
+    this build.
+
+  The times come from `snapshots\step5-after.json` and `step5-fix-before.json`, converted with Node.
+
+  Every change outside the set-apart places, and the two set-apart files, falls between 21:25:05 and 21:29:10 UTC.
+  By their names and those times, they look like the user's own MemPalace plugin saving this and another Claude Code
+  session after replies. This is an inference from the file names and times: it was not traced, and the user did not
+  say it. Under the user's rule (step 1) these changes still count as a difference.
+- The stand-in run that shows the run ending FAILED (`run tachi_8d_no_such_module`) had no pair of listings of its
+  own: it lies inside this gap pair. It is not the cause:
+  - it started at 21:30:51 UTC, after every change above except the set-apart daemon folder's own time;
+  - its `USERPROFILE` and `HOME` pointed at the build home. The run uses step 1's `install` environment
+    (`scripts/8d/model-check.mjs:77`, `:163`; `throwaway` sets `USERPROFILE` and `HOME` to `<build>\install\home`,
+    `scripts/8d/throwaway.mjs:34-35`);
+  - Python stopped on the import, before MemPalace was loaded.
 - The user's choice, 2026-11-19: **check around each run.**
   - From now on, only the listings taken just before and just after each build run are compared. Those must show no
     change outside the set-apart places.
