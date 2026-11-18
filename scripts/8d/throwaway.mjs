@@ -5,10 +5,12 @@
 //
 // Everything uv, Python or MemPalace does during the build happens in a sub-folder of the build folder, with an
 // environment from `throwaway`: the home, the uv cache and Pythons, MemPalace's config and the model cache all inside
-// that sub-folder, and no API keys. The snapshot lists names, sizes and change times under the user's own MemPalace and
-// uv folders, opens no file in them, changes nothing and follows no link; it is saved in the build folder as
-// <label>.json, and, given an earlier label, compared with it, printing "no change" or each difference. Changes in the
-// two places the user's own MemPalace writes by itself are printed apart and do not count (`ownMemPalace`, below).
+// that sub-folder, no API keys, and UV_NO_CONFIG=1 so uv reads no config file of the user's (APPDATA is not moved,
+// so %APPDATA%\uv\uv.toml would otherwise be read). The snapshot lists names, sizes and change times under the user's
+// own MemPalace and uv folders, opens no file in them, changes nothing and follows no link; it is saved in the build
+// folder as <label>.json, and, given an earlier label, compared with it, printing "no change" or each difference.
+// Changes in the two places the user's own MemPalace writes by itself are printed apart and do not count
+// (`ownMemPalace`, below).
 import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -35,6 +37,11 @@ export function throwaway(name, { root = BUILD, env = process.env } = {}) {
     UV_PYTHON_INSTALL_DIR: path.join(dir, "python"),
     MEMPALACE_CONFIG_DIR: path.join(home, ".config", "mempalace"),
     HF_HOME: path.join(home, ".cache", "huggingface"),
+    // uv's own list of variables (https://docs.astral.sh/uv/reference/environment/, UV_NO_CONFIG, added in 0.2.30):
+    // "If set, uv will not read any configuration files from the current directory, parent directories, or user
+    // configuration directories." The user-level one is %APPDATA%\uv\uv.toml on Windows
+    // (https://docs.astral.sh/uv/concepts/configuration-files/). The user's choice after step 1's review.
+    UV_NO_CONFIG: "1",
   };
   // Windows treats names without regard to case, so another spelling of one of these is dropped, not kept beside it.
   const kept = Object.entries(commandEnv(env)).filter(([k]) => !(k.toUpperCase() in set));
@@ -110,12 +117,14 @@ export function snapshot(folders = userFolders()) {
 }
 
 // The two places the user's own MemPalace writes by itself while it runs, by exact path in ~/.mempalace: a folder
-// directly under daemon/ (its own times) and what lies directly in it, and hook_state/hook.log. A change there is set
-// apart, still shown, and does not fail the comparison (the user's choice at step 1, "Set apart, still shown").
+// directly under daemon/ (its own times) and what lies directly in it, and hook_state/hook.log; with the folders daemon
+// and hook_state themselves, whose own times change when a daemon folder comes or goes or the hook log is made again.
+// A change there is set apart, still shown, and does not fail the comparison (the user's choice at step 1, "Set apart,
+// still shown", and after step 1's review). Any other file in hook_state still fails.
 const ownMemPalace = (label, rel) => {
   if (label !== "~/.mempalace") return false;
   const parts = rel.split("/");
-  return rel === "hook_state/hook.log" || (parts[0] === "daemon" && (parts.length === 2 || parts.length === 3));
+  return rel === "hook_state" || rel === "hook_state/hook.log" || (parts[0] === "daemon" && parts.length <= 3);
 };
 
 // Each difference between two snapshots, one line each: `changes` fail the comparison, `apart` are the user's own

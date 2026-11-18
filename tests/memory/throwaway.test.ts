@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmdirSync,
   symlinkSync,
   unlinkSync,
   utimesSync,
@@ -41,6 +42,16 @@ describe("throwaway", () => {
     expect(env.PATH).toBe("/bin");
   });
 
+  // The user's choice after step 1's review: uv reads no config file of the user's (%APPDATA%\uv\uv.toml), as the six
+  // variables do not move APPDATA. UV_NO_CONFIG is from uv's own list of variables
+  // (https://docs.astral.sh/uv/reference/environment/).
+  it("tells uv to read no config file, whatever the given environment says", () => {
+    const { env } = throwaway("three", { root: made(), env: { PATH: "/bin", uv_no_config: "0", APPDATA: "C:\\a" } });
+    expect(Object.keys(env).filter((k) => k.toUpperCase() === "UV_NO_CONFIG")).toEqual(["UV_NO_CONFIG"]);
+    expect(env.UV_NO_CONFIG).toBe("1");
+    expect(env.APPDATA).toBe("C:\\a");
+  });
+
   it("leaves no API key, in any case", () => {
     const keys = Object.fromEntries(API_KEYS.flatMap((k) => [[k, "sk-1"], [k.toLowerCase(), "sk-2"]]));
     const { env } = throwaway("two", { root: made(), env: { PATH: "/bin", ...keys } });
@@ -61,6 +72,9 @@ describe("snapshot", () => {
     writeFileSync(path.join(dir, "watched", "sub", "b.txt"), "two");
     return dir;
   }
+
+  // The paths a comparison's lines name, sorted.
+  const paths = (lines: string[]) => lines.map((l) => /(?:changed|added|removed) (\S+)/.exec(l)?.[1]).toSorted();
 
   it("finds no change in a folder left alone", () => {
     const dir = tree();
@@ -104,21 +118,67 @@ describe("snapshot", () => {
     // Still failing: anything else, deeper inside a daemon folder, beside the hook log, the same names elsewhere.
     writeFileSync(path.join(home, "daemon", "key1", "deeper", "x"), "22");
     writeFileSync(path.join(home, "hook_state", "other.log"), "22");
+    writeFileSync(path.join(home, "hook_state", "new.log"), "1");
     writeFileSync(path.join(home, "palace", "new"), "1");
     writeFileSync(path.join(home, "daemon.txt"), "1");
     writeFileSync(path.join(dir, "other", "daemon", "key1", "pid"), "22");
     const { changes, apart }: { changes: string[]; apart: string[] } = compare(before, snapshot(folders));
-    const paths = (lines: string[]) => lines.map((l) => /(?:changed|added|removed) (\S+)/.exec(l)?.[1]).toSorted();
-    const setApart = ["daemon/key1", "daemon/key1/new", "daemon/key1/pid", "daemon/key2", "hook_state/hook.log"];
-    expect(paths(apart)).toEqual(setApart);
+    // A new daemon folder and a new file beside the hook log change daemon's and hook_state's own times: set apart.
+    expect(paths(apart)).toEqual([
+      "daemon",
+      "daemon/key1",
+      "daemon/key1/new",
+      "daemon/key1/pid",
+      "daemon/key2",
+      "hook_state",
+      "hook_state/hook.log",
+    ]);
     expect(apart.every((l) => l.startsWith("~/.mempalace: "))).toBe(true);
-    const failing = paths(changes.filter((l) => l.startsWith("~/.mempalace: ")));
-    for (const p of setApart) expect(failing).not.toContain(p);
-    expect(changes.join("\n")).toMatch(/~\/\.mempalace: changed daemon\/key1\/deeper\/x/);
-    expect(changes.join("\n")).toMatch(/~\/\.mempalace: changed hook_state\/other\.log/);
-    expect(changes.join("\n")).toMatch(/~\/\.mempalace: added palace\/new/);
-    expect(changes.join("\n")).toMatch(/~\/\.mempalace: added daemon\.txt/);
-    expect(changes.join("\n")).toMatch(/other: changed daemon\/key1\/pid/);
+    // Exactly these fail, and no line for the set-apart places is among them.
+    expect(paths(changes)).toEqual([
+      "daemon.txt",
+      "daemon/key1/deeper/x",
+      "daemon/key1/pid",
+      "hook_state/new.log",
+      "hook_state/other.log",
+      "palace",
+      "palace/new",
+    ]);
+    expect(changes.filter((l) => !l.startsWith("~/.mempalace: "))).toEqual([
+      expect.stringMatching(/^other: changed daemon\/key1\/pid /),
+    ]);
+  });
+
+  it("sets apart a daemon folder added or removed and the hook log made again, failing nothing", () => {
+    const dir = made();
+    const home = path.join(dir, "mp");
+    for (const sub of ["daemon/key1", "daemon/key3", "hook_state"]) {
+      mkdirSync(path.join(home, sub), { recursive: true });
+    }
+    for (const file of ["daemon/key1/pid", "daemon/key3/pid", "hook_state/hook.log"]) {
+      writeFileSync(path.join(home, file), "1");
+    }
+    const folders = { "~/.mempalace": home };
+    const before = snapshot(folders);
+    mkdirSync(path.join(home, "daemon", "key2"));
+    writeFileSync(path.join(home, "daemon", "key2", "pid"), "1");
+    unlinkSync(path.join(home, "daemon", "key3", "pid"));
+    rmdirSync(path.join(home, "daemon", "key3"));
+    unlinkSync(path.join(home, "hook_state", "hook.log"));
+    writeFileSync(path.join(home, "hook_state", "hook.log"), "1");
+    const { changes, apart }: { changes: string[]; apart: string[] } = compare(before, snapshot(folders));
+    expect(changes).toEqual([]);
+    expect(paths(apart)).toEqual([
+      "daemon",
+      "daemon/key2",
+      "daemon/key2/pid",
+      "daemon/key3",
+      "daemon/key3/pid",
+      "hook_state",
+      "hook_state/hook.log",
+    ]);
+    expect(apart.join("\n")).toMatch(/added daemon\/key2/);
+    expect(apart.join("\n")).toMatch(/removed daemon\/key3/);
   });
 
   it("records a missing folder as missing, and reports it appearing", () => {
