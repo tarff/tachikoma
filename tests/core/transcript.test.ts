@@ -674,6 +674,15 @@ describe("transcript", { timeout: 15_000 }, () => {
       expect([r.setup, r.told]).toEqual([OFF, { date: "2026-11-17", setup: OFF }]);
     });
 
+    // 8c-2b plan, Step 10: a session saved with the allowed sites is read back as that setup.
+    it("reads a saved sites setup back as a setup", async () => {
+      const p = place();
+      const SITES: Setup = { sandbox: "copy", network: "sites", git: "copy" };
+      new Transcript(p.file, p.pictures).write({ ...start, box: true, date: "2026-11-17", setup: SITES });
+      const r = read(p);
+      expect([r.setup, r.told]).toEqual([SITES, { date: "2026-11-17", setup: SITES }]);
+    });
+
     it("reads an older start line's box alone as the setup, with no date told", async () => {
       for (const [line, sandbox] of [
         [start, "off"],

@@ -1,17 +1,20 @@
+import os from "node:os";
 import type { Tool } from "@modelcontextprotocol/client";
 import { openBrowser } from "../auth/chatgpt.js";
 import type { Bus } from "../core/bus.js";
 import { settingsDir } from "../core/datadir.js";
 import { visible } from "../core/permissions.js";
 import { errorText, type ToolSpec } from "../core/types.js";
+import type { Site } from "../sandbox/sites.js";
 import type { Answers } from "./answers.js";
 import type { AuthStore, SignInIO } from "./auth.js";
 import type { McpBox, Unstopped } from "./box.js";
 import { Checker } from "./checker.js";
 import type { ServerConfig } from "./config.js";
 import { Forms } from "./forms.js";
-import { answerSetup, helperRuns, type McpSandbox, placeOf, starts } from "./place.js";
-import { Server, type State } from "./server.js";
+import { answerSetup, helperRuns, type McpSandbox, NETWORK_OFF, offReason, placeOf } from "./place.js";
+import { type CheckedFetch, Server, type State } from "./server.js";
+import { type SitesFetchOptions, sitesFetch } from "./sitesFetch.js";
 
 // The MCP servers together, and one table of tool names over them all (release 8c plan, Task 5; design, "Tools for the
 // model"; choices 7, 8 and 36).
@@ -44,7 +47,7 @@ export interface Offered {
   forJudge: string;
   forNote: string;
   trustedOnly?: true;
-  boxNetwork?: "on" | "off";
+  boxNetwork?: "on" | "off" | "sites";
 }
 
 // What a request is offered (Task 6b; choices 37-42): `defined`, the tools it defines, those loaded upfront (alwaysLoad)
@@ -92,6 +95,7 @@ export class Servers {
   readonly #headless: boolean;
   readonly #box: McpBox | undefined;
   readonly #settingsDir: string;
+  readonly #checked: CheckedFetch | undefined; // with the allowed sites, each remote server's (8c-2b plan, Step 9)
   // Each name's stops that failed in the box (8c-2a plan, Task 4, decision 24): one list per name, given to every copy
   // of it, so a record outlives live edits, a removal and the entry added back. A list is never replaced, as a copy
   // still stopping may yet add to it; one emptied by the retries stays, holding nothing.
@@ -122,12 +126,17 @@ export class Servers {
   // Tasks 4 and 6; decision 10): a host or remote copy needs it too, to try a failed in-box stop of its name again.
   // `settingsDir`: the folder a user's entry's headersHelper runs in, ~/.tachikoma unless a test gives its own (8c-2a
   // plan, Task 10).
+  // `sites`: the entries in force with the network "sites" (8c-2b plan, Step 9), each remote server's requests then
+  // going through a checked fetch of its own (sitesFetch.ts) against this computer's addresses, read here, at the
+  // launch. `checked`: a test's own addresses, lookup, connect and certificates for those (decision 12), never set
+  // otherwise.
   constructor(
     configs: ServerConfig[],
     opts: {
       root: string; env: NodeJS.ProcessEnv; bus: Bus; answers: () => Answers; unread?: Answers;
-      network: "on" | "off" | "none"; lead: () => string; startMs?: number;
+      network: "on" | "off" | "sites" | "none"; lead: () => string; startMs?: number;
       auth?: AuthStore; openBrowser?: (url: string) => void; headless?: boolean; box?: McpBox; settingsDir?: string;
+      sites?: Site[]; checked?: Partial<Omit<SitesFetchOptions, "sites" | "refused">>;
     },
   ) {
     this.#root = opts.root;
@@ -136,7 +145,19 @@ export class Servers {
     this.#makeAnswers = opts.answers;
     this.#unread = opts.unread;
     if (opts.network !== "none" && !opts.box) throw new Error("Servers: the sandbox is on, but no box was given");
-    this.#sandbox = opts.network === "none" ? null : { kind: opts.box!.kind, network: opts.network };
+    this.#sandbox =
+      opts.network === "none"
+        ? null
+        : opts.network === "sites"
+          ? { kind: opts.box!.kind, network: "sites", sites: opts.sites ?? [] }
+          : { kind: opts.box!.kind, network: opts.network };
+    if (opts.network === "sites") {
+      const sites = opts.sites ?? [];
+      // This computer's own addresses, read at launch, as the proxy's are (design review's finding 4; sitesNet.ts).
+      const own = Object.values(os.networkInterfaces()).flatMap((list) => (list ?? []).map((a) => a.address));
+      const given = { own, ...opts.checked };
+      this.#checked = (refused) => sitesFetch({ ...given, sites, refused });
+    }
     this.#lead = opts.lead;
     this.#startMs = opts.startMs;
     this.#auth = opts.auth;
@@ -457,7 +478,9 @@ export class Servers {
   // project's for a project's (8c-2a plan, Task 10).
   #slot(config: ServerConfig): Slot {
     const slot: Slot = { config, said: new Set() };
-    if (!starts(config, this.#sandbox)) return { ...slot, fixed: { is: "off" } };
+    // With the reason /mcp says, none when the box's network is off (8c-2b plan, Step 9).
+    const off = offReason(config, this.#sandbox);
+    if (off !== undefined) return { ...slot, fixed: off === NETWORK_OFF ? { is: "off" } : { is: "off", reason: off } };
     if (config.where === "project") {
       const yes = this.#readAnswers()?.get(config.name, config.written, answerSetup(config, this.#sandbox));
       if (yes === undefined) return { ...slot, fixed: { is: "waiting for your yes" } };
@@ -474,6 +497,7 @@ export class Servers {
       ...(helperRuns(config, this.#sandbox) && {
         helper: { cwd: config.where === "user" ? this.#settingsDir : this.#root, project: config.where === "project" },
       }),
+      ...(this.#checked && config.entry.kind !== "stdio" && { checked: this.#checked }),
     });
     slot.server = server;
     return slot;

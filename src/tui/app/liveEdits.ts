@@ -4,6 +4,7 @@ import { errorText, type Provider } from "../../core/types.js";
 import { KEYBINDINGS, type KeysLoaded } from "../../keybindings.js";
 import { mergeServers } from "../../mcp/config.js";
 import { NO_RULES } from "../../safety/rules.js";
+import { rules } from "../../sandbox/sites.js";
 import { hooksOf, type Loaded, SETTINGS, type Settings } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { editorCommand } from "../external.js";
@@ -17,6 +18,10 @@ const same = (a: unknown, b: unknown) => {
   const text = (v: unknown) => JSON.stringify(v, (_key, x: unknown) => (x instanceof RegExp ? { regex: x.source, flags: x.flags } : x));
   return text(a) === text(b);
 };
+// An entry's value as compared: the allowed sites as a set, so the same sites in another order are no change, and no
+// list is the same as an empty one (8c-2b plan, Step 3's review).
+const compared = (s: Settings, key: (typeof LIVE)[number]) =>
+  key === "allowedSites" ? (s.allowedSites ?? []).map(rules.siteText).sort() : s[key];
 
 export const liveEdits = (ui: UI, fns: Fns) => {
   // A live edit of the settings file (release 6 design, "Live edits"): a broken file keeps the last good settings
@@ -33,7 +38,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     ui.fileNow.current = read.settings;
     const now = resolve({}, {}, read.settings);
     for (const key of LIVE) {
-      if (same(before[key], read.settings[key])) continue;
+      if (same(compared(before, key), compared(read.settings, key))) continue;
       // VISUAL and EDITOR come before the file's editor, as a flag comes before an entry (external.ts, editorCommand).
       const flag = key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : ui.live?.given[key];
       if (flag) fns.note(gray(`${SETTINGS}'s "${key}" was left as ${flag} set it for this session`));
@@ -90,6 +95,9 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       // is ever unset, and then the lead's model judges.
       const launched = resolve({}, {}, ui.live?.loaded.settings ?? {})[key] || "the lead's model";
       fns.note(gray(`"${key}" changes in ${SETTINGS} take effect at the next launch; it stays ${launched}`));
+    } else if (key === "allowedSites") {
+      // Read at the launch only, as network is (8c-2b plan, Step 3 and question 9; W3).
+      fns.note(gray(`"allowedSites" changes in ${SETTINGS} take effect at the next launch`));
     } else if (key === "theme") {
       // Read at the launch only (TUI design pass, Task 1), with the same line; auto unless the launch's file set it.
       fns.note(gray(`"theme" changes in ${SETTINGS} take effect at the next launch; it stays ${ui.live?.loaded.settings.theme ?? "auto"}`));

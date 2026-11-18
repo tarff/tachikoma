@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ServerConfig } from "../../src/mcp/config.js";
-import { answerSetup, helperRuns, type McpSandbox, placeOf, starts } from "../../src/mcp/place.js";
+import { answerSetup, helperRuns, type McpSandbox, offReason, placeOf, starts } from "../../src/mcp/place.js";
 
 // 8c-2a plan, Task 6 (design, "Where a local server runs"; decision 11): where each server runs, which start with the
 // box's network as it is, whether a remote entry's headersHelper runs, and the setup a project's answer is kept for.
@@ -55,6 +55,43 @@ describe("placeOf and starts", () => {
   });
 });
 
+// 8c-2b plan, Step 9 (design, section 4's table; decision 13): with the allowed sites in force a box server starts, a
+// host one is off, and a remote one starts only when its address's name and port are listed and not written as local.
+describe("offReason with the allowed sites", () => {
+  const at = (url: string) => remote("r", undefined, { entry: { kind: "http", url, headers: {} } });
+  const listed = [{ name: "mcp.example.com", port: 443 }, { name: "api.example.com", port: 8443 }];
+  for (const kind of ["live", "copy"] as const) {
+    it(`gives each server's reason, or none for one that starts (${kind})`, () => {
+      const s: McpSandbox = { kind, network: "sites", sites: listed };
+      expect(offReason(local("a"), s)).toBeUndefined();
+      expect(offReason(local("p", project), s)).toBeUndefined();
+      expect(offReason(local("h", { host: true }), s)).toBe("the sandbox's network is limited to its allowed sites");
+      expect(offReason(remote("r"), s)).toBeUndefined(); // https://mcp.example.com/mcp, on 443
+      expect(offReason(at("https://API.example.com:8443/x"), s)).toBeUndefined();
+      expect(offReason(at("https://other.example.com/mcp"), s)).toBe("not on the allowed sites");
+      expect(offReason(at("http://mcp.example.com/mcp"), s)).toBe("not on the allowed sites"); // port 80
+      const locals = ["http://localhost:3000/mcp", "http://a.localhost/mcp", "http://127.0.0.1:9/mcp", "http://[::1]/"];
+      for (const url of locals) {
+        expect([url, offReason(at(url), s)]).toEqual([url, "a local address"]);
+      }
+      expect(offReason(at("https://93.184.215.14/mcp"), s)).toBe("not on the allowed sites"); // no IP entries
+      expect(starts(local("h", { host: true }), s)).toBe(false);
+      expect(starts(remote("r"), s)).toBe(true);
+      expect(starts(at("https://other.example.com/mcp"), s)).toBe(false);
+    });
+  }
+
+  it("keeps the off and on rows as they were: off has its one reason, on none", () => {
+    for (const s of SANDBOXES) {
+      const off = s!.network === "off" ? "the sandbox's network is off" : undefined;
+      expect(offReason(local("a"), s)).toBeUndefined();
+      expect(offReason(local("h", { host: true }), s)).toBe(off);
+      expect(offReason(remote("r"), s)).toBe(off);
+    }
+    for (const c of [local("a"), local("h", { host: true }), remote("r")]) expect(offReason(c, null)).toBeUndefined();
+  });
+});
+
 describe("helperRuns", () => {
   it("runs a user entry's helper in every setup, and a project's only with no sandbox", () => {
     for (const s of [null, ...SANDBOXES]) {
@@ -80,5 +117,15 @@ describe("answerSetup", () => {
     expect(answerSetup(remote("k", "get-key", project), null)).toBe("helper");
     for (const s of SANDBOXES) expect(answerSetup(remote("k", "get-key", project), s)).toBe("no helper");
     for (const s of [null, ...SANDBOXES]) expect(answerSetup(remote("r", undefined, project), s)).toBeUndefined();
+  });
+
+  // 8c-2b plan, Step 10 (decision 14): network sites has answers of its own, whatever the list holds.
+  it("keeps a project's box server's answer for network sites, the list not part of it", () => {
+    const one: McpSandbox = { kind: "copy", network: "sites", sites: [{ name: "github.com", port: 443 }] };
+    const none: McpSandbox = { kind: "copy", network: "sites", sites: [] };
+    expect(answerSetup(local("p", project), one)).toBe("box copy network sites");
+    expect(answerSetup(local("p", project), none)).toBe("box copy network sites");
+    const live: McpSandbox = { kind: "live", network: "sites", sites: [] };
+    expect(answerSetup(local("p", project), live)).toBe("box live network sites");
   });
 });

@@ -115,6 +115,38 @@ describe("setupNote", () => {
 
   // Task 3's code review; the user's choice: only an old session's "on" resumed in the sandbox opens saying its earlier
   // setup was not recorded; resumed with no sandbox, where commands run is known to differ.
+  // 8c-2b plan, Step 10 (W6): the allowed sites on either side.
+  describe("with the allowed sites", () => {
+    const LIVE_SITES: Setup = { ...LIVE_ON, network: "sites" };
+    const NOW = "Shell commands can reach only the sandbox's allowed sites now";
+    const WAS = "earlier they could reach only the sandbox's allowed sites.";
+    it("says sites now, the whole web earlier", () => {
+      expect(setupNote(LIVE_ON, LIVE_SITES, HOST)).toBe(note(`${NOW}; earlier they could reach the whole web.`, CLOSE));
+      expect(setupNote(OFF, LIVE_SITES, HOST)).toBe(
+        note(TO_BOX, LIVE, `${NOW}; earlier they could reach the whole web.`, CLOSE),
+      );
+    });
+    it("says sites now, no web earlier", () => {
+      expect(setupNote(LIVE_OFF, LIVE_SITES, HOST)).toBe(note(`${NOW}; earlier they could not reach the web.`, CLOSE));
+    });
+    it("says sites now, the earlier setup not recorded", () => {
+      expect(setupNote({ sandbox: "on" }, LIVE_SITES, HOST)).toBe(unrecorded(LIVE, REPO, `${NOW}.`));
+    });
+    it("says the web now, sites earlier", () => {
+      expect(setupNote(LIVE_SITES, LIVE_ON, HOST)).toBe(note(`Shell commands can reach the web now; ${WAS}`, CLOSE));
+      expect(setupNote(LIVE_SITES, OFF, HOST)).toBe(
+        note(TO_HOST, `Shell commands can reach the web now; ${WAS}`, CLOSE),
+      );
+    });
+    it("says no web now, sites earlier", () => {
+      const said = note(`Shell commands cannot reach the web now; ${WAS}`, CLOSE);
+      expect(setupNote(LIVE_SITES, LIVE_OFF, HOST)).toBe(said);
+    });
+    it("says nothing from sites to sites", () => {
+      expect(setupNote(LIVE_SITES, { ...LIVE_SITES, git: "none" }, HOST)).toBeUndefined();
+    });
+  });
+
   it("opens as under another setup when an old session's sandbox is now off", () => {
     expect(setupNote({ sandbox: "on" }, OFF, HOST)?.startsWith(`${OPEN} `)).toBe(true);
     expect(setupNote({ sandbox: "on" }, COPY_OFF, HOST)?.startsWith(`${UNRECORDED} `)).toBe(true);
@@ -189,6 +221,16 @@ describe("dueNotes and toldAfter", () => {
       { type: "text", text: "x", from: "note", note: "x" },
     ] as unknown as Part[];
     for (const p of others) expect([isDateNote(p), isSetupNote(p)]).toEqual([false, false]);
+  });
+
+  // 8c-2b plan, Step 10: the allowed sites are a network of their own.
+  it("knows a saved sites setup, which differs from on and off and equals itself", () => {
+    const sites: Setup = { sandbox: "copy", network: "sites", git: "copy" };
+    expect(isSetup(sites)).toBe(true);
+    expect(sameSetup(sites, { ...sites, network: "on" })).toBe(false);
+    expect(sameSetup(sites, { ...sites, network: "off" })).toBe(false);
+    expect(sameSetup({ ...sites, network: "on" }, sites)).toBe(false);
+    expect(sameSetup(sites, { ...sites })).toBe(true);
   });
 
   it("compares the sandbox setting and the box's network, never git", () => {

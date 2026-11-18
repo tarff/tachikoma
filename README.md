@@ -186,7 +186,7 @@ tachi review [<name> [--discard]]                  list the copies kept for revi
                         and dangerous commands ask you
                   never: never ask; only with --sandbox copy, where you review changes at the end
 --sandbox <how>   off | live | copy (default: off): commands run in Docker on this folder or a copy
---network <net>   off | on (default: off): whether commands in the sandbox can reach the internet
+--network <net>   off | on | sites (default: off): whether commands in the sandbox can reach the internet; sites allows only the settings' "allowedSites"
 --judge <spec>    the model that judges in auto mode; the lead's model unless set
 --effort <level>  Anthropic models only: low | medium | high | xhigh | max
 --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
@@ -545,17 +545,82 @@ session ends.` A crashed session's box is removed first, and two reviews of one 
 
 ### The network
 
-`--network off` (the default) or `--network on`, or `"network"` in the settings file. Off, nothing
-in the box can reach the internet, so an install, a `git push` or a download there fails, and every
-failed command's result gets one more line: `(The box's network is off, so nothing in it can reach
-the internet. To allow it, launch with --network on.)` On, the box has Docker's ordinary network.
-Tachikoma's own requests to the model go from your machine either way. Without the sandbox,
-`--network` does nothing and says so: `--network acts only with the sandbox on; it was ignored`. A
-list of allowed sites is planned for the second part of release 8c-2. With the network off, MCP
+`--network off` (the default), `--network on` or `--network sites`, or `"network"` in the settings
+file. Off, nothing in the box can reach the internet, so an install, a `git push` or a download
+there fails, and every failed command's result gets one more line: `(The box's network is off, so
+nothing in it can reach the internet. To allow it, launch with --network on.)` On, the box has
+Docker's ordinary network. With `sites`, it reaches only the sites you list (below). Tachikoma's
+own requests to the model go from your machine either way. Without the sandbox, `--network` does
+nothing and says so: `--network acts only with the sandbox on; it was ignored`. With the network off, MCP
 servers in the box still start, with no web, and those marked `"host"` and remote ones are off,
 with one line: `MCP servers marked "host" and remote servers are off: the sandbox's network is
 off, and outside the box nothing keeps them off the web. Start with --network on to use them.`
 (see [MCP servers](#with-the-sandbox)).
+
+**The allowed sites,** `--network sites`: the box reaches only the sites in `"allowedSites"` in
+your settings file, and nothing on your computer or your local network. Only you can add a site:
+the list comes from your settings file alone, never from a project, a skill or the model, and an
+edit to it counts from the next launch. Switching between `on` and `sites` keeps the list.
+
+```json
+"network": "sites",
+"allowedSites": ["github.com", "pypi.org", "files.pythonhosted.org", "example.com:8443"]
+```
+
+- **An entry is a name, with its port when it is not 443:** `github.com` allows `github.com` on
+  port 443 only, so not `api.github.com` and not `github.com:80`; plain `http://` needs its port
+  written, such as `example.com:80`. Letter case and a last dot do not count: `GitHub.com.` is
+  `github.com`. A site whose downloads come from a second name needs both listed, as pip needs
+  `pypi.org` and `files.pythonhosted.org`.
+- **An entry that cannot be used is left out,** with one line at each launch naming its place in
+  the list and only its name, never a password, path or query: `allowedSites entry 3
+  (*.github.com) was left out: a wildcard; list each name`. The other reasons are `a path`, `a
+  scheme in front; write the name and port only`, `a password`, `a local address` and `an IP
+  address; list its name`; with no name that can be read, `allowedSites entry 4 was left out: not
+  a name and port`. The rest of the list applies. A value that is not a list stops the launch:
+  `settings.json: "allowedSites" must be a list of names, such as ["github.com",
+  "example.com:8443"] (got "github.com")`.
+- **How the box is held to the list:** each launch makes its own Docker network, with no way out
+  and no gateway into Docker's side of your computer, and starts a small proxy of Tachikoma's own
+  on it, from the box's image, the only container there that also reaches the web. In the box,
+  `HTTPS_PROXY`, `HTTP_PROXY` and their lowercase forms point at the proxy, which git, pip, uv, npm
+  and Python's urllib use, and `NODE_USE_ENV_PROXY=1` makes Node's own `fetch` use them too.
+  `NO_PROXY` is the box's own loopback, `localhost,127.0.0.1,::1`, so a program reaches a server
+  running inside the box directly. The box's name lookups go to the proxy, which answers none.
+- **What passes:** the proxy checks each connection's name and port against the list, looks the
+  name up itself, refuses it if any of its addresses is on your computer or a local or reserved
+  network, and connects to the address it checked. An https connection must open with its TLS
+  greeting naming that same site. A plain http request is checked by its address, its `Host`
+  header must name the same site, and each request is checked again, a redirect's too. Anything
+  else is refused, `git` over SSH among them. A command in the box gets the proxy's reason as its
+  error: `Tachikoma's sandbox refused github.io:443: not on the allowed sites`, or `…: it points at
+  a local address`; a listed site it cannot reach gives `Tachikoma's sandbox could not reach
+  github.com:443: <error code, such as ENOTFOUND>`. A failed command's result gets one more line:
+  `(The sandbox's network reaches only its allowed sites; the user can add one to
+  "allowedSites".)`
+- **The launch check:** before anything runs in the box, Tachikoma proves the list holds on this
+  machine. Docker's own description must show the network with no gateway and the box joined to it
+  alone; the box's routes, as its kernel lists them, must lead nowhere but the network itself, and
+  its routing rules, read with `python3` where the box's image has it, must be the kernel's
+  standard ones; and from the box, a direct connection to an outside address must be refused at
+  once, an unlisted site and a tunnel without a TLS greeting must be refused by the proxy, and a
+  name lookup must reach the proxy. If any of these fails, the launch stops, naming it: `The
+  sandbox's allowed sites cannot be held on this machine: the box has a route out. Use --network
+  off or --network on.`
+- **The launch line** gives the count of entries in force, `network sites (3)`. With none, the box
+  works as with the network off, and the launch says `The sandbox's network allows no sites; add
+  them to "allowedSites" in ~/.tachikoma/settings.json.`
+- **Its time:** on the computer it was built on, a launch with `sites` took about 1.7 s more than
+  one with the network off (3.1 s against 1.4 s, the middle of ten runs each, with Docker awake).
+  After Docker Desktop had been idle for six minutes, the first network it made took about 8 s. The
+  network and its proxy get 30 s, `The sandbox's network and proxy were not ready within 30 s.`,
+  and the check 10 s, `…cannot be held on this machine: the check did not finish within 10 s. …`.
+  A failed launch removes what it made, and names anything Docker could not remove: `Left in
+  Docker: <names>. The next launch removes them.`
+- **The model is told the sites,** the first 10 by name: `The sandbox's network reaches only these
+  sites: github.com, pypi.org. Other sites and local addresses are refused, and only the user can
+  add a site.`, with `…and 3 more` after the tenth name for 13. With none: `The sandbox's network
+  allows no sites, so shell commands cannot reach the web; only the user can add a site.`
 
 ### The box's limits
 
@@ -661,6 +726,10 @@ everything the model read, cannot be committed by mistake.
   copy of the project. The project is a git repository made for this sandbox copy; its one commit
   holds the project as copied. Shell commands can reach the web now; earlier they could not. Earlier
   replies about the setup were right under the system prompt they were made with.`
+  With the network `sites` on either side, the web's sentence names the allowed sites, such as
+  `Shell commands can reach only the sandbox's allowed sites now; earlier they could reach the whole
+  web.` or `Shell commands cannot reach the web now; earlier they could reach only the sandbox's
+  allowed sites.` A changed list alone is not another setup, so it gets no note.
   Neither shows in the conversation on screen; `/export` writes them under `Notes:`.
 - **What does not come back:** the mode, the sandbox and the network, which come from this launch's
   flags and settings, so resuming never brings back `auto` or `never` unasked; in copy mode the box
@@ -989,7 +1058,8 @@ Every entry is optional; one left out keeps its default.
 | `lead` | the lead model, as `--lead` | none | as `/lead`: at once when idle, otherwise when the turn ends. Taken out, the session keeps its lead |
 | `mode` | `"ask"`, `"project"`, `"auto"` or `"never"`, as `--mode`; `"never"` only with `"sandbox": "copy"` | `"ask"` | at the next launch only (below); Shift+Tab still switches the mode |
 | `sandbox` | `"off"`, `"live"` or `"copy"`, as `--sandbox`: see [The sandbox](#the-sandbox) | `"off"` | at the next launch only (below) |
-| `network` | `"off"` or `"on"`, as `--network` | `"off"` | at the next launch only (below) |
+| `network` | `"off"`, `"on"` or `"sites"`, as `--network` | `"off"` | at the next launch only (below) |
+| `allowedSites` | the sites the box can reach with `"network": "sites"`, as a list: `["github.com", "example.com:8443"]`; see [The network](#the-network) | none | at the next launch only (below) |
 | `judge` | auto mode's judge, as `--judge` | the lead's model | at the next launch only (below) |
 | `sandboxLimits` | the box's memory, CPUs and processes: see [The box's limits](#the-boxs-limits) | scaled to Docker's size | at the next launch |
 | `dangerousCommands` | your own rules for [the dangerous-command check](#the-dangerous-command-check) | none | a rule added, or a kind switched back on, at once; a kind switched off, or a rule removed, at the next launch, with a red warning |
@@ -1035,8 +1105,10 @@ Every entry is optional; one left out keeps its default.
 - **Except `"mode"`, which applies at the next launch only,** so a shell command you allowed cannot
   rewrite the file to put the session in `project` mode. An edit to it gets a grey line, `"mode"
   changes in settings.json take effect at the next launch; the mode stays ask`, and the mode stays;
-  Shift+Tab still switches it. `"sandbox"`, `"network"` and `"judge"` wait for the next launch too,
-  with the same kind of line, so a command cannot change where commands run or who judges them.
+  Shift+Tab still switches it. `"sandbox"`, `"network"`, `"allowedSites"` and `"judge"` wait for
+  the next launch too, with the same kind of line (`"allowedSites" changes in settings.json take
+  effect at the next launch`), so a command cannot change where commands run, what the box can
+  reach, or who judges them.
 - **`"mode": "never"` needs `"sandbox": "copy"`,** as `--mode never` needs `--sandbox copy`: without
   it, the launch stops with one line.
 - **The file tools never touch the settings file or the keys file,** in any mode, even when the
@@ -1450,7 +1522,8 @@ Start the MCP server "build-tools" from this project's .mcp.json on this compute
 ```
 
 With the sandbox on, `on this computer` is `inside the sandbox (copy, network off)`, with `copy` or
-`live link`, and `network off` or `network on`, as the launch's setup is.
+`live link`, and `network off`, `network on` or `network sites`, as the launch's setup is: `inside
+the sandbox (copy, network sites)`.
 
 - **The question shows the entry as the file writes it,** `${VAR}` unfilled, so a key filled in
   from your environment never reaches the screen. When the entry sets variables, the question
@@ -1470,12 +1543,14 @@ With the sandbox on, `on this computer` is `inside the sandbox (copy, network of
   variables or address is asked about again (Claude Code asks once per name). A new value of a
   `${VAR}` asks nothing.
 - **An answer counts only where it was given:** on this computer, or in the box, in copy mode or
-  live link, with the network off or on; and for a remote server with a `headersHelper`, with the
-  helper run or not. Each new setup is asked about once, so a yes for the box never starts the
-  server on your machine, and a setup already answered asks nothing. Reset my answer forgets them
-  all. An answer saved by release 8c counts for this computer, where 8c ran every server.
+  live link, with the network off, on or `sites`; and for a remote server with a `headersHelper`,
+  with the helper run or not. Each new setup is asked about once, so a yes for the box never
+  starts the server on your machine, and a setup already answered asks nothing. Changing the
+  allowed sites asks nothing again. Reset my answer forgets them all. An answer saved by release
+  8c counts for this computer, where 8c ran every server.
 - **Only the servers that would start are asked about:** with the box's network off, only the
-  local ones, which run in the box.
+  local ones, which run in the box; with `sites`, those and the remote ones whose address's name
+  and port are listed.
 - **Trust in `.mcp.json` never counts:** `trusted` and `trustedTools` there are ignored, with a
   line.
 - **The same name in both files:** your own entry wins whole, so a repository cannot replace a
@@ -1507,12 +1582,12 @@ An MCP call is a new kind of action for the [permission modes](#permission-modes
 call to a server in the box runs while the box's network is off, as all it does then lands in the
 copy you review:
 
-| Mode | A server in the box, network off | A server in the box, network on | A `host` or remote server, or no sandbox |
-|---|---|---|---|
-| `ask`, `project` | asks | asks | asks |
-| `auto` | the judge decides, and is shown the tool's description | the same | the same |
-| `never` (copy mode) | runs | asks: it can change things on the web, which the review never shows | asks: the server is outside the box |
-| `-p` | refused, as nobody can answer, except in `never`, where it runs; in `auto` the judge decides | refused; in `auto` the judge decides | the same |
+| Mode | A server in the box, network off | A server in the box, network on | A server in the box, network sites | A `host` or remote server, or no sandbox |
+|---|---|---|---|---|
+| `ask`, `project` | asks | asks | asks | asks |
+| `auto` | the judge decides, and is shown the tool's description | the same | the same | the same |
+| `never` (copy mode) | runs | asks: it can change things on the web, which the review never shows | asks, as with on: it can change things on the listed sites, which the review never shows | asks: the server is outside the box |
+| `-p` | refused, as nobody can answer, except in `never`, where it runs; in `auto` the judge decides | refused; in `auto` the judge decides | the same as with on | the same |
 
 The question names the server, the tool and its input, with the tool's own description in grey:
 
@@ -1677,7 +1752,8 @@ server, such as a fresh token. Here it prints a file that holds `{"Authorization
   headersHelper was not run, as it comes from the project and the sandbox is on.`, and says it
   again only after an edit restarts the server.
 - **Your own helper** runs with the sandbox on too, on your machine. With the box's network off no
-  remote server is reached, so no helper runs.
+  remote server is reached, so no helper runs. With `sites` it runs for a listed server, and is not
+  held to the list itself.
 
 ### Figma
 
@@ -1766,10 +1842,26 @@ own user, unless your entry says `"host": true`. The box's network decides what 
 |---|---|---|---|
 | off, the default | start, with no web | off | off |
 | on | start | start | reached |
+| sites | start, reaching only the listed sites | off | reached if listed |
 
 - **With the network off,** the launch says once: `MCP servers marked "host" and remote servers are
   off: the sandbox's network is off, and outside the box nothing keeps them off the web. Start with
   --network on to use them.` `/mcp` shows each of them as `off: the sandbox's network is off`.
+- **With `sites`,** a server in the box reaches only the listed sites, as the box's commands do. A
+  `host` server is off, as nothing can hold a program on your machine to the list: the launch says
+  once `MCP servers marked "host" are off: the sandbox's network is limited to its allowed sites.`,
+  and `/mcp` shows it as `off: the sandbox's network is limited to its allowed sites`. A remote
+  server starts only when its address's name and port are listed, `https://` meaning port 443 and
+  `http://` port 80 unless the address gives one; otherwise `/mcp` shows it as `off: not on the
+  allowed sites`, or, for an address such as `http://localhost:3845`, `off: a local address`.
+- **A listed remote server's requests** are checked as the proxy checks the box's: each one looks
+  the name up again, is refused if it points at a local address, and goes to the address that was
+  checked, so a name that later points somewhere local is caught then. Sign-in's requests are
+  checked too, so the sign-in service's address and its token address must be listed; the page your
+  browser opens is not checked. A refused request fails with its reason: `<name>:<port> is not on
+  the allowed sites; add it to "allowedSites" in ~/.tachikoma/settings.json`, or `<name>:<port>
+  points at a local address`. After one refusal, that connection or sign-in sends nothing more: a
+  running server fails with the reason, and Reconnect, or Sign in again, starts afresh.
 - **`"host": true`,** in your settings file only, runs a server on your machine, as without the
   sandbox, for a server that needs it: one that talks to a desktop app on your machine, or
   MemPalace's, whose palace is in your home folder. To run a project's server on
@@ -1788,8 +1880,8 @@ own user, unless your entry says `"host": true`. The box's network decides what 
   letters, digits and _, not starting with a digit`. Its roots say `/work`.
 - **What it can reach** is what the box's commands reach: in copy mode its writes land in the copy
   and show in the review, and in live link they land in your real files. With the network on it
-  can reach the whole web, and what it changes there is in no review, which is why `never` asks
-  then ([above](#trust-and-approval)).
+  can reach the whole web, and with `sites` the listed sites, and what it changes there is in no
+  review, which is why `never` asks then ([above](#trust-and-approval)).
 - **Stopping:** at a Reconnect or a restart, its input is closed, and if it still runs 300 ms
   later, it is killed inside the box with everything it started. If that kill cannot run, no new
   copy starts until it can: `MCP server notes failed to start: its earlier copy could not be
@@ -1814,7 +1906,9 @@ weather · failed: it did not answer within 30 s
 
 (The counts are made up; on Windows the file is named `~\.tachikoma\settings.json`.) A row's state
 is its tool count, `starting`, `needs sign-in`, `waiting for your yes`, `you said no`, `failed:
-<reason>`, `stopped: <reason>` or `off: the sandbox's network is off`. Enter on a server lists what
+<reason>`, `stopped: <reason>` or `off: <reason>`: `the sandbox's network is off`, or with `sites`
+`the sandbox's network is limited to its allowed sites`, `not on the allowed sites` or `a local
+address`. Enter on a server lists what
 applies to it: Reconnect, Sign in, Sign out, Show tools (each tool's own name, as the server gives
 it, then any left out and why; hooks match the full `mcp__<server>__<tool>` name) and, for a
 project's server you answered, Reset my answer. Esc goes back, then closes.
@@ -1835,8 +1929,6 @@ project's .mcp.json.`
 
 ### Not yet, for MCP
 
-- **Planned for the second part of release 8c-2:** the sandbox's list of allowed sites, for the
-  box's network.
 - **Planned for release 12,** with subagents that write: each worker's own servers. Until then
   subagents use the lead's servers, and only the tools you trust.
 - **Planned for release 14,** with `tachi setup`: importing the servers you set up for Claude Code.
@@ -2383,6 +2475,70 @@ it says so.
   something makes that folder, for example a command in the box, logins, settings and keys saved
   later are in the project, where the box can see them. It needs such a link on your machine.
 
+### The allowed sites' limits
+
+- **A program in the box that does not use the proxy variables reaches nothing,** listed sites
+  included, as the box has no other way out and the proxy answers no name lookup. Node's own
+  `fetch` does use them, as the box sets `NODE_USE_ENV_PROXY=1`.
+- **pip, uv and git do not show the proxy's reason:** a refused download in pip ends with `ERROR:
+  No matching distribution found for <package>`, uv says `tunnel error: unsuccessful`, and git
+  says `CONNECT tunnel failed, response 403`. npm and Python's urllib show it.
+- **What is sent inside TLS is not read.** An https connection is checked by its name, its port and
+  its TLS greeting's server name; what follows is passed through, so a site that serves several
+  names behind one greeting name is reached as that site chooses, and another protocol carried
+  inside TLS to a listed name and port, such as mail over TLS, passes.
+- **A TLS greeting longer than one TLS record is refused,** as the proxy lets nothing through
+  before it has read the whole greeting.
+- **WebSocket over plain http, and any other switch of protocol there, is refused:** the proxy
+  passes single http requests only. Over https, a WebSocket is inside TLS and passes unread.
+- **A plain http request must come as a proxy request,** with its full address and one `Host`
+  header naming the same site; any other form is refused, with `Tachikoma's sandbox refused the
+  request: its address and its Host header must name one site`.
+- **Your computer's own addresses are read at launch:** one it gains later, and your router's
+  public IPv4 address, which only an outside service could tell, are not counted as local.
+- **On a network that reaches IPv4 sites through IPv6 with a prefix of its own (NAT64),** an
+  address under that prefix holding a local IPv4 address is not counted as local; only the
+  standard prefix, `64:ff9b::/96`, is read that way.
+- **Other containers on Docker's ordinary network can use a launch's proxy,** for its listed sites
+  only.
+- **The proxy has no time limit of its own:** a tunnel that never sends its greeting, or a site that
+  never answers, is held as long as the program in the box waits, and a connection that hangs
+  until the system's own limit.
+- **The launch check proves how Docker set the box up,** not every way the machine could be
+  changed afterwards. It reads the box's routes as its kernel lists them, allowing only the
+  network's own block, the box's own address, loopback, link-local and multicast, and the kernel's
+  own IPv6 entries that refuse everything else. A box whose kernel lists no IPv6 routes at all
+  stops the launch with `the box's routes could not be read`, as none was seen while building. The
+  routing rules are read with `python3`: a project's own image without it is checked by its routes
+  alone, so a routing rule is not seen there, though a rule acts only through a route, which is
+  still read.
+- **Linux and macOS were not measured:** the allowed sites were built and measured on Windows 11
+  with Docker Desktop. Elsewhere the launch check decides, and may stop the launch.
+- **What a launch could not remove,** after a failure or when Tachikoma ended, is left for a later
+  launch to remove. Its removal of the networks left has 30 s; if Docker has not answered by then,
+  it leaves them for the next launch and starts.
+- **A remote MCP server's compressed answer:** with `sites`, Tachikoma asks a remote server for
+  answers that are not compressed, and does not read one that is. Each such answer fails its own
+  request with `the server sent a compressed answer (gzip), which Tachikoma does not read with the
+  allowed sites in force`, and the server's other requests go on; when its first answer is one, the
+  server fails to start with that line.
+- **A computer that reaches the web only through a company proxy:** with `sites`, Tachikoma's
+  requests to remote MCP servers go straight to the address it checked, never through another
+  proxy, so there they fail.
+- **Remote servers' rarer cases with `sites`:** a start whose 30 s run out after a refusal fails
+  with `it did not answer within 30 s`, not the refusal's reason; Esc during a sign-in after a
+  refusal reports the refusal.
+- **A resumed session whose list has changed** keeps the system prompt it was saved with, which
+  names the earlier list, until the next shortening or `/clear`, and the model is not told: the
+  list is not part of the setup a resume compares. The box is held to the new list.
+- **A session saved with `sites`** reads as an unknown setup in an older Tachikoma.
+- **Listed sites have been reached for real only on Windows 11 with Docker Desktop,** by the test
+  that runs only when asked for (`TACHI_TEST_INTERNET=1`) and by hand: github.com, and PyPI's two
+  sites for pip. The other automated tests reach no public site.
+- **A cancel while a remote server's name is being looked up waits for the lookup to end,** and if
+  the lookup then fails, the request fails as one that could not reach the server, not as
+  cancelled.
+
 ### Live link's limits
 
 - **Lefthook's and pre-commit's settings files stay writable from the box,** as `package.json` is.
@@ -2749,10 +2905,11 @@ it says so.
   an `updatedMCPToolOutput` that is not text and a later one gives text, the first in the file is
   kept, the text is lost, and Ctrl+O does not say so.
 - **Live edits:** the `MCP servers changed` line says `restarted` for a changed entry that then does
-  not start (a `host` or remote one with the sandbox's network off, or your entry was removed,
-  uncovering a project's one that waits for a yes). With the sandbox's network off, `/mcp` may
-  read a project's answers for the first time, so their notes, or the could-not-be-read line, can
-  come then or at a later edit.
+  not start (a `host` or remote one with the sandbox's network off, with `sites` a `host` one or a
+  remote one not listed or at a local address, or your entry was removed, uncovering a project's
+  one that waits for a yes). With the sandbox's network off, or `sites`, `/mcp` may read a
+  project's answers for the first time, so their notes, or the could-not-be-read line, can come
+  then or at a later edit.
 - **Sign-in:** Sign out does not ask the service to cancel the tokens. Two windows renewing one
   token at once, where the service hands out a new one each time, may lose that sign-in. Esc after
   the browser sent the code back may still save the sign-in, which counts from the next launch.
@@ -2794,8 +2951,8 @@ it says so.
   MCP library's `Not connected`. A server outside the box that is reconnected twice in quick
   succession, or removed and added back, can start its new copy while the old one still has up to
   300 ms before it is killed; for that moment both run, and can clash over a lock file or port.
-- **Servers in the box:** with the network on, one can reach the whole web, until the allowed sites
-  of 8c-2's second part, and in live link it writes your real files, as the box's commands do. A
+- **Servers in the box:** with the network on, one can reach the whole web, and with `sites` the
+  listed sites, and in live link it writes your real files, as the box's commands do. A
   program missing from the box shows only when the server starts. A command file that is there but
   cannot be run is reported as not found in the box, whose advice about `host` does not fit then;
   a command that is one of bash's own, such as `cd`, gives a less clear reason; and a command
@@ -2854,7 +3011,7 @@ it says so.
    - 8b: hooks, in Claude Code's format, from your settings file only (done);
    - 8c: MCP servers, in Claude Code's format, from your settings file and, after asking, a
      project's `.mcp.json` (done); then 8c-2, in two parts: servers inside the sandbox and
-     `headersHelper` (this release), then the sandbox's list of allowed sites (next);
+     `headersHelper` (done), then the sandbox's list of allowed sites (this release);
    - 8d: long-term memory (MemPalace), with a save before each shortening; lessons learned from the
      error log, recalled when the same error comes back;
    - 8e: more of Claude Code's hook events, the ones that have a place in Tachikoma already, such as

@@ -78,6 +78,36 @@ describe("systemPrompt", () => {
     expect(prompt).not.toContain("curl");
   });
 
+  // 8c-2b plan, Step 10 (the design's line 7 and W7; decision 16; the user's count, 10 names).
+  describe("with the allowed sites", () => {
+    const SITES: Setup = { sandbox: "live", network: "sites", git: "repo" };
+    const web = (o: { sites: { name: string; port: number }[] }) =>
+      systemPrompt({ ...at(SITES, "/work"), ...o }, "win32").split("\n")[6];
+    const TAIL = "Other sites and local addresses are refused, and only the user can add a site.";
+
+    it("names the sites, a port when it is not 443", () => {
+      const sites = [
+        { name: "github.com", port: 443 }, { name: "pypi.org", port: 443 }, { name: "a.example", port: 8443 },
+      ];
+      const named = "github.com, pypi.org, a.example:8443";
+      expect(web({ sites })).toBe(`The sandbox's network reaches only these sites: ${named}. ${TAIL}`);
+    });
+
+    it("cuts a long list after 10 names with …and N more", () => {
+      const sites = Array.from({ length: 13 }, (_, i) => ({ name: `s${i + 1}.example`, port: 443 }));
+      const ten = sites.slice(0, 10).map((s) => s.name).join(", ");
+      expect(web({ sites })).toBe(`The sandbox's network reaches only these sites: ${ten}, …and 3 more. ${TAIL}`);
+      const all = `The sandbox's network reaches only these sites: ${ten}. ${TAIL}`;
+      expect(web({ sites: sites.slice(0, 10) })).toBe(all);
+    });
+
+    it("says W7 with no site", () => {
+      expect(web({ sites: [] })).toBe(
+        "The sandbox's network allows no sites, so shell commands cannot reach the web; only the user can add a site.",
+      );
+    });
+  });
+
   it("names the host's shell and plain curl on macOS and Linux", () => {
     const lines = systemPrompt(at(OFF, "/home/u/proj"), "darwin").split("\n");
     expect(lines).toContain("Shell commands run with sh on darwin.");

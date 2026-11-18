@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
@@ -12,6 +13,7 @@ import { readServers, type ServerConfig } from "../../src/mcp/config.js";
 import { NotReached } from "../../src/mcp/server.js";
 import { type Offered, Servers } from "../../src/mcp/servers.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
+import type { Site } from "../../src/sandbox/sites.js";
 import { Bus, collectErrors, removeTree } from "../helpers.js";
 import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog, standinBox } from "./fake.js";
 
@@ -26,6 +28,11 @@ const tool = (name: string, inputSchema: object = { type: "object" }, descriptio
 const plain = tool("plain", { type: "object", properties: { x: { type: "number" } } });
 const nobody = (): Answers => {
   throw new Error("no project server here, so no answers are read");
+};
+const STAND_IN = {
+  own: [],
+  lookup: async () => ["93.184.215.14"],
+  connect: (_address: string, port: number) => net.connect(port, "127.0.0.1"),
 };
 
 // The test's own folder, the project's root, and its Servers, each stopped before the folder is removed: on Windows a
@@ -55,7 +62,8 @@ async function setup() {
   const make = (
     configs: ServerConfig[],
     opts: {
-      answers?: () => Answers; unread?: Answers; network?: "on" | "off" | "none"; box?: McpBox; settingsDir?: string;
+      answers?: () => Answers; unread?: Answers; network?: "on" | "off" | "sites" | "none"; box?: McpBox;
+      settingsDir?: string; sites?: Site[];
     } = {},
   ) => {
     const answers = opts.answers ?? nobody;
@@ -63,8 +71,12 @@ async function setup() {
     const network = opts.network ?? "none";
     const box = opts.box ? { box: opts.box } : {};
     const settings = opts.settingsDir ? { settingsDir: opts.settingsDir } : {};
+    // 8c-2b plan, Step 9 (decision 12): with the allowed sites, every name looks up as a public address and each
+    // connection goes to the fake on 127.0.0.1 at the port asked for.
+    const sites = network === "sites" ? { sites: opts.sites ?? [], checked: STAND_IN } : {};
     const servers = new Servers(configs, {
-      root: dir, env: process.env, bus, answers, ...unread, network, ...box, ...settings, lead: () => "fake:a",
+      root: dir, env: process.env, bus, answers, ...unread, network, ...box, ...settings, ...sites,
+      lead: () => "fake:a",
     });
     made.push(servers);
     return servers;
@@ -963,7 +975,7 @@ describe("Servers: a project's servers and the network", () => {
 describe("Servers: where each server runs", () => {
   // The stand-in box, a copy, and Servers on it with the box's network as given; the servers are stopped before the
   // stand-in's are killed, then the folder is removed (setup's, after this).
-  async function placed(network: "on" | "off") {
+  async function placed(network: "on" | "off" | "sites") {
     const s = await setup();
     const fake = standinBox(s.dir, { kind: "copy" });
     const made: Servers[] = [];
@@ -971,8 +983,9 @@ describe("Servers: where each server runs", () => {
       await Promise.all(made.map((servers) => servers.stopAll()));
       fake.killAll();
     });
-    const make = (configs: ServerConfig[], answers?: () => Answers, settingsDir?: string) => {
-      const servers = s.make(configs, { network, box: fake.box, ...(answers && { answers }), settingsDir });
+    // `sites`: the entries in force with the network "sites" (8c-2b plan, Step 9).
+    const make = (configs: ServerConfig[], answers?: () => Answers, settingsDir?: string, sites?: Site[]) => {
+      const servers = s.make(configs, { network, box: fake.box, ...(answers && { answers }), settingsDir, sites });
       made.push(servers);
       return servers;
     };
@@ -1008,6 +1021,41 @@ describe("Servers: where each server runs", () => {
     expect(fake.started()).toHaveLength(1); // the box server only; the host one ran on this computer
     expect(initializes(logs.get("h")!)).toBe(1);
     expect(boxNetworks(servers)).toEqual(["b on", "h undefined", "r undefined"]);
+  });
+
+  // 8c-2b plan, Step 9 (decision 13; design, section 4's table): with the allowed sites in force a box server starts, a
+  // host one is off, and a remote one starts only when listed; /mcp's list gives each off server its reason.
+  it("gives each server that is off with the allowed sites its reason, and starts a listed remote one", async () => {
+    const { dir, config, fake, make, remote } = await placed("sites");
+    const http = await httpFake(dir, { tools: [tool("echo")] });
+    const named = (name: string, url: string) => ({ ...remote(url), name, safe: name });
+    const configs = [
+      await config("b", { tools: [plain] }), await config("h", {}, { host: true }),
+      named("r", `http://mcp.example:${http.port}/mcp`), named("u", `http://other.example:${http.port}/mcp`),
+      named("l", `http://localhost:${http.port}/mcp`),
+    ];
+    const servers = make(configs, undefined, undefined, [{ name: "mcp.example", port: http.port }]);
+    servers.startAll();
+    expect(await servers.ready()).toBe(true);
+    expect(servers.list().map((x) => [x.name, x.state.is === "off" ? x.state : x.state.is])).toEqual([
+      ["b", "ready"],
+      ["h", { is: "off", reason: "the sandbox's network is limited to its allowed sites" }],
+      ["r", "ready"],
+      ["u", { is: "off", reason: "not on the allowed sites" }],
+      ["l", { is: "off", reason: "a local address" }],
+    ]);
+    expect(fake.started()).toHaveLength(1);
+    expect(boxNetworks(servers)).toEqual(["b sites", "r undefined"]);
+  });
+
+  it("leaves off a remote server a live edit adds when it is not listed", async () => {
+    const s = await placed("sites");
+    const servers = s.make([], undefined, undefined, [{ name: "mcp.example", port: 443 }]);
+    servers.startAll();
+    await servers.ready();
+    expect(servers.set([{ ...s.remote("https://elsewhere.example/mcp") }]).added).toEqual(["r"]);
+    expect(await servers.ready()).toBe(true);
+    expect(stateOf(servers, "r")).toEqual({ is: "off", reason: "not on the allowed sites" });
   });
 
   it("reads a project's box server's answer for box copy network off, and waits for a yes without one", async () => {
@@ -1107,6 +1155,33 @@ describe("Servers: where each server runs", () => {
     expect(await servers.ready()).toBe(true);
     expect(notes).toEqual([NOT_RUN, NOT_RUN]);
     expect(theirs.runs()).toEqual([]);
+  });
+
+  // 8c-2b design, choice 9: the user's own helper runs with the allowed sites, as with on; a project's never does with
+  // the sandbox on. Both servers are listed, and reached through the checked fetch.
+  it("with the allowed sites runs the user's helper, not a project's", async () => {
+    const { dir, notes, make } = await placed("sites");
+    const settings = path.join(dir, "settings");
+    mkdirSync(settings);
+    const [userLog, projectLog] = [path.join(dir, "user.jsonl"), path.join(dir, "project.jsonl")];
+    const [user, project] = [await httpFake(dir, { log: userLog }), await httpFake(dir, { log: projectLog })];
+    const [mine, theirs] = [fakeHelper(dir), fakeHelper(dir)];
+    mine.give({ "x-key": "mine" });
+    theirs.give({ "x-key": "theirs" });
+    const answers = launchAnswers();
+    answers.set("p", "w1", true, "no helper");
+    const u = remoteWith("u", `http://u.example:${user.port}/mcp`, mine.command);
+    const pUrl = `http://p.example:${project.port}/mcp`;
+    const p = remoteWith("p", pUrl, theirs.command, { where: "project", written: "w1" });
+    const sites = [{ name: "u.example", port: user.port }, { name: "p.example", port: project.port }];
+    const servers = make([u, p], () => answers, settings, sites);
+    servers.startAll();
+    expect(await servers.ready()).toBe(true);
+    expect(servers.list().map((s) => [s.name, s.state.is])).toEqual([["u", "ready"], ["p", "ready"]]);
+    expect(mine.runs()).toHaveLength(1);
+    expect(theirs.runs()).toEqual([]);
+    expect([keys(userLog), keys(projectLog)]).toEqual([new Set(["mine"]), new Set(["static"])]);
+    expect(notes).toEqual([NOT_RUN]);
   });
 
   it("runs a project's helper in the project's folder with the sandbox off, saying nothing of it", async () => {

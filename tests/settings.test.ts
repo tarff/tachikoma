@@ -76,7 +76,7 @@ describe("readSettings", () => {
   it("refuses a value its flag would refuse, in the flag's words after the file and the entry", () => {
     expect(problem({ mode: "x" })).toBe('settings.json: "mode" must be one of: ask, project, auto, never (got "x")');
     expect(problem({ sandbox: "on" })).toBe('settings.json: "sandbox" must be one of: off, live, copy (got "on")');
-    expect(problem({ network: "yes" })).toBe('settings.json: "network" must be one of: off, on (got "yes")');
+    expect(problem({ network: "yes" })).toBe('settings.json: "network" must be one of: off, on, sites (got "yes")');
     expect(problem({ effort: "huge" })).toBe('settings.json: "effort" must be one of: low, medium, high, xhigh, max (got "huge")');
     expect(problem({ screen: "half" })).toBe('settings.json: "screen" must be one of: full, classic (got "half")');
     expect(problem({ editorMode: "emacs" })).toBe('settings.json: "editorMode" must be one of: normal, vim (got "emacs")');
@@ -205,6 +205,41 @@ describe("readSettings", () => {
         settings: { dangerousCommands: { add: ["make deploy"], off: [] } },
         warnings: ['settings.json: "dangerousCommands.of" is not a setting; it was left out'],
       });
+    });
+  });
+
+  // 8c-2b plan, Step 3: the sandbox's allowed sites, read by the shared rules (src/sandbox/sites.ts); a left-out entry
+  // is a warning, as any left-out entry is, and the rest are kept.
+  describe("allowedSites", () => {
+    it("allowedSites is read, its bad entries left out with their lines and the rest kept", () => {
+      expect(read({ allowedSites: ["github.com", "*.github.com", "Example.com:8443", "https://pypi.org"] })).toEqual({
+        settings: { allowedSites: [{ name: "github.com", port: 443 }, { name: "example.com", port: 8443 }] },
+        warnings: [
+          "allowedSites entry 2 (*.github.com) was left out: a wildcard; list each name",
+          "allowedSites entry 4 (pypi.org) was left out: a scheme in front; write the name and port only",
+        ],
+      });
+    });
+
+    it("allowedSites that is not a list is a problem for the file", () => {
+      const w2 = 'settings.json: "allowedSites" must be a list of names, such as ["github.com", "example.com:8443"]';
+      expect(problem({ allowedSites: "github.com" })).toBe(`${w2} (got "github.com")`);
+      expect(problem({ allowedSites: { github: true } })).toBe(`${w2} (got {"github":true})`);
+    });
+
+    it("an empty list is read as no sites", () => {
+      expect(read({ allowedSites: [] })).toEqual({ settings: { allowedSites: [] }, warnings: [] });
+    });
+
+    // Step 11 (decision 15): "sites" is taken now; the list is kept beside on as beside sites (the design's choice 2).
+    it("network takes sites, and the list is kept with on and with sites", () => {
+      const sites = [{ name: "github.com", port: 443 }];
+      for (const network of ["sites", "on"] as const) {
+        expect(read({ network, allowedSites: ["github.com"] })).toEqual({
+          settings: { network, allowedSites: sites },
+          warnings: [],
+        });
+      }
     });
   });
 

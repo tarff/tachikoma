@@ -50,13 +50,20 @@ import { Checker } from "./checker.js";
 import type { ServerConfig, ServerEntry } from "./config.js";
 import type { FormHandler } from "./forms.js";
 import { mergeHeaders, runHelper } from "./helper.js";
+import type { SiteRefused } from "./sitesFetch.js";
 
 // One MCP server's connection, local or remote, through the library's own transports (release 8c plan, Task 4; choice 2).
 // `Tool` is the library's tool, as tools/list sends it, each description whole: the views cut their own copies.
 export type State =
   | { is: "starting" } | { is: "ready"; tools: Tool[] } | { is: "failed"; reason: string }
   | { is: "stopped"; reason: string; retry: boolean } // retry: a remote one whose connection dropped, not yet tried again since this drop (choices 13, 33)
-  | { is: "needs sign-in" } | { is: "waiting for your yes" } | { is: "you said no" } | { is: "off" };
+  | { is: "needs sign-in" } | { is: "waiting for your yes" } | { is: "you said no" }
+  // Why, as /mcp says it after "off: "; none when the box's network is off (8c-2b plan, Step 9; place.ts, offReason).
+  | { is: "off"; reason?: string };
+
+// With the allowed sites in force (8c-2b plan, Step 9; decision 13a): makes the checked fetch of one connection or one
+// sign-in attempt (sitesFetch.ts), `refused` hearing its first refusal.
+export type CheckedFetch = (refused: (err: SiteRefused) => void) => FetchLike;
 
 // How a refresh ended (8c-2a plan, Task 11; decision 20): its new connection ready; failed, the server with it, with
 // the reason a waiting call is told and whether it was the helper that failed or the new connection (choice 6); or
@@ -160,6 +167,8 @@ interface Conn {
   signs: boolean;
   helped: boolean;
   redirected?: Redirected;
+  // With the allowed sites, its checked fetch's first refusal, read as redirected is (8c-2b plan, decision 13a).
+  refused?: SiteRefused;
   // Task 11: its calls and reads waiting for answers, and whether a refresh replaced it, so it closes when none is left
   // (#retire; decision 25).
   sent: number;
@@ -194,6 +203,7 @@ export class Server {
   readonly #pendingStops: Set<Promise<void>>; // its name's stops in the box still running (#close)
   #stops = 0; // how many stops have come, so a start that waited can tell one came meanwhile (#connect)
   readonly #helper: { cwd: string; project: boolean } | undefined;
+  readonly #checked: CheckedFetch | undefined;
   #helping: AbortController | undefined; // the latest start's helper, which a stop kills
   #refresh: Refreshing | undefined; // the latest refresh, until it ends (Task 11)
   readonly #retiring = new Set<Conn>(); // the connections refreshes replaced, until each has closed (decision 25)
@@ -209,12 +219,14 @@ export class Server {
   // a list `Servers` owns and gives every copy of the name, or else this server's own (decision 24). `pendingStops`:
   // its name's stops in the box still running, a set given so too (decision 24, as built). `helper`: given when the
   // entry's headersHelper runs, the folder it runs in and whether it is the project's (Servers; Task 10).
+  // `checked`: given a remote server with the allowed sites in force, the maker of each connection's checked fetch,
+  // and of each sign-in attempt's (8c-2b plan, Step 9; decision 13a).
   constructor(
     config: ServerConfig,
     opts: {
       root: string; env: NodeJS.ProcessEnv; auth?: AuthStore; onChange(): void; onForm?: FormHandler; startMs?: number;
       box?: McpBox; unstopped?: Unstopped[]; pendingStops?: Set<Promise<void>>;
-      helper?: { cwd: string; project: boolean };
+      helper?: { cwd: string; project: boolean }; checked?: CheckedFetch;
     },
   ) {
     this.config = config;
@@ -227,9 +239,10 @@ export class Server {
     this.#unstopped = opts.unstopped ?? [];
     this.#pendingStops = opts.pendingStops ?? new Set();
     this.#helper = opts.helper;
+    this.#checked = opts.checked;
     const entry = config.entry;
     const signs = opts.auth && entry.kind !== "stdio" && (opts.helper || !hasAuthorization(entry.headers));
-    this.#auth = signs ? new McpAuth(opts.auth!, config) : undefined;
+    this.#auth = signs ? new McpAuth(opts.auth!, config, undefined, opts.checked) : undefined;
   }
 
   get state(): State {
@@ -305,6 +318,7 @@ export class Server {
     try {
       return await conn.client.callTool({ name, arguments: args as Record<string, unknown> }, { signal: opts.signal, timeout });
     } catch (err) {
+      if (conn.refused) throw this.#refusedOn(conn, conn.refused);
       if (!conn.local && notReached(err)) throw new NotReached(remoteReason(this.#address(), err), { cause: err });
       // A sign-in lost mid-session: a refused refresh, a Sign out in another window (choice 59).
       if (conn.signs && UnauthorizedError.isInstance(err)) {
@@ -346,6 +360,7 @@ export class Server {
     try {
       return await send(conn.client, this.#limit());
     } catch (err) {
+      if (conn.refused) throw this.#refusedOn(conn, conn.refused);
       if (!conn.local && notReached(err)) throw new NotReached(remoteReason(this.#address(), err), { cause: err });
       if (conn.signs && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
       else if (!conn.local && (err instanceof TypeError || err instanceof SdkHttpError || err instanceof SseError)) {
@@ -495,6 +510,9 @@ export class Server {
       const got = await Promise.race([work, late]);
       return got === "late" ? { reason: this.#late() } : { tools: got };
     } catch (err) {
+      // A refusal of its checked fetch comes first, whatever the library made of it, its 401 handling's included
+      // (8c-2b plan, Step 9; decision 13a).
+      if (conn.refused) return { reason: conn.refused.message };
       // A start the server refused for want of a sign-in, which only /mcp starts (Task 11); one that publishes no sign-in
       // details keeps its 401 (choice 59).
       if (conn.signs && UnauthorizedError.isInstance(err)) return { signIn: true };
@@ -649,8 +667,15 @@ export class Server {
     const { headers, signs } = prepared;
     const answered = (status: number) => this.#answered(conn, status);
     const redirected = (err: Redirected) => (conn.redirected = err);
-    const send = connectionFetch({ url, endpoint, headers, signs, answered, redirected });
-    const opts = signs ? { authProvider: this.#auth!, fetch: send } : { requestInit: { headers }, fetch: send };
+    // With the allowed sites, this connection's own checked fetch (8c-2b plan, Step 9; decision 13a), which its sign-in
+    // client's own requests use too (auth.ts, discoveryState).
+    const checked = this.#checked?.((err) => (conn.refused ??= err));
+    // Its own view of the server's sign-in client, so a later connection's fetch never takes its place (the outside
+    // review of PR #25, finding 2).
+    const auth = checked && this.#auth ? this.#auth.withFetch(checked) : this.#auth;
+    const own = checked ? { fetch: checked } : {};
+    const send = connectionFetch({ url, endpoint, headers, signs, answered, redirected, ...own });
+    const opts = signs ? { authProvider: auth!, fetch: send } : { requestInit: { headers }, fetch: send };
     // With a helper, a 403 asking for more scope fails its request, which the library would otherwise send again after
     // signing in again, and the refresh follows (Task 11; decision 26). The SSE transport sends nothing again.
     const scope = prepared.helped ? { onInsufficientScope: "throw" as const } : {};
@@ -721,11 +746,25 @@ export class Server {
         .catch(() => undefined)
         .then((gone) => this.#dropped(conn, () => (gone === undefined ? exitReason(local) : BOX_STOPPED)));
     };
+    // A refusal of the checked fetch on a request of the library's own, such as its event stream's, fails the server
+    // as a call's does (the outside review of PR #25, finding 1).
     client.onerror = (err) => {
-      if (conn.signs && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
+      if (conn.refused) this.#refusedOn(conn, conn.refused);
+      else if (conn.signs && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
       else if (!conn.local && isDrop(err)) this.#dropped(conn, () => remoteReason(this.#address(), err));
     };
     return client;
+  }
+
+  // A ready connection whose checked fetch refused (8c-2b plan, Step 9; decision 13a; the step's code review): every
+  // later request of it would be refused too, a sign-in's refresh among them, so the server fails with the refusal,
+  // its connection closed, as a drop's is, and the call or read is told the same. Gives the refusal back to throw.
+  #refusedOn(conn: Conn, refused: SiteRefused): SiteRefused {
+    if (conn !== this.#conn || !conn.ready || conn.closed) return refused;
+    this.#state = { is: "failed", reason: refused.message };
+    setImmediate(() => void this.#close(conn));
+    this.#onChange();
+    return refused;
   }
 
   // A ready server's sign-in that no longer holds: `needs sign-in`, its connection closed, as a drop's is (#dropped).
@@ -864,8 +903,12 @@ export function connectionFetch(opts: {
   signs: boolean;
   answered(status: number): void;
   redirected?(err: Redirected): void;
+  // In place of Node's own: the connection's checked fetch with the allowed sites (8c-2b plan, Step 9).
+  fetch?: FetchLike;
 }): FetchLike {
   const { url, endpoint, headers, signs } = opts;
+  // Node's own is read at each request, as before (the step's code review).
+  const fetch: FetchLike = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const place = (u: URL) => `${u.origin}${u.pathname}`;
   const chains = new WeakMap<object, Set<string>>(); // by a request's headers object, the places it was sent on to
   const carried = Object.keys(headers).length > 0;
