@@ -11,6 +11,7 @@ import { docker, type DockerRun } from "./docker.js";
 import {
   atExit,
   BOX_HOME,
+  CHECK_LIMIT_MS,
   type Limits,
   NO_DOCKER,
   removeProxyFolder,
@@ -147,6 +148,262 @@ export async function startSitesNet(
     if (e instanceof Late) return await fail(notReady(limitMs));
     // Any other failure, such as a temp folder that cannot be written, removes what was made first (the step's review).
     await removeSitesNet(made, run, limitMs);
+    throw e;
+  }
+}
+
+// The launch check's script in the box (8c-2b plan, Step 6 and decision 9a). It stands alone, as helper.ts does, and
+// only reads and reports, as raw text, for Tachikoma to judge: the route files; the routing rules through python3's
+// netlink socket where the image has python3 (the user's answer after Step 1); a direct connection to 192.0.2.1:443, an
+// address set aside for documentation (RFC 5737); a tunnel to an unlisted name; a tunnel to the check's name that
+// opens with an SSH greeting; and a lookup of the check's name.
+export function boxCheck(require: NodeJS.Require, args: string[], rulesPy: string): void {
+  const fs: typeof import("node:fs") = require("node:fs");
+  const net: typeof import("node:net") = require("node:net");
+  const dns: typeof import("node:dns") = require("node:dns");
+  const cp: typeof import("node:child_process") = require("node:child_process");
+  const [proxy, port, check] = args as [string, string, string];
+  const read = (file: string) => {
+    try {
+      return fs.readFileSync(file, "utf8");
+    } catch (e) {
+      return { error: String((e as NodeJS.ErrnoException).code) };
+    }
+  };
+  const rules = () => {
+    const r = cp.spawnSync("python3", ["-I", "-c", rulesPy], { encoding: "utf8" });
+    const code = (r.error as NodeJS.ErrnoException | undefined)?.code;
+    if (r.error) return code === "ENOENT" ? { missing: true } : { error: String(code) };
+    if (r.status === 0) return { text: r.stdout };
+    return { error: r.stderr.trim().split("\n").pop() || `exit code ${r.status}` };
+  };
+  const direct = () =>
+    new Promise((done) => {
+      const s = net.connect(443, "192.0.2.1");
+      s.on("connect", () => (s.destroy(), done({ connected: true })));
+      s.on("error", (e: NodeJS.ErrnoException) => done({ error: String(e.code) }));
+    });
+  // A tunnel's answer line, and how many bytes came back after it (after `then` was sent, when it is given).
+  const tunnel = (target: string, then?: string) =>
+    new Promise((done) => {
+      const s = net.connect(Number(port), proxy);
+      let head = "";
+      let status: string | undefined;
+      let after = 0;
+      const end = () => (s.destroy(), done({ status: status ?? head.split("\r\n")[0], after }));
+      s.on("connect", () => s.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`));
+      s.on("data", (d: Buffer) => {
+        if (status !== undefined) return ((after += d.length), end());
+        head += d.toString("latin1");
+        const at = head.indexOf("\r\n\r\n");
+        if (at < 0) return;
+        status = head.slice(0, head.indexOf("\r\n"));
+        after = head.length - at - 4;
+        if (then && after === 0 && status.startsWith("HTTP/1.1 200")) s.write(then);
+        else end();
+      });
+      s.on("close", end);
+      s.on("error", () => {});
+    });
+  const lookup = () =>
+    new Promise((done) =>
+      dns.lookup(check, (e) => done(e ? { error: String((e as NodeJS.ErrnoException).code) } : { resolved: true })),
+    );
+  void (async () => {
+    const out = {
+      fib_trie: read("/proc/net/fib_trie"),
+      ipv6_route: read("/proc/net/ipv6_route"),
+      rules: rules(),
+      direct: await direct(),
+      unlisted: await tunnel(`unlisted.${check}:443`),
+      tunnel: await tunnel(`${check}:443`, "SSH-2.0-Tachikoma_check\r\n"),
+      lookup: await lookup(),
+    };
+    process.stdout.write(JSON.stringify(out));
+  })();
+}
+
+// The routing rules, through the kernel's netlink socket (RTM_GETRULE), for IPv4 and IPv6, as one JSON list. Measured
+// on 2026-11-18 in the box's image as the box's user with no capability (the design's "Measured while building").
+const RULES_PY = [
+  "import json, socket, struct",
+  "out = []",
+  "for fam, name in ((socket.AF_INET, 4), (socket.AF_INET6, 6)):",
+  "    s = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE)",
+  "    s.bind((0, 0))",
+  '    s.send(struct.pack("IHHII", 28, 34, 0x301, 1, 0) + struct.pack("BBBBBBBBI", fam, 0, 0, 0, 0, 0, 0, 0, 0))',
+  "    done = False",
+  "    while not done:",
+  "        data = s.recv(65536)",
+  "        i = 0",
+  "        while i < len(data):",
+  '            ln, ty = struct.unpack_from("IH", data, i)',
+  "            if ty == 3:",
+  "                done = True",
+  "                break",
+  "            if ty == 2:",
+  '                raise SystemExit("netlink error %d" % struct.unpack_from("i", data, i + 16)[0])',
+  '            f, dl, sl, tos, table, r1, r2, action, flags = struct.unpack_from("BBBBBBBBI", data, i + 16)',
+  "            attrs, j = {}, i + 28",
+  "            while j + 4 <= i + ln:",
+  '                al, at = struct.unpack_from("HH", data, j)',
+  "                if al < 4:",
+  "                    break",
+  "                attrs[str(at & 0x3FFF)] = data[j + 4:j + al].hex()",
+  "                j += (al + 3) & ~3",
+  '            out.append({"family": name, "table": table, "action": action, "tos": tos, "flags": flags,',
+  '                        "src_len": sl, "dst_len": dl, "attrs": attrs})',
+  "            i += (ln + 3) & ~3",
+  "print(json.dumps(out))",
+].join("\n");
+
+// What `docker exec -i <box> node -` runs: the script's source and its call, tsx's `__name` defined (helper.ts).
+export const BOX_CHECK =
+  `const __name = (f) => f;\n(${String(boxCheck)})(require, process.argv.slice(2), ${JSON.stringify(RULES_PY)});\n`;
+
+// The kernel's standard routing rules, as python3 reads them in a box on the launch's network and on Docker's ordinary
+// one (measured 2026-11-18, Docker 29.9.3): local (255), main (254) and default (253) for IPv4, local and main for
+// IPv6, each sending every packet to its table. Any other rule, or a change to one of these, stops the launch.
+const STANDARD_RULES = [
+  [4, 255, { "14": "ffffffff", "15": "ff000000", "21": "02" }],
+  [4, 254, { "6": "fe7f0000", "14": "ffffffff", "15": "fe000000", "21": "02" }],
+  [4, 253, { "6": "ff7f0000", "14": "ffffffff", "15": "fd000000", "21": "02" }],
+  [6, 255, { "14": "ffffffff", "15": "ff000000", "21": "02" }],
+  [6, 254, { "6": "fe7f0000", "14": "ffffffff", "15": "fe000000", "21": "02" }],
+] as const;
+const ruleText = (r: Record<string, unknown>) => {
+  const attrs = (r.attrs ?? {}) as Record<string, unknown>;
+  const sorted = Object.fromEntries(Object.keys(attrs).sort().map((k) => [k, attrs[k]]));
+  const { family, table, action, tos, flags, src_len, dst_len } = r;
+  return JSON.stringify({ family, table, action, tos, flags, src_len, dst_len, attrs: sorted });
+};
+const STANDARD = STANDARD_RULES.map(([family, table, attrs]) =>
+  ruleText({ family, table, action: 1, tos: 0, flags: 0, src_len: 0, dst_len: 0, attrs }),
+).sort();
+
+const v4 = (text: string) => text.split(".").reduce((n, x) => n * 256 + Number(x), 0);
+const inside = (address: string, base: number, len: number) =>
+  len === 0 || v4(address) >>> (32 - len) === base >>> (32 - len);
+
+// Question 3's IPv4 rule, on /proc/net/fib_trie: only the main and local tables, and in them only routes within the
+// network's own block (the box's own address and the block's broadcast among them) or loopback. The trie's inner
+// lines (`+-- 0.0.0.0/0 2 0 2`) are in every box; a route is a leaf (`|-- <address>`) and its `/<length> ...` lines.
+function trieVerdict(text: string, block: string): "out" | "unread" | undefined {
+  const [base, len] = block.split("/") as [string, string];
+  const lines = text.split("\n").filter((l) => l.trim() !== "");
+  if (!lines.length || !/^(Main|Local|Id \d+):$/.test(lines[0]!) || !lines.includes("Main:")) return "unread";
+  let leaf: string | undefined;
+  for (const line of lines) {
+    if (/^Id \d+:$/.test(line)) return "out";
+    if (/^(Main|Local):$/.test(line)) {
+      leaf = undefined;
+      continue;
+    }
+    if (/^\s+\+-- \d{1,3}(\.\d{1,3}){3}\/\d{1,2} \d+ \d+ \d+$/.test(line)) continue;
+    const at = /^\s+\|-- (\d{1,3}(?:\.\d{1,3}){3})$/.exec(line);
+    if (at) {
+      leaf = at[1];
+      continue;
+    }
+    const route = /^\s+\/(\d{1,2}) [a-z]+ [A-Z_]+$/.exec(line);
+    if (!route || leaf === undefined) return "unread";
+    const length = Number(route[1]);
+    const ok = (b: string, l: number) => length >= l && inside(leaf!, v4(b), l);
+    if (!ok(base, Number(len)) && !ok("127.0.0.0", 8)) return "out";
+  }
+  return undefined;
+}
+
+// Question 3's IPv6 rule, with the user's answer after Step 1: loopback, link-local and multicast routes, and exactly
+// the kernel's own refusal entries for everything as measured (`::/0`, flags 00200200, metric ffffffff, on lo).
+function v6Verdict(text: string): "out" | "unread" | undefined {
+  const lines = text.split("\n").filter((l) => l.trim() !== "");
+  if (!lines.length) return "unread"; // a box lists loopback at least (the step's review)
+  for (const line of lines) {
+    const f = line.trim().split(/\s+/);
+    if (f.length !== 10 || !/^[0-9a-f]{32}$/.test(f[0]!) || !/^[0-9a-f]{2}$/.test(f[1]!)) return "unread";
+    const [dest, lenHex, , , , metric, , , flags, dev] = f as [string, string, ...string[]];
+    const len = parseInt(lenHex, 16);
+    const loopback = dest === `${"0".repeat(31)}1` && len === 128;
+    const refusal =
+      dest === "0".repeat(32) && len === 0 && flags === "00200200" && metric === "ffffffff" && dev === "lo";
+    const linkLocal = len >= 10 && (parseInt(dest.slice(0, 3), 16) & 0xffc) === 0xfe8;
+    const multicast = len >= 8 && dest.startsWith("ff");
+    if (!(loopback || refusal || linkLocal || multicast)) return "out";
+  }
+  return undefined;
+}
+
+// Choice 8: what lets the launch go on (question 3's list, every item), judged here from the raw answers; each failure
+// has its W8 ending, and an answer that cannot be read or understood fails (fail closed). One signal, made just before
+// the first command, covers the whole check (question 4's check limit).
+export async function checkSites(net: SitesNet, box: string, run: DockerRun = docker, limitMs = CHECK_LIMIT_MS) {
+  const signal = AbortSignal.timeout(limitMs);
+  const late = `the check did not finish within ${limitMs / 1000} s`;
+  const cannot = (words: string) => `the check could not run (${words.replace(/\.$/, "")})`;
+  const call = async (args: string[], input?: Buffer): Promise<{ fail: string } | { out: string }> => {
+    const got = await run(args, { signal, ...(input && { input }) }).catch((e: unknown) => e as Error);
+    if (signal.aborted) throw new Late();
+    if (got instanceof Error) return { fail: errorText(got) };
+    if (got === "missing" || got.code !== 0) return { fail: words(got) };
+    return { out: got.out };
+  };
+  const json = (text: string): unknown => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  };
+  try {
+    const described = await call(["network", "inspect", "--format", "{{json .IPAM.Config}}", net.network]);
+    if ("fail" in described) return cannot(described.fail);
+    const config = json(described.out) as { Subnet?: string; Gateway?: string }[] | undefined;
+    const entries = Array.isArray(config) && config.every((c) => c && typeof c === "object");
+    if (!entries) return cannot("Docker's description of the network could not be read");
+    if (config.some((c) => c.Gateway)) return "the box's network has a gateway";
+    const block = config.map((c) => c.Subnet).find((s) => s && /^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(s));
+    if (!block) return cannot("Docker's description of the network has no IPv4 block");
+    const boxed = await call(["inspect", "--format", "{{json .NetworkSettings.Networks}}", box]);
+    if ("fail" in boxed) return cannot(boxed.fail);
+    const networks = json(boxed.out);
+    if (!networks || typeof networks !== "object") return cannot("Docker's description of the box could not be read");
+    const joined = Object.keys(networks);
+    if (joined.length !== 1 || joined[0] !== net.network) return "the box is joined to another network";
+    const exec = ["exec", "-i", box, "node", "-", net.address, String(net.port), net.check];
+    const script = await call(exec, Buffer.from(BOX_CHECK));
+    if ("fail" in script) return cannot(script.fail);
+    const a = json(script.out) as Record<string, Record<string, unknown> | string> | undefined;
+    if (!a || typeof a !== "object") return cannot("its answer could not be read");
+    const unread = "the box's routes could not be read";
+    if (typeof a.fib_trie !== "string" || typeof a.ipv6_route !== "string") return unread;
+    const routes = [trieVerdict(a.fib_trie, block), v6Verdict(a.ipv6_route)];
+    if (routes.includes("unread")) return unread;
+    if (routes.includes("out")) return "the box has a route out";
+    const rules = a.rules as { missing?: boolean; text?: string } | undefined;
+    if (!rules?.missing) {
+      const list = typeof rules?.text === "string" ? json(rules.text) : undefined;
+      if (!Array.isArray(list) || !list.every((r) => r && typeof r === "object")) return unread;
+      const seen = list.map((r) => ruleText(r as Record<string, unknown>)).sort();
+      if (seen.length !== STANDARD.length || seen.some((r, i) => r !== STANDARD[i])) return "the box has a route out";
+    }
+    const direct = a.direct as { connected?: boolean; error?: string } | undefined;
+    if (direct?.connected) return "the box connected straight to an outside address";
+    if (direct?.error !== "ENETUNREACH") return "the box has a route out";
+    const unlisted = a.unlisted as { status?: string } | undefined;
+    if (!unlisted?.status?.startsWith("HTTP/1.1 403 ")) return "the proxy let through a site that is not listed";
+    const tunnel = a.tunnel as { status?: string; after?: number } | undefined;
+    if (!tunnel?.status?.startsWith("HTTP/1.1 200 ")) {
+      return cannot(tunnel?.status || "the check's tunnel was not opened");
+    }
+    if (tunnel.after !== 0) return "the proxy let through a tunnel that did not open with a TLS greeting";
+    const log = await call(["logs", net.proxy]);
+    if ("fail" in log) return cannot(log.fail);
+    const seen = log.out.split("\n").some((l) => (json(l) as { lookup?: unknown } | undefined)?.lookup === net.check);
+    if (!seen) return "the box's lookup did not reach the proxy";
+    return undefined;
+  } catch (e) {
+    if (e instanceof Late) return late;
     throw e;
   }
 }

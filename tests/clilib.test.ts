@@ -49,7 +49,10 @@ import {
   resolve,
   resumed,
   resumeArgs,
+  type Ready,
+  sandboxStart,
   screenMode,
+  SITES_NOTE,
   scrollSpeed,
   serverQuestion,
   setupOf,
@@ -1913,5 +1916,180 @@ describe("networkNoted's start", () => {
       expect((await running.done).stderr).toBe("");
       expect(running.log.kept()).toBe("ok\n");
     }
+  });
+});
+
+// 8c-2b plan, Step 6: a sites launch, in-process, with a stand-in Docker that answers by each call (release 7 plan,
+// choice 69): the network and proxy (Step 5), the box, today's node check, then the launch check (sitesNet.ts).
+describe("a sites launch", () => {
+  type Answer = Awaited<ReturnType<NonNullable<Parameters<typeof sandboxStart>[3]["run"]>>>;
+  type Run = NonNullable<Parameters<typeof sandboxStart>[3]["run"]>;
+  const ok = (out = ""): Answer => ({ code: 0, out, err: "" });
+  const INFO = JSON.stringify({
+    NCPU: 24, MemTotal: 33518923776, SecurityOptions: [], MemoryLimit: true, CpuCfsQuota: true, PidsLimit: true,
+  });
+  const CHECK_OK = {
+    fib_trie: "Main:\n  +-- 0.0.0.0/0 2 0 2\n     |-- 172.23.0.0\n        /16 link UNICAST\n" +
+      "     |-- 172.23.0.1\n        /32 host LOCAL\nLocal:\n",
+    ipv6_route:
+      "00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 " +
+      "00000000 00000004 00000000 80200001       lo\n",
+    rules: { missing: true },
+    direct: { error: "ENETUNREACH" },
+    unlisted: { status: "HTTP/1.1 403 Tachikoma's sandbox refused x: not on the allowed sites" },
+    tunnel: { status: "HTTP/1.1 200 Connection established", after: 0 },
+    lookup: { error: "EAI_AGAIN" },
+  };
+
+  function stand(o: { node?: Answer; check?: Record<string, unknown>; rmFails?: boolean } = {}) {
+    const calls: string[][] = [];
+    let check = "";
+    const run: Run = async (args, opts) => {
+      calls.push(args);
+      const [verb, sub] = args;
+      if (verb === "ps" || (verb === "network" && sub === "ls")) return ok();
+      if (verb === "info") return ok(`${INFO}\n`);
+      if (verb === "network" && sub === "create") return ok("n3t\n");
+      if (verb === "network" && sub === "inspect") return ok('[{"Subnet":"172.23.0.0/16"}]');
+      if (verb === "run" && args.includes("/proxy/proxy.cjs")) {
+        const folder = args[args.indexOf("-v") + 1]!.replace(/:\/proxy:ro$/, "");
+        check = (JSON.parse(readFileSync(path.join(folder, "settings.json"), "utf8")) as { check: string }).check;
+        return ok("pr0xy\n");
+      }
+      if (verb === "run") return ok("b0x\n");
+      if (verb === "logs" && sub === "--follow") {
+        opts?.line?.('{"port":40103,"udp":53,"tcp":53}');
+        return new Promise<Answer>((_, reject) => {
+          if (opts?.signal?.aborted) reject(new Error("stopped"));
+          opts?.signal?.addEventListener("abort", () => reject(new Error("stopped")));
+        });
+      }
+      if (verb === "logs") return ok(`{"lookup":"${check}"}\n`);
+      if (verb === "inspect" && args[2]!.startsWith("{{(index")) return ok("172.23.0.2\n");
+      if (verb === "inspect" && args[2] === "{{json .NetworkSettings.Networks}}") {
+        const net = calls.find((c) => c[1] === "create")!.at(-1)!;
+        return ok(`{"${net}":{"IPAddress":"172.23.0.1"}}`);
+      }
+      if (verb === "inspect") return ok("true\n"); // the box is running (executor.ts, a failed command's check)
+      if (verb === "exec" && args.includes("/sys/fs/cgroup/memory.events")) return ok("oom_kill 0\n");
+      if (verb === "exec" && args[1] === "-i") return ok(JSON.stringify({ ...CHECK_OK, ...o.check }));
+      if (verb === "exec" && args[1] === "-w") {
+        if (args.at(-1)!.startsWith("curl")) return { code: 6, out: "", err: "" };
+        if (args.at(-1)!.startsWith("node -e")) return o.node ?? ok("v24.22.2 function");
+        return ok();
+      }
+      if (o.rmFails && verb === "network" && sub === "rm") return { code: 1, out: "", err: "boom\n" };
+      return ok();
+    };
+    return { run, calls };
+  }
+
+  async function launch(sites: { name: string; port: number }[], s = stand()) {
+    const root = mkdtempSync(path.join(tmpdir(), "tachi-sites-launch-"));
+    onTestFinished(() => removeTree(root));
+    const tag = "tachikoma-sandbox:0123456789ab";
+    const ready: Ready = { tag, git: undefined, mounts: [], env: {}, gitOutside: false };
+    const lines: string[] = [];
+    const io = { err: (l: string) => lines.push(l), run: s.run };
+    const waits = { setup: 1000, check: 1000 }; // the test's own limits
+    const opts = { network: "sites" as const, sites, limits: undefined, session: "s1", waits };
+    const started = await sandboxStart(root, ready, opts, io);
+    if (!("exit" in started)) onTestFinished(() => started.box.stop());
+    return { root, lines, started, calls: s.calls };
+  }
+  const removals = (calls: string[][]) => calls.filter((c) => c[0] === "rm" || (c[0] === "network" && c[1] === "rm"));
+  const SITES = [{ name: "github.com", port: 443 }, { name: "pypi.org", port: 443 }];
+
+  it("the launch line says network sites (2)", async () => {
+    const r = await launch(SITES);
+    if ("exit" in r.started) throw new Error(r.lines.join("\n"));
+    expect(r.started.lines[0]).toBe(
+      `Sandbox: live link on ${r.root}, network sites (2), limits 4g, 4 CPUs, 1024 processes.`,
+    );
+    expect(r.started.lines).not.toContain(
+      'The sandbox\'s network allows no sites; add them to "allowedSites" in ~/.tachikoma/settings.json.',
+    );
+    // The order of decision 10: the network and proxy, the box, the node check, then the launch check.
+    const order = r.calls.map((c) => c.slice(0, 2).join(" "));
+    const at = (what: string) => order.findIndex((c) => c.startsWith(what));
+    expect(at("network create")).toBeLessThan(at("run -d"));
+    expect(at("exec -w")).toBeLessThan(at("network inspect"));
+    expect(at("network inspect")).toBeLessThan(at("exec -i"));
+  });
+
+  it("with no site it says (0) and line 2", async () => {
+    const r = await launch([]);
+    if ("exit" in r.started) throw new Error(r.lines.join("\n"));
+    expect(r.started.lines[0]).toContain("network sites (0)");
+    expect(r.started.lines).toContain(
+      'The sandbox\'s network allows no sites; add them to "allowedSites" in ~/.tachikoma/settings.json.',
+    );
+  });
+
+  it("a failed check ends with line 8, and the box, the proxy and the network are removed", async () => {
+    const r = await launch(SITES, stand({ check: { direct: { connected: true } } }));
+    expect(r.started).toEqual({ exit: 1 });
+    expect(r.lines).toEqual([
+      "The sandbox's allowed sites cannot be held on this machine: the box connected straight to an outside address. " +
+        "Use --network off or --network on.",
+    ]);
+    const net = r.calls.find((c) => c[1] === "create")!.at(-1)!;
+    const proxy = r.calls.find((c) => c.includes("/proxy/proxy.cjs"))![6]!;
+    expect(removals(r.calls)).toEqual([["rm", "-f", "b0x"], ["rm", "-f", proxy], ["network", "rm", net]]);
+  });
+
+  it("a removal that fails is named after the launch's line (W15), and the launch still ends", async () => {
+    const r = await launch(SITES, stand({ check: { direct: { connected: true } }, rmFails: true }));
+    expect(r.started).toEqual({ exit: 1 });
+    const net = r.calls.find((c) => c[1] === "create")!.at(-1)!;
+    expect(r.lines[1]).toBe(`Left in Docker: ${net}. The next launch removes them.`);
+  });
+
+  it("the node check still comes first and keeps its own lines, with everything removed", async () => {
+    const missing = { code: 127, out: "", err: "bash: line 1: node: command not found\n" };
+    const r = await launch(SITES, stand({ node: missing }));
+    expect(r.started).toEqual({ exit: 1 });
+    expect(r.lines).toEqual(["The sandbox's image has no node, which Tachikoma's file tools need in the box."]);
+    expect(r.calls.some((c) => c[0] === "network" && c[1] === "inspect")).toBe(false);
+    expect(removals(r.calls)).toHaveLength(3);
+  });
+
+  it("a Docker answer the check cannot take still removes everything (the step's review)", async () => {
+    const s = stand();
+    const odd = (args: string[]) => (s.calls.push(args), Promise.resolve(ok("[null]")));
+    const run: Run = (args, opts) => (args[0] === "network" && args[1] === "inspect" ? odd(args) : s.run(args, opts));
+    const r = await launch(SITES, { run, calls: s.calls });
+    expect(r.started).toEqual({ exit: 1 });
+    expect(r.lines[0]).toMatch(/^The sandbox's allowed sites cannot be held on this machine: the check could not run/);
+    expect(removals(r.calls)).toHaveLength(3);
+  });
+
+  it("a check that never finishes ends at the check limit, with everything removed", async () => {
+    const s = stand();
+    const hang = (signal?: AbortSignal) =>
+      new Promise<Answer>((_, reject) => signal?.addEventListener("abort", () => reject(new Error("stopped"))));
+    const run: Run = (args, opts) =>
+      args[0] === "exec" && args[1] === "-i" ? (s.calls.push(args), hang(opts?.signal)) : s.run(args, opts);
+    const r = await launch(SITES, { run, calls: s.calls });
+    expect(r.lines[0]).toBe(
+      "The sandbox's allowed sites cannot be held on this machine: the check did not finish within 1 s. " +
+        "Use --network off or --network on.",
+    );
+    expect(removals(r.calls)).toHaveLength(3);
+  });
+
+  it("a failed command in a sites box gets line 6, through exec and through start's log", async () => {
+    const r = await launch(SITES);
+    if ("exit" in r.started) throw new Error(r.lines.join("\n"));
+    expect(SITES_NOTE).toBe(
+      '(The sandbox\'s network reaches only its allowed sites; the user can add one to "allowedSites".)',
+    );
+    const failed = await r.started.executor.exec("curl https://example.com", "/work");
+    expect(failed.stderr).toBe(SITES_NOTE);
+    const running = r.started.executor.start("curl https://example.com", "/work");
+    await running.done;
+    expect(running.log.kept()).toBe(SITES_NOTE);
+    const fine = await r.started.executor.exec("echo ok", "/work");
+    expect(fine.stderr).toBe("");
   });
 });

@@ -3,8 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { DockerRun } from "../../src/sandbox/docker.js";
-import { atExit } from "../../src/sandbox/executor.js";
+import { atExit, type SitesNet } from "../../src/sandbox/executor.js";
 import {
+  BOX_CHECK,
+  checkSites,
   holdLine,
   leftLine,
   notReady,
@@ -254,5 +256,204 @@ describe("removeSitesNet", () => {
     const fake = fakeDocker();
     expect(await removeSitesNet({}, fake.run, LIMIT)).toEqual([]);
     expect(fake.calls).toEqual([]);
+  });
+});
+
+// 8c-2b plan, Step 6 (choice 8, decision 9a, question 3 and the user's answers after Step 1): the launch check, judged
+// by Tachikoma from the raw answers of Docker and of one script in the box. The route texts are those Step 1 recorded
+// from a real passing box (the design's "Measured while building" section).
+const NET: SitesNet = {
+  network: "tachikoma-sites-aaa", proxy: "tachikoma-proxy-aaa", address: "172.23.0.2", port: 40103,
+  folder: "unused", check: "c0ffee.invalid",
+};
+const TRIE_BODY = [
+  "  +-- 0.0.0.0/0 2 0 2",
+  "     +-- 127.0.0.0/8 2 0 2",
+  "        +-- 127.0.0.0/31 1 0 0",
+  "           |-- 127.0.0.0",
+  "              /8 host LOCAL",
+  "           |-- 127.0.0.1",
+  "              /32 host LOCAL",
+  "        |-- 127.255.255.255",
+  "           /32 link BROADCAST",
+  "     +-- 172.23.0.0/16 2 0 2",
+  "        +-- 172.23.0.0/31 1 0 0",
+  "           |-- 172.23.0.0",
+  "              /16 link UNICAST",
+  "           |-- 172.23.0.1",
+  "              /32 host LOCAL",
+  "        |-- 172.23.255.255",
+  "           /32 link BROADCAST",
+];
+const trie = (main: string[] = TRIE_BODY, before: string[] = []) =>
+  [...before, "Main:", ...main, "Local:", ...TRIE_BODY, ""].join("\n");
+const V6 = [
+  "00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 " +
+    "ffffffff 00000001 00000000 00200200       lo",
+  "00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 " +
+    "00000000 00000004 00000000 80200001       lo",
+  "00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 " +
+    "ffffffff 00000001 00000000 00200200       lo",
+];
+const RULES = [
+  { family: 4, table: 255, attrs: { "14": "ffffffff", "15": "ff000000", "21": "02" } },
+  { family: 4, table: 254, attrs: { "6": "fe7f0000", "14": "ffffffff", "15": "fe000000", "21": "02" } },
+  { family: 4, table: 253, attrs: { "6": "ff7f0000", "14": "ffffffff", "15": "fd000000", "21": "02" } },
+  { family: 6, table: 255, attrs: { "14": "ffffffff", "15": "ff000000", "21": "02" } },
+  { family: 6, table: 254, attrs: { "6": "fe7f0000", "14": "ffffffff", "15": "fe000000", "21": "02" } },
+].map((r) => ({ ...r, action: 1, tos: 0, flags: 0, src_len: 0, dst_len: 0 }));
+const PASS = {
+  fib_trie: trie(),
+  ipv6_route: `${V6.join("\n")}\n`,
+  rules: { text: JSON.stringify(RULES) },
+  direct: { error: "ENETUNREACH" },
+  unlisted: {
+    status: "HTTP/1.1 403 Tachikoma's sandbox refused unlisted.c0ffee.invalid:443: not on the allowed sites",
+  },
+  tunnel: { status: "HTTP/1.1 200 Connection established", after: 0 },
+  lookup: { error: "EAI_AGAIN" },
+};
+type Check = typeof PASS | Record<string, unknown>;
+
+function checking(
+  answer: Partial<Record<keyof typeof PASS, unknown>> = {},
+  docker: (args: string[]) => Answer | undefined = () => undefined,
+) {
+  return fakeDocker((args, o) => {
+    const own = docker(args);
+    if (own !== undefined) return own;
+    if (args[0] === "network" && args[1] === "inspect") return ok('[{"Subnet":"172.23.0.0/16"}]\n');
+    if (args[0] === "inspect") return ok(`{"${NET.network}":{"Gateway":"","IPAddress":"172.23.0.1"}}\n`);
+    if (args[0] === "exec") return ok(JSON.stringify({ ...PASS, ...answer } as Check));
+    if (args[0] === "logs") return ok(`${FIRST}\n{"lookup":"${NET.check}"}\n`);
+    return hang(o);
+  });
+}
+
+describe("checkSites", () => {
+  it("passes when every item of question 3 holds and the lookup shows at the proxy", async () => {
+    const fake = checking();
+    expect(await checkSites(NET, "b0x", fake.run, LIMIT * 100)).toBeUndefined();
+    expect(fake.calls).toEqual([
+      ["network", "inspect", "--format", "{{json .IPAM.Config}}", NET.network],
+      ["inspect", "--format", "{{json .NetworkSettings.Networks}}", "b0x"],
+      ["exec", "-i", "b0x", "node", "-", NET.address, String(NET.port), NET.check],
+      ["logs", NET.proxy],
+    ]);
+    expect(fake.options[2]!.input!.toString()).toBe(BOX_CHECK);
+    const signal = fake.options[0]!.signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(fake.options.every((o) => o?.signal === signal)).toBe(true);
+  });
+
+  type Docker = Parameters<typeof checking>[1];
+  const stops = async (ending: string | undefined, answer: Parameters<typeof checking>[0], docker?: Docker) =>
+    expect(await checkSites(NET, "b0x", checking(answer, docker).run, LIMIT * 100)).toBe(ending);
+
+  it("a network with a gateway", () =>
+    stops("the box's network has a gateway", {}, (a) =>
+      a[1] === "inspect" ? ok('[{"Subnet":"172.23.0.0/16","Gateway":"172.23.0.1"}]') : undefined));
+  it("a box joined to a second network", () =>
+    stops("the box is joined to another network", {}, (a) =>
+      a[0] === "inspect" ? ok(`{"${NET.network}":{"IPAddress":"172.23.0.1"},"bridge":{}}`) : undefined));
+  it("a default route in the main table", () =>
+    stops("the box has a route out", {
+      fib_trie: trie([TRIE_BODY[0]!, "     |-- 0.0.0.0", "        /0 universe UNICAST", ...TRIE_BODY.slice(1)]),
+    }));
+  it("a route beyond the network's block in the main table", () =>
+    stops("the box has a route out", {
+      fib_trie: trie([...TRIE_BODY, "     |-- 10.99.0.0", "        /16 universe UNICAST"]),
+    }));
+  it("an IPv6 route beyond loopback, link-local and multicast", () =>
+    stops("the box has a route out", {
+      ipv6_route: [...V6, "20000000000000000000000000000000 03 00000000000000000000000000000000 00 " +
+        "fe800000000000000000000000000001 00000400 00000001 00000000 00000003     eth0"].join("\n"),
+    }));
+  it("an everything route that is not the kernel's own refusal", () =>
+    stops("the box has a route out", {
+      ipv6_route: [V6[1], "00000000000000000000000000000000 00 00000000000000000000000000000000 00 " +
+        "00000000000000000000000000000000 00000400 00000001 00000000 00000001     eth0"].join("\n"),
+    }));
+  it("link-local and multicast routes are allowed", () =>
+    stops(undefined, {
+      ipv6_route: [...V6,
+        "fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 " +
+          "00000100 00000001 00000000 00000001     eth0",
+        "ff000000000000000000000000000000 08 00000000000000000000000000000000 00 00000000000000000000000000000000 " +
+          "00000100 00000001 00000000 00000001     eth0",
+      ].join("\n"),
+    }));
+  it("a direct connection that connects", () =>
+    stops("the box connected straight to an outside address", { direct: { connected: true } }));
+  it("one that fails any other way than the system's refusal", () =>
+    stops("the box has a route out", { direct: { error: "ETIMEDOUT" } }));
+  it("an unlisted site let through", () =>
+    stops("the proxy let through a site that is not listed", {
+      unlisted: { status: "HTTP/1.1 200 Connection established" },
+    }));
+  it("a tunnel without a greeting that got bytes back", () =>
+    stops("the proxy let through a tunnel that did not open with a TLS greeting", {
+      tunnel: { status: "HTTP/1.1 200 Connection established", after: 21 },
+    }));
+  it("a lookup the proxy did not see", () =>
+    stops("the box's lookup did not reach the proxy", {}, (a) => (a[0] === "logs" ? ok(`${FIRST}\n`) : undefined)));
+  it("a check that cannot run", () =>
+    stops("the check could not run (OCI runtime exec failed: exec failed)", {}, (a) =>
+      a[0] === "exec" ? { code: 126, out: "", err: "OCI runtime exec failed: exec failed.\n" } : undefined));
+  it("a check whose answer is not JSON cannot run", () =>
+    stops("the check could not run (its answer could not be read)", {}, (a) =>
+      a[0] === "exec" ? ok("Killed\n") : undefined));
+
+  // The second review's finding 1: a route out in another table, with the main table clean.
+  it("a clean main table, a route out in another table, and the direct connection unreachable stop it", () =>
+    stops("the box has a route out", {
+      fib_trie: trie(TRIE_BODY, ["Id 100:", "  |-- 0.0.0.0", "     /0 universe UNICAST"]),
+    }));
+  it("a third table with no route in it stops it too", () =>
+    stops("the box has a route out", { fib_trie: trie(TRIE_BODY, ["Id 100:"]) }));
+
+  it("a route list that cannot be read, is empty, or is not in the form Step 1 recorded stops the launch", async () => {
+    const unread = "the box's routes could not be read";
+    await stops(unread, { fib_trie: { error: "EACCES" } });
+    await stops(unread, { fib_trie: "" });
+    await stops(unread, { fib_trie: trie([...TRIE_BODY, "     ?? something else"]) });
+    await stops(unread, { fib_trie: ["Local:", ...TRIE_BODY].join("\n") });
+    await stops(unread, { ipv6_route: { error: "ENOENT" } }); // the user's answer: a missing file stops the launch
+    await stops(unread, { ipv6_route: "not a route\n" });
+    await stops(unread, { ipv6_route: "" }); // every box lists loopback at least (the step's review)
+  });
+
+  // The user's answer after Step 1: the rules are read with python3 where the image has it.
+  it("a rule beyond the kernel's standard ones stops the launch", () =>
+    stops("the box has a route out", {
+      rules: {
+        text: JSON.stringify([...RULES, { ...RULES[1]!, table: 100, attrs: { "6": "e8030000", "15": "64000000" } }]),
+      },
+    }));
+  it("a standard rule changed in any field stops it too", () =>
+    stops("the box has a route out", {
+      rules: { text: JSON.stringify([{ ...RULES[0]!, src_len: 8 }, ...RULES.slice(1)]) },
+    }));
+  it("a rules answer that cannot be read stops the launch", async () => {
+    await stops("the box's routes could not be read", { rules: { text: "Traceback (most recent call last)" } });
+    await stops("the box's routes could not be read", { rules: { error: "netlink error -13" } });
+  });
+  it("an image with no python3 relies on the route tables", () => stops(undefined, { rules: { missing: true } }));
+
+  const hangsIn = (phase: string, at: (args: string[]) => boolean) =>
+    it(`a Docker that never returns from ${phase} ends at the check limit`, async () => {
+      const fake = checking();
+      const run: DockerRun = (args, o) => (at(args) ? (fake.run(args, o), hang(o)) : fake.run(args, o));
+      expect(await checkSites(NET, "b0x", run, LIMIT)).toBe(`the check did not finish within ${LIMIT / 1000} s`);
+      expect(fake.options[fake.calls.findIndex(at)]!.signal!.aborted).toBe(true);
+    });
+  hangsIn("the network's description", (a) => a[0] === "network");
+  hangsIn("the box's description", (a) => a[0] === "inspect");
+  hangsIn("the script in the box, or a proxy that never answers it", (a) => a[0] === "exec");
+  hangsIn("the read of the proxy's output", (a) => a[0] === "logs");
+
+  it("the box's script stands alone", () => {
+    expect(BOX_CHECK).toContain("python3");
+    expect(BOX_CHECK).not.toMatch(/require\(["'](?!node:)/);
   });
 });

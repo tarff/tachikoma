@@ -30,9 +30,14 @@ import { NO_RULES, type UserRules } from "./safety/rules.js";
 import { type Shell, shellOf } from "./safety/split.js";
 import { BoxWorkspace } from "./sandbox/boxWorkspace.js";
 import { docker } from "./sandbox/docker.js";
-import { BOX_HOME, boxLimits, boxUser, DockerExecutor, dockerRoom, memoryText, NO_DOCKER, type Room, sweepBoxes, unlimitedLine } from "./sandbox/executor.js";
+import {
+  BOX_HOME, boxLimits, boxUser, CHECK_LIMIT_MS, DockerExecutor, dockerRoom, memoryText, NO_DOCKER, type Room,
+  SETUP_LIMIT_MS, type SitesNet, sweepBoxes, unlimitedLine,
+} from "./sandbox/executor.js";
 import { heldLine, type ImageIo, prepareImage } from "./sandbox/image.js";
 import { CASE_REFUSED, ignoresCase, liveMounts, type Mount, sessionSettings } from "./sandbox/mounts.js";
+import type { Site } from "./sandbox/sites.js";
+import { checkSites, holdLine, leftLine, removeSitesNet, startSitesNet } from "./sandbox/sitesNet.js";
 import { MANIFEST, type Manifest, PENDING, removeCopySync, snapshot } from "./sandbox/snapshot.js";
 import type { SandboxLimits, Settings } from "./settings.js";
 import { screen } from "./tui/describe.js";
@@ -553,28 +558,63 @@ export function dropOnExit(
 export async function sandboxStart(
   root: string,
   ready: Ready,
-  opts: { network: Network; limits: SandboxLimits | undefined; session: string; labels?: Record<string, string> },
+  // `sites` are the entries in force with the network "sites" (8c-2b plan, Step 6); `waits` are a test's own short
+  // limits, never set otherwise.
+  opts: {
+    network: Network | "sites";
+    sites?: Site[];
+    limits: SandboxLimits | undefined;
+    session: string;
+    labels?: Record<string, string>;
+    waits?: { setup: number; check: number };
+  },
   io: Pick<SandboxIo, "err" | "run">,
 ): Promise<Started | { exit: number }> {
   const run = io.run ?? docker;
   const { copy } = ready;
   const refuse = (line: string) => (io.err(visible(line)), { exit: 1 });
-  await sweepBoxes(run);
+  const waits = opts.waits ?? { setup: SETUP_LIMIT_MS, check: CHECK_LIMIT_MS };
+  await sweepBoxes(run, waits.setup);
   let box: DockerExecutor;
   let room: Room;
+  // A sites launch's network and proxy (8c-2b plan, Step 6 and decision 10): made before the box; a failure after them
+  // removes the box, the proxy, the network and the folder (decision 10a), then says what was left (W15).
+  let net: SitesNet | undefined;
+  const dropSites = async (line: string, made: SitesNet, boxId?: string) => {
+    const { proxy, network, folder } = made;
+    const left = await removeSitesNet({ box: boxId, proxy, network, folder }, run, waits.setup);
+    io.err(visible(line));
+    if (left.length) io.err(visible(leftLine(left)));
+    return { exit: 1 };
+  };
   try {
     room = await dockerRoom(run);
     const got = boxLimits(opts.limits, room);
     if ("problem" in got) return refuse(got.problem);
     const { mounts, env } = ready;
-    const { network, session } = opts;
+    const { session } = opts;
     const labels = opts.labels ? { labels: opts.labels } : {};
     const user = boxUser(room);
     const folder = copy ? path.join(copy.folder, "work") : root; // in copy mode only the copy's work/ is mounted
     const { unlimited } = room;
+    if (opts.network === "sites") {
+      const sites = opts.sites ?? [];
+      const made = await startSitesNet(
+        { image: ready.tag, session, user, limits: got.limits, unlimited, sites, ...labels },
+        run,
+        waits.setup,
+      );
+      if ("line" in made) {
+        io.err(visible(made.line));
+        if (made.left.length) io.err(visible(leftLine(made.left)));
+        return { exit: 1 };
+      }
+      net = made.net;
+    }
+    const network = net ?? (opts.network as Network);
     box = await DockerExecutor.start({ image: ready.tag, folder, network, limits: got.limits, unlimited, mounts, env, session, user, ...labels }, run);
   } catch (err) {
-    return refuse(errorText(err));
+    return net ? dropSites(errorText(err), net) : refuse(errorText(err));
   }
   // Choices 17 and 97: the file tools' helper needs node in the box, with path.matchesGlob (Node 22.5 or newer, Node's own
   // docs). A failed check removes the box before the launch ends.
@@ -596,20 +636,34 @@ export async function sandboxStart(
     return undefined;
   })();
   if (problem) {
+    if (net) return dropSites(problem, net, box.id);
     await box.stop();
     return refuse(problem);
+  }
+  // Choice 8: the launch check, after the node check, before anything runs in the box.
+  if (net) {
+    // One that throws stops the launch too, with what was made removed (the step's review).
+    const ending = await checkSites(net, box.id, run, waits.check).catch(
+      (e: unknown) => `the check could not run (${errorText(e)})`,
+    );
+    if (ending) return dropSites(holdLine(ending), net, box.id);
   }
   if (copy) {
     for (const args of commitArgs(copy.branch)) {
       const made = await run(["exec", "-w", BOX_ROOT, box.id, "git", ...args]).catch((err: Error) => err);
       if (made !== "missing" && !(made instanceof Error) && made.code === 0) continue;
-      await box.stop();
       const words = made === "missing" ? NO_DOCKER : made instanceof Error ? errorText(made) : made.err.trim() || `exit code ${made.code}`;
-      return refuse(`The sandbox could not make the copy a git repository in the box (${words}).`);
+      const line = `The sandbox could not make the copy a git repository in the box (${words}).`;
+      if (net) return dropSites(line, net, box.id);
+      await box.stop();
+      return refuse(line);
     }
   }
   const { limits } = box;
-  const tail = `network ${opts.network}, limits ${memoryText(limits.memory)}, ${limits.cpus} CPUs, ${limits.pids} processes.`;
+  const count = opts.sites?.length ?? 0;
+  const shownNetwork = net ? `sites (${count})` : opts.network; // W12
+  const tail =
+    `network ${shownNetwork}, limits ${memoryText(limits.memory)}, ${limits.cpus} CPUs, ${limits.pids} processes.`;
   const line = copy
     ? `Sandbox: copy of ${root} (${files(Object.values(copy.manifest.entries).filter((e) => e.type === "file").length)}, ` +
       `${(copy.ms / 1000).toFixed(1)} s), ${tail} Your folder is not touched until you review the changes.`
@@ -617,7 +671,7 @@ export async function sandboxStart(
   return {
     box,
     root: BOX_ROOT,
-    executor: opts.network === "off" ? networkNoted(box) : box,
+    executor: opts.network === "off" ? networkNoted(box) : net ? networkNoted(box, SITES_NOTE) : box,
     workspace: new BoxWorkspace(box.id, run, BOX_ROOT, box.state),
     subagentSystem: subagentPrompt(BOX_ROOT),
     gate: { root: BOX_ROOT, home: BOX_HOME, shell: shellOf("box") },
@@ -626,6 +680,10 @@ export async function sandboxStart(
       visible(line),
       ...(copy?.manifest.leftOut.map((l) => visible(leftOut(l.path, l.why))) ?? []),
       ...room.unlimited.map(unlimitedLine),
+      // The design's line 2: a sites launch with no site in force starts, and works as with the network off.
+      ...(net && count === 0
+        ? ['The sandbox\'s network allows no sites; add them to "allowedSites" in ~/.tachikoma/settings.json.']
+        : []),
       ...(ready.gitOutside ? ["Git does not work in the box here: .git points to a git folder outside the project. Commit on this computer."] : []),
     ],
     ...(copy ? { copy } : {}),
@@ -636,8 +694,13 @@ export async function sandboxStart(
 // were the network's cannot be told, so every failure gets it. A command run through start, as the shell tool runs
 // every command from the background commands plan's Task 5 on, gets it in its result and in its log, so a background
 // command's ending says it; one that was stopped did not fail, and gets nothing.
-export function networkNoted(executor: Executor): Executor {
-  const line = "(The box's network is off, so nothing in it can reach the internet. To allow it, launch with --network on.)";
+// A sites box's failed command gets the design's line 6 in the same way (8c-2b plan, Step 6).
+export const SITES_NOTE =
+  '(The sandbox\'s network reaches only its allowed sites; the user can add one to "allowedSites".)';
+export function networkNoted(
+  executor: Executor,
+  line = "(The box's network is off, so nothing in it can reach the internet. To allow it, launch with --network on.)",
+): Executor {
   const after = (text: string) => `${text && !text.endsWith("\n") ? "\n" : ""}${line}`;
   return {
     exec: async (command, cwd, signal) => {
