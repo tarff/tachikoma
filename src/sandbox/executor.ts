@@ -56,12 +56,12 @@ export function removeProxyFolder(folder: string): boolean {
   }
 }
 
-// The two limits of a sites launch (8c-2b plan, question 4: the user's pick after Step 1, 2026-11-18): 10 s for the
-// set-up (also each failed launch's cleanup and the sweep's network part) and 10 s for the launch check. The design's
-// "Measured while building" section has the source: of ten runs on this PC, the slowest set-up took 1.06 s, the
-// slowest cleanup 1.13 s and the slowest check 0.60 s, so these are about 9 and 17 times them. The one slowdown
-// measured for this project on a busier machine is CI's 3.1 to 3.4 times (vitest.config.ts).
-export const SETUP_LIMIT_MS = 10_000;
+// The two limits of a sites launch (8c-2b plan, question 4), with their source in the design's "Measured while
+// building" section. The set-up's (also each failed launch's cleanup and the sweep's network part) is 30 s, the user's
+// pick after Step 7 (2026-11-18): the slowest set-up measured, 8.9 s just after Docker had rested (its first network
+// create took 7.9 s), times CI's measured slowdown of 3.1 to 3.4 (vitest.config.ts). The check's is 10 s, the user's
+// pick after Step 1: of ten runs here the slowest check took 0.60 s, so it is about 17 times that.
+export const SETUP_LIMIT_MS = 30_000;
 export const CHECK_LIMIT_MS = 10_000;
 
 // The limits Docker can be asked for but may not apply (choice 83), as its line names them.
@@ -308,8 +308,14 @@ export class DockerExecutor implements Executor {
     // variables by its address, Node's own included (decision 11, measured at Step 1).
     const sites = typeof opts.network === "object" ? opts.network : undefined;
     const proxy = sites && `http://${sites.address}:${sites.port}`;
+    // NO_PROXY: the box's own loopback reached directly, so a program reaches a server inside the box (the user's
+    // choice after Step 7).
+    const loopback = "localhost,127.0.0.1,::1";
     const proxyEnv = proxy
-      ? ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].flatMap((name) => ["-e", `${name}=${proxy}`])
+      ? [
+          ...["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"].flatMap((name) => ["-e", `${name}=${proxy}`]),
+          ...["NO_PROXY", "no_proxy"].flatMap((name) => ["-e", `${name}=${loopback}`]),
+        ]
       : [];
     const network = sites ? [sites.network, "--dns", sites.address] : [opts.network === "on" ? "bridge" : "none"];
     const got = await run([

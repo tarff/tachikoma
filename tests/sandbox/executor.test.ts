@@ -263,9 +263,12 @@ describe("DockerExecutor with a stand-in Docker", () => {
     expect(run.slice(at, at + 4)).toEqual(["--network", "tachikoma-sites-aaa", "--dns", "172.23.0.2"]);
     const home = run.indexOf("HOME=/tmp");
     const proxy = "http://172.23.0.2:40103";
-    expect(run.slice(home + 1, home + 11)).toEqual([
+    // And the box's own loopback reached directly (the user's choice after Step 7).
+    const loopback = "localhost,127.0.0.1,::1";
+    expect(run.slice(home + 1, home + 15)).toEqual([
       "-e", `HTTPS_PROXY=${proxy}`, "-e", `HTTP_PROXY=${proxy}`, "-e", `https_proxy=${proxy}`,
-      "-e", `http_proxy=${proxy}`, "-e", "NODE_USE_ENV_PROXY=1",
+      "-e", `http_proxy=${proxy}`, "-e", `NO_PROXY=${loopback}`, "-e", `no_proxy=${loopback}`,
+      "-e", "NODE_USE_ENV_PROXY=1",
     ]);
   });
 

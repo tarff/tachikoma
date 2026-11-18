@@ -33,6 +33,8 @@ export interface SitesOptions {
   unlimited?: Unlimited[];
   sites: Site[];
   labels?: Record<string, string>;
+  // Test-only, as `labels` is: Docker's own `--add-host name:address` on the proxy (8c-2b plan, decision 12).
+  addHosts?: string[];
 }
 
 // The design's line 8, W9's two forms and W15.
@@ -112,7 +114,8 @@ export async function startSitesNet(
       "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--network", network,
       ...limit("memory", ["--memory", String(memory), "--memory-swap", String(memory)]),
       ...limit("CPUs", ["--cpus", String(cpus)]), ...limit("processes", ["--pids-limit", String(pids)]),
-      "-v", `${made.folder}:/proxy:ro`, ...labels, o.image, "node", "/proxy/proxy.cjs",
+      "-v", `${made.folder}:/proxy:ro`, ...(o.addHosts ?? []).flatMap((h) => ["--add-host", h]), ...labels,
+      o.image, "node", "/proxy/proxy.cjs",
     ]);
     if (failed(ran)) return await fail(proxyFailed(words(ran)));
     const joined = await call(["network", "connect", "bridge", proxy]);
@@ -334,6 +337,15 @@ function v6Verdict(text: string): "out" | "unread" | undefined {
   return undefined;
 }
 
+// Question 3's two route files, judged against the network's IPv4 block, as their W8 ending (exported for the real
+// Docker control of Step 7, a box on Docker's ordinary network).
+export function routesVerdict(a: Record<string, unknown>, block: string): string | undefined {
+  if (typeof a.fib_trie !== "string" || typeof a.ipv6_route !== "string") return "the box's routes could not be read";
+  const routes = [trieVerdict(a.fib_trie, block), v6Verdict(a.ipv6_route)];
+  if (routes.includes("unread")) return "the box's routes could not be read";
+  return routes.includes("out") ? "the box has a route out" : undefined;
+}
+
 // Choice 8: what lets the launch go on (question 3's list, every item), judged here from the raw answers; each failure
 // has its W8 ending, and an answer that cannot be read or understood fails (fail closed). One signal, made just before
 // the first command, covers the whole check (question 4's check limit).
@@ -376,10 +388,8 @@ export async function checkSites(net: SitesNet, box: string, run: DockerRun = do
     const a = json(script.out) as Record<string, Record<string, unknown> | string> | undefined;
     if (!a || typeof a !== "object") return cannot("its answer could not be read");
     const unread = "the box's routes could not be read";
-    if (typeof a.fib_trie !== "string" || typeof a.ipv6_route !== "string") return unread;
-    const routes = [trieVerdict(a.fib_trie, block), v6Verdict(a.ipv6_route)];
-    if (routes.includes("unread")) return unread;
-    if (routes.includes("out")) return "the box has a route out";
+    const routes = routesVerdict(a, block);
+    if (routes) return routes;
     const rules = a.rules as { missing?: boolean; text?: string } | undefined;
     if (!rules?.missing) {
       const list = typeof rules?.text === "string" ? json(rules.text) : undefined;

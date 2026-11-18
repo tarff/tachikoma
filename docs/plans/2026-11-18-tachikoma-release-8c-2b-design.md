@@ -590,3 +590,50 @@ prompt is 1,109 characters with no sandbox, 1,014 with the box's network off and
   3. The routing rules can be read inside the shipped image, with `python3`'s netlink socket, as the box's user with
      no capability; question 3's known limit says they cannot. A project's own image may have no `python3`, and Node
      cannot read them.
+
+### Measured while building (8c-2b plan, Steps 5 to 7)
+
+**The kernel's standard routing rules, in full** (Step 6, for the launch check's rules comparison): `rules.py` (the
+same read as the check's own, src/sandbox/sitesNet.ts) run with `docker exec -i <box> python3 -I - < rules.py` in a
+box on an isolated network, and in one on `bridge`, printed the same five rules, one per line:
+
+```
+{"family":4,"table":255,"action":1,"tos":0,"flags":0,"src_len":0,"dst_len":0,
+  "attrs":{"14":"ffffffff","15":"ff000000","21":"02"}}
+```
+
+shown here as the fields that differ: IPv4 table 255 with no priority attribute; IPv4 table 254 with `"6":"fe7f0000"`
+(priority 32766); IPv4 table 253 with `"6":"ff7f0000"` (32767); IPv6 table 255 with no priority; IPv6 table 254 with
+`"6":"fe7f0000"`. Every one has action 1, tos 0, flags 0, no source or destination length, `"14":"ffffffff"` (no
+suppress_prefixlen), `"15"` its own table and `"21":"02"` (made by the kernel). The check stops the launch on any
+other rule or any change to one of these. (The first rule is one line in the output, broken here for width.)
+
+**Removing what is not there** (Step 5): `docker rm -f tachi-8c2b-measure-nonesuch` exited 0;
+`docker network rm tachi-8c2b-measure-nonesuch` exited 1 with
+`Error response from daemon: network tachi-8c2b-measure-nonesuch not found`. So the cleanup counts a network Docker
+says is not found as removed, and the proxy is named before its run.
+
+**The real launch's time** (Step 7, `node --import <the repo's tsx> timing.mts 10`: the real code of Steps 5 and 6
+with the sandbox's own image, everything labelled `tachikoma.test=1` and removed; ten runs each, in ms):
+
+| What | fastest | middle | slowest | its limit |
+|---|---|---|---|---|
+| the set-up, `network create` to the proxy's address read | 997 | 1018 | 1061 | 10,000 |
+| the launch check | 565 | 578 | 587 | 10,000 |
+| the cleanup: the box, the proxy and the network | 1046 | 1084 | 1169 | 10,000 |
+| `sandboxStart` with the network `off` | 1360 | 1391 | 1430 | |
+| `sandboxStart` with `sites` (two sites) | 3049 | 3083 | 3125 | |
+
+So a sites launch takes about 1.7 s more than one with the network off, on this computer with Docker awake.
+**Real runs went over the set-up limit after Docker had been idle.** The first test of the first run of
+tests/sandbox/sitesReal.test.ts ended with `The sandbox's network and proxy were not ready within 10 s.`, and so did
+`timing.mts 1` run after six minutes with no Docker command (13:37). Then, after six more idle minutes (13:43), each
+command timed alone (Step 1's `timing.mjs 1`): `docker version` 361 ms and `docker info` 643 ms, but the first
+`docker network create` 7,891 ms, against 139 to 161 ms when Docker is awake; the proxy's run 568 ms, the join 204 ms,
+the first line 127 ms, the address read 127 ms; the whole set-up 8,917 ms. So the first network Docker makes after a
+rest takes about 8 s, and the set-up's 10 s limit is too close: it was crossed twice in three idle starts.
+
+The user then picked 30 s for the set-up limit (8.9 s times CI's measured slowdown of 3.1 to 3.4, vitest.config.ts),
+also for the cleanup and the sweep's network part; the check's stays 10 s. **The cleanup just after a rest**
+(`idle-cleanup.mts`: a network, proxy and box made, six minutes with no Docker command, then the cleanup of decision
+10a, 14:07 to 14:13): 1,117 ms, nothing left. So a rest slows the first network Docker makes, not its removals.
