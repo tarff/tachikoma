@@ -1,14 +1,16 @@
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import http from "node:http";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { running } from "../../src/exec/local.js";
 import type { ServerConfig, ServerEntry } from "../../src/mcp/config.js";
-import { connectionFetch, NotReached, Server } from "../../src/mcp/server.js";
+import { type CheckedFetch, connectionFetch, NotReached, Server } from "../../src/mcp/server.js";
+import { sitesFetch } from "../../src/mcp/sitesFetch.js";
+import type { Site } from "../../src/sandbox/sites.js";
 import { removeTree } from "../helpers.js";
 import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog } from "./fake.js";
 
@@ -43,10 +45,14 @@ async function setup() {
   const onChange = vi.fn();
   const make = (
     config: ServerConfig,
-    opts: { env?: NodeJS.ProcessEnv; startMs?: number; root?: string; helper?: { cwd: string; project: boolean } } = {},
+    opts: {
+      env?: NodeJS.ProcessEnv; startMs?: number; root?: string; helper?: { cwd: string; project: boolean };
+      checked?: CheckedFetch;
+    } = {},
   ) => {
     const server = new Server(config, {
       root: opts.root ?? dir, env: opts.env ?? process.env, onChange, startMs: opts.startMs, helper: opts.helper,
+      ...(opts.checked && { checked: opts.checked }),
     });
     servers.push(server);
     return server;
@@ -483,6 +489,167 @@ describe("a remote server", () => {
 
 // 8c-2a plan, Task 10 (decisions 14, 17, 22, 27 and 28; choices 1 (b) and 5): the headersHelper at each connection, and
 // no redirect to another origin with the entry's headers.
+// 8c-2b plan, Step 9 (decisions 13 and 13a; design, section 3): a remote server with the allowed sites in force, each
+// connection's requests through its own checked fetch (Step 8), whose lookup answers `table` (a public address
+// otherwise) and whose connection goes to the fake on 127.0.0.1 at the port asked for (decision 12).
+describe("a remote server with the allowed sites", () => {
+  const PUBLIC = "93.184.215.14";
+  const checking = (sites: Site[], table: Record<string, string[]> = {}) => {
+    const lookups: string[] = [];
+    const checked: CheckedFetch = (refused) =>
+      sitesFetch({
+        sites, own: [], refused,
+        lookup: async (name) => (lookups.push(name), table[name] ?? [PUBLIC]),
+        connect: (_address, port) => net.connect(port, "127.0.0.1"),
+      });
+    return { checked, lookups, table };
+  };
+  const named = (port: number, path = "/mcp") => `http://mcp.example:${port}${path}`;
+  const listed = (port: number) => [{ name: "mcp.example", port }];
+
+  it("connects over HTTP when listed and calls a tool, each request looked up", async () => {
+    const { dir, make, log } = await setup();
+    const fake = await httpFake(dir, { log });
+    const c = checking(listed(fake.port));
+    const server = make(remote(named(fake.port)), { checked: c.checked });
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    expect(textOf(await server.callTool("echo", { text: "checked" }, {}))).toBe("checked");
+    const posts = readLog(log).filter((m) => m.http === "POST").length;
+    expect(c.lookups.length).toBeGreaterThanOrEqual(posts);
+    expect(new Set(c.lookups)).toEqual(new Set(["mcp.example"]));
+  });
+
+  // A server of the old SSE transport, written here: its event stream names where messages go, and each answer comes
+  // on the stream.
+  it("connects over SSE when listed and calls a tool", async () => {
+    let stream: http.ServerResponse | undefined;
+    const sse = http.createServer((req, res) => {
+      if (req.method === "GET") {
+        stream = res.writeHead(200, { "content-type": "text/event-stream" });
+        return void res.write("event: endpoint\ndata: /messages\n\n");
+      }
+      let body = "";
+      req.on("data", (d) => (body += d));
+      req.on("end", () => {
+        res.writeHead(202).end();
+        const m = JSON.parse(body);
+        if (m.id === undefined) return;
+        const info = { capabilities: { tools: {} }, serverInfo: { name: "sse", version: "1" } };
+        const result =
+          m.method === "initialize"
+            ? { protocolVersion: m.params.protocolVersion, ...info }
+            : m.method === "tools/list"
+              ? { tools: [{ name: "echo", inputSchema: { type: "object" } }] }
+              : { content: [{ type: "text", text: "over SSE" }] };
+        stream!.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: m.id, result })}\n\n`);
+      });
+    });
+    await new Promise<void>((resolve) => sse.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => (sse.closeAllConnections(), void sse.close()));
+    const port = (sse.address() as AddressInfo).port;
+    const { make } = await setup();
+    const url = named(port, "/sse");
+    const c = checking(listed(port));
+    const server = make({ ...base, entry: { kind: "sse", url, headers: {} }, asWritten: { url, headers: {} } }, c);
+    await server.start();
+    expect(names(server)).toEqual(["echo"]);
+    expect(textOf(await server.callTool("echo", {}, {}))).toBe("over SSE");
+    expect(new Set(c.lookups)).toEqual(new Set(["mcp.example"]));
+  });
+
+  it("fails with W5 when its listed name points somewhere local, sending it nothing", async () => {
+    const { dir, make, log } = await setup();
+    const fake = await httpFake(dir, { log });
+    const server = make(remote(named(fake.port)), checking(listed(fake.port), { "mcp.example": ["10.0.0.5"] }));
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: `mcp.example:${fake.port} points at a local address` });
+    expect(readLog(log)).toEqual([]);
+  });
+
+  it("follows a redirect within its origin, each hop checked, and fails one to an unlisted site", async () => {
+    const { dir, make, log } = await setup();
+    const fake = await httpFake(dir, { log, slash: true });
+    const c = checking(listed(fake.port));
+    const server = make(remote(named(fake.port), { "X-Key": "static" }), c);
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    const posts = readLog(log).filter((m) => m.http === "POST");
+    expect(new Set(posts.map((m) => m.path))).toEqual(new Set(["/mcp", "/mcp/"]));
+    expect(c.lookups.length).toBeGreaterThanOrEqual(posts.length);
+    // To another site: part A's rule, with the entry's headers, or the library's own same-site rule, without them,
+    // stops it before the checked fetch is asked; either way the unlisted site is never looked up nor reached.
+    const away = await httpFake(dir, { redirect: `http://evil.example:${fake.port}/mcp` });
+    const a = checking(listed(away.port));
+    const moved = make(remote(named(away.port), { "X-Key": "static" }), a);
+    await moved.start();
+    expect(moved.state).toEqual({
+      is: "failed",
+      reason:
+        `the server answered with a redirect to http://evil.example:${fake.port}; ` +
+        "Tachikoma does not follow a redirect with the entry's headers",
+    });
+    const b = checking(listed(away.port));
+    const bare = make(remote(named(away.port)), b);
+    await bare.start();
+    expect(bare.state).toEqual({ is: "failed", reason: `http://mcp.example:${away.port} answered 307` });
+    expect([...a.lookups, ...b.lookups].filter((n) => n !== "mcp.example")).toEqual([]);
+  });
+
+  it("is stopped with retry at a drop, as today, through the checked fetch", async () => {
+    const { dir, make } = await setup();
+    const fake = await httpFake(dir);
+    const server = make(remote(named(fake.port)), checking(listed(fake.port)));
+    await server.start();
+    await fake.stop();
+    const call = server.callTool("echo", { text: "x" }, {});
+    await expect(call).rejects.toThrow(NotReached);
+    await expect(call).rejects.toThrow(`connect ECONNREFUSED 127.0.0.1:${fake.port}`);
+    expect(server.state).toMatchObject({ is: "stopped", retry: true });
+  });
+
+  // The step's code review: a refusal on a ready connection ends it, as every later request would be refused.
+  it("fails a ready server with W5 when its name later points somewhere local, the call told the same", async () => {
+    const { dir, make } = await setup();
+    const fake = await httpFake(dir);
+    const c = checking(listed(fake.port));
+    const server = make(remote(named(fake.port)), c);
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    c.table["mcp.example"] = ["192.168.1.5"];
+    const local = `mcp.example:${fake.port} points at a local address`;
+    await expect(server.callTool("echo", { text: "x" }, {})).rejects.toThrow(local);
+    expect(server.state).toEqual({ is: "failed", reason: local });
+  });
+
+  it("starts clean at a new connection after a refusal", async () => {
+    const { dir, make } = await setup();
+    const fake = await httpFake(dir);
+    const c = checking(listed(fake.port), { "mcp.example": ["127.0.0.1"] });
+    const server = make(remote(named(fake.port)), c);
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: `mcp.example:${fake.port} points at a local address` });
+    c.table["mcp.example"] = [PUBLIC];
+    await server.stop();
+    await server.start(); // /mcp's Reconnect stops the server and starts it again
+    expect(names(server)).toEqual(TOOLS);
+  });
+
+  // The user's decision after Step 8 (2026-11-18): a compressed answer fails its own request, here the first.
+  it("fails with W14 when the server answers compressed", async () => {
+    const gz = http.createServer((_req, res) => res.writeHead(200, { "content-encoding": "gzip" }).end("x"));
+    await new Promise<void>((resolve) => gz.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => void gz.close());
+    const port = (gz.address() as AddressInfo).port;
+    const { make } = await setup();
+    const server = make(remote(named(port)), checking(listed(port)));
+    await server.start();
+    const w14 =
+      "the server sent a compressed answer (gzip), which Tachikoma does not read with the allowed sites in force";
+    expect(server.state).toEqual({ is: "failed", reason: w14 });
+  });
+});
+
 describe("a remote server's headersHelper, and its redirects", () => {
   const posts = (log: string) => readLog(log).filter((m) => m.http === "POST");
   const keys = (sent: Record<string, any>[]) =>

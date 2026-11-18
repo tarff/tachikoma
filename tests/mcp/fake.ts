@@ -4,8 +4,10 @@ import { once } from "node:events";
 import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import http from "node:http";
+import https from "node:https";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
+import tls from "node:tls";
 import { fileURLToPath } from "node:url";
 import { onTestFinished } from "vitest";
 import { gitBash, system32 } from "../../src/exec/env.js";
@@ -320,6 +322,15 @@ export async function signInFake(
   opts: {
     refresh?: false; registration?: false | "refused"; metadata?: "none" | "elsewhere" | "challenge"; slow?: true;
     slash?: true; scope403?: true;
+    // 8c-2b plan, Step 9: the names its addresses give in place of 127.0.0.1, for the allowed sites' tests, which
+    // reach it through the checked fetch's stand-in connect: the server's own; the discovery document its 401 names
+    // (the server's unless given); its sign-in service's; and the service's authorize, registration and token
+    // addresses (the service's unless given).
+    names?: {
+      server?: string; resource?: string; service?: string; authorize?: string; register?: string; token?: string;
+    };
+    https?: Record<string, { key: string; cert: string }>; // served over TLS, a certificate for each of those names
+
   } = {},
 ) {
   const clients = new Map<string, { redirect_uris: string[] }>();
@@ -333,7 +344,7 @@ export async function signInFake(
   };
   let issued = 0;
   let scoped = false;
-  const server = http.createServer((req, res) => {
+  const handle = (req: http.IncomingMessage, res: http.ServerResponse) => {
     let body = "";
     req.setEncoding("utf8");
     req.on("data", (c: string) => (body += c));
@@ -343,8 +354,9 @@ export async function signInFake(
         res.writeHead(status, { "content-type": "application/json", connection: "close", ...headers }).end(JSON.stringify(value));
       seen.requests.push({ path: url.pathname, headers: req.headers });
       const metadata = {
-        issuer: opts.metadata === "challenge" ? `${base}/issuer` : base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`,
-        ...(opts.registration !== false && { registration_endpoint: `${base}/register` }),
+        issuer: opts.metadata === "challenge" ? `${base}/issuer` : at.service,
+        authorization_endpoint: `${at.authorize}/authorize`, token_endpoint: `${at.token}/token`,
+        ...(opts.registration !== false && { registration_endpoint: `${at.register}/register` }),
         response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], grant_types_supported: ["authorization_code", "refresh_token"],
         token_endpoint_auth_methods_supported: ["none"],
       };
@@ -356,7 +368,8 @@ export async function signInFake(
         if (url.pathname.startsWith("/.well-known/")) return res.writeHead(404, { connection: "close" }).end();
       }
       if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
-        return json(200, { resource: `${base}${url.pathname.slice("/.well-known/oauth-protected-resource".length) || "/mcp"}`, authorization_servers: [base] });
+        const resource = `${at.server}${url.pathname.slice("/.well-known/oauth-protected-resource".length) || "/mcp"}`;
+        return json(200, { resource, authorization_servers: [at.service] });
       }
       if (url.pathname === "/.well-known/oauth-authorization-server" && opts.metadata === undefined) return json(200, metadata);
       if (url.pathname === "/register" && req.method === "POST" && opts.registration !== false) {
@@ -408,7 +421,7 @@ export async function signInFake(
         const bearer = req.headers.authorization ?? null;
         seen.bearer.push(bearer);
         if (!bearer || !live.has(bearer.replace(/^Bearer /, ""))) {
-          const named = `${base}/.well-known/oauth-protected-resource${opts.slash ? "/mcp" : url.pathname}`;
+          const named = `${at.resource}/.well-known/oauth-protected-resource${opts.slash ? "/mcp" : url.pathname}`;
           const resource = opts.metadata === "challenge" ? `${base}/challenge/resource` : named;
           return json(401, { error: "invalid_token" }, { "www-authenticate": `Bearer resource_metadata="${resource}"` });
         }
@@ -431,16 +444,34 @@ export async function signInFake(
       }
       res.writeHead(404, { connection: "close" }).end();
     });
-  });
+  };
+  // With `https`, each name's certificate, picked by the name its greeting asks for (the library sends a token request
+  // only over TLS, but to localhost).
+  const certs = opts.https;
+  const server = certs
+    ? https.createServer(
+        { SNICallback: (name, done) => done(null, certs[name] && tls.createSecureContext(certs[name])) },
+        handle,
+      )
+    : http.createServer(handle);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const port = (server.address() as AddressInfo).port;
+  const base = `http://127.0.0.1:${port}`;
+  const named = (name?: string) => (name ? `${certs ? "https" : "http"}://${name}:${port}` : base);
+  const n = opts.names ?? {};
+  const at = {
+    server: named(n.server), resource: named(n.resource ?? n.server), service: named(n.service),
+    authorize: named(n.authorize ?? n.service), register: named(n.register ?? n.service),
+    token: named(n.token ?? n.service),
+  };
   onTestFinished(() => {
     server.close();
     server.closeAllConnections();
   });
   return {
-    url: `${base}/mcp`,
+    url: `${at.server}/mcp`,
     base,
+    port,
     seen,
     expire: () => live.clear(),
     revoke: () => refresh.clear(), // every refresh token given so far refused

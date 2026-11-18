@@ -20,7 +20,7 @@ import type { Executor } from "./exec/executor.js";
 import { headCommand } from "./exec/log.js";
 import type { Answers } from "./mcp/answers.js";
 import { type ServerConfig, variables } from "./mcp/config.js";
-import { answerSetup, helperRuns, type McpSandbox, starts } from "./mcp/place.js";
+import { answerSetup, HOST_OFF, helperRuns, type McpSandbox, starts } from "./mcp/place.js";
 import { SEARCH } from "./mcp/search.js";
 import { KILL_MS } from "./mcp/server.js";
 import type { Servers } from "./mcp/servers.js";
@@ -820,7 +820,14 @@ export function mcpLines(servers: Servers, opts: { print: boolean }): string[] {
   const line =
     'MCP servers marked "host" and remote servers are off: the sandbox\'s network is off, and outside the box ' +
     "nothing keeps them off the web. Start with --network on to use them.";
-  const off = list.some((s) => s.state.is === "off") ? [line] : [];
+  // With the allowed sites, the design's line 3 for host servers only; a remote one off says why in /mcp (8c-2b plan,
+  // Step 9). The network off's line is its off state with no reason.
+  const sites = 'MCP servers marked "host" are off: the sandbox\'s network is limited to its allowed sites.';
+  const off = list.some((s) => s.state.is === "off" && s.state.reason === undefined)
+    ? [line]
+    : list.some((s) => s.state.is === "off" && s.state.reason === HOST_OFF)
+      ? [sites]
+      : [];
   if (!opts.print) return off;
   const skipped = list
     .filter((s) => s.where === "project" && (s.state.is === "waiting for your yes" || s.state.is === "you said no"))

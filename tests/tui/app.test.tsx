@@ -12755,6 +12755,19 @@ describe("App's MCP", () => {
     expect(mcpRow(row)).toBe("om · needs sign-in");
   });
 
+  // 8c-2b plan, Step 9: the rows of servers the allowed sites keep off (the design's line 4, and W4).
+  it("shows each off: row the allowed sites give", () => {
+    const row = (reason: string) => ({
+      name: "s", where: "user" as const, state: { is: "off" as const, reason }, trusted: null, trustedTools: [],
+      tools: 0,
+    });
+    expect(mcpRow(row("the sandbox's network is limited to its allowed sites"))).toBe(
+      "s · off: the sandbox's network is limited to its allowed sites",
+    );
+    expect(mcpRow(row("not on the allowed sites"))).toBe("s · off: not on the allowed sites");
+    expect(mcpRow(row("a local address"))).toBe("s · off: a local address");
+  });
+
   it("says where servers go on /mcp when there are none, and that /mcp takes nothing after it", async () => {
     const { app } = await mount([]);
     await type(app, "/mcp");

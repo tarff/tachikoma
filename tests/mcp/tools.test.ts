@@ -1076,9 +1076,10 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // the stand-in box, a copy. The cleanup is registered before the start, so it runs even if the start throws: the
   // servers are stopped before the stand-in's are killed, then the folder is removed (setup's, run after this, as
   // vitest runs onTestFinished in reverse order).
-  async function boxed(t: Setup, network: "on" | "off") {
+  async function boxed(t: Setup, network: "on" | "off" | "sites") {
     const fake = standinBox(t.dir, { kind: "copy" });
-    const servers = t.make([await t.local("s", { description: ECHO })], { network, box: fake.box });
+    const sites = network === "sites" ? { sites: [] } : {};
+    const servers = t.make([await t.local("s", { description: ECHO })], { network, box: fake.box, ...sites });
     onTestFinished(async () => {
       await servers.stopAll();
       fake.killAll();
@@ -1116,6 +1117,32 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const refused = { output: `${P}: s: echo {"text":"p"}`, isError: true };
     expect([t.results(session), p.asked]).toEqual([[refused], [asking("p")]]);
     expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "window" }]);
+  });
+
+  // 8c-2b design, choice 6: the allowed sites narrow where the box reaches, so a box server's call asks in never, as
+  // with on, and a hook's ask on it goes to the user.
+  it("asks in never about a box server's call with the allowed sites, as with on, and refuses it in -p", async () => {
+    const t = await setup();
+    const servers = await boxed(t, "sites");
+    const g = gated(t, "never", { answers: [true] });
+    await lead(t, servers, g.gate, hi("window")).session.send("go");
+    expect(g.asked).toEqual([asking("window")]);
+    const p = gated(t, "never", { headless: true });
+    const { session } = lead(t, servers, p.gate, hi("p"));
+    await session.send("go");
+    expect(t.results(session)).toEqual([{ output: `${P}: s: echo {"text":"p"}`, isError: true }]);
+    expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "window" }]);
+  });
+
+  it("takes a hook's ask on a box server's call with the allowed sites to the user in never", async () => {
+    const t = await setup();
+    const servers = await boxed(t, "sites");
+    const g = gated(t, "never", { answers: [true] });
+    const { hooks } = hooked(t, g.gate, ASK);
+    const { session } = lead(t, servers, g.gate, hi(), { hooks });
+    await session.send("go");
+    expect(g.asked).toEqual([{ summary: 'mcp__s__echo {"text":"hi"}', note: "A hook asks: Sure?" }]);
+    expect(t.results(session)).toEqual([{ output: "hi", isError: false }]);
   });
 
   it("shows auto's judge a box server's call with the network off as inside, and boxed", async () => {

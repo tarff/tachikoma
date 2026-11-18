@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import http from "node:http";
-import type { AddressInfo } from "node:net";
+import https from "node:https";
+import net, { type AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
@@ -11,11 +12,14 @@ import { commandEnv, system32 } from "../../src/exec/env.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import { launchAnswers } from "../../src/mcp/answers.js";
 import { listen } from "../../src/auth/oauth.js";
-import { AuthStore, McpAuth } from "../../src/mcp/auth.js";
+import { AuthStore, McpAuth, type SignInIO } from "../../src/mcp/auth.js";
 import type { OAuthEntry, ServerConfig } from "../../src/mcp/config.js";
+import { Server } from "../../src/mcp/server.js";
 import { Servers } from "../../src/mcp/servers.js";
+import { sitesFetch } from "../../src/mcp/sitesFetch.js";
 import { type Approve, mcpTools } from "../../src/mcp/tools.js";
 import { Bus, removeTree } from "../helpers.js";
+import { certificate } from "./cert.js";
 import { fakeHelper, httpFake, readLog, signInFake } from "./fake.js";
 
 // Release 8c plan, Task 11: signing in to a remote server, against the fake sign-in service of fake.ts on 127.0.0.1, the
@@ -642,6 +646,178 @@ describe("signing in, with a headersHelper", () => {
 
 // Choice 53: the sign-in's own address, Claude Code's form, on both of this machine's own addresses at one port; and
 // /login chatgpt's, as it was.
+// 8c-2b plan, Step 9 (decision 13a; design, section 3, "Sign-in"): with the allowed sites in force every request
+// Tachikoma makes for a sign-in goes through the attempt's own checked fetch (Step 8), and a connection's 401 handling
+// through the connection's. The fake answers under names (fake.ts, `names`), each looked up as a public address and
+// reached on 127.0.0.1 (decision 12); its record holds every request it got.
+describe("signing in with the allowed sites", () => {
+  const PUBLIC = "93.184.215.14";
+  const W5 = (site: string) =>
+    `${site} is not on the allowed sites; add it to "allowedSites" in ~/.tachikoma/settings.json`;
+  // The user's browser for named addresses: each hop by hand, one at a named host sent to the fake on 127.0.0.1 over
+  // TLS with that name and its certificate, Tachikoma's own address on this computer as it is.
+  const browserTo = (port: number, ca: string[]) => (address: string) =>
+    void (async () => {
+      let at: URL | undefined = new URL(address);
+      for (let hops = 0; at && hops < 5; hops++) {
+        const location: string | undefined = await new Promise((done, fail) => {
+          const named = at!.hostname.endsWith(".example");
+          const opts = { host: "127.0.0.1", port, path: `${at!.pathname}${at!.search}`, servername: at!.hostname, ca };
+          const req = named ? https.get(opts) : http.get(at!);
+          req.on("response", (res) => (res.resume(), done(res.headers.location)));
+          req.on("error", fail);
+        });
+        at = location === undefined ? undefined : new URL(location, at);
+      }
+    })().catch(() => {});
+
+  async function sited(
+    given: Parameters<typeof signInFake>[0] & object, listed: string[], oauthAt?: (port: number) => OAuthEntry,
+    lookup: (name: string) => Promise<string[]> = async () => [PUBLIC],
+  ) {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-auth-"));
+    const servers: Server[] = [];
+    onTestFinished(async () => {
+      await Promise.all(servers.map((s) => s.stop()));
+      await removeTree(dir);
+    });
+    // Over TLS, as the library sends a token request to no other address but localhost's (decision 12's certificates).
+    const names = [...new Set([...Object.values(given.names ?? {}), "meta.example"])];
+    const certs = Object.fromEntries(names.map((n) => [n, certificate(n)]));
+    const ca = Object.values(certs).map((c) => c.cert);
+    const fake = await signInFake({ ...given, https: certs });
+    const oauth = oauthAt?.(fake.port);
+    const store = new AuthStore(path.join(dir, "data", "tachi"));
+    const opened: string[] = [];
+    const asked: string[] = [];
+    const make = (name: string, sites = listed) => {
+      const checked = (refused: (e: Error) => void) =>
+        sitesFetch({
+          sites: sites.map((n) => ({ name: n, port: fake.port })), own: [], refused, ca, lookup,
+          connect: (_address, port) => net.connect(port, "127.0.0.1"),
+        });
+      const server = new Server(remote(name, fake.url, oauth), {
+        root: dir, env: process.env, auth: store, onChange: () => {}, checked,
+      });
+      servers.push(server);
+      return server;
+    };
+    const io = (): SignInIO => ({
+      ask: async (q) => (asked.push(q), true),
+      say: () => {},
+      openBrowser: (url) => (opened.push(url), browserTo(fake.port, ca)(url)),
+      signal: new AbortController().signal,
+    });
+    const paths = () => fake.seen.requests.map((r) => r.path);
+    const hosts = () => fake.seen.requests.map((r) => r.headers.host);
+    return { fake, make, io, opened, asked, paths, hosts, site: (n: string) => `${n}:${fake.port}` };
+  }
+
+  it("signs in when the server and its sign-in service are listed, the token request's form included", async () => {
+    const names = { server: "mcp.example", service: "auth.example" };
+    const t = await sited({ names }, ["mcp.example", "auth.example"]);
+    const server = t.make("om");
+    await server.start();
+    expect(server.state).toEqual({ is: "needs sign-in" });
+    expect(await server.signIn(t.io())).toBe(true);
+    expect(t.fake.seen.grants).toEqual(["authorization_code"]); // the form's code and verifier checked by the fake
+    await server.stop();
+    await server.start();
+    expect(server.state.is).toBe("ready");
+  });
+
+  // The page the browser opens is the user's, not Tachikoma's request (design, section 3).
+  it("does not check the page the browser opens", async () => {
+    const names = { server: "mcp.example", service: "auth.example", authorize: "login.example" };
+    const t = await sited({ names }, ["mcp.example", "auth.example"]);
+    expect(await t.make("om").signIn(t.io())).toBe(true);
+    expect(t.asked).toEqual(["Open your browser to sign in to om at login.example:" + t.fake.port]);
+  });
+
+  it("fails with W5 when the server's sign-in details name a service not listed, asking nothing more", async () => {
+    const t = await sited({ names: { server: "mcp.example", service: "auth.example" } }, ["mcp.example"]);
+    await expect(t.make("om").signIn(t.io())).rejects.toThrow(W5(t.site("auth.example")));
+    expect(t.paths()).toEqual(["/.well-known/oauth-protected-resource/mcp"]);
+    expect([t.opened, t.asked]).toEqual([[], []]);
+  });
+
+  it("fails with W5 when an entry's authServerMetadataUrl is not listed, not as no sign-in details", async () => {
+    const names = { server: "mcp.example", service: "mcp.example" };
+    const t = await sited({ metadata: "elsewhere", names }, ["mcp.example"], (port) => ({
+      authServerMetadataUrl: `https://meta.example:${port}/elsewhere/metadata`,
+    }));
+    const server = t.make("om");
+    await expect(server.signIn(t.io())).rejects.toThrow(W5(t.site("meta.example")));
+    expect([t.paths(), t.opened]).toEqual([[], []]);
+    await server.start(); // the launch's 401 asks for it too
+    expect(server.state).toEqual({ is: "failed", reason: W5(t.site("meta.example")) });
+    expect(t.paths()).toEqual(["/mcp"]);
+  });
+
+  it("fails with W5 when the registration address is not listed, never opening the browser", async () => {
+    const names = { server: "mcp.example", service: "auth.example", register: "reg.example" };
+    const t = await sited({ names }, ["mcp.example", "auth.example"]);
+    await expect(t.make("om").signIn(t.io())).rejects.toThrow(W5(t.site("reg.example")));
+    expect([t.opened, t.asked, t.fake.seen.registered]).toEqual([[], [], 0]);
+  });
+
+  it("fails with W5 when the token address is not listed", async () => {
+    const names = { server: "mcp.example", service: "auth.example", token: "tok.example" };
+    const t = await sited({ names }, ["mcp.example", "auth.example"]);
+    await expect(t.make("om").signIn(t.io())).rejects.toThrow(W5(t.site("tok.example")));
+    expect(t.opened).toHaveLength(1);
+    expect(t.fake.seen.grants).toEqual([]);
+  });
+
+  // The library goes on after a discovery error that is not a TypeError (public-CvV4ZHkX.mjs:1185-1189): here to ask
+  // the server's own address for the sign-in service's details, which is listed; the attempt's first refusal holds.
+  it("gives a connection W5 at its 401 when the document it names is unlisted, its next request refused", async () => {
+    const t = await sited({ names: { server: "mcp.example", resource: "doc.example" } }, ["mcp.example"]);
+    const server = t.make("om");
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: W5(t.site("doc.example")) });
+    expect(t.paths()).toEqual(["/mcp"]); // the 401, and nothing after the refusal
+  });
+
+  // The sign-in reads the discovery document the launch's 401 named, kept from the launch (choice 70; auth.ts, signIn).
+  it("fails with W5 the same way through the details kept from the launch's 401", async () => {
+    const names = { server: "mcp.example", resource: "doc.example", service: "auth.example", register: "reg.example" };
+    const t = await sited({ names }, ["mcp.example", "doc.example", "auth.example"]);
+    const server = t.make("om");
+    await server.start();
+    expect(server.state).toEqual({ is: "needs sign-in" });
+    const before = t.hosts().length;
+    await expect(server.signIn(t.io())).rejects.toThrow(W5(t.site("reg.example")));
+    expect(t.hosts()[before]).toBe(t.site("doc.example")); // the kept document, asked for first
+    expect([t.opened, t.asked, t.fake.seen.registered]).toEqual([[], [], 0]);
+  });
+
+  // The library's next request, to the server's own address, would have been refused as local: the first is said.
+  it("says the first reason when the library's next request would have been refused for another", async () => {
+    let asked = 0;
+    const lookup = async () => (++asked === 1 ? [PUBLIC] : ["10.0.0.9"]); // the 401's request, then somewhere local
+    const names = { server: "mcp.example", resource: "doc.example" };
+    const t = await sited({ names }, ["mcp.example"], undefined, lookup);
+    const server = t.make("om");
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: W5(t.site("doc.example")) });
+    expect([t.paths(), asked]).toEqual([["/mcp"], 1]);
+  });
+
+  it("starts each sign-in attempt clean, and one server's refusal leaves another's sign-in working", async () => {
+    const names = { server: "mcp.example", service: "auth.example", register: "reg.example" };
+    const t = await sited({ names }, ["mcp.example", "auth.example"]);
+    const server = t.make("om");
+    await expect(server.signIn(t.io())).rejects.toThrow(W5(t.site("reg.example")));
+    const first = t.paths().length;
+    expect(first).toBeGreaterThan(0);
+    await expect(server.signIn(t.io())).rejects.toThrow(W5(t.site("reg.example")));
+    expect(t.paths().length).toBe(2 * first); // its discovery reached the fake again
+    const other = t.make("other", ["mcp.example", "auth.example", "reg.example"]);
+    expect(await other.signIn(t.io())).toBe(true);
+  });
+});
+
 describe("the sign-in's own address", () => {
   // Whether this machine has ::1 to listen on.
   const ipv6 = () =>

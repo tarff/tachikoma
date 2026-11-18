@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   type AuthorizationServerMetadata,
   auth,
+  type FetchLike,
   isSpecType,
   type OAuthClientInformationContext,
   type OAuthClientMetadata,
@@ -22,6 +23,8 @@ import { privateDir, readPrivate, writePrivate } from "../auth/private.js";
 import { dataDir } from "../core/datadir.js";
 import { visible } from "../core/permissions.js";
 import type { OAuthEntry, ServerConfig } from "./config.js";
+import type { CheckedFetch } from "./server.js";
+import { SiteRefused } from "./sitesFetch.js";
 
 // Signing in to remote MCP servers (release 8c plan, Task 11; design, "Remote servers and sign-in"): one OAuth client per
 // server, through the library's own `auth`, which discovers the server's sign-in service, registers, refreshes and
@@ -158,11 +161,21 @@ export class McpAuth implements OAuthClientProvider {
   readonly #url: string;
   readonly #oauth: OAuthEntry | undefined;
   readonly #attempt: { redirect: string; state: string; signal: AbortSignal; to?: URL } | undefined; // a sign-in's own: its address, state, Esc
+  readonly #checked: CheckedFetch | undefined;
   #verifier = "";
   #discovery: OAuthDiscoveryState | undefined;
   #refreshRead: string | undefined; // the refresh token last read, so a refused one drops only itself (invalidateCredentials)
+  // With the allowed sites (8c-2b plan, Step 9; decision 13a), the checked fetch its own request uses (discoveryState):
+  // the connection's, which the server sets at each new one, or a sign-in attempt's own. Node's otherwise.
+  fetch: FetchLike | undefined;
 
-  constructor(store: AuthStore, config: ServerConfig, attempt?: { redirect: string; state: string; signal: AbortSignal }) {
+  // `checked`: with the allowed sites, the maker of each sign-in attempt's own checked fetch.
+  constructor(
+    store: AuthStore,
+    config: ServerConfig,
+    attempt?: { redirect: string; state: string; signal: AbortSignal },
+    checked?: CheckedFetch,
+  ) {
     if (config.entry.kind === "stdio") throw new Error("only a remote server signs in");
     this.#store = store;
     this.#config = config;
@@ -170,6 +183,7 @@ export class McpAuth implements OAuthClientProvider {
     this.#url = config.entry.url;
     this.#oauth = config.entry.oauth;
     this.#attempt = attempt;
+    this.#checked = checked;
   }
 
   get redirectUrl(): string {
@@ -256,8 +270,14 @@ export class McpAuth implements OAuthClientProvider {
     quiet();
     const at = this.#oauth?.authServerMetadataUrl;
     if (this.#discovery || at === undefined) return this.#discovery;
-    // One that cannot be reached (no such host, refused, a redirect) is the same: not the server's own failure.
-    const res = await fetch(at, { headers: { accept: "application/json" }, redirect: "error" }).catch(() => undefined);
+    // One that cannot be reached (no such host, refused, a redirect) is the same: not the server's own failure. One
+    // the allowed sites refuse is that refusal (8c-2b plan, decision 13a).
+    const res = await (this.fetch ?? fetch)(at, { headers: { accept: "application/json" }, redirect: "error" }).catch(
+      (err: unknown) => {
+        if (err instanceof SiteRefused) throw err;
+        return undefined;
+      },
+    );
     const metadata: unknown = res?.ok ? await res.json().catch(() => undefined) : undefined;
     if (!isSpecType.OAuthMetadata(metadata) && !isSpecType.OpenIdProviderDiscoveryMetadata(metadata)) throw new NoSignIn();
     const found = metadata as AuthorizationServerMetadata;
@@ -310,12 +330,31 @@ export class McpAuth implements OAuthClientProvider {
     }
     const attempt: { redirect: string; state: string; signal: AbortSignal; to?: URL } = { redirect: listener.redirectUri, state, signal: io.signal };
     const client = new McpAuth(this.#store, this.#config, attempt);
+    // With the allowed sites (8c-2b plan, Step 9; decision 13a), one checked fetch for the attempt: its client's own
+    // request and both auth() calls'. Once a call has ended, however it ended, its first refusal fails the sign-in with
+    // W5, whatever the library made of it, so the browser is never offered after one.
+    let refused: SiteRefused | undefined;
+    const send = this.#checked?.((err) => (refused ??= err));
+    client.fetch = send;
+    const fetchFn = send ? { fetchFn: send } : {};
+    const held = <T>(work: Promise<T>): Promise<T> =>
+      work.then(
+        (got) => {
+          if (refused) throw refused;
+          return got;
+        },
+        (err: unknown) => {
+          throw refused ?? err;
+        },
+      );
     const scope = this.#oauth?.scopes ? { scope: this.#oauth.scopes } : {};
     // The discovery document the server's 401 named, which the library kept here as the launch tried it: a server may
     // name it only there (choice 70: the outside review of PR #17, finding 2). The exchange uses the attempt's own.
     const named = this.#discovery?.resourceMetadataUrl;
     try {
-      const first = stoppable(auth(client, { serverUrl: this.#url, ...(named && { resourceMetadataUrl: new URL(named) }), ...scope }), io.signal).catch((err: unknown) => {
+      const kept = named ? { resourceMetadataUrl: new URL(named) } : {};
+      const asked = { serverUrl: this.#url, ...kept, ...scope, ...fetchFn };
+      const first = held(stoppable(auth(client, asked), io.signal)).catch((err: unknown) => {
         throw err instanceof RegistrationRejectedError && err.status === 403 ? new Error(REFUSED) : err;
       });
       if ((await first) === "AUTHORIZED") return true;
@@ -329,7 +368,8 @@ export class McpAuth implements OAuthClientProvider {
       if (error) throw new OAuthError(error, reply.get("error_description") ?? error); // the service's own words
       const code = reply.get("code");
       if (!code) throw new Error("the sign-in page sent back no code");
-      await stoppable(auth(client, { serverUrl: this.#url, authorizationCode: code, iss: reply.get("iss") ?? undefined, ...scope }), io.signal);
+      const exchange = { serverUrl: this.#url, authorizationCode: code, iss: reply.get("iss") ?? undefined, ...scope };
+      await held(stoppable(auth(client, { ...exchange, ...fetchFn }), io.signal));
       return true;
     } finally {
       listener.close();

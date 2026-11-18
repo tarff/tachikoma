@@ -137,11 +137,12 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
   // With the sandbox on, the stand-in box, in which nothing starts here (8c-2a plan, Task 6): live link, unless `kind`
   // says copy.
   const servers = (
-    configs: ServerConfig[], network: "on" | "off" | "none", answers: () => Answers, kind?: "live" | "copy",
+    configs: ServerConfig[], network: "on" | "off" | "sites" | "none", answers: () => Answers, kind?: "live" | "copy",
   ) => {
     const box = network === "none" ? {} : { box: standinBox(tmpdir(), { kind }).box };
+    const sites = network === "sites" ? { sites: [] } : {}; // 8c-2b plan, Step 9: no site in force
     return new Servers(configs, {
-      root: tmpdir(), env: {}, bus: new Bus(), answers, network, ...box, lead: () => "fake:a",
+      root: tmpdir(), env: {}, bus: new Bus(), answers, network, ...box, ...sites, lead: () => "fake:a",
     });
   };
   const none = (): Answers => ({ get: () => undefined, set: () => {}, reset: () => {} });
@@ -365,6 +366,17 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
     expect(mcpLines(servers(configs, "none", given), { print: false })).toEqual([]);
     expect(mcpLines(servers(configs.slice(2), "off", given), { print: false })).toEqual([]);
     expect(mcpLines(servers([], "off", none), { print: true })).toEqual([]);
+  });
+
+  // 8c-2b plan, Step 9 (the design's line 3): with the allowed sites, the line once for the host servers it keeps off;
+  // a remote one that is off says so in /mcp only.
+  it("says once that host servers are off with the allowed sites, and nothing for remote ones", () => {
+    const line = 'MCP servers marked "host" are off: the sandbox\'s network is limited to its allowed sites.';
+    const host = (name: string) => ({ ...local(name, [], "user"), host: true as const });
+    const far = server("far", { kind: "http", url: "https://mcp.example.com/mcp", headers: {} }, "user");
+    expect(mcpLines(servers([host("a"), host("b"), far], "sites", none), { print: false })).toEqual([line]);
+    expect(mcpLines(servers([host("a"), far], "sites", none), { print: true })).toEqual([line]);
+    expect(mcpLines(servers([far, local("mine", [], "user")], "sites", none), { print: true })).toEqual([]);
   });
 });
 
