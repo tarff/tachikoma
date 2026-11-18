@@ -349,3 +349,5 @@ A second review, also passed on by the user, found two more; both taken ("Apply 
    breaks its programs.
 6. Old and new Tachikomas side by side share the running hub, a palace remembers the newest MemPalace that opened it
    so an older one never reopens it, and an old folder is removed only when no hub runs from it (section 2).
+
+## Found and measured in the build (8d plan)
