@@ -889,8 +889,8 @@ A hub started detached and hidden outlives the process that started it. A second
 at once with `MEMPALACE_MCP_WRITER_WAIT_SECONDS=0`, and otherwise waits up to 120 s. Entries can be looked up and
 removed by their exact label, and a long entry's pieces counted. Adding the same text twice to one room adds it once.
 The backend and the model are chosen by a flag and a setting, and both can be read back. MemPalace 3.6.0, the user's
-copy, offers every tool Tachikoma needs under the same names. Questions Q7, Q8 and Q19 are still waiting on the user,
-with four new ones that these findings raise (at the end of this part).
+copy, offers every tool Tachikoma needs under the same names. Questions Q7, Q8 and Q19, and four new ones these
+findings raised, were answered by the user on 2026-11-19 (at the end of this part).
 
 Script: `scripts/8d/mempalace-checks.mjs`, run as `node scripts/8d/mempalace-checks.mjs run`. The figures below come
 from its fifth run, saved with that run's logs as
@@ -903,6 +903,10 @@ local time (22:00 to 22:24 UTC on 2026-11-18):
 - Run 4: the same answers, but its pair of listings was not clean (see "The user's folders"), and its last process
   check counted another program's process as the script's (see "Processes").
 - Run 5: the same answers, with the pair of listings clean and nothing left running.
+
+The script's exit code shows only two things: the connection watch found nothing, and no process of the script's was
+left running. The 12 answers are what the run recorded in `results.json`, read from it for this record; the exit
+code does not check them.
 
 MemPalace's source was read in the installed packages, `tachi-8d-build\env\Lib\site-packages`. All `mempalace/...`
 paths below are there.
@@ -1022,6 +1026,8 @@ with type; `*` = required):
     `source_file`, `since`, `before` strings; `max_distance` number; and others). A query of 251 characters is
     refused: `-32602 Invalid params for tool mempalace_search: 'query' must be at most 250 characters`.
   - add an entry: `mempalace_add_drawer` (`wing`*, `room`*, `content`* strings; `source_file`, `added_by` strings).
+    The plan took adding an entry to need `source_file`; the schema requires only `wing`, `room` and `content`.
+    Tachikoma's saver must always send `source_file`, as step 22's look-ups and removals go by it.
 - Used when a palace offers them:
   - entries by exact `source_file`: `mempalace_delete_by_source` with `dry_run` true (its default), which reports
     `match_count` (item 8); also `mempalace_search` with `source_file`.
@@ -1113,8 +1119,12 @@ does not need a newer MemPalace than 3.6.0.
 - Read back from the palace: the palace file's `meta` table holds `embedder_model:mempalace_drawers = minilm`, and its
   `collections` table `mempalace_drawers` with dimension 384, read with `node:sqlite` read-only. The same read, made
   while the hub was running, gave `minilm`, and the hub answered a search right after. `minilm` is all-MiniLM-L6-v2
-  (`mempalace/embedding.py:1416-1419`; step 5). A palace refuses to open with a model other than the one recorded
-  (3.11.0 and later; `mempalace/palace/collection.py`, `_enforce_embedder_identity`).
+  (`mempalace/embedding.py:11`; `mempalace/config.py:1151`). Any other value MemPalace does not know also becomes
+  `minilm`, with only a warning in the hub's log; only near misses of the other models' names are refused
+  (`embedding.py:1242-1292`, used at `:1417`). So a read-back of `minilm` cannot tell a misspelt setting from the
+  choice. A collection whose model is recorded refuses another model; one that holds entries but has no recorded model
+  only warns (`mempalace/palace/collection.py:101-116`, `_enforce_embedder_identity`). A new palace records its model
+  at its first write, as seen here.
 - A hub on a palace made with the other backend: a palace made with `--backend chroma` (files `chroma.sqlite3`,
   `mempalace_embedder.json` and a folder) was given a hub with `--backend sqlite_exact`. It exited with code 2 about
   1.4 s after its start, never answering: `Writable MCP HTTP startup refused: could not acquire MCP peer-writer lock
@@ -1128,27 +1138,37 @@ servers: no name lookup, connection, send or HTTP request through Python's own c
 logs. The hub that served every tool call (`hd-direct`) was started directly, so its hook was in the serving process.
 The only child process any logged process started was `serve`'s own server (one each). That child, and every `serve`
 hub's serving interpreter, is started by MemPalace without `-I` and without the hook (`cmd_serve.py:132-149`,
-`mempalace/_proc.py:97-123`, which sets `PYTHONSAFEPATH=1` and drops the working folder from the import path); only the
-dead-end proxy watched them. The venv's `site.py` turns the user's own site-packages off for that child
-(`install\python\...\Lib\site.py:636-639`). Known limits as in step 5: native code is not seen.
+`mempalace/_proc.py:97-123`, which sets `PYTHONSAFEPATH=1` and drops the working folder from the import path). Those
+children were not watched. The dead-end proxy sees only HTTP sent through the proxy variables; it received nothing,
+which does not show that they made no other connection. The venv's `site.py` turns the user's own site-packages off
+for that child (`install\python\...\Lib\site.py:636-639`). Known limits as in step 5: native code is not seen.
 
 **The user's folders** (step 5's rule: only the listings just before and just after each run are compared):
 - Around runs 1, 2, 3 and 5 (`step6-before` to `step6-after`, and `step6-runN-before` to `step6-runN-after`): "no
   change", apart from the set-apart daemon folder `daemon/<palace key>8ab5b11d` of the user's own MemPalace.
 - **Around run 4 (`step6-run4-before` to `step6-run4-after`): not clean.** The user's own `~/.mempalace` changed in
-  these places outside the set-apart ones, between 22:16:59 and 22:17:35 UTC, while run 4 ran (22:16:21 to about
-  22:18:10):
+  these places outside the set-apart ones, between 22:16:59 and 22:17:35 UTC, while run 4 ran (from 22:16:21 until
+  its `results.json` was written at 22:17:47.8 UTC, the file's change time):
   - `hook_state/<session>_last_save` and `hook_state/last_checkpoint` (22:17:00);
   - `wal/write_log.jsonl` (22:16:59) and `locks/mine_palace_<palace key>.lock` (22:17:00);
   - `palace/sqlite_exact.sqlite3` (22:17:31), its `-wal`, and the folder `locks` (22:17:35).
   The set-apart `hook_state/hook.log` (22:17:00) and `daemon/.../queue.sqlite3` (22:17:35) changed too. The times are
   from the snapshot files, converted with Node. These are the same files as in step 5's gap, and the first is named
-  after this build's Claude Code session. During run 4 the builder was making tool calls in that session. By the names
-  and times, this looks like the user's own MemPalace plugin saving the session. That is an inference: it was not
-  traced, and the user did not say it. Run 4's MemPalace ran with its home in the build folder (its `USERPROFILE` and
-  `HOME` lines in the run's output), and the build never runs the user's programs. Under the user's rule this pair
-  fails. Run 5 was then made with no other tool call from the builder while it ran, and its pair is clean. The figures
-  above are run 5's. Whether run 4's pair is acceptable is the user's call.
+  after this build's Claude Code session.
+  - The cause, traced (the review of this step): the user's own MemPalace plugin saves on the main Claude Code
+    session's Stop hook, when that session finishes a reply, not on tool calls (the plugin's
+    `.claude-plugin/hooks/hooks.json:4-9`; its `hooks_cli.py:1122-1134`). The session log shows the main session
+    finishing a reply at 22:16:57.8 UTC. The plugin's files changed at 22:17:00.1 to 22:17:00.3 (`_last_save`,
+    `last_checkpoint`, `hook.log`, the `mine_palace` lock), the user's palace at 22:17:31.8 and the daemon queue at
+    22:17:35.3. No main-session reply fell inside run 5, and its pair is clean.
+  - No code path of the build writes the user's `~/.mempalace` (the review's finding). Every MemPalace process of the
+    build ran with `USERPROFILE` and `HOME` at the build home (`scripts/8d/throwaway.mjs:34-35`), so its state
+    folder is the build home's `.mempalace` (`mempalace/paths.py:34-37`) and its hook state is under that
+    (`mempalace/hooks_cli.py:45`). Its write log is under `MEMPALACE_CONFIG_DIR` (`mempalace/wal.py:24`), which is
+    in the build home. Every palace path in the run logs is under `install\home\palaces`. The builder made no
+    MemPalace MCP call and ran no `mempalace` command outside the scripted runs.
+  - Under the user's rule this pair fails. The user accepted it on 2026-11-19, with this cause. The figures above are
+    run 5's.
 - In the gaps, listed only: `step5-fix-after` to `step6-before`, the daemon folder and `hook_state/hook.log`; each
   later gap between two runs, the daemon folder only. Nothing outside the set-apart places changed in any gap.
 
@@ -1158,9 +1178,11 @@ started by one of them, was running. Runs 1 and 2 ended the same way, and run 3 
 last check reported one process left: a `conhost.exe` started at 22:17:46.6 UTC, whose parent id, 279188, had been
 the launcher of a hub that ended about 2.5 s after its start at 22:16:45.3. Windows had given that id to a later
 process, so the `conhost.exe` belonged to another program. It was not stopped, signalled or asked about further, and
-a look by those two ids afterwards found neither running. The script now counts a process under a recorded id as its
-own only if it started before that recorded process was seen gone, and lists any other one apart, untouched. Run 5
-listed none.
+a look by those two ids afterwards found neither running. Run 5 ran with a fix: a process under a recorded id counted
+as the script's only if it started before that recorded process was seen gone. Run 5 listed none apart. After the
+review the rule is stricter and has not been run: a process under a recorded id counts as the script's only if it
+started after that recorded process and no later than the last look that found it running
+(`scripts/8d/mempalace-checks.mjs`, `isMine`). Any other is listed apart and left alone.
 
 **For later steps** (findings, not decisions):
 - Step 18: the client should not treat the library's `Failed to open SSE stream: Not Found` as a failure; it comes
@@ -1175,10 +1197,10 @@ listed none.
 - Step 28: "how many entries" comes from `mempalace_list_drawers`' `total`, one call per room; `mempalace_list_rooms`
   counts pieces.
 
-#### Questions waiting on the user
+#### Questions for the user
 
-Q7, Q8 and Q19 are waiting on the user, as are four new questions these findings raise. The user's answers are to be
-recorded here in a later commit.
+Q7, Q8 and Q19, and four new questions these findings raised. The user answered all of them on 2026-11-19; the
+answers are under "The user's answers" below.
 
 **Q7. Where the window finds the hub.** Found: MemPalace's file is
 `memory/home/.mempalace/server/<24 hex>/serverinfo.json` (item 4). The key worked out by the script matched, so either
@@ -1225,7 +1247,9 @@ started directly, is two processes and the same server code with the same argume
 - Option 1 (recommended): start `<env>\Scripts\python.exe -I -c <MemPalace's own safe launcher, _proc.py:97-102>
   mempalace.mcp_server --transport http --host 127.0.0.1 --port <p> --palace <palace> --backend sqlite_exact`, and stop
   it by the serving process's id from `serverinfo.json`, checked against its start time. (Stopping the launcher
-  Tachikoma started also ended a direct hub whole, item 2.)
+  Tachikoma started also ended a direct hub whole, item 2.) Not run in this form in step 6: the direct hubs here were
+  started through the audit-hook wrapper, not MemPalace's safe launcher, and run 5 stopped its direct hub by its
+  launcher, not by the serving process's id.
 - Option 2: keep `mempalace serve`; record the serving process's id from `serverinfo.json` once it answers, and stop
   that one, which ends the other three (item 2).
 
@@ -1248,3 +1272,19 @@ or the whole wing.
   inside the one time limit.
 - Option 2: one search over the wing, keeping only matches from the two rooms (other projects' matches can push them
   out of the results).
+
+#### The user's answers (2026-11-19)
+
+- Q7: Tachikoma keeps its own hub record. It finds MemPalace's file by listing `server/*/serverinfo.json` and matching
+  `palace_path`, ignoring letter case.
+- Q8: every hub starts with `MEMPALACE_MCP_WRITER_WAIT_SECONDS=0`. Exit code 2 counts as a failed start: another window
+  holds the palace.
+- Q19: the room's code is 8 hex characters.
+- Q24: the window starts `mempalace.mcp_server --transport http` directly, with `-I`, and stops it by the serving
+  process's id. This exact start and stop was not run in step 6 (see Q24 above), so step 20 must test it before
+  relying on it.
+- Q25: every hub starts with `MEMPALACE_MCP_IDLE_HOURS=0`.
+- Q26: a turn over 100,000 characters is saved in parts. This is the user's choice, not the option recommended above;
+  the plan's later steps will say how.
+- Q27: two searches at once, the project's room and `lessons`, their matches merged by distance.
+- Run 4's pair of listings: accepted as explained, with the cause traced under "The user's folders".

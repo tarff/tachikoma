@@ -174,21 +174,22 @@ ConvertTo-Json -InputObject $r -Compress -Depth 3`);
 // Every process this script started or found below one: id -> { label, created, name, ppid }.
 const mine = new Map();
 const stops = [];
-// When each recorded process was first seen gone, as a time no earlier than its exit. Windows gives a gone process's
-// id to later processes, so a process naming a gone one of these as its parent is this script's only if it started
-// before that time (`isMine`).
-const goneAt = new Map();
+// When each recorded process was last seen running: the time just before the look that found it. Windows gives a
+// gone process's id to later processes, so a process naming a recorded one as its parent is this script's only if it
+// started after that parent and no later than that parent was last seen running (`isMine`). Any other is not proven
+// to be this script's, and is left alone.
+const seen = new Map();
 const nowIso = () => new Date().toISOString().replace("Z", "0000Z");
-const markGone = (pid) => goneAt.has(pid) || goneAt.set(pid, nowIso());
 const isMine = (k) => {
   const parent = mine.get(k.ppid);
-  if (!parent || k.created < parent.created) return false;
-  return !goneAt.has(k.ppid) || k.created < goneAt.get(k.ppid);
+  return Boolean(parent && seen.has(k.ppid) && k.created >= parent.created && k.created <= seen.get(k.ppid));
 };
 
 function own(label, pid) {
+  const at = nowIso();
   const [p] = cim(`ProcessId=${pid}`).list;
   if (p && !mine.has(pid)) mine.set(pid, { label, created: p.created, name: p.name, ppid: p.ppid });
+  if (p && mine.get(pid).created === p.created) seen.set(pid, at);
   return p;
 }
 
@@ -198,10 +199,13 @@ function tree(label, root) {
   const rows = mine.has(root) ? [{ pid: root, ...mine.get(root) }] : [];
   let frontier = rows.map((r) => r.pid);
   while (frontier.length) {
+    running(frontier);
+    const at = nowIso();
     const { list } = cim(frontier.map((p) => `ParentProcessId=${p}`).join(" OR "));
     const kids = list.filter(isMine);
     for (const k of kids) {
       if (!mine.has(k.pid)) mine.set(k.pid, { label, created: k.created, name: k.name, ppid: k.ppid });
+      seen.set(k.pid, at);
       rows.push({ pid: k.pid, ...mine.get(k.pid), cmd: (k.cmd ?? "").replace(/\s+/g, " ").slice(0, 160) });
     }
     frontier = kids.map((k) => k.pid);
@@ -212,9 +216,10 @@ function tree(label, root) {
 // Which of `pids` still run as the process this script recorded (same id, same start time).
 function running(pids) {
   if (!pids.length) return [];
+  const at = nowIso();
   const { list } = cim(pids.map((p) => `ProcessId=${p}`).join(" OR "));
   const alive = list.filter((p) => mine.get(p.pid)?.created === p.created).map((p) => p.pid);
-  for (const pid of pids) if (!alive.includes(pid)) markGone(pid);
+  for (const pid of alive) seen.set(pid, at);
   return alive;
 }
 
@@ -371,10 +376,7 @@ async function run() {
     closeSync(e);
     const s = { label, kind, port, palace: where, ...f, pid: child.pid, exit: null, t0 };
     s.exited = new Promise((resolve) => {
-      child.on("close", (code, signal) => {
-        markGone(child.pid);
-        resolve((s.exit = { code, signal, ms: since(t0) }));
-      });
+      child.on("close", (code, signal) => resolve((s.exit = { code, signal, ms: since(t0) })));
       child.on("error", (err) => resolve((s.exit = { code: null, error: err.message, ms: since(t0) })));
     });
     own(label, child.pid);
@@ -807,9 +809,9 @@ async function run() {
   const stillRunning = running(all.map((r) => r.pid));
   const { list: kids } = cim(all.map((r) => `ParentProcessId=${r.pid}`).join(" OR "));
   const newKids = kids.filter(isMine);
-  // Children of a recorded id that started after that process was gone: another process's, not touched.
+  // Children of a recorded id not proven this script's (started after that process was last seen running): left alone.
   const reused = kids.filter((k) => mine.has(k.ppid) && !isMine(k)).map((k) => ({ pid: k.pid, name: k.name,
-    created: k.created, parentId: k.ppid, parentSeenGone: goneAt.get(k.ppid) }));
+    created: k.created, parentId: k.ppid, parentLastSeenRunning: seen.get(k.ppid) }));
   out.processes = { started: all, stillRunning, childrenStillRunning: newKids, notMineUnderReusedIds: reused };
   writeFileSync(path.join(runDir, "results.json"), `${JSON.stringify(out, null, 2)}\n`);
   console.log(JSON.stringify(out, null, 2));
@@ -817,7 +819,10 @@ async function run() {
     l.control > 0 && l.proxies);
   const clean = stillRunning.length === 0 && newKids.length === 0;
   say(`results ${path.join(runDir, "results.json")}`);
-  say(`connection watch: ${watchOk ? "nothing but this computer" : "FAILED"}; processes left running: ` +
+  // What the watch covers: the hooked processes, and HTTP sent through the proxy variables. `serve`'s server children
+  // are not hooked.
+  const watch = watchOk ? "hooked processes reached no outside address, the dead-end proxy got nothing" : "FAILED";
+  say(`connection watch (serve's server children not hooked): ${watch}; processes left running: ` +
     `${stillRunning.length + newKids.length}`);
   process.exitCode = watchOk && clean ? 0 : 1;
 }
