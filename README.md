@@ -2480,9 +2480,9 @@ it says so.
 - **A program in the box that does not use the proxy variables reaches nothing,** listed sites
   included, as the box has no other way out and the proxy answers no name lookup. Node's own
   `fetch` does use them, as the box sets `NODE_USE_ENV_PROXY=1`.
-- **pip and uv do not show the proxy's reason:** a refused download in pip ends with `ERROR: No
-  matching distribution found for <package>`, and uv says `tunnel error: unsuccessful`. git, npm
-  and Python's urllib show it.
+- **pip, uv and git do not show the proxy's reason:** a refused download in pip ends with `ERROR:
+  No matching distribution found for <package>`, uv says `tunnel error: unsuccessful`, and git
+  says `CONNECT tunnel failed, response 403`. npm and Python's urllib show it.
 - **What is sent inside TLS is not read.** An https connection is checked by its name, its port and
   its TLS greeting's server name; what follows is passed through, so a site that serves several
   names behind one greeting name is reached as that site chooses, and another protocol carried
@@ -2532,8 +2532,9 @@ it says so.
   names the earlier list, until the next shortening or `/clear`, and the model is not told: the
   list is not part of the setup a resume compares. The box is held to the new list.
 - **A session saved with `sites`** reads as an unknown setup in an older Tachikoma.
-- **Listed sites were reached for real by hand only:** the automated tests reach no public site,
-  except one that runs only when asked for (`TACHI_TEST_INTERNET=1`).
+- **Listed sites have been reached for real only on Windows 11 with Docker Desktop,** by the test
+  that runs only when asked for (`TACHI_TEST_INTERNET=1`) and by hand: github.com, and PyPI's two
+  sites for pip. The other automated tests reach no public site.
 
 ### Live link's limits
 

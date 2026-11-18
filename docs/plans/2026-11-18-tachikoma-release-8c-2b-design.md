@@ -536,8 +536,8 @@ whose reason is line 5):
 In full: git said `fatal: unable to access 'https://github.com/git/git/': CONNECT tunnel failed, response 403`; pip
 `ERROR: No matching distribution found for idna`; npm `npm error 403 403 Tachikoma's sandbox refused
 registry.npmjs.org:443: not on the allowed sites - GET https://registry.npmjs.org/idna`; urllib `Tunnel connection
-failed: 403 Tachikoma's sandbox refused pypi.org:443: not on the allowed sites`. So git, npm and urllib show the
-proxy's reason; pip and uv do not.
+failed: 403 Tachikoma's sandbox refused pypi.org:443: not on the allowed sites`. So npm and urllib show the
+proxy's reason; pip, uv and git do not.
 
 Nothing reached any site: the box has no route out and the stand-in answers every request itself.
 
@@ -703,5 +703,13 @@ Steps 1-11 are 80d98ce to 3ad2690, one commit each, with 653e8d4 for the user's 
 - **The launch's time**, with Docker awake: 3.1 s with `sites` against 1.4 s with the network off, the middle of ten
   runs each (above).
 - **Reached for real:** the test that uses the internet (git, pip and a curl-style request, the plan's question 1)
-  runs only with `TACHI_TEST_INTERNET=1`. [To fill in after Step 12's terminal check: which of that test and the
-  terminal check was run, and whether it passed.]
+  runs only with `TACHI_TEST_INTERNET=1`. On 2026-11-18 both its tests ran and passed: git, pip and a curl-style
+  request with github.com and PyPI's two sites listed (7.9 s), and pip failing with its files' site left off
+  (13.7 s). A one-off check with github.com alone listed passed too: `git ls-remote` reached github.com and urllib
+  got a 200 from it; urllib to example.com was refused with the proxy's reason, while git to gitlab.com said only
+  `CONNECT tunnel failed, response 403`. The user's terminal check passed, with `-p` runs in copy mode, in a scratch
+  folder, the settings restored after. It showed the launch line `network sites (1)`; git and urllib reaching
+  github.com, and example.com refused with line 5; line 1 for the two entries left out; line 3; the resume's line
+  that the setup has changed; and the saved setup note with W6, `Shell commands cannot reach the web now; earlier
+  they could reach only the sandbox's allowed sites.` It did not cover line 4 (`/mcp`'s rows, in the window), a
+  listed remote MCP server, or line 6: the model added an `echo` to the command, so it exited 0.
