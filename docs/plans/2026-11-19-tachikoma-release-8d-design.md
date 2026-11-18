@@ -591,3 +591,102 @@ For step 16: the user's own MemPalace settings must never reach Tachikoma's own 
 holds `MEMPALACE_MCP_ALLOW_PEER_WRITER=1` and `MEMPALACE_MCP_IDLE_HOURS=0`. Step 1's helper now drops every
 `MEMPALACE_` variable of the environment it is given, in any spelling, except the ones it sets itself
 (`MEMPALACE_CONFIG_DIR`), and step 16 applies the same rule to Tachikoma's own MemPalace environment.
+
+### Step 4 The install, and the hashes enforced (2026-11-19)
+
+In short: uv installed MemPalace 3.12.0 and the 84 other packages Windows needs from `memory/uv.lock` into the build
+folder, with a Python 3.13 of its own that it downloaded there. The installed `mempalace --version` prints
+`MemPalace 3.12.0`. A copy of the lock with only the MemPalace wheel's hash altered was refused: uv stopped on a hash
+mismatch for that wheel and installed nothing. The user's own folders were not changed.
+
+Script: `scripts/8d/install-throwaway.mjs`, run as `node scripts/8d/install-throwaway.mjs <dirs install | install |
+version | report install | tamper | report tamper>`. Tools: uv 0.13.5 (`uv 0.13.5 (46776a95d 2026-10-21
+x86_64-pc-windows-msvc)`) and sfw 1.15.4, as in step 3. The user said yes on 2026-11-19 to these two PyPI fetches and
+to uv downloading CPython 3.13 into the build folder for each.
+
+How it was run:
+- Each run has its own sub-folder of `C:\Users\<user>\AppData\Local\Temp\tachi-8d-build`, `install` and `tamper`, with
+  step 1's `throwaway` environment and a copy of `memory/pyproject.toml` and `memory/uv.lock` in `<run>\project` (the
+  install's copy is byte for byte the repo's), so no `.venv` was made in the repo.
+- On the command only, five more variables, each in uv's list (https://docs.astral.sh/uv/reference/environment/):
+  `UV_TOOL_DIR` (added in 0.2.16), `UV_PYTHON_BIN_DIR` (0.4.29) and `UV_PYTHON_CACHE_DIR` (0.7.0) in the run's folder;
+  `UV_PYTHON_PREFERENCE=only-managed` (0.3.2), "Only use managed Python installations; never use system Python
+  installations" (https://docs.astral.sh/uv/concepts/python-versions/); and `UV_PROJECT_ENVIRONMENT` (0.4.4), the
+  environment folder, `tachi-8d-build\env` for the install and `tachi-8d-build\tamper\env` for the tamper run: "If an
+  absolute path is provided, it will be used as-is" (https://docs.astral.sh/uv/concepts/projects/config/).
+- Before each fetch, through sfw with that environment, `uv cache dir`, `uv python dir` and `uv python dir --bin`
+  printed `<run>\uv-cache`, `<run>\python` and `<run>\python-bin`, all inside the run's folder.
+- The install: `sfw uv sync --locked --python 3.13 -vv`, exit 0 in 11.5 s. "Using CPython 3.13.17", "Creating virtual
+  environment at: C:\Users\<user>\AppData\Local\Temp\tachi-8d-build\env", "Resolved 112 packages in 1ms", "Prepared 85
+  packages in 3.19s", "Installed 85 packages in 1.28s". `memory/pyproject.toml` was not changed.
+- uv looked for a Python only among its own, in `install\python` ("Searching for managed installations at ..."), and
+  queried one interpreter, the one it had just downloaded there.
+- Requests went to `files.pythonhosted.org` (the packages) and `releases.astral.sh` (the Python) only. The one place
+  outside the build folder the log names is an empty lock file uv makes for the project, in the user's Temp folder
+  (`Temp\uv-<16 hex>.lock`, one per project folder). The two my runs made were deleted by exact name afterwards.
+- sfw printed nothing and blocked nothing.
+
+The Python uv downloaded, both runs alike:
+- `cpython-3.13.17+20261021-x86_64-pc-windows-msvc-install_only_stripped.tar.gz`, from the folder
+  `https://releases.astral.sh/github/python-build-standalone/releases/download/20261021/` (Astral's address for the
+  python-build-standalone release 20261021; the `+` is written `%2B` in the address). 21,986,637 bytes (the copy uv
+  keeps in
+  `UV_PYTHON_CACHE_DIR`), SHA-256 `56cde3b1a1dcc36576753cb408ee0c3568d211baafa0eee40423adc147c480f2` (computed here;
+  uv names the kept copy with that hash's first 9 digits). Unpacked: 3,316 files, 62,727,698 bytes, in
+  `install\python\cpython-3.13.17-windows-x86_64-none`, with a link `cpython-3.13-windows-x86_64-none` to it, which the
+  environment's `pyvenv.cfg` names as its home.
+
+The installed program: `C:\Users\<user>\AppData\Local\Temp\tachi-8d-build\env\Scripts\mempalace.exe --version`, run by
+its full path with the install's environment (`HOME` and `USERPROFILE` in `install\home`): exit 0, `MemPalace 3.12.0`.
+Its `--version` is argparse's version action (`mempalace/cli/parser.py`), so it opens no palace; `install\home` was
+still empty afterwards. The environment also holds `mempalace-mcp.exe` and `mempalace-light-mcp.exe`.
+
+Downloaded on this PC, file by file (`report install`): 85 package files, 86,095,655 bytes (82.1 MiB) together, plus
+the Python archive above, 21,986,637 bytes. A file's size is the one the lock records for it: uv checks each file's
+SHA-256 against the lock, so a file it took is byte for byte the one the lock describes. Every file the log fetched is
+in the lock. The full list is printed by `report install` from the kept log `install\sync.log`. The ten largest, in
+bytes:
+
+| File | Bytes |
+|---|---|
+| chromadb-1.5.9-cp39-abi3-win_amd64.whl | 23,542,454 |
+| onnxruntime-1.32.0-cp313-cp313-win_amd64.whl | 16,697,937 |
+| numpy-2.5.5-cp313-cp313-win_amd64.whl | 12,573,354 |
+| kubernetes-37.0.3-py2.py3-none-any.whl | 7,511,682 |
+| grpcio-1.85.3-cp313-cp313-win_amd64.whl | 5,607,144 |
+| hf_xet-1.8.0-cp38-abi3-win_amd64.whl | 3,911,559 |
+| tokenizers-0.23.3-cp310-abi3-win_amd64.whl | 2,872,101 |
+| pydantic_core-2.50.4-cp313-cp313-win_amd64.whl | 2,262,887 |
+| pygments-2.21.0-py3-none-any.whl | 1,250,147 |
+| mempalace-3.12.0-py3-none-any.whl | 1,140,726 |
+
+The other 75 files come to 8,725,664 bytes.
+
+The tamper run (`tamper`): its own folder `tachi-8d-build\tamper`, with its own empty uv cache, Python folder and
+environment folder. Its copy of the lock differs from `memory/uv.lock` on one line only, the
+`mempalace-3.12.0-py3-none-any.whl` line, whose hash is `sha256:4832534f...52626f` in place of
+`sha256:3832534f...52626f` (the first digit changed). The same command, exit 1 in 7.5 s, after downloading its own
+Python 3.13.17:
+
+    error: Failed to download `mempalace==3.12.0`
+      cause: Hash mismatch for `mempalace==3.12.0`
+             Expected:
+               sha256:4832534f377f3a81a324f741f90bf3c1ec277d49404608257cde1b5b0d52626f
+             Computed:
+               sha256:3832534f377f3a81a324f741f90bf3c1ec277d49404608257cde1b5b0d52626f
+    hint: `mempalace` (v3.12.0) was included because `tachikoma-memory` (v0) depends on `mempalace`
+
+- The message names the package and version, `mempalace==3.12.0`, not the file name; the file is the lock's one
+  wheel for it, and the log shows that file's address
+  (`.../mempalace-3.12.0-py3-none-any.whl`) fetched just before. "Computed" is the real wheel's hash.
+- Nothing was installed: `tamper\env\Lib\site-packages` is empty, and no name in `tamper\env` starts with
+  `mempalace`. The only mempalace entry in the tamper cache is an empty lock file
+  (`wheels-v7\pypi\mempalace\3.12.0-py3-none-any.lock`).
+- uv had sent all 85 package requests before it stopped (56 answers had come in).
+
+The snapshot of the user's folders (`step4-before`, `step4-after`): "no change", apart from the set-apart line of the
+user's own MemPalace daemon folder.
+
+Kept for later steps: `tachi-8d-build\env` (the environment) and `tachi-8d-build\install` (its uv cache, its Python,
+which the environment needs, the Python archive and `sync.log`). Also left, for step 31 to remove with the build
+folder: `tachi-8d-build\tamper` and the snapshots.
