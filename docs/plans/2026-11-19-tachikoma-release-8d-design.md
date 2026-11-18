@@ -1302,9 +1302,9 @@ not its own, and the script's work is done.
 ### M1 The download's size, for the first-use ask (step 7, 2026-11-19)
 
 In short: a first set-up downloads three things: the packages (86 to 111 MB, by system), the model (83.2 MB, the
-same everywhere) and a Python of uv's own (22.0 MB on this PC; not measured for the other systems). Without Python, the
-largest is Linux x86-64 at 194.2 MB and the smallest Windows at 169.3 MB. With Python, this PC comes to 191.3 MB, and
-that matches, to the byte, what step 4's install really fetched here plus the model.
+same everywhere) and a Python of uv's own (22.0 to 35.4 MB, by system). With Python, the largest is Linux x86-64 at
+229.5 MB and the smallest Windows at 191.3 MB; this PC's 191.3 MB matches, to the byte, what step 4's install really
+fetched here plus the model. **N = 230** (the user's choice and rounding rule, at the end of this part).
 
 Script: `scripts/8d/measure-download.mjs`, run as `node scripts/8d/measure-download.mjs`, exit 0, "measure-download:
 passed". Its output is kept as `tachi-8d-build\download\measure-download.txt`. Nothing was fetched: the script reads
@@ -1336,14 +1336,20 @@ The table, in MB:
 | System | Packages | Model | Python | Without Python | With Python |
 |---|---|---|---|---|---|
 | Windows x86-64 (this PC) | 86.1 | 83.2 | 22.0 | 169.3 | 191.3 |
-| Linux x86-64 | 111.0 | 83.2 | not measured | 194.2 | not measured |
-| Linux arm64 | 104.7 | 83.2 | not measured | 187.9 | not measured |
-| macOS arm64 | 92.0 | 83.2 | not measured | 175.2 | not measured |
+| Linux x86-64 | 111.0 | 83.2 | 35.4 | 194.2 | 229.5 |
+| Linux arm64 | 104.7 | 83.2 | 29.5 | 187.9 | 217.4 |
+| macOS arm64 | 92.0 | 83.2 | 25.3 | 175.2 | 200.5 |
 | Intel Macs | known limit | | | | |
 | Windows on ARM | known limit | | | | |
 
 In bytes: packages 86,095,655 (Windows), 111,009,574 (Linux x86-64), 104,749,343 (Linux arm64), 92,011,082 (macOS
-arm64); model 83,178,821; Python on this PC 21,986,637.
+arm64); model 83,178,821; Python 21,986,637 (Windows), 35,356,674 (Linux x86-64), 29,455,505 (Linux arm64),
+25,286,365 (macOS arm64). With Python: 191,261,113 (Windows), 229,545,069 (Linux x86-64), 217,383,669 (Linux arm64),
+200,476,268 (macOS arm64; 200,575,841 on macOS 14, below).
+
+The table's packages, model and without-Python columns, and Windows' Python, are the script's output. The other three
+Python sizes, and so their with-Python totals, are from the size-only requests under "Python on the other systems",
+not from the script.
 
 Where each figure comes from:
 - Packages: the script's output, above.
@@ -1381,11 +1387,12 @@ This PC's measured total against its computed total:
 Python on the other systems, from uv's own listing:
 - Command: `uv python list 3.13.17 --all-platforms --all-arches --only-downloads --show-urls --output-format json -vv`
   (uv 0.13.5), exit 0. It lists 20 downloads. Their fields are key, version, version_parts, path, symlink, url, os,
-  variant, implementation, arch and libc. **No size**, so Linux and macOS are "not measured".
+  variant, implementation, arch and libc. **No size**, so the script gives Linux and macOS as "not measured", and
+  their sizes come from the size-only requests below.
 - The files uv would download (its `url` field): `cpython-3.13.17+20261021-<system>-install_only_stripped.tar.gz`,
   with `<system>` `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` or `aarch64-apple-darwin`, all from
   `https://releases.astral.sh/github/python-build-standalone/releases/download/20261021/`. uv also lists x86-64 builds
-  for newer processors (`x86_64_v2` to `v4`); which one uv picks on a given Linux PC was not checked.
+  for newer processors (`x86_64_v2` to `v4`); which one uv picks is under "The x86-64 build" below.
 - Why it could not fetch: it ran with step 1's `throwaway("download")` environment; `UV_OFFLINE=1` (uv's own "Disable
   network access", `uv python list --help`); `UV_TOOL_DIR`, `UV_PYTHON_BIN_DIR` and `UV_PYTHON_CACHE_DIR` in
   `tachi-8d-build\download`; and `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` pointing at a listener of the script's on
@@ -1395,14 +1402,50 @@ Python on the other systems, from uv's own listing:
   `Temp\uv-*.lock` file.
 - uv was run directly, not through sfw, since nothing was to be fetched.
 
-The snapshot of the user's folders: `step7-run-before` and `step7-run-after`, around the run above, "no change"; and
-`step7-before` (before the first uv command of this step) against `step7-all` (after the last), "no change". Each has
-only the set-apart line of the user's own MemPalace daemon folder.
+The size-only requests (2026-11-19, after the user's yes; no sfw, as the user said):
+- Exactly 3 requests, from PowerShell, one per address, each the listing's `url` for that system (the same CPython
+  3.13.17, build 20261021, `install_only_stripped`, and the same folder as step 4's Windows archive):
+  `C:\Windows\System32\curl.exe --head --fail --silent --show-error --proto =https --max-redirs 0 --dump-header
+  <file> --output NUL <address>`. Each exited 0. No file body was downloaded (`--head`). The headers are kept in
+  `tachi-8d-build\python-sizes\<system>.headers.txt`, a folder made new for them.
+- Each answered `HTTP/1.1 200 OK`, with no redirect and a `Content-Length`:
 
-The user's choice (step 7): not yet given. The options, as the plan has them:
-1. One figure for all systems, the largest, without Python: 194.2 MB (Linux x86-64).
-2. One figure for all systems, the largest, with Python: not measured. It is 194.2 MB plus Linux x86-64's Python
-   archive, whose size uv's listing does not give.
-3. One figure per system, without Python: Windows 169.3, Linux x86-64 194.2, Linux arm64 187.9, macOS arm64 175.2 MB
-   (175.3 on macOS 14).
-4. One figure per system, with Python: Windows 191.3 MB; the others not measured.
+| System | Address's `<system>` | Content-Length (bytes) | Last-Modified |
+|---|---|---|---|
+| Linux x86-64 | `x86_64-unknown-linux-gnu` | 35,356,674 | Wed, 21 Oct 2026 19:31:11 GMT |
+| Linux arm64 | `aarch64-unknown-linux-gnu` | 29,455,505 | Wed, 21 Oct 2026 19:30:03 GMT |
+| macOS arm64 | `aarch64-apple-darwin` | 25,286,365 | Wed, 21 Oct 2026 19:29:55 GMT |
+
+- A size given in a HEAD answer is the size the server says it would send; the files were not downloaded to compare.
+
+The x86-64 build: uv's code was not read (its source is not on this PC; reading it would be another request). What uv
+does show, offline as before: `uv python list 3.13.17 --all-platforms --only-downloads --show-urls --output-format
+json -vv`, without `--all-arches`, lists for Linux on this PC only `cpython-3.13.17-linux-x86_64-gnu` (the plain
+build) and `...-linux-x86_64-musl`, none of `x86_64_v2` to `v4`. This PC's processor is an Intel Core i9-12900K, and
+Windows reports AVX2 present (`IsProcessorFeaturePresent(40)`: True), so it could run a newer-processor build; uv
+still names the plain one for it. That is uv's output on a Windows PC, not its code, and not a run on Linux. The
+figure uses the plain build's size; the newer-processor builds' sizes were not asked for (a fourth request needs the
+user's yes).
+
+The snapshot of the user's folders:
+- `step7-run-before` and `step7-run-after`, around the script's run, "no change"; `step7-before` (before the first uv
+  command of this step) against `step7-all` (after the last of the first part), "no change".
+- `step7b-head-before` and `step7b-head-after`, around the 3 requests (all in one PowerShell command), "no change".
+- `step7b-list-before` and `step7b-list-after`, around the second offline listing above: **not clean**. The user's
+  own `~/.mempalace` changed outside the set-apart places: `palace/sqlite_exact.sqlite3` and its `-wal` (23:08:05.3
+  UTC) and the folder `locks` (23:08:05.6), with the set-apart daemon queue (23:08:05.6). The listing ran at about
+  23:08:04.6 UTC. uv ran with `USERPROFILE` and `HOME` in `tachi-8d-build\download\home` and ran no MemPalace. These
+  are the same files as in step 6's run 4, whose cause was traced to the user's own MemPalace plugin saving on the
+  main Claude Code session's Stop hook; that this pair has the same cause is an inference from the files and times,
+  not traced. Under the user's rule this pair fails.
+- Each clean pair has only the set-apart line of the user's own MemPalace daemon folder.
+
+The user's choice (step 7), 2026-11-19:
+1. Yes to 3 size-only requests to releases.astral.sh, without sfw, for the CPython 3.13.17+20261021
+   `install_only_stripped` builds for Linux x86-64, Linux arm64 and macOS arm64 (above).
+2. N is one figure for all systems: the largest system's total, counting Python.
+3. The approved line stays word for word: "MemPalace 3.12.0 and its packages (about N MB)".
+
+**N = 230.** The rule: the largest with-Python total, in MB of 1,000,000 bytes, rounded up to a whole number. The
+largest is Linux x86-64: 111,009,574 (packages) + 83,178,821 (model) + 35,356,674 (Python) = 229,545,069 bytes, 229.5
+MB, rounded up to 230. It holds while uv picks the plain x86-64 build (above).
