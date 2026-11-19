@@ -3422,8 +3422,12 @@ lesson, the same cut-off hands 57 their own lesson at a count of 1, but 10 get a
 of the 28 failures with nothing to learn from are handed one anyway. Tighter cut-offs hand out fewer wrong lessons
 and fewer right ones. **Everything here is
 made up by the builder, failures and lessons both, so words they share are partly the builder's doing; real lessons
-may sit closer or farther.** The user's 6 real failures, a side figure only and possibly test-polluted, are handed
-none of the made-up lessons at or below 0.3480. The cut-off and the count wait on the user (end of this part).
+may sit closer or farther.** (Added after the review.) A count of those shared words says this leans one way: a
+made-up lesson shares about a quarter of its words with its own family's failures and about a twenty-fifth with any
+other family's ("Shared words", below). So the rates of right lessons are likely too good, and the rates of wrong
+lessons may be too low; neither could be measured from these results. The user's 6 real failures, a side figure
+only and possibly test-polluted, are handed none of the made-up lessons at or below 0.3480. The cut-off and the
+count wait on the user (end of this part).
 
 Script: `scripts/8d/measure-lessons.mjs`, two new commands, `lessons-check` (made-up only, to check the run first)
 and `lessons` (the same, then the old rule's comparison and the real side figure; the old-rule comparison runs in
@@ -3464,6 +3468,22 @@ failed; with a family's error line pasted into one of its lessons, the lesson te
 Readings of the builder's, beyond the decided rule: the cut counts code points, as MemPalace's `maxLength` does
 (`mempalace/mcp_server/schemas.py:309`), where the first run cut by Node's length; a missing command (an input with no
 `command` text) drops the first word rather than failing; the pieces are joined by single spaces (the plan's text).
+
+Two fixes to the rule after the review (2026-11-19), each with a test written first and seen failing (15 tests now,
+all passing; with `turns.test.ts`, 33):
+- **A Windows line end on the error's first line** is now taken off on every path, as it already was off a failed
+  command's message; before, the tool's-name-and-first-line path kept a trailing `\r`.
+- **`exit code: null`** now counts as a status line. `shellText` writes `exit code: ${r.code}` whenever there is no
+  signal (`src/tools/shell.ts:5`), and a result's `code` may be null (`src/exec/executor.ts:8`), so a failure with no
+  code and no signal is now searched by the failed-command rule.
+
+No figure above changes: the rule as committed before the fix and as fixed, applied to the 116 made-up failures and
+to the 6 real rows' messages in a pure script (`scratch\step13\query-diff.mjs`; counts only), give 0 different queries
+under the new rule, 0 under the old rule for the 48 failed commands, and the same counts of status-shaped errors (48
+made-up, 2 real). The same comparison does tell the two apart on the fixed cases, so it would have seen a difference.
+**Duties for step 25** (`src/memory/lessonQuery.ts`): take a trailing `\r` off the error's first line on every path,
+and count `exit code: null` as a status line, as `scripts/8d/lesson-query.mjs` now does; the shared test cases hold
+both.
 
 #### The made-up families and lessons (written by the builder; marked made-up in the file)
 
@@ -3600,8 +3620,9 @@ What the figures mean:
   its query is `shell git To <remote>` and its lessons sit at up to 0.7846, behind other lessons; Python's traceback
   head (C14) puts its lessons out to 0.6312. These are real shapes of those programs' output.
 - **The other tools mix where their errors and lessons share words**: the three `edit_file` families N2 to N4 find
-  one another's lessons (wrong lessons from 0.2252), and N14's "needs sign-in" sits 0.2017 from N13's lesson about a
-  stopped server, the closest wrong pair of all.
+  one another's lessons (wrong lessons from 0.2252), and N14's failures ("needs sign-in", a family with no lesson)
+  have a wrong lesson at 0.2017, the closest wrong pair of all. (Corrected after the review: which lesson that is was
+  not recorded, as the results hold only each family's nearest wrong distance.)
 - **Failures with nothing to learn from are handed a lesson** from 0.2017 up: 6 of 28 at 0.2929, 9 at 0.3480, 12 at
   0.4862, all 28 at 0.7846.
 - **The count adds little.** A family has one or two lessons, so a count above 1 can add at most one more right one;
@@ -3609,6 +3630,31 @@ What the figures mean:
   one (35 against 22). That bound is set by the made-up design (one or two lessons a family), not measured.
 - **Made up, both sides.** The builder wrote the failures and the lessons, so the words they share are partly the
   builder's doing; real lessons, written by the model in the lesson ask or by the user, may sit closer or farther.
+
+**Shared words** (added after the review). The review counted, and the builder counted again with a small script
+(`scratch\step13\overlap.mjs` in the build folder, which reads `scripts/8d/lesson-families.mjs` only: no model, no
+hub), how many of each made-up lesson's words also appear in failures' text. Words are runs of letters, lower-cased,
+of 4 letters or more, with common English stopwords left out; a lesson's share with a family is the part of its
+distinct words found anywhere in that family's 4 failures; "other" is the mean over the 28 other families; the
+figures are means over the 28 lessons.
+
+| Counted against | Own family | Other families |
+|---|---|---|
+| Each failure's tool name and whole error text (the builder's count) | 0.273 | 0.040 |
+| Each failure's query, what the search is sent (the builder's count) | 0.223 | 0.032 |
+| The review's count (content words of 4 letters or more, minus stopwords) | 0.142 | 0.013 |
+
+The counts differ with the text and the stopword list used, but every one finds a lesson sharing about 7 to 11 times
+as many of its words with its own family as with another. Highest against the whole text: N10 0.545, N13 0.455, N8
+0.400, C2 0.396, C7 0.375 (the review's highest: N13 0.417, N8 0.286, N10 0.273, C10 0.271, C7 0.248, C2 0.194).
+Against the queries, C2 shares none (git writes the remote's name first, so its query holds none of the lesson's
+words), and 2 lessons share no word with their own family's queries.
+
+What it means, in plain words: the builder wrote each lesson with its own failures in view, so they share
+words a real lesson might not. That likely makes the right-lesson rates here too good. In the other direction, the
+families were written to be unlike one another, so they share few words, while real lessons will share common words
+such as "command" and "failed" across kinds of failure; that may make the wrong-lesson rates here too low. Neither
+direction, nor its size, could be measured from these results.
 
 Not measured: real lessons; the user's own MemPalace; errors and lessons in other languages than English; a room of
 more than 100 lessons (a search would then return only the closest 100); several lessons per family written by
@@ -3637,9 +3683,11 @@ The same commands listed the top level of the user's Temp folder (names and time
 `measure-lessons-<stamp>-lessons` was deleted by its exact name after its hub had stopped, in each run (7 files and
 its folder); `palaces` holds no `measure-lessons-*` folder. A scan afterwards, in one process, for each of the 6 real
 texts and their first lines (22 strings, plain and as JSON would write them) through every file in the build folder's
-`install` folder and this step's outputs (11,946 files, 936 MB) found them in no file of MemPalace's or of the runs;
-its one hit is again the builder's own scratch check of the first run, which shares one of Tachikoma's fixed status
-lines.
+`install` folder and this step's outputs (11,946 files, 936 MB) found them in no file of MemPalace's or of the runs.
+(Corrected after the review.) It has 2 hits, both scratch files of the builder's own in `scratch\step13`:
+`logic-check.cjs`, the check of the first run on hand-made data, and `added-rerun.txt`, this step's own added lines,
+written for the private-details scan after the scan was first run (the review's run of the scan finds both). Both
+match only Tachikoma's fixed `exit code: N` status form; nothing of the user's is in them.
 
 #### The decision for the user: the lesson cut-off and the count
 
@@ -3666,12 +3714,17 @@ The options for the count: **1**; **2**; or **3**. At R2 they hand a right lesso
 wrong one to 16, 18 and 19; at R3 to 57, 58 and 62 and 22, 34 and 35. A family here has at most two lessons, so the
 gain from a higher count is bounded by the made-up design.
 
-Recommended (not chosen): **R3, 0.4862, with a count of 1.** It hands two thirds of the made-up failures their own
-lesson, hands no made-up failed command a wrong one (26 of the 36 get their own), and keeps the wrong-first count
-close to the tighter options' (10 against 7 at R2). Its weak points: 12 of the 28 made-up failures with nothing to
-learn from are handed some other lesson; 2 of the user's 6 real failures would be handed a made-up lesson that is not
-theirs; and every figure rests on the builder's own failures and lessons. A more careful choice is **R2, 0.3480, with
-a count of 1**: 17 fewer failures get their own lesson, 3 fewer get a wrong one first, and none of the real failures
-is handed one.
+Recommended (not chosen): **R3, 0.4862, with a count of 1.** It hands their own lesson to 57 of the 88 made-up
+failures that have one (65%; 49% of all 116; corrected after the review), hands no made-up failed command a wrong one
+(26 of the 36 get their own), and keeps the wrong-first count close to the tighter options' (10 against 7 at R2). Its
+weak points: 12 of the 28 made-up failures with nothing to learn from are handed some other lesson; 2 of the user's 6
+real failures would be handed a made-up lesson that is not theirs; and every figure rests on the builder's own
+failures and lessons. A more careful choice is **R2, 0.3480, with a count of 1**: 17 fewer failures get their own
+lesson, 3 fewer get a wrong one first, and none of the real failures is handed one.
+
+Beside the recommendation (added after the review): the made-up lessons share far more words with their own family's
+failures than with others ("Shared words", above), so at any cut-off the right-lesson figures are likely better here
+than they will be live, and the wrong-lesson figures may be lower than live. Neither could be measured here. Whichever
+cut-off is chosen, it rests on that.
 
 **The user's choice: not yet given.**

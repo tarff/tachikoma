@@ -45,6 +45,18 @@ describe("the lesson search's query", () => {
       .toBe("shell node killed by SIGKILL");
   });
 
+  it("handles a command with no exit code and no signal (shellText's `exit code: null`) as a failed command", () => {
+    expect(lessonQuery("shell", cmd("npm test"), failed("boom\n", "", null))).toBe("shell npm boom");
+    expect(lessonQuery("shell", cmd("npm test"), failed("", "", null))).toBe("shell npm exit code: null");
+  });
+
+  it("takes a Windows line end off the error's first line for every tool, as for a command's message", () => {
+    expect(lessonQuery("read_file", { path: "a.ts" }, "ENOENT: no such file\r\nmore"))
+      .toBe("read_file ENOENT: no such file");
+    expect(lessonQuery("shell", cmd("sleep 9"), "Stopped: timeout\r\n")).toBe("shell Stopped: timeout");
+    expect(lessonQuery("shell", cmd("git push"), failed("x\n"), { old: true })).toBe("shell exit code: 1");
+  });
+
   it("gives a timeout's and a could-not-start text the name and the first line, with no first word", () => {
     const timeout = "Stopped: the command did not complete within its 30s timeout. A command that starts with sleep " +
       "is stopped at its timeout, not moved to the background.";

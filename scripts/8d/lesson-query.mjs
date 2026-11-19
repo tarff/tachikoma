@@ -19,7 +19,9 @@ import { firstWord } from "./measure-lesson-ask.mjs";
 
 export const QUERY_MAX = 250;
 export const MARKERS = ["--- stderr ---", "--- stdout ---"];
-const STATUS = /^(exit code: -?\d+|killed by \S+)$/;
+// `exit code: null` too: shellText writes it for a result with no code and no signal (ExecResult's `code` may be
+// null, src/exec/executor.ts:8; src/tools/shell.ts:5).
+const STATUS = /^(exit code: (-?\d+|null)|killed by \S+)$/;
 
 export const statusShaped = (error) => {
   const lines = error.split("\n");
@@ -29,7 +31,8 @@ export const statusShaped = (error) => {
 const cut = (s) => [...s].slice(0, QUERY_MAX).join("");
 
 export function lessonQuery(tool, input, error, { old = false } = {}) {
-  const first = error.split("\n")[0];
+  // A Windows line end is taken off the first line on every path, as off a command's message below.
+  const first = error.split("\n")[0].replace(/\r$/, "");
   if (old || tool !== "shell" || !statusShaped(error)) return cut(`${tool} ${first}`);
   const message = error.split("\n").slice(1).map((l) => l.replace(/\r$/, ""))
     .find((l) => l.trim() && !MARKERS.includes(l));
