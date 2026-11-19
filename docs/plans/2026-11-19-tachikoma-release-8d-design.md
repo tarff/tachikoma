@@ -1868,3 +1868,170 @@ The margin of 5 times this PC's slowest figure behind 1, 2 and 4 was not measure
 chose it. The user also asked for all of the review's points on this record to be fixed; the corrections are in the
 text above (the slowest stop, the wrapped hub's figures, the uv lock files in Temp, what changed in the script after
 the runs, the serverinfo.json figure, the reused id, the first start's cause, and the forced stop).
+
+### M4 How often the "in use" file is refreshed, and when one counts as stale (step 9, 2026-11-19)
+
+In short: rewriting a window's "in use" file costs about 8 ms with the repo's private write (2 ms as a plain
+overwrite). A timer in a busy Tachikoma process can fire more than 3 s late on this PC: the longest hold-up measured
+was making a new folder private (`privateDir`, 3.2 s, three PowerShell starts), then a synchronous taskkill (0.9 s).
+Reading a large file and hashing the model hold the timer up by 0.2 s at most. So a file must be allowed at least the
+refresh interval plus about 3.2 s, before any margin for slower machines, before it counts as gone. **The figures and
+the two decisions wait on the user's OK.**
+
+Script: `scripts/8d/measure-inuse.mjs`, run once as `TSX_DISABLE_CACHE=1 node --import tsx
+scripts/8d/measure-inuse.mjs` (tsx so the repo's own `privateDir`, `writePrivate`, `killTree` and `shellFor` are
+imported and run as they are; its cache off, so tsx writes nothing to the user's Temp folder), between a pair of
+snapshots of the user's folders. Exit 0, "measure-inuse: passed", no failures. Results:
+`tachi-8d-build\inuse\measure-inuse-2026-11-19T00-55-36-718Z\results.json`, with every run's figure in `raw`. No
+MemPalace ran; nothing was fetched. After the run, only two comments' line numbers (read_file's lines, 296-320) and the
+line endings (LF to CRLF) changed in the script; no code changed.
+
+This PC, as in M3: Intel Core i9-12900K (16 cores, 24 threads), 68.4 GB of memory, solid-state disks (the build
+folder is on C:), Windows 11 Pro 10.0.26200, Node v24.22.1. Microsoft Defender's real-time scanning is off
+(`Get-MpComputerStatus`, `RealTimeProtectionEnabled: False`, read again in this run), so no figure includes scanning.
+Other programs of the user's were running as usual; their load was not measured.
+
+How it was run:
+- The script's own environment was replaced at its start by step 1's `inuse` throwaway's (TEMP and TMP
+  `tachi-8d-build\inuse\tmp`, the home `tachi-8d-build\inuse\home`, no API keys), so every child got it, the repo's
+  own too: `privateDir`'s whoami, PowerShell and icacls and `killTree`'s taskkill take `commandEnv()`, which reads
+  the process's environment.
+- **The refresh** rewrote a small file (about what a window's file would hold: its process id and a time, 35 bytes)
+  in `private-1`, a folder this run made and made private with the repo's `privateDir` (`src/auth/private.ts:72-95`).
+  Two forms, 1,000 times each, 10 ms apart: the repo's private write, `writePrivate` (`src/auth/private.ts:155-173`:
+  a new file, written, flushed to disk with `fsyncSync`, swapped in), and a plain `writeFileSync` overwrite.
+- **Permissions** were changed only on the five folders `private-1` to `private-5`, each made by this run inside its
+  own run folder with a non-recursive `mkdirSync` (which fails if the folder is already there). Before each
+  `privateDir` call and each refresh the script checked the folder: inside the build folder, one this run made, a
+  plain folder (not a link), and no link or junction on its way (`realpathSync.native` gives back the same path). No
+  other folder's permissions were touched.
+- **The timer**: a 10 ms `setInterval` ran beside each kind of work, and the script recorded the gap between its
+  firings across each piece of work. 10 ms is shorter than any hold-up worth knowing about, so the gap shows the
+  hold-up's whole length (step 8's polling step, too). A self-check came first: a 200 ms busy wait showed as a gap of
+  200.2 ms. Pieces of work were 100 ms apart, so the gaps around one never ran into the next one's.
+- **The taskkill** was the repo's own `killTree` (`src/exec/local.ts:37-53`), which runs `taskkill /pid <id> /T /F`
+  synchronously with `spawnSync`. Its target each time was a Windows PowerShell this script had started the way local.ts
+  starts a command (`shellFor`, `src/exec/local.ts:13-33`, and its spawn, `:106`), running a Node program of the
+  script's (a tree of PowerShell and that Node program, with any console host Windows made; not listed). Before each
+  kill, the start-time check: the shell's start time, read by the build Python (`-I`, `GetProcessTimes`, step 8's
+  `START_TIME_PY`), fell between just before and just after the spawn (16 ms of leeway each side, one of Windows' clock
+  steps), was the same when read again just before the kill, and Node had not seen the shell exit (killTree's own
+  check). All 20 passed; nothing else was ever stopped. Afterwards: all 20 shells had exited; all 20 Node programs,
+  looked up again by id and start time, were gone; and a listing of every process whose parent was one of the 20 shells
+  found none left. (Each Node program would have ended by itself after 120 s had a kill missed it.)
+- **The large file read** was read_file's way: `readFile(<file>, "utf8")` (`src/exec/local.ts:162-164`), then the
+  line split and the first rows as `src/tools/files.ts:296-320` makes them with read_file's defaults. The file was
+  step 5's model archive, `tachi-8d-build\model-download\onnx.tar.gz` (83,178,821 bytes), read only. It is not text:
+  it read as 322,923 lines. A text file of the same size has more lines, so its split would take longer; not measured.
+- **The hash** was a SHA-256 of that same archive, the size of the model download, in two forms: the whole file read
+  at once and hashed (`readFileSync`, one `update`), and streamed (`createReadStream`, 64 KiB pieces). Every hash was
+  step 5's `913d7300...16ec3`.
+
+| Figure (ms) | Fastest | Middle | Slowest | Runs |
+|---|---|---|---|---|
+| Refresh, `writePrivate` (the repo's private write) | 6.5 | 7.9 | 13.5 | 1,000 |
+| Refresh, plain overwrite | 1.4 | 2.0 | 34.7 | 1,000 |
+| Timer gap, idle (the timer alone, 30 s) | 11.0 | 15.5 | 24.8 | 1,925 |
+| `privateDir` of a new folder, the work | 3,061.2 | 3,073.1 | 3,161.9 | 5 |
+| Timer gap across it | 3,077.2 | 3,088.8 | **3,178.2** | 5 |
+| Synchronous taskkill (`killTree`), the work | 834.3 | 850.0 | 872.5 | 20 |
+| Timer gap across it | 837.7 | 856.0 | 881.2 | 20 |
+| Large file read, read_file's way, the work | 966.2 | 1,020.4 | 1,138.7 | 20 |
+| Timer gap across it | 80.9 | 87.2 | 198.4 | 20 |
+| SHA-256, whole file at once, the work | 59.4 | 60.9 | 63.6 | 20 |
+| Timer gap across it | 60.1 | 76.2 | 79.0 | 20 |
+| SHA-256, streamed, the work | 104.1 | 111.5 | 139.1 | 20 |
+| Timer gap across it | 15.3 | 20.0 | 25.7 | 20 |
+
+Also: every one of the 1,000 private writes took over 5 ms (the flush to disk), none over 50 ms; of the plain
+overwrites 17 took over 5 ms, none over 50 ms. Of the 1,925 idle gaps, 10 were over 20 ms and none over 50 ms.
+
+What the figures mean:
+- A timer gap is the time from one firing to the next. A refresh timer set to R fires at most R plus the longest
+  hold-up after the one before, so a live window's file can be R plus that, plus the write itself, old when another
+  window looks at it.
+- The longest hold-up here is the first `privateDir` of a folder on Windows: 3.2 s, synchronous. That is the code's
+  worst case (the folder inherits other accounts' entries, so PowerShell reads the permissions three times and icacls
+  runs twice, `src/auth/private.ts:76-89`). It can happen while a window is in a session, not only at its start: the
+  error log makes its folder private on the first error a process writes (`src/core/errorlog.ts:19`), as do the MCP
+  answers and login files when first used (`src/mcp/answers.ts:72`, `src/mcp/auth.ts:79`). A folder that is already
+  private costs one permission read, one PowerShell start: the error log's own comment records 385 ms for that
+  (`src/core/errorlog.ts:13-14`, the code review's figure). A private file read for the first time (`readPrivate`,
+  `src/auth/private.ts:105-118`) costs one more; neither was timed here.
+- A synchronous taskkill holds the process for 0.85 s on a PowerShell running one program here. On a tree holding Docker
+  it took 2.2 to 3.8 s on this PC (5 runs, 2026-11-06, `docs/plans/2026-10-31-tachikoma-release-7.md:989-992`), which is
+  up to 1.2 times the `privateDir` figure.
+- The large file read and the streamed hash barely hold the timer (the reading happens off the main thread); the read's
+  text work holds it up to 0.2 s for an 83 MB file. Hashing the whole file at once holds it for its whole 60 ms;
+  streamed, the timer is never more than 26 ms late. A note for step 19: hash the model streamed.
+- `writePrivate` swaps the new file in with a rename, which Windows refuses while another process has the file open;
+  it is then retried, blocking, for up to 1 s (`RENAME_RETRY_MS`, `src/auth/private.ts:131-136`; measured on
+  2026-10-23 with two processes reading nonstop: the slowest went through after 0.76 s). Other windows read the "in
+  use" files only when they join or leave, so this was not measured here; it would add up to 1 s to one refresh.
+- A note for step 20: the timer should rewrite the file before it awaits the hub's health check (up to 0.75 s, M3
+  decision 3); otherwise the check's time adds to every refresh's lateness.
+- Compared with the existing lock: `src/auth/lock.ts:12` rechecks a held lock every 5 s (`RECHECK_MS = 5_000`),
+  proper-lockfile's refresh, half its 10,000 ms stale age (`src/auth/lock.ts:9-10`). This PC's longest hold-up, 3.2
+  s, is 64% of that 5 s. Refreshing every 5 s with a stale age of 10 s, as proper-lockfile does, leaves 5 s for
+  hold-ups: 1.6 times this PC's slowest gap, less than any of the margins below.
+- Not measured: other systems (Linux, macOS); a slower PC; real-time scanning (off here); other Tachikoma work on the
+  main thread (the screen redrawing a long answer, reading a long transcript when a session is resumed); two hold-ups
+  back to back; the rename retry above; a PC that sleeps or hibernates (every window's file goes stale at once, and
+  no age can tell that apart from a crash); the clock being set back or forward while windows run.
+
+Choices the script made, each with its reason (in the script's comments too): a 10 ms timer step and 100 ms between
+pieces of work (above); a 30 s idle baseline, about as long as the longest phase of work, so a rare pause of the idle
+process would show; 1,000 refreshes of each form, as each takes about a millisecond, so the rare slow write shows; five
+new folders made private, each about 3 s, enough for a middle and a spread with few permission changes; twenty
+taskkills, reads and hashes of each form, as step 8's start-time reads. The script's own cut-off: 30 s for each Node
+program to start. None of these is a figure for Tachikoma.
+
+#### The user's folders
+
+One pair of snapshots, taken in the same command as the run, just before and just after it: `step9-before` and
+`step9-after`. It printed "no change", with only the set-apart line for the user's own MemPalace daemon folder
+(`daemon/<palace key>8ab5b11d`). The same command listed the top level of the user's Temp folder before and
+after (names, kinds and last-written times; no file opened): nothing added, nothing removed, only `tachi-8d-build`
+itself rewritten, and no `uv-*.lock`. No pair failed. (Before the run, a two-line check that tsx could load
+`src/auth/private.ts`, run once with tsx's cache on, wrote to tsx's own cache folder in Temp, `tsx-<user>`, which
+`npm run dev` already uses; the run itself had the cache off. Every PowerShell start, here as in Tachikoma, may update
+PowerShell's own files under `AppData\Local\Microsoft\Windows\PowerShell`, which no listing watches.)
+
+#### The decisions for the user
+
+The options and recommendations, none picked. Each is built from this PC's slowest figures. **The margin for slower
+machines is not measured** (no slower PC was run): it is the user's choice, shown at 3, 5 and 10 times this PC's
+slowest.
+
+The figure behind both: the longest a live window's file can go without a refresh beyond the interval is the
+longest hold-up plus the slowest refresh: 3,178.2 + 13.5 = 3,191.7 ms (with `writePrivate`; with the plain overwrite,
+3,178.2 + 34.7 = 3,212.9 ms). With the margin: times 3, 9,575.1 ms; times 5, 15,958.5 ms; times 10, 31,917.0 ms.
+
+**1. The refresh interval** (R): how often a window rewrites its file.
+- What it costs: one refresh holds the window's thread for 7.9 ms (middle; 13.5 ms slowest) with `writePrivate`.
+  Every 1 s that is 0.8% of the thread; every 5 s, 0.16%; every 10 s, 0.08%.
+- What it adds: the stale age must be at least R plus the figure above, so a longer R makes the stale age longer.
+- Options: A. 1 s; B. **5 s**, the same as `src/auth/lock.ts:12`'s recheck; C. 10 s.
+- Recommended: B, 5 s. Its cost is negligible (0.16% of the thread), and it keeps the stale age within half a minute
+  at every margin but 10 times.
+
+**2. The stale age** (S): how old a file must be to count as gone. S = R + margin x 3,191.7 ms, rounded up to a whole
+second:
+
+| R | Margin 3 times | Margin 5 times | Margin 10 times |
+|---|---|---|---|
+| 1 s | 1 + 9.6 = 10.6, **11 s** | 1 + 16.0 = 17.0, **17 s** | 1 + 31.9 = 32.9, **33 s** |
+| 5 s | 5 + 9.6 = 14.6, **15 s** | 5 + 16.0 = 21.0, **21 s** | 5 + 31.9 = 36.9, **37 s** |
+| 10 s | 10 + 9.6 = 19.6, **20 s** | 10 + 16.0 = 26.0, **26 s** | 10 + 31.9 = 41.9, **42 s** |
+
+- Too short: a live window that was held up is taken for gone. If the last other window leaves then, it stops the
+  hub under the live one; the live one finds the hub gone at its next check and joins again, starting a new hub (about
+  1.1 s here, M3), and a memory call in flight at that moment fails.
+- Too long: after a window crashes, its file still counts as fresh for up to S, so a last window leaving within that
+  time leaves the hub running, until a later window joins and leaves (the design's "A crashed last window leaves the
+  hub running until the next window joins and finds no other fresh file").
+- Recommended: with R = 5 s and the margin of 5 times, as the user chose for M3, **21 s** (5,000 + 15,958.5 =
+  20,958.5 ms). It covers the Docker taskkill seen in release 7 (3.8 s) with room to spare, and the rename retry (up to
+  1 s) within the margin.
+
+The user's OK on these figures, and the two decisions: not yet given.
