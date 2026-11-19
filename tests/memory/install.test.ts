@@ -95,13 +95,17 @@ async function modelServer(hold = false) {
   return { url: `http://127.0.0.1:${port}/all-MiniLM-L6-v2/onnx.tar.gz`, seen };
 }
 
-// A data folder, the user's home folders and the stand-in's record, all in a folder the test made.
+// A data folder, the user's home folders, an empty PATH folder and the stand-in's record, all in a folder the test
+// made. The PATH variable is replaced in every spelling (Windows' is `Path`), so no test reaches the user's own.
 async function setup(more: Record<string, string> = {}) {
   const top = await mkdtemp(path.join(tmpdir(), "tachi-install-"));
   folders.push(top);
   const record = path.join(top, "record.jsonl");
+  const bin = path.join(top, "bin");
+  mkdirSync(bin);
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== "PATH")),
+    PATH: bin,
     USERPROFILE: path.join(top, "user"),
     HOME: path.join(top, "user"),
     APPDATA: path.join(top, "user", "AppData", "Roaming"),
@@ -116,16 +120,17 @@ async function setup(more: Record<string, string> = {}) {
     existsSync(record)
       ? readFileSync(record, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Started)
       : [];
-  return { top, data, paths, env, records };
+  return { top, bin, data, paths, env, records };
 }
 
 interface Started {
-  as: "uv" | "python";
+  as: "uv" | "python" | "sfw";
   file: string;
   args: string[];
   cwd: string;
   env: Record<string, string>;
   pid: number;
+  ppid: number;
 }
 
 const model = (url: string, sha256 = MODEL_HASH) => ({ url, sha256 });
@@ -162,6 +167,77 @@ describe("uvProgram", () => {
   it("finds no uv when PATH has none, even with sfw", async () => {
     const { dir } = await bin("sfw");
     expect(uvProgram({ PATH: dir })).toBeNull();
+  });
+
+  // The user's choice at step 19's review, "Accept sfw.cmd too": npm installs sfw as sfw.cmd on Windows.
+  it.runIf(process.platform === "win32")("puts an npm-installed sfw.cmd in front of uv without sfw.exe", async () => {
+    const { dir, file } = await bin("uv");
+    writeFileSync(path.join(dir, "sfw.cmd"), "");
+    expect(uvProgram({ PATH: dir })).toEqual({ command: path.join(dir, "sfw.cmd"), args: [file("uv")] });
+  });
+
+  it.runIf(process.platform === "win32")("prefers sfw.exe to sfw.cmd, even one earlier on PATH", async () => {
+    const { dir, file } = await bin("uv", "sfw");
+    writeFileSync(path.join(dir, "sfw.cmd"), "");
+    const earlier = await bin();
+    writeFileSync(path.join(earlier.dir, "sfw.cmd"), "");
+    expect(uvProgram({ PATH: `${earlier.dir};${dir}` })).toEqual({ command: file("sfw"), args: [file("uv")] });
+  });
+});
+
+// A stand-in sfw.cmd in a folder on the test's own PATH: it starts the stand-in as sfw (`uv.mjs --sfw`), which records
+// its arguments and runs the rest as a program, as sfw runs uv. The test's uv is the stand-in uv, started with Node.
+describe.runIf(process.platform === "win32")("install through sfw.cmd", () => {
+  async function throughSfw(s: Setup, folderName: string) {
+    const dir = path.join(s.top, folderName);
+    mkdirSync(dir);
+    const sfw = path.join(dir, "sfw.cmd");
+    writeFileSync(sfw, `@"${process.execPath}" "${UV}" --sfw %*\r\n`);
+    return { command: sfw, args: [process.execPath, UV] };
+  }
+  const UV_ARGS = ["sync", "--locked", "--python", "3.13"];
+
+  it("runs uv through sfw.cmd with the exact arguments", async () => {
+    const s = await setup();
+    const served = await modelServer();
+    const uv = await throughSfw(s, "sfw-bin");
+    expect(await installed(s, served.url, { uv })).toEqual({ is: "ready", version: "3.12.0" });
+    const [sfw, ran] = s.records();
+    expect(sfw!.as).toBe("sfw");
+    expect(sfw!.args).toEqual([process.execPath, UV, ...UV_ARGS]);
+    expect(ran!.as).toBe("uv");
+    expect(ran!.args).toEqual(UV_ARGS);
+  });
+
+  it("keeps a path with spaces and cmd's own characters whole through the quoting", async () => {
+    const s = await setup();
+    const served = await modelServer();
+    const uv = await throughSfw(s, "with space & caret^ (and) brackets");
+    expect(await installed(s, served.url, { uv })).toEqual({ is: "ready", version: "3.12.0" });
+    const [sfw] = s.records();
+    expect(path.resolve(sfw!.file)).toBe(path.resolve(UV));
+    expect(sfw!.args).toEqual([process.execPath, UV, ...UV_ARGS]);
+  });
+
+  it("stops while uv runs under sfw.cmd: cmd.exe, sfw and uv are all ended", async () => {
+    const s = await setup();
+    const served = await modelServer();
+    const uv = await throughSfw(s, "sfw-bin");
+    const env = { ...s.env, TACHI_TEST_UV_HOLD: path.join(s.top, "never-made") };
+    const before = running.size;
+    const stop = new AbortController();
+    const done = installed(s, served.url, { uv, env, signal: stop.signal });
+    await until(() => s.records().length === 2, "sfw and uv to start");
+    const [sfw, held] = s.records();
+    pids.push(sfw!.pid, held!.pid);
+    stop.abort();
+    expect(await done).toEqual({ is: "stopped" });
+    expect(running.size).toBe(before);
+    for (const pid of [sfw!.ppid, sfw!.pid, held!.pid]) await until(() => !alive(pid), `process ${pid} to be gone`);
+    expect(existsSync(readyFile(s.paths))).toBe(false);
+    const lock = tryLock(s.paths.root, "install");
+    expect(lock).not.toBeNull();
+    lock!.release();
   });
 });
 

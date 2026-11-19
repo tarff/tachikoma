@@ -14,7 +14,7 @@ import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream } from "node:stream/web";
-import { onPath } from "../exec/env.js";
+import { mcpProgram, onPath, system32 } from "../exec/env.js";
 import { collect, killTree, running } from "../exec/local.js";
 import { hubEnv, uvEnv } from "./env.js";
 import { tryLock } from "./oslock.js";
@@ -72,11 +72,13 @@ export interface InstallOptions {
   signal?: AbortSignal;
 }
 
-// uv by its full path (onPath, `uv.exe` on Windows), with sfw in front when sfw is on PATH too; null without uv.
+// uv by its full path (onPath, `uv.exe` on Windows), with sfw in front when sfw is on PATH too; null without uv. On
+// Windows sfw is `sfw.exe` anywhere on PATH, or else an npm-installed `sfw.cmd` (the user's choice at step 19's review,
+// "Accept sfw.cmd too"), looked for as written in each PATH folder (mcpProgram), which run starts through cmd.exe.
 export function uvProgram(env: NodeJS.ProcessEnv = process.env): Program | null {
   const uv = onPath("uv", env);
   if (!uv) return null;
-  const sfw = onPath("sfw", env);
+  const sfw = onPath("sfw", env) ?? (process.platform === "win32" ? mcpProgram("sfw.cmd", env, "win32") : null);
   return sfw ? { command: sfw, args: [uv] } : { command: uv, args: [] };
 }
 
@@ -174,14 +176,31 @@ function said(ran: Ran): string {
   return ran.stderr.split("\n").map((l) => l.trim()).filter(Boolean).at(-1) ?? `exit code: ${ran.code}`;
 }
 
+// A .cmd on Windows (an npm-installed sfw.cmd), which Node starts only through a shell: through cmd.exe as
+// src/tui/external.ts starts an editor's, `/d /s /c` with the line as written, `/d` leaving out cmd's AutoRun commands
+// and `/s` taking off only the outer quotes; each part in quotes, so spaces and cmd's own characters (& ^ ( ) and the
+// like) in a path stay as they are; `& exit` so cmd exits with the program's code. A known limit: cmd still expands
+// `%name%` inside quotes (and `!name!` where the user has turned its delayed expansion on), so a path holding a
+// variable's name between two such signs would not reach the program whole.
+function started(p: Program): { file: string; args: string[]; verbatim: boolean } {
+  if (process.platform !== "win32" || !/\.cmd$/i.test(p.command)) {
+    return { file: p.command, args: p.args, verbatim: false };
+  }
+  const line = [p.command, ...p.args].map((part) => `"${part}"`).join(" ");
+  return { file: system32("cmd.exe"), args: ["/d", "/s", "/c", `"${line} & exit"`], verbatim: true };
+}
+
 // Runs a program hidden, with no input, in `running` so it dies with Tachikoma. A stop ends it and everything it
-// started (killTree, which runs only while its exit is not yet seen), and settles at once.
+// started (killTree, which runs only while its exit is not yet seen: for a .cmd, cmd.exe and all below it), and
+// settles at once.
 function run(p: Program, cwd: string, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<Ran> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Stopped());
-    const child = spawn(p.command, p.args, {
+    const how = started(p);
+    const child = spawn(how.file, how.args, {
       cwd,
       env,
+      windowsVerbatimArguments: how.verbatim,
       windowsHide: true,
       detached: process.platform !== "win32", // its own process group, so killTree reaches what it starts
       stdio: ["ignore", "pipe", "pipe"],
