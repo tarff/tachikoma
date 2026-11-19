@@ -4159,3 +4159,36 @@ The user chose with these before them:
 Not covered: real lessons in the note, the user's own MemPalace, a note tried again on the next message, other
 languages and larger palaces. Step 14 was committed (0668f98, with the review fixes aa1b266) before the user's
 answer; the answer is in the commit after them.
+
+### Q2's open item: Node 22 and node:sqlite's warning (step 17, 2026-11-20)
+
+The question (Q2's "Open" item above): does Node 22 print anything when `node:sqlite` is loaded?
+
+Where it ran: the Node 22 already on this PC, the user's fnm install
+(`C:\Users\<user>\AppData\Roaming\fnm\node-versions\v22.22.2\installation\node.exe`, `v22.22.2`), run as it is,
+nothing fetched or changed, in a folder of the build's own (`tachi-8d-build\step17`, removed afterwards). No Node 22.20
+exactly is on this PC. Node v24.22.1 for comparison.
+
+What was seen, each a one-off command (open a lock file, `BEGIN EXCLUSIVE`, close):
+- Node 22.22.2, by `require`, by `import()` and by `process.getBuiltinModule("node:sqlite")`: exit 0, and on stderr
+  each time:
+
+      (node:287420) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+      (Use `node --trace-warnings ...` to show where the warning was created)
+
+- Node v24.22.1: exit 0, nothing on stderr.
+- Node 22.22.2, with `process.emitWarning` swapped, for the length of the load only, for a filter that drops an
+  `ExperimentalWarning` whose text starts "SQLite is an experimental feature": nothing of SQLite's on stderr, and a
+  warning sent afterwards still showed (`ExperimentalWarning: another warning, still shown`).
+
+Before this step nothing in Tachikoma stopped Node's warnings (no `warning` listener, `emitWarning`, `--no-warnings` or
+`NODE_NO_WARNINGS` in `src/`), so on Node 22 the two lines would reach the user's screen.
+
+The user's choice (2026-11-20): drop only that one warning, as the filter above does, and load `node:sqlite` only when
+a lock is first taken, never at launch. Built in `src/memory/oslock.ts`.
+
+Checked on the built lock: `tests/memory/oslock.test.ts` (Node 24; Node 22's warning stood in by the child script)
+passes; and the test's child script, `tests/memory/oslock-child.ts hold`, run under Node 22.22.2 with `--import tsx`
+(TEMP and TMP in the build's folder): it took the lock with nothing on stderr; a second process was refused ("busy",
+nothing on stderr); after the holder was killed outright (`SIGKILL`), a third took it, then let it go on "release".
+The suite does not need Node 22.
