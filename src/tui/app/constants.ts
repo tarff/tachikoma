@@ -129,11 +129,12 @@ export const isCommand = (text: string) =>
 // release 8a's (release 8a plan, choice 26). hooks and disableAllHooks are release 8b's (release 8b design, "What the
 // user sees"; its plan's Task 12 applies them). mcpServers is release 8c's (release 8c design, "The settings entry"; its
 // plan's Task 10 applies it). allowedSites is 8c-2b's, here for its line, as it waits for the next launch (8c-2b plan,
-// Step 3 and question 9).
+// Step 3 and question 9). memory is 8d's, here for its line, as it waits for the next launch (8d plan, step 15 and
+// question Q20).
 export const LIVE = [
   "lead", "mode", "sandbox", "network", "allowedSites", "judge", "effort", "fallback", "worker", "maxTasks",
   "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor", "dangerousCommands", "autoCompactWindow",
-  "hooks", "disableAllHooks", "mcpServers", "theme",
+  "hooks", "disableAllHooks", "mcpServers", "theme", "memory",
 ] as const;
 export const FROM = ` (from ${SETTINGS})`;
 

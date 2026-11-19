@@ -187,6 +187,15 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(help).toMatch(/\/screen\s+switches\s+between\s+full\s+screen\s+and\s+classic/);
   });
 
+  // Release 8d plan, step 15 and question Q13: the one flag is declared, so it is no longer an unknown option.
+  it("takes --no-memory, and lists it in the help", () => {
+    const r = tachi("--lead", "ollama:none", "--no-memory");
+    expect(r.stderr).not.toContain("--no-memory");
+    expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+    const line = '  --no-memory       run this launch without long-term memory (to keep it off, set "memory": false)';
+    expect(tachi("--help").stdout).toContain(`\n${line}\n`);
+  });
+
   it("lists tachi review in the help", () => {
     expect(tachi("--help").stdout).toMatch(/^ {2}tachi review \[<name> \[--discard\]\] +list the copies kept for review, open one, or discard one$/m);
   });

@@ -145,6 +145,7 @@ sites allows only the settings' "allowedSites"
   --classic         use the terminal's own scrollback, not the full screen (or set TACHI_CLASSIC=1)
   --scroll-speed <n>  lines a wheel notch scrolls in full screen, above 0 and up to 20
                       (default: 3; or set TACHI_SCROLL_SPEED)
+  --no-memory       run this launch without long-term memory (to keep it off, set "memory": false)
   -p, --print <prompt>  run without the interface
   --json            with -p, print every event as one JSON line
   --raw             with -p, print the answer exactly as written, control codes and all
@@ -359,6 +360,7 @@ try {
       status: { type: "string" },
       classic: { type: "boolean" },
       "scroll-speed": { type: "string" },
+      "no-memory": { type: "boolean" }, // the one flag, not Node's allowNegative (release 8d plan, question Q13)
       print: { type: "string", short: "p" },
       json: { type: "boolean" },
       raw: { type: "boolean" },

@@ -9304,6 +9304,13 @@ describe("App's live settings", () => {
     await sees(b.app, stays("light"));
   });
 
+  // Release 8d plan, step 15 and question Q20: memory is read at the launch only, so a live edit says so.
+  it("says an edit to memory waits for the next launch", async () => {
+    const a = await watching([], {});
+    a.write({ memory: false });
+    await sees(a.app, '"memory" changes in settings.json take effect at the next launch');
+  });
+
   // Release 8a plan, choice 26: "autoCompactWindow" is LIVE, set as /autocompact sets it; a bad one keeps the last good.
   it("sets the /autocompact size from a live autoCompactWindow, off when removed, and says a bad one", async () => {
     const { app, session, write } = await watching([], {});

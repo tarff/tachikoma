@@ -166,6 +166,7 @@ export interface Flags {
   sandbox?: string;
   network?: string;
   judge?: string;
+  "no-memory"?: boolean;
 }
 
 // Where commands run, and whether the box reaches the internet (release 7 design, "Launching"): both off unless asked for.
@@ -196,6 +197,10 @@ export function resolve(flags: Flags, env: NodeJS.ProcessEnv, settings: Settings
     // though the file is still checked whole, so a bad one there stops -p. A bad --scroll-speed, typed for this run, still
     // stops it (the user's choice, 2026-10-27, at release 5's Task 7 review).
     speed: flags.print === undefined ? scrollSpeed(flags["scroll-speed"], env, settings.scrollSpeed) : scrollSpeed(flags["scroll-speed"], {}),
+    // Release 8d plan, step 15: off, Tachikoma's own palace, or the user's program; --no-memory wins, for this launch.
+    memory: flags["no-memory"] || settings.memory === false
+      ? ("off" as const)
+      : typeof settings.memory === "object" ? settings.memory : ("own" as const),
   };
 }
 

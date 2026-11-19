@@ -1092,6 +1092,19 @@ describe("resolve", () => {
     expect(file.allowedSites).toEqual([{ name: "github.com", port: 443 }]);
   });
 
+  // Release 8d plan, step 15 and question Q13: one answer, off, Tachikoma's own palace or the user's program at a path;
+  // --no-memory wins over the file, for this launch.
+  it("takes memory as off, Tachikoma's own or the user's program, --no-memory winning over the file", () => {
+    const use = path.resolve("/tools/mempalace-mcp");
+    expect(resolve({}, {}, {}).memory).toBe("own");
+    expect(resolve({}, {}, { memory: true }).memory).toBe("own");
+    expect(resolve({}, {}, { memory: false }).memory).toBe("off");
+    expect(resolve({}, {}, { memory: { use } }).memory).toEqual({ use });
+    for (const memory of [undefined, true, false, { use }]) {
+      expect(resolve({ "no-memory": true }, {}, { memory }).memory).toBe("off");
+    }
+  });
+
   it("takes auto mode from the flag or the file", () => {
     expect(resolve({ mode: "auto" }, {}, { mode: "ask" }).mode).toBe("auto");
     expect(resolve({}, {}, { mode: "auto" }).mode).toBe("auto");

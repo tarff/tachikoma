@@ -300,6 +300,39 @@ describe("readSettings", () => {
     });
   });
 
+  // Release 8d plan, step 15: off, Tachikoma's own palace, or the user's own MemPalace program by its full path.
+  describe("memory", () => {
+    const own = path.resolve("/tools/mempalace-mcp"); // a full path on this system
+    const WRONG =
+      'settings.json: "memory" must be true, false, or an object such as {"use": "<full path to mempalace-mcp>"}';
+    const USE = 'settings.json: "memory": "use" must be the full path to your mempalace-mcp program';
+
+    it("takes true, false, or an object with a full path in use", () => {
+      expect(read({ memory: true })).toEqual({ settings: { memory: true }, warnings: [] });
+      expect(read({ memory: false })).toEqual({ settings: { memory: false }, warnings: [] });
+      expect(read({ memory: { use: own } })).toEqual({ settings: { memory: { use: own } }, warnings: [] });
+    });
+
+    it("refuses what is not true, false, or an object with use", () => {
+      for (const bad of ["false", 0, 1, null, [], ["x"], own, {}, { usee: own }]) {
+        expect(problem({ memory: bad })).toBe(`${WRONG} (got ${JSON.stringify(bad)})`);
+      }
+    });
+
+    it("refuses a use that is not a full path", () => {
+      for (const bad of ["mempalace-mcp", path.join("bin", "mempalace-mcp"), "", 5, null, true, [own]]) {
+        expect(problem({ memory: { use: bad } })).toBe(`${USE} (got ${JSON.stringify(bad)})`);
+      }
+    });
+
+    it("leaves out a name it does not know, with a warning, and keeps use", () => {
+      expect(read({ memory: { use: own, palace: "x" } })).toEqual({
+        settings: { memory: { use: own } },
+        warnings: ['settings.json: "memory.palace" is not a setting; it was left out'],
+      });
+    });
+  });
+
   // Release 8b plan, Task 1: the hooks themselves are read in src/hooks/config.ts (tests/hooks/config.test.ts).
   describe("hooks and disableAllHooks", () => {
     it("applies the other entries when hooks holds only events Tachikoma does not run", () => {
