@@ -4,6 +4,17 @@
 //   node scripts/8d/measure-lessons.mjs madeup    the made-up failures only, to check the script before it reads the
 //                                                 user's error logs
 //   node scripts/8d/measure-lessons.mjs run       the made-up failures, then the user's real ones
+//   node scripts/8d/measure-lessons.mjs lessons-check   the re-run (below), made-up only, to check it first
+//   node scripts/8d/measure-lessons.mjs lessons   the re-run: made-up lessons searched by made-up failures, the old
+//                                                 rule's comparison, and the user's real failures as a side figure
+//
+// The re-run (step 13 after the user's answers, 2026-11-19). The first run (`madeup`, `run`, described next) compared
+// error lines with error lines. The re-run compares failures with lessons, as step 25 will: the made-up families and
+// their made-up lessons of scripts/8d/lesson-families.mjs (written by hand; no model call anywhere), every lesson added
+// to `lessons`, then every made-up failure searched for with the query rule of scripts/8d/lesson-query.mjs, the hits
+// put in order by their own distance, and each lesson recorded as its own family's ("right") or another's ("wrong").
+// Failed commands are also searched with the old rule, for the comparison. The user's real tool failures, read only,
+// are put through the same rule and searched against the made-up lessons, counted only.
 //
 // There are no lessons yet, so failures stand in for them, as the plan says. Each failure's text is the tool's name, a
 // space and the first line of its error, as /errors shows that line (src/core/errorlog.ts:60; Q18, the user's answer).
@@ -42,6 +53,8 @@ import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { BUILD, throwaway } from "./throwaway.mjs";
+import { FAMILIES as LESSON_FAMILIES } from "./lesson-families.mjs";
+import { lessonQuery, statusShaped } from "./lesson-query.mjs";
 
 const PYTHON = path.join(BUILD, "env", "Scripts", "python.exe");
 const POWERSHELL = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0",
@@ -1153,7 +1166,7 @@ function removeTree(dir, n) {
 }
 function removePalaces() {
   const root = path.join(home, "palaces");
-  const mine = new RegExp(`^measure-lessons-${stamp}-(madeup|real)$`);
+  const mine = new RegExp(`^measure-lessons-${stamp}-(madeup|real|lessons)$`);
   return palaces.map((dir) => {
     const name = path.basename(dir);
     if (path.dirname(dir) !== root || !mine.test(name)) {
@@ -1210,8 +1223,277 @@ async function main() {
   }
 }
 
+// ---- the re-run: made-up lessons searched by made-up failures (step 13 after the user's answers) ----
+
+const COUNTS_RERUN = [1, 2, 3];
+
+// The user's real tool failures as the query rule takes them: the tool's name, the input that ran and the error. The
+// input is read back from the row's `attempted`, the tool's name, a space and the input as JSON
+// (src/core/session.ts:1064), when it was short enough not to be cut. Counts only ever leave here.
+function readRealCalls() {
+  const c = { files: 0, lines: 0, unreadable: 0, otherKinds: 0, toolRows: 0, subagentRows: 0, inputUnreadable: 0,
+    shellWithStatus: 0 };
+  const calls = [];
+  let names = [];
+  try {
+    names = readdirSync(ERRORS, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code !== "ENOENT") throw err;
+  }
+  for (const e of names) {
+    if (!e.isFile() || !e.name.endsWith(".jsonl")) continue;
+    c.files++;
+    for (const l of readFileSync(path.join(ERRORS, e.name), "utf8").split("\n")) {
+      if (!l.trim()) continue;
+      c.lines++;
+      let row;
+      try {
+        row = JSON.parse(l);
+      } catch {}
+      if (typeof row?.kind !== "string" || typeof row.attempted !== "string" || typeof row.message !== "string") {
+        c.unreadable++;
+        continue;
+      }
+      if (row.kind !== "tool") {
+        c.otherKinds++;
+        continue;
+      }
+      c.toolRows++;
+      if (SUBAGENT.test(row.attempted)) c.subagentRows++;
+      const rest = row.attempted.replace(SUBAGENT, "");
+      const at = rest.indexOf(" ");
+      const tool = at < 0 ? rest : rest.slice(0, at);
+      let input;
+      try {
+        input = JSON.parse(rest.slice(at + 1));
+      } catch {
+        c.inputUnreadable++;
+      }
+      if (tool === "shell" && statusShaped(row.message)) c.shellWithStatus++;
+      calls.push({ tool, input, error: row.message });
+    }
+  }
+  return { counts: c, calls };
+}
+
+// For each failure, the lessons in order of their own distance (closest first; the hub's order is not used, as the
+// first run found it re-ranks), each marked right (its own family's) or wrong.
+function ordered(dists, lessons, family) {
+  return dists.map((d, k) => ({ k, d, right: lessons[k].family === family })).filter((h) => h.d !== null)
+    .sort((a, b) => a.d - b.d || a.k - b.k);
+}
+
+// One table for a set of failures: for each cut-off and each count, what the lessons inside, closest first, up to the
+// count, give.
+function lessonTable(items, list) {
+  return list.map(([from, x]) => ({ x, from, counts: COUNTS_RERUN.map((count) => {
+    const t = { count, failures: items.length, withLessons: 0, getRight: 0, getWrong: 0, wrongFirst: 0,
+      noneThoughHas: 0, lessonless: 0, lessonlessHanded: 0 };
+    for (const f of items) {
+      const got = f.hits.filter((h) => h.d <= x).slice(0, count);
+      if (got.some((h) => !h.right)) t.getWrong++;
+      if (f.hasLessons) {
+        t.withLessons++;
+        if (got.some((h) => h.right)) t.getRight++;
+        else t.noneThoughHas++;
+        if (got.length && !got[0].right) t.wrongFirst++;
+      } else {
+        t.lessonless++;
+        if (got.length) t.lessonlessHanded++;
+      }
+    }
+    return t;
+  }) }));
+}
+
+function analyseLessons(items) {
+  const right = items.flatMap((f) => f.hits.filter((h) => h.right).map((h) => h.d));
+  const wrong = items.flatMap((f) => f.hits.filter((h) => !h.right).map((h) => h.d));
+  const nearestRight = items.filter((f) => f.hasLessons).map((f) => f.hits.find((h) => h.right)?.d)
+    .filter((d) => d !== undefined);
+  const nearestWrong = items.map((f) => f.hits.find((h) => !h.right)?.d).filter((d) => d !== undefined);
+  const nr = sortNum(nearestRight);
+  const wv = sortNum(wrong);
+  return {
+    spreads: { right: spread(right), wrong: spread(wrong), nearestRight: spread(nearestRight),
+      nearestWrong: spread(nearestWrong) },
+    closestIsWrong: items.filter((f) => f.hasLessons && f.hits[0] && !f.hits[0].right).length,
+    withLessons: items.filter((f) => f.hasLessons).length,
+    candidates: [["nearest right: 25th", nearest(nr, 0.25)], ["nearest right: middle", nearest(nr, 0.5)],
+      ["nearest right: 75th", nearest(nr, 0.75)], ["nearest right: 90th", nearest(nr, 0.9)],
+      ["nearest right: largest", nr.at(-1)], ["wrong: smallest", wv[0]], ["wrong: 1st", nearest(wv, 0.01)],
+      ["wrong: 5th", nearest(wv, 0.05)], ["wrong: 10th", nearest(wv, 0.1)]].filter(([, d]) => d != null),
+  };
+}
+
+async function measureLessons(withReal) {
+  const r = {};
+  const palace = palaceDir("lessons");
+  if (existsSync(palace)) throw new Error("the palace folder for the re-run is there already");
+  palaces.push(palace);
+  const h = startHub("lessons", { palace, port: await freePort() });
+  const up = await waitHealthy(h);
+  if (!up.ok) throw new Error("lessons: the hub did not answer");
+  r.startMs = up.ms;
+  const { client, call, errors } = await mcpClient(h.port);
+  // Every made-up lesson, its text alone, as step 23 will add one.
+  const lessons = LESSON_FAMILIES.flatMap((f) => f.lessons.map((text, k) =>
+    ({ family: f.id, text, label: `measure-lessons lesson ${f.id} ${k + 1}` })));
+  r.add = { lessons: lessons.length, added: 0, other: 0, pieces: {} };
+  for (const l of lessons) {
+    const a = await call("mempalace_add_drawer", { wing: WING, room: ROOM, source_file: l.label, content: l.text });
+    if (a.json?.success === true && !a.json.reason) {
+      r.add.added++;
+      r.add.pieces[a.json.chunks] = (r.add.pieces[a.json.chunks] ?? 0) + 1;
+    } else r.add.other++;
+  }
+  if (r.add.other || lessons.length > LIMIT) fail(`lessons: adds ${JSON.stringify(r.add)}`);
+  const q = { searches: 0, atLimit: 0, failed: 0, notReturned: 0, otherRoom: 0, unknownHits: 0, boosted: 0,
+    sanitized: 0, changedBySanitizer: 0 };
+  // One search of `lessons`, as step 25 will send it: each lesson's distance (its closest piece), or null.
+  const search = async (query) => {
+    q.searches++;
+    if ([...query].length === QUERY_MAX) q.atLimit++;
+    const s = await call("mempalace_search", { query, wing: WING, room: ROOM, limit: LIMIT });
+    const hits = s.json?.results;
+    if (s.isError || s.json?.error || !Array.isArray(hits)) {
+      q.failed++;
+      return lessons.map(() => null);
+    }
+    if (s.json.query_sanitized) q.sanitized++;
+    if (s.json.query_sanitized && s.json.sanitizer?.clean_query !== query) q.changedBySanitizer++;
+    const best = new Map();
+    for (const x of hits) {
+      if (x.room !== ROOM) q.otherRoom++;
+      const k = lessons.findIndex((l) => l.label === x.source_path);
+      if (k < 0) {
+        q.unknownHits++;
+        continue;
+      }
+      if (x.effective_distance !== x.distance) q.boosted++;
+      best.set(k, Math.min(best.get(k) ?? Infinity, x.distance));
+    }
+    const row = lessons.map((_, k) => best.get(k) ?? null);
+    q.notReturned += row.filter((d) => d === null).length;
+    return row;
+  };
+  const items = [];
+  for (const f of LESSON_FAMILIES) {
+    for (const x of f.failures) {
+      const command = x.tool === "shell" && statusShaped(x.error);
+      const item = { family: f.id, hasLessons: f.lessons.length > 0, kind: command ? "command" : "other",
+        hits: ordered(await search(lessonQuery(x.tool, x.input, x.error)), lessons, f.id) };
+      if (command) {
+        item.old = ordered(await search(lessonQuery(x.tool, x.input, x.error, { old: true })), lessons, f.id);
+      }
+      items.push(item);
+    }
+  }
+  r.made = { families: LESSON_FAMILIES.length, lessonless: LESSON_FAMILIES.filter((f) => !f.lessons.length).length,
+    failures: items.length, commands: items.filter((i) => i.kind === "command").length, lessons: lessons.length };
+  // The user's real failures, through the same rule, against the made-up lessons: counted only.
+  if (withReal) {
+    const { counts, calls } = readRealCalls();
+    r.real = { read: counts, nearest: [] };
+    for (const c of calls) {
+      const row = await search(lessonQuery(c.tool, c.input, c.error));
+      const d = row.filter((x) => x !== null);
+      r.real.nearest.push(d.length ? Math.min(...d) : null);
+    }
+  }
+  r.queries = q;
+  if (q.failed || q.notReturned || q.otherRoom || q.unknownHits) fail(`lessons: searches ${JSON.stringify(q)}`);
+  r.size = { entries: (await call("mempalace_list_drawers", { wing: WING, room: ROOM, limit: 1 })).json?.total,
+    pieces: (await call("mempalace_status", {})).json?.total_drawers };
+  r.backend = (await call("mempalace_status", {})).json?.backend;
+  r.statusz = await statusz(h.port);
+  r.transportErrors = errors.length;
+  await client.close();
+  r.stopMs = (await stopHub(h, "lessons: measured")).goneMs;
+  r.model = palaceModel(palace);
+  if (r.backend !== "sqlite_exact" || r.statusz.backend !== "sqlite_exact" || r.model !== "minilm") {
+    fail(`lessons: backend ${r.backend} / ${r.statusz.backend}, model ${r.model}`);
+  }
+  // The figures: the new rule over all, failed commands alone and the rest; the old rule for failed commands; and,
+  // per family (made-up, so named), its failures' nearest right and nearest wrong lesson.
+  const commands = items.filter((i) => i.kind === "command");
+  const oldCommands = commands.map((i) => ({ ...i, hits: i.old }));
+  r.analysis = { all: analyseLessons(items), commands: analyseLessons(commands),
+    other: analyseLessons(items.filter((i) => i.kind === "other")), oldCommands: analyseLessons(oldCommands) };
+  const list = [...r.analysis.all.candidates].sort(([, x], [, y]) => x - y);
+  r.tables = { all: lessonTable(items, list), commands: lessonTable(commands, list),
+    other: lessonTable(items.filter((i) => i.kind === "other"), list), oldCommands: lessonTable(oldCommands, list) };
+  if (r.real) {
+    r.real.atCutoffs = list.map(([from, x]) => ({ x, from, handed: r.real.nearest.filter((d) => d !== null && d <= x)
+      .length }));
+    r.real.nearest = spread(r.real.nearest.filter((d) => d !== null));
+  }
+  r.families = LESSON_FAMILIES.map((f) => {
+    const mine = items.filter((i) => i.family === f.id);
+    const nr = mine.map((i) => i.hits.find((h) => h.right)?.d).filter((d) => d !== undefined);
+    const nw = mine.map((i) => i.hits.find((h) => !h.right)?.d).filter((d) => d !== undefined);
+    return { id: f.id, lessons: f.lessons.length, nearestRight: nr.length ? Math.max(...nr) : null,
+      nearestWrong: nw.length ? Math.min(...nw) : null, closestIsWrong: mine.filter((i) => i.hits[0] &&
+      !i.hits[0].right).length };
+  });
+  return r;
+}
+
+function reportLessons(r) {
+  say("---- RE-RUN: made-up lessons searched by made-up failures ----");
+  say(`made: ${JSON.stringify(r.made)}; adds ${JSON.stringify(r.add)}; entries ${r.size.entries}, pieces ` +
+    `${r.size.pieces}`);
+  say(`queries: ${JSON.stringify(r.queries)}; backend ${r.backend} / ${r.statusz.backend}, model ${r.model}; hub ` +
+    `start ${r.startMs} ms, stop ${r.stopMs} ms`);
+  for (const [name, a] of Object.entries(r.analysis)) {
+    say(`${name}: closest lesson is a wrong one for ${a.closestIsWrong} of ${a.withLessons} with lessons`);
+    for (const [k, s] of Object.entries(a.spreads)) say(`  ${k}: ${sp(s)} (${s.n})`);
+  }
+  for (const [name, table] of Object.entries(r.tables)) {
+    say(`table ${name}: cut-off (from): count: right, wrong, wrong first, none though it has, lessonless handed`);
+    for (const row of table) {
+      say(`  ${row.x} (${row.from}): ${row.counts.map((t) => `${t.count}: ${t.getRight}/${t.withLessons}, ` +
+        `${t.getWrong}, ${t.wrongFirst}, ${t.noneThoughHas}, ${t.lessonlessHanded}/${t.lessonless}`).join(" | ")}`);
+    }
+  }
+  say(`families (id lessons nearest-right-farthest nearest-wrong-closest closest-is-wrong): ${r.families.map((f) =>
+    `${f.id} ${f.lessons} ${f.nearestRight} ${f.nearestWrong} ${f.closestIsWrong}`).join("; ")}`);
+  if (r.real) {
+    say(`REAL (possibly test-polluted), read: ${JSON.stringify(r.real.read)}; nearest lesson: ${sp(r.real.nearest)} ` +
+      `(${r.real.nearest.n})`);
+    say(`  handed a lesson at each cut-off: ${r.real.atCutoffs.map((c) => `${c.x} ${c.handed}`).join(", ")}`);
+  }
+}
+
+async function mainLessons() {
+  let phase = "made-up";
+  try {
+    init();
+    await setUp(COMMAND);
+    phase = COMMAND === "lessons" ? "real" : "made-up";
+    out.lessons = await measureLessons(COMMAND === "lessons");
+    reportLessons(out.lessons);
+    phase = "done";
+  } catch (e) {
+    // The real failures are searched in the same pass, so any error says its name alone.
+    fail(phase === "real" ? `lessons: ${e?.name ?? "error"} ${e?.code ?? ""}` : `${phase}: ${e?.stack ?? e?.message}`);
+  } finally {
+    if (lister) {
+      await cleanup();
+      out.palaces = removePalaces();
+      for (const p of out.palaces) say(`palace ${p.name}: ${p.removed ? `deleted (${p.files} files, ${p.folders} ` +
+        "folders)" : `NOT deleted${p.why ? ` (${p.why})` : ""}`}`);
+      await finish();
+    } else {
+      say(`measure-lessons: FAILED (${out.failures.length})`);
+      process.exitCode = 1;
+    }
+  }
+}
+
 if (COMMAND === "madeup" || COMMAND === "run") await main();
+else if (COMMAND === "lessons-check" || COMMAND === "lessons") await mainLessons();
 else {
-  console.error("usage: node scripts/8d/measure-lessons.mjs madeup | run");
+  console.error("usage: node scripts/8d/measure-lessons.mjs madeup | run | lessons-check | lessons");
   process.exitCode = 2;
 }

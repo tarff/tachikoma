@@ -3054,6 +3054,11 @@ commit after it.
 
 ### M5 The lesson cut-off and count, from the error logs (step 13, 2026-11-19)
 
+**This is the first run. The cut-off and the count are NOT chosen from its figures** (the user's answers after its
+review, 2026-11-19): it compared error lines with error lines, and Q18 has since changed for the `shell` tool. The
+figures the user chooses from are those of the re-run, "M5, the re-run", after this part. This part keeps its
+figures as they were, with the review's corrections marked "(Corrected after the review.)".
+
 In short: there are no lessons yet, so past tool failures stood in for them. Each failure's text (the tool's name and
 the first line of its error, Q18) was put in a palace, and each failure in turn was searched for, scoring every other.
 **Real lessons will be sentences written by the model or the user, not raw errors, so both sets here are
@@ -3061,15 +3066,21 @@ stand-ins:** the figures say how MemPalace scores one error line against another
 against a lesson. What was found:
 - **The user's error logs hold 6 tool failures**, too few to set a figure. Among them is one pair that is "the same"
   by the plan's rule (the two failed commands), at a distance of 0.2016; the closest pair that is not is at 0.4039.
+  (Corrected after the review.) This set is possibly test-polluted: before commit cce56d5 (2026-11-06) Tachikoma's
+  tests wrote rows into the user's real errors folder (at least 126 rows naming `ollama:none`), and one of the two
+  `shell` rows, from 2026-11-04, may be a test's, so the set may hold no "same" pair at all.
 - **A made-up set of 94 failures**, in the shapes of Tachikoma's own tool errors (the user's addition), shows the
   scores of "same" and "different" failures overlapping widely. Where a path is most of the line, two "same" failures
   score far apart (up to 0.68); where two different errors share most of their words, they score very close (down to
   0.038). No cut-off keeps most "same" matches in and the others out: at the cut-off that lets in 1% of the
   different pairs (0.2526), 46% of the same pairs are in.
-- **Every failed command looks alike to this search.** A failed `shell` call's first line is its exit status alone
-  (`exit code: <n>`, `src/tools/shell.ts:5-7`), so with Q18's rule the query carries no part of the command, and any
-  two failed commands are "the same" by the rule. A lesson about one command would attach to every failed command
-  within the cut-off.
+- **Failed commands with an exit status look alike to this search.** A failed `shell` call that ran and ended with
+  an exit code or a signal has its status alone as its first line (`exit code: <n>` or `killed by <signal>`,
+  `src/tools/shell.ts:5-7`), so with Q18's rule as it then was the query carries no part of the command, and any two
+  such failures are "the same" by the rule. A lesson about one such command would attach to every other within the
+  cut-off. (Corrected after the review: not every `shell` failure has that shape; a timeout,
+  `src/tools/commands.ts:72-75`, and a command that could not be started, `src/exec/local.ts:101-102`, have their
+  own text.)
 - The cut-off and the count wait on the user (the options are at the end of this part).
 
 Script: `scripts/8d/measure-lessons.mjs`, two commands: `madeup` (the made-up failures alone, to check the script
@@ -3125,6 +3136,10 @@ file, so it does find text where there is some.
 - **The palace**: one per source, in the build folder, wing `tachikoma`, room `lessons`. Each failure was added in
   turn, the whole text as the entry. Identical texts are stored once: MemPalace answers `already_exists` for the rest
   (step 6 item 9), and the script counted the repeats itself to compare.
+- **The cut** (corrected after the review): this run cut each text with Node's `slice`, which counts UTF-16 units,
+  while MemPalace counts characters (code points; `maxLength` 250, `mempalace/mcp_server/schemas.py:309`). A text
+  with characters outside the basic plane is therefore cut a little shorter than MemPalace allows, never longer. The
+  re-run's rule (`scripts/8d/lesson-query.mjs`) cuts by code point, and step 25 must too.
 - **The searches**: each failure in turn, its text cut to 250 characters (step 6 item 7, as step 25 will cut it), one
   search of `lessons` with `limit` 100, MemPalace's most (`_MAX_RESULTS`, `mempalace/mcp_server/_session.py:681`), so
   that every entry came back: each palace held 100 entries or fewer, and every search returned all of them.
@@ -3210,7 +3225,7 @@ In the table, G is the tool `mcp__github__create_issue` and D is `mcp__docs__sea
 | Entries by `mempalace_list_drawers`; pieces | 93; 93 | 6; 6 |
 | Queries cut at 250 characters | 1 | 0 |
 | Queries MemPalace rewrote | 0 (2 marked, unchanged) | 0 |
-| Pairs: identical / same / different | 2 / 320 / 8,328 | 0 / 2 / 28 |
+| Pairs, both ways: identical / same / different | 2 / 320 / 8,328 | 0 / 2 (1 pair) / 28 |
 | Failures with an identical or same match | 82 of 94 | 2 of 6 |
 | Same matches per failure: middle / most | 4 / 4 (set by the design) | 0 / 1 |
 
@@ -3254,7 +3269,8 @@ At a count of 1, how many failures get a different lesson as their first, and ho
 a like match get none: 1 and 65 at 0.0377; 20 and 49 at 0.2016; 30 and 46 at 0.2526; 32 and 44 at 0.2715; 38 and 36
 at 0.3901 and 0.4039; 43 and 33 at 0.5123 and 0.5267; 44 and 32 at 0.5825 and above.
 
-**The real failures at the same cut-offs** (2 same pairs, 28 different). No failure has more than one entry inside
+**The real failures at the same cut-offs** (2 same pairs both ways, that is 1 pair; 28 different both ways;
+possibly test-polluted, above). No failure has more than one entry inside
 at any of them, so every count from 1 to 5 attaches the same:
 
 | Cut-off | Same in | Different in | Attached: like / different | Get any |
@@ -3276,7 +3292,9 @@ F3 0.6459, F15 0.5031, F6 0.4909, F13 0.4180, F12 0.4151, F10 0.3841, F5 0.3765,
 What the figures mean:
 - **The score follows the words, not the rule.** Where the error's own words are few and a path is most of the line
   (the `ENOENT` families F3, F11 and F15, and network paths F6), the path decides the score, and two failures that
-  are the same by the rule score as far apart as 0.50 to 0.68, farther than most different pairs. Where the words are
+  are the same by the rule score as far apart as 0.4909 to 0.6785, about as far apart as the closest quarter of
+  different pairs (corrected after the review: only 1,938 of the 8,328 different pairs, 23.3%, are at or under
+  0.6785). Where the words are
   many and only a number changes (timeouts F2, HTTP statuses F16), same pairs score within 0.03. And two different
   errors that share most of their words score very close, from 0.038.
 - **So no cut-off separates them.** Taking in half the same pairs (0.2715) lets in 106 different ones; taking them
@@ -3285,13 +3303,16 @@ What the figures mean:
 - **The count matters only where many entries fall inside.** In the real set no failure had more than one; in the
   made-up set the likes per failure are capped at 4 by design, so a count above 1 mostly adds different ones at the
   looser cut-offs (at 0.3901: count 1 attaches 46 like and 38 different, count 3 149 and 74, count 5 221 and 105).
-- **The real set is too small to set a figure**: 6 failures, one same pair. That pair is the two failed commands,
-  whose texts differ only in the exit code; its 0.2016 says how close `exit code: <n>` lines are, not whether the two
-  commands were alike.
-- **Failed commands**: as F1 shows, every failed command's text is `shell exit code: <n>` (or `killed by <signal>`):
-  the command and its error output are on later lines (`src/tools/shell.ts:5-7`), which Q18's rule leaves out. So
-  every failed command is the same as every other by the rule, and close by the score (F1's farthest pair 0.2060). A
-  lesson filed from one failed command would attach to any failed command, at any cut-off from 0.2060 up.
+- **The real set is too small to set a figure**: 6 failures, one same pair (2 both ways). That pair is the two
+  failed commands, whose texts differ only in the exit code; its 0.2016 says how close `exit code: <n>` lines are, not
+  whether the two commands were alike. And the set is possibly test-polluted (above): one of the two may be a test's.
+- **Failed commands with an exit status** (corrected after the review): a command that ran and ended with an exit
+  code or a signal has the text `shell exit code: <n>` (or `shell killed by <signal>`) under the rule as it then was:
+  the command and its error output are on later lines (`src/tools/shell.ts:5-7`), which that rule left out. So every
+  such failure is the same as every other by the rule. In the made-up F1 family, five of them with different exit
+  codes, the farthest pair is 0.2060, so a cut-off from 0.2060 up would attach a lesson filed from one of those five
+  to all the others; that figure holds for F1 only. A timeout (F2) and a command that could not be started have
+  their own text and are not caught by this.
 - **Real lessons will score differently.** A lesson is a sentence ("what went wrong, what fixed it, and how to spot
   it", the ask's approved wording), not an error line, so its distance from a new error will most likely be larger
   than these error-to-error distances; that was not measured, as there are no lessons yet. A cut-off taken from these
@@ -3313,9 +3334,11 @@ Three pairs of snapshots, each taken in the same command just before and just af
   07:03:52.719 UTC) and the folder `locks` (07:03:45.914, then 07:03:52.722), with one lock file in it,
   `locks/<lock id>.lock`, removed; set apart as usual, the daemon folder and its `queue.sqlite3` (07:03:52.740). So a
   save of the user's palace was under way as run 2's before-snapshot was taken (its lock already there, the palace
-  written 2.7 s later). Nothing of the build writes to `~/.mempalace`: every child had the build's home. **Not
-  traced yet**: it needs the reply-end times of the user's Claude Code sessions near 07:03:20 to 07:03:50 UTC, under
-  the user's rule. Until then the pair counts as failed. Run 1, with the same figures, had a clean pair.
+  written 2.7 s later). Nothing of the build writes to `~/.mempalace`: every child had the build's home. **Traced
+  afterwards, so explained** (the orchestrator, 2026-11-19, under the user's rule: the "After step 13's review" entry
+  of the run folder's `user-decisions-after-step-6.md`): the main session's reply ended at 07:03:20.523 UTC, its Stop
+  hook ran at 07:03:22.5, and the user's palace was written at 07:03:22.2 and 07:03:52.7. The pair failed, and counts
+  as explained. Run 1, with the same figures, had a clean pair.
 
 The same commands listed the top level of the user's Temp folder (step 8's `templist2.cjs`; names and times only, no
 file opened). No `uv-*.lock` in any of the three. In each, one file was removed (origin not traced) and nothing was
@@ -3328,6 +3351,11 @@ folder. MemPalace's own server records and lock files for them stay in the build
 31.
 
 #### The decision for the user: the lesson cut-off and the count
+
+**Not offered for the choice** (the user's answers after the review): these options are kept as they were put; the
+user chose option M, a new measurement, and the choice is made from the re-run below. (Corrected after the review.)
+Every option here also rests on how the made-up set was designed: its families, their sizes and their wording are
+the builder's, and other made-up sets would give other figures.
 
 What the two numbers do (design, section 5): when a tool fails, Tachikoma searches `lessons` and adds the matches at
 or below the cut-off, closest first, up to the count, after the error the model sees (and only as many as fit the cap,
@@ -3361,5 +3389,288 @@ Recommended (not chosen): **M** before choosing, as every figure here is error a
 against lesson. If figures are wanted now: **B with a count of 1**, the real data's one same pair: on the real set it
 attaches only that, and on the made-up set 33 like against 20 different. Its weak points: failed commands match one
 another whatever the command, and the made-up set gives a different lesson first for 20 of 94 failures.
+
+**The user's choice: not yet given.** (Answered after the review: none of these options. The user chose to measure
+again with made-up lessons written as sentences, option M, and to change the query for failed commands, a form of
+option Q; the re-run follows.)
+
+### M5, the re-run: made-up lessons searched by made-up failures (step 13 after the user's answers, 2026-11-19)
+
+**The user's earlier choice at step 13, word for word** (2026-11-19, the answer to the builder's question before the
+first run, as recorded in the run folder's `user-decisions-after-step-6.md`): "Measure, and add made-up failures
+(Recommended)", offered as "Measure your 6 real failures as planned. Alongside them, measure a made-up set of tool
+failures, written for the test and clearly marked: similar pairs and different pairs ... You choose the cut-off from
+both, and the record says which figures come from which." The reason: the user's error logs hold only 6 `tool` rows
+(of 640 rows in 634 files), too few to set a figure.
+
+**What the user decided after the first run's review** (the "After step 13's review" entry of the same file, and the
+approval of the plan's "Changed after step 13" with both of its readings):
+- The lesson search for a failed command (the `shell` tool, with the status shape) uses the tool's name, the
+  command's first word (step 12's "same job" rule) and the command's own message: the first line after the status
+  that is not blank and not one of the two fixed marker lines (`--- stderr ---`, `--- stdout ---`), that is the
+  command's first error-stream line, else its first ordinary-output line, else the status line itself. A `shell`
+  failure without the status shape (a timeout, a command that could not be started) keeps Q18: the tool's name and
+  the error's first line, with no first word. Every other tool keeps Q18. All of it is cut to 250 characters.
+- Step 13 is measured again with that rule and with made-up lessons written as sentences, searched by made-up
+  failures as step 25 will search. The cut-off and the count are chosen from these figures.
+
+In short: with lessons written as sentences and the new rule, **failed commands find their own lesson well, and the
+rest only partly**. Of the 36 made-up failed commands whose family has a lesson, at a cut-off of 0.4862 and a count
+of 1, 26 are handed their own lesson and none of the 48 failed commands is handed a wrong one (at a count of 2 or 3,
+2 are); under the old rule not one of them ever gets its own lesson first. Over all 88 made-up failures that have a
+lesson, the same cut-off hands 57 their own lesson at a count of 1, but 10 get another family's lesson first, and 12 of the 28 failures with nothing to learn
+from are handed one anyway. Tighter cut-offs hand out fewer wrong lessons and fewer right ones. **Everything here is
+made up by the builder, failures and lessons both, so words they share are partly the builder's doing; real lessons
+may sit closer or farther.** The user's 6 real failures, a side figure only and possibly test-polluted, are handed
+none of the made-up lessons at or below 0.3480. The cut-off and the count wait on the user (end of this part).
+
+Script: `scripts/8d/measure-lessons.mjs`, two new commands, `lessons-check` (made-up only, to check the run first)
+and `lessons` (the same, then the old rule's comparison and the real side figure; the old-rule comparison runs in
+both). The first run's commands are unchanged. The rule is in `scripts/8d/lesson-query.mjs`, the families and lessons
+in `scripts/8d/lesson-families.mjs`, the rule's tests in `tests/memory/lesson-query.test.ts`; step 12's
+`scripts/8d/measure-lesson-ask.mjs` now exports its `firstWord`, which the rule uses (that word and a line break are
+the only change there). Runs, each between a pair of snapshots: the check, `node scripts/8d/measure-lessons.mjs
+lessons-check`, 07:47:04 to 07:47:44 UTC; the run, `node scripts/8d/measure-lessons.mjs lessons`, 07:49:04 to
+07:49:43. Both exit 0, "measure-lessons: passed", no failures; every made-up figure is the same in both; the figures
+below are the run's. Results: `tachi-8d-build\install\measure-lessons-lessons-2026-11-19T07-49-04-541Z\results.json`
+(counts and scores only). One hub, started and stopped the decided way (Q24, Q8, Q25), gone 22.8 ms after its stop;
+7 processes recorded, none left running; backend `sqlite_exact` and model `minilm` read back; nothing fetched (the
+dead-end proxy got 0 connections). The script makes no model call: a search of the three scripts for the providers'
+names finds none, and its only network requests are the copied health and status checks to the build's own hub on
+127.0.0.1.
+
+#### The rule and its tests
+
+`tests/memory/lesson-query.test.ts`, on made-up text only, was written first and failed (the rule's module did not
+exist). Then 13 of 13 passed. Two breaks were tried, each put back: with the marker lines not skipped, 6 tests
+failed; with a family's error line pasted into one of its lessons, the lesson test failed. `tsc` exit 0. The tests:
+- a failed command with a message on its error stream gives the name, the first word and that message, not the
+  status line and not a marker line;
+- an empty error stream gives the ordinary output's first line;
+- no output at all gives the name, the first word and the status line;
+- blank lines before the message, Windows line ends among them, are passed over (a line's `\r` is taken off);
+- a command killed by a signal is handled as one that exited with a code;
+- a timeout's text and a could-not-start text give the name and the first line, with no first word;
+- another tool's failure gives its name and the error's first line;
+- two commands with the same exit code and different messages give different queries, and with the old rule the
+  same one;
+- the first word is step 12's, on every command in step 12's own tests (and one with extra spaces);
+- a longer query is cut to exactly 250 characters, counted by code point, so a character outside the basic plane is
+  never cut in half;
+- every made-up failed command's error has the real shape (built by Tachikoma's own `shellText`), every lesson is
+  one or two sentences with no date, and no lesson holds a whole error line of its family.
+
+Readings of the builder's, beyond the decided rule: the cut counts code points, as MemPalace's `maxLength` does
+(`mempalace/mcp_server/schemas.py:309`), where the first run cut by Node's length; a missing command (an input with no
+`command` text) drops the first word rather than failing; the pieces are joined by single spaces (the plan's text).
+
+#### The made-up families and lessons (written by the builder; marked made-up in the file)
+
+29 families of 4 failures each, 116 failures: enough members to vary each family's paths, numbers, arguments and
+wording, few enough to read through by hand. 28 lessons, one or two for each of 22 families, none for 7 on purpose,
+so that one search (at most 100 results) scores every lesson. Each lesson is written the way `record_lesson` and
+`/lesson` will store one: what went wrong, what fixed it and how to spot it, naming the tool or the command and the
+gist of the message, never the error line itself, with no date and no project. Nothing was asked of a model.
+
+- **14 failed-command families**, each a `shell` failure built by Tachikoma's own `shellText` (or, for C7 and C8, the
+  text Tachikoma gives instead): C1 `npm test` with jest missing (one command, one message, four times); C2 and C3
+  `git push` rejected and `git push` with failed authentication (one command, two messages, two families); C4 a dev
+  server's port taken, from `npm run dev` and from `vite` (two commands, one message, one family); C5 `grep` finding
+  nothing (no output at all); C6 a long `node` script killed by a signal (no lesson); C7 a command starting with
+  `sleep` stopped at its timeout (not the status shape); C8 a command with a NUL character that could not be started
+  (not the status shape); C9 `tsc` with a type error on its ordinary output only; C10 `npm install` with a dependency
+  conflict (two lessons); C11 `docker` with Docker Desktop not running, in two wordings; C12 `cargo build` with an
+  unknown name (no lesson); C13 `git commit` with nothing to commit, on the ordinary output only (no lesson); C14
+  `python` with a module missing (two lessons). 48 of the 56 failures (C1 to C6, C9 to C14) have the status shape.
+- **15 other families**, the first run's groups that fit: N1 `read_file` no such file; N2 to N5 `edit_file` (text not
+  found; text not found in a CRLF file; text found several times; not UTF-8, no lesson); N6 and N7 `write_file` (not
+  permitted; busy, no lesson); N8 `read_file` in Tachikoma's data folder; N9 `find_files` with a missing folder; N10
+  `search_files` with a flag inside the pattern; N11 `read_file` with invalid input (no lesson); N12 an MCP server
+  answering with a server error; N13 an MCP server stopped; N14 an MCP server needing sign-in (no lesson); N15 an MCP
+  server's local service not running.
+
+Some queries this gives, to show the rule (all made-up): C1 `shell npm 'jest' is not recognized as an internal or
+external command,`; C2 `shell git To github.com:acme/shop.git` (git writes the remote's name first, so the query
+carries no part of the rejection); C5 `shell grep exit code: 1`; C9 `shell tsc src/cart.ts(12,7): error TS2322: ...`;
+C14 `shell python Traceback (most recent call last):` (Python writes the traceback's head first).
+
+#### How it was measured
+
+One new palace in the build folder, wing `tachikoma`, room `lessons`. Each of the 28 lessons was added, its text
+alone, as step 23 will add one (28 added, each one piece). Then each of the 116 failures was searched for as step 25
+will: its query from the rule, one search of `lessons` with `limit` 100, every lesson returned, the hits put in order
+by their own `distance` (closest first) and not in the hub's order. A lesson of the failure's own family is "right",
+any other "wrong". Each of the 48 failed commands with the status shape was searched a second time with the old rule
+(the tool's name and the status line), for the comparison. 170 searches in all (116, 48 and the 6 real ones); 2
+queries reached 250 characters; MemPalace marked 4 queries but changed none.
+
+What a cut-off and a count hand a failure: the lessons at or below the cut-off, closest first, up to the count. For
+each, the tables count: failures handed a right lesson (of those whose family has one); failures handed any wrong
+lesson; failures whose first lesson is wrong; failures whose family has a lesson but that are handed no right one;
+and failures whose family has no lesson that are handed one all the same. The candidate cut-offs are taken from the
+scores: the 25th, middle, 75th and 90th percentile and the largest of each failure's nearest right lesson, and the
+smallest, 1st, 5th and 10th percentile of all wrong distances (nearest rank, so each is a score that occurred).
+
+#### The figures
+
+Distances, lower is closer (percentiles by nearest rank):
+
+| What | Count | Smallest | 10th | 25th | Middle | 75th | 90th | Largest |
+|---|---|---|---|---|---|---|---|---|
+| All: right, every pair | 112 | 0.1222 | 0.2253 | 0.3162 | 0.3508 | 0.5029 | 0.6928 | 0.9245 |
+| All: wrong, every pair | 3,136 | 0.2017 | 0.6759 | 0.7697 | 0.8478 | 0.9122 | 0.9661 | 1.1073 |
+| All: each failure's nearest right | 88 | 0.1222 | 0.2173 | 0.2929 | 0.3480 | 0.4862 | 0.6312 | 0.7846 |
+| All: each failure's nearest wrong | 116 | 0.2017 | 0.3027 | 0.4614 | 0.5849 | 0.6373 | 0.6739 | 0.7761 |
+| Failed commands: nearest right | 36 | 0.2173 | 0.2173 | 0.2929 | 0.3480 | 0.5029 | 0.6921 | 0.7846 |
+| Failed commands: nearest wrong | 48 | 0.4730 | 0.5057 | 0.5399 | 0.6376 | 0.6697 | 0.7446 | 0.7761 |
+| Others: nearest right | 52 | 0.1222 | 0.2176 | 0.2923 | 0.3518 | 0.4573 | 0.5396 | 0.6928 |
+| Others: nearest wrong | 68 | 0.2017 | 0.2594 | 0.3306 | 0.4988 | 0.5982 | 0.6222 | 0.6791 |
+| Old rule, failed commands: nearest right | 36 | 0.5572 | 0.5572 | 0.7756 | 0.8507 | 0.9161 | 0.9878 | 0.9878 |
+| Old rule, failed commands: nearest wrong | 48 | 0.5224 | 0.5224 | 0.5224 | 0.5224 | 0.5533 | 0.5581 | 0.6503 |
+
+With no cut-off, the closest lesson is a wrong one for 15 of the 88 failures that have a lesson: 4 of the 36 failed
+commands (all four of C2's) and 11 of the 52 others (C8's 2, N2's 1, and all four of N3's and of N4's). Under the old
+rule it is a wrong one for all 36 failed commands.
+
+**All 116 made-up failures** (88 whose family has a lesson, 28 whose family has none). Each cell: handed a right one
+(of 88) / handed any wrong one (of 116) / a wrong one first (of 88) / none though it has one (of 88) / handed one
+with nothing to learn from (of 28):
+
+| Cut-off (from) | Count 1 | Count 2 | Count 3 |
+|---|---|---|---|
+| 0.2017 (wrong: smallest) | 4 / 1 / 0 / 84 / 1 | 4 / 1 / 0 / 84 / 1 | 4 / 1 / 0 / 84 / 1 |
+| 0.2929 (nearest right: 25th) | 21 / 10 / 4 / 67 / 6 | 22 / 10 / 4 / 66 / 6 | 22 / 11 / 4 / 66 / 6 |
+| 0.3392 (wrong: 1st) | 31 / 15 / 6 / 57 / 9 | 32 / 17 / 6 / 56 / 9 | 33 / 18 / 6 / 55 / 9 |
+| 0.3480 (nearest right: middle) | 40 / 16 / 7 / 48 / 9 | 41 / 18 / 7 / 47 / 9 | 43 / 19 / 7 / 45 / 9 |
+| 0.4862 (nearest right: 75th) | 57 / 22 / 10 / 31 / 12 | 58 / 34 / 10 / 30 / 12 | 62 / 35 / 10 / 26 / 12 |
+| 0.5900 (wrong: 5th) | 67 / 27 / 11 / 21 / 16 | 68 / 55 / 11 / 20 / 16 | 72 / 65 / 11 / 16 / 16 |
+| 0.6312 (nearest right: 90th) | 72 / 32 / 12 / 16 / 20 | 73 / 72 / 12 / 15 / 20 | 77 / 83 / 12 / 11 / 20 |
+| 0.6759 (wrong: 10th) | 73 / 39 / 14 / 15 / 25 | 74 / 95 / 14 / 14 / 25 | 78 / 107 / 14 / 10 / 25 |
+| 0.7846 (nearest right: largest) | 73 / 43 / 15 / 15 / 28 | 75 / 104 / 15 / 13 / 28 | 82 / 116 / 15 / 6 / 28 |
+
+**The 48 failed commands with the status shape** (36 with a lesson, 12 without), the same cells (of 36 / of 48 /
+of 36 / of 36 / of 12):
+
+| Cut-off | Count 1 | Count 2 | Count 3 |
+|---|---|---|---|
+| 0.2017 | 0 / 0 / 0 / 36 / 0 | the same | the same |
+| 0.2929 | 9 / 0 / 0 / 27 / 0 | the same | the same |
+| 0.3392 | 15 / 0 / 0 / 21 / 0 | the same | the same |
+| 0.3480 | 19 / 0 / 0 / 17 / 0 | the same | the same |
+| 0.4862 | 26 / 0 / 0 / 10 / 0 | 26 / 2 / 0 / 10 / 0 | 26 / 2 / 0 / 10 / 0 |
+| 0.5900 | 28 / 1 / 0 / 8 / 1 | 28 / 9 / 0 / 8 / 1 | 28 / 17 / 0 / 8 / 1 |
+| 0.6312 | 32 / 5 / 1 / 4 / 4 | 32 / 13 / 1 / 4 / 4 | 32 / 21 / 1 / 4 / 4 |
+| 0.6759 | 32 / 12 / 3 / 4 / 9 | 32 / 32 / 3 / 4 / 9 | 32 / 40 / 3 / 4 / 9 |
+| 0.7846 | 32 / 16 / 4 / 4 / 12 | 33 / 40 / 4 / 3 / 12 | 36 / 48 / 4 / 0 / 12 |
+
+**The same 48 under the old rule** (the tool's name and the status line): at or below 0.4862, nothing is handed to
+any of them. From 0.5900 up, every one of the 36 gets a wrong lesson first at a count of 1 (36 / 36), and at most 4
+are handed a right one at a count of 2 or 3; 8 to 12 of the 12 with nothing to learn from are handed one.
+
+**The 68 others** (52 with a lesson, 16 without; of 52 / of 68 / of 52 / of 52 / of 16):
+
+| Cut-off | Count 1 | Count 2 | Count 3 |
+|---|---|---|---|
+| 0.2017 | 4 / 1 / 0 / 48 / 1 | the same | the same |
+| 0.2929 | 12 / 10 / 4 / 40 / 6 | 13 / 10 / 4 / 39 / 6 | 13 / 11 / 4 / 39 / 6 |
+| 0.3392 | 16 / 15 / 6 / 36 / 9 | 17 / 17 / 6 / 35 / 9 | 18 / 18 / 6 / 34 / 9 |
+| 0.3480 | 21 / 16 / 7 / 31 / 9 | 22 / 18 / 7 / 30 / 9 | 24 / 19 / 7 / 28 / 9 |
+| 0.4862 | 31 / 22 / 10 / 21 / 12 | 32 / 32 / 10 / 20 / 12 | 36 / 33 / 10 / 16 / 12 |
+| 0.5900 | 39 / 26 / 11 / 13 / 15 | 40 / 46 / 11 / 12 / 15 | 44 / 48 / 11 / 8 / 15 |
+| 0.6312 | 40 / 27 / 11 / 12 / 16 | 41 / 59 / 11 / 11 / 16 | 45 / 62 / 11 / 7 / 16 |
+| 0.6759 | 41 / 27 / 11 / 11 / 16 | 42 / 63 / 11 / 10 / 16 | 46 / 67 / 11 / 6 / 16 |
+| 0.7846 | 41 / 27 / 11 / 11 / 16 | 42 / 64 / 11 / 10 / 16 | 46 / 68 / 11 / 6 / 16 |
+
+**Each family** (made-up, so named): the farthest of its failures' nearest right lessons; the closest wrong lesson
+to any of them; and how many of its 4 failures have a wrong lesson closest. C1 0.2173, 0.5900, 0; C2 0.7846, 0.6105,
+4; C3 0.3973, 0.4730, 0; C4 0.5029, 0.5134, 0; C5 0.2929, 0.6544, 0; C6 (no lesson), 0.5957; C7 0.2255, 0.4584, 0;
+C8 0.6928, 0.4373, 2; C9 0.3350, 0.6964, 0; C10 0.3480, 0.5057, 0; C11 0.3754, 0.6498, 0; C12 (no lesson), 0.5362;
+C13 (no lesson), 0.6024; C14 0.6312, 0.6697, 0; N1 0.6093, 0.5803, 0; N2 0.3309, 0.2511, 1; N3 0.4400, 0.2252, 4;
+N4 0.4120, 0.2745, 4; N5 (no lesson), 0.3306; N6 0.5428, 0.5849, 0; N7 (no lesson), 0.4801; N8 0.3408, 0.5484, 0;
+N9 0.4277, 0.4988, 0; N10 0.4510, 0.6029, 0; N11 (no lesson), 0.2654; N12 0.5192, 0.6146, 0; N13 0.1222, 0.4176, 0;
+N14 (no lesson), 0.2017; N15 0.3471, 0.5852, 0.
+
+What the figures mean:
+- **The new rule works for failed commands.** Their own lesson is the closest for 32 of 36, and no wrong lesson
+  comes within 0.4730 of any of them; under the old rule every one of them was closest to another family's lesson,
+  most of them at the same distance, 0.5224 (the same bare status line finds the same lesson; which lesson it is was
+  not recorded).
+- **It fails where the command's first line is not its message**: C2's `git push` writes the remote's name first, so
+  its query is `shell git To <remote>` and its lessons sit at up to 0.7846, behind other lessons; Python's traceback
+  head (C14) puts its lessons out to 0.6312. These are real shapes of those programs' output.
+- **The other tools mix where their errors and lessons share words**: the three `edit_file` families N2 to N4 find
+  one another's lessons (wrong lessons from 0.2252), and N14's "needs sign-in" sits 0.2017 from N13's lesson about a
+  stopped server, the closest wrong pair of all.
+- **Failures with nothing to learn from are handed a lesson** from 0.2017 up: 6 of 28 at 0.2929, 9 at 0.3480, 12 at
+  0.4862, all 28 at 0.7846.
+- **The count adds little.** A family has one or two lessons, so a count above 1 can add at most one more right one;
+  at 0.4862 a count of 3 hands 5 more failures a right lesson than a count of 1 (62 against 57) and 13 more a wrong
+  one (35 against 22). That bound is set by the made-up design (one or two lessons a family), not measured.
+- **Made up, both sides.** The builder wrote the failures and the lessons, so the words they share are partly the
+  builder's doing; real lessons, written by the model in the lesson ask or by the user, may sit closer or farther.
+
+Not measured: real lessons; the user's own MemPalace; errors and lessons in other languages than English; a room of
+more than 100 lessons (a search would then return only the closest 100); several lessons per family written by
+different hands.
+
+#### The user's real failures, a side figure only (possibly test-polluted)
+
+The user's error logs, read only, as at the first run: 634 files, 640 rows, 0 unreadable, 634 of other kinds, 6
+`tool` rows (0 from subagents); every row's input could be read back; 2 are failed commands with the status shape.
+**Possibly test-polluted**: before commit cce56d5 (2026-11-06) Tachikoma's tests wrote rows into the user's real
+errors folder (at least 126 rows naming `ollama:none`), and one of the two `shell` rows may be a test's. Each of the 6
+was put through the new rule and searched against the made-up lessons, counts only; none of the made-up lessons is
+about the user's work, so any lesson handed to one is a lesson that does not belong to it. The nearest made-up lesson
+to each: 0.3529 at the closest and 0.6708 at the farthest (middle 0.4910). Handed a made-up lesson: none at or below
+0.3480; 2 of the 6 at 0.4862; 4 at 0.5900; 5 at 0.6312; all 6 at 0.6759 and above. No figure is chosen from this set.
+
+#### The user's folders
+
+Two pairs of snapshots, each taken in the same command just before and just after its run:
+- the check: `step13-r-check-before` (07:46:37 UTC) and `step13-r-check-after` (after 07:47:44): "no change" (exit
+  0), with only the set-apart daemon folder of the user's MemPalace;
+- the run: `step13-r-before` (07:48:29) and `step13-r-after` (after 07:49:43): "no change" (exit 0), the same.
+
+The same commands listed the top level of the user's Temp folder (names and times only, no file opened): no
+`uv-*.lock`; in each pair, one file rewritten (origin not traced), nothing added or removed. The palace
+`measure-lessons-<stamp>-lessons` was deleted by its exact name after its hub had stopped, in each run (7 files and
+its folder); `palaces` holds no `measure-lessons-*` folder. A scan afterwards, in one process, for each of the 6 real
+texts and their first lines (22 strings, plain and as JSON would write them) through every file in the build folder's
+`install` folder and this step's outputs (11,946 files, 936 MB) found them in no file of MemPalace's or of the runs;
+its one hit is again the builder's own scratch check of the first run, which shares one of Tachikoma's fixed status
+lines.
+
+#### The decision for the user: the lesson cut-off and the count
+
+What the two numbers do (design, section 5): when a tool fails, the lessons at or below the cut-off, closest first, up
+to the count, are added after the error the model sees (as many as fit the cap, Q23). Every figure below is on the
+builder's made-up failures and lessons, and would differ with other made-up sets.
+
+The options for the cut-off, each with what it hands out at a count of 1 (made-up: of the 88 failures with a lesson,
+and of the 28 without; failed commands of 36; real: of 6):
+- **R0. 0.2017** (the closest wrong pair): 4 handed their own lesson, 1 failure handed a wrong one, 1 of 28 with
+  nothing to learn from handed one. Failed commands: none. Real: none. In practice almost nothing is attached.
+- **R1. 0.2929** (a quarter of the failures' nearest right lessons): 21 right, 4 wrong first, 6 of 28 handed one.
+  Failed commands: 9 right, 0 wrong. Real: none.
+- **R2. 0.3480** (the middle of the nearest right lessons): 40 right, 7 wrong first, 9 of 28 handed one. Failed
+  commands: 19 right, 0 wrong. Real: none.
+- **R3. 0.4862** (three quarters of the nearest right lessons): 57 right, 10 wrong first, 12 of 28 handed one.
+  Failed commands: 26 right, 0 wrong. Real: 2 of 6 handed a made-up lesson.
+- **R4. 0.5900** (5% of the wrong pairs inside): 67 right, 11 wrong first, 16 of 28 handed one. Failed commands: 28
+  right, 1 wrong. Real: 4 of 6.
+- **R5. 0.6312** (nine tenths of the nearest right lessons): 72 right, 12 wrong first, 20 of 28 handed one. Failed
+  commands: 32 right, 5 wrong. Real: 5 of 6.
+
+The options for the count: **1**; **2**; or **3**. At R2 they hand a right lesson to 40, 41 and 43 failures and a
+wrong one to 16, 18 and 19; at R3 to 57, 58 and 62 and 22, 34 and 35. A family here has at most two lessons, so the
+gain from a higher count is bounded by the made-up design.
+
+Recommended (not chosen): **R3, 0.4862, with a count of 1.** It hands two thirds of the made-up failures their own
+lesson, hands no made-up failed command a wrong one (26 of the 36 get their own), and keeps the wrong-first count
+close to the tighter options' (10 against 7 at R2). Its weak points: 12 of the 28 made-up failures with nothing to
+learn from are handed some other lesson; 2 of the user's 6 real failures would be handed a made-up lesson that is not
+theirs; and every figure rests on the builder's own failures and lessons. A more careful choice is **R2, 0.3480, with
+a count of 1**: 17 fewer failures get their own lesson, 3 fewer get a wrong one first, and none of the real failures
+is handed one.
 
 **The user's choice: not yet given.**

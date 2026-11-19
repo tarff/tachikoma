@@ -77,7 +77,8 @@ function callsOf(lines) {
 }
 
 const FILE_EDITS = new Set(["write_file", "edit_file"]);
-const firstWord = (command) => (typeof command === "string" ? command.trim().split(/\s+/)[0] || undefined : undefined);
+export const firstWord = (command) =>
+  (typeof command === "string" ? command.trim().split(/\s+/)[0] || undefined : undefined);
 const samePath = (a, b, project) => typeof a === "string" && typeof b === "string" &&
   path.resolve(project ?? "", a).toLowerCase() === path.resolve(project ?? "", b).toLowerCase();
 
