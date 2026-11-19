@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -36,7 +37,7 @@ async function folder(): Promise<string> {
 }
 
 // A second process, as another Tachikoma window would be. `next` gives its next line of output.
-function start(mode: "hold" | "warnings", dir: string, name: string) {
+function start(mode: "hold" | "warnings" | "warning-objects", dir: string, name: string) {
   const child = spawn(process.execPath, ["--import", "tsx", CHILD, mode, dir, name], { stdio: "pipe" });
   children.push(child);
   const lines: string[] = [];
@@ -122,13 +123,31 @@ describe("tryLock", () => {
     expect(take(dir, "join")).toBeNull();
   });
 
-  it("loads node:sqlite at the first take, dropping only its experimental warning", async () => {
+  it("refuses a second take of a name this process already holds, and takes it again once let go", async () => {
     const dir = await folder();
-    const child = start("warnings", dir, "join");
-    expect(await child.next()).toBe("loaded");
-    expect(await child.next()).toBe("took");
-    expect(await child.closed).toBe(0);
-    expect(child.errors()).not.toContain("SQLite is an experimental feature");
-    expect(child.errors()).toContain("ExperimentalWarning: another warning, still shown");
+    const lock = take(dir, "join")!;
+    expect(lock).not.toBeNull();
+    expect(take(dir, "join")).toBeNull();
+    lock.release();
+    expect(take(dir, "join")).not.toBeNull();
   });
+
+  it("fails with a clear error when the lock's folder is missing, and makes no folder", async () => {
+    const missing = path.join(await folder(), "missing");
+    expect(() => take(missing, "save")).toThrow(`the save lock's folder is missing: ${missing}`);
+    expect(existsSync(missing)).toBe(false);
+  });
+
+  it.each(["warnings", "warning-objects"] as const)(
+    "loads node:sqlite at the first take, dropping only its experimental warning (%s)",
+    async (mode) => {
+      const dir = await folder();
+      const child = start(mode, dir, "join");
+      expect(await child.next()).toBe("loaded");
+      expect(await child.next()).toBe("took");
+      expect(await child.closed).toBe(0);
+      expect(child.errors()).not.toContain("SQLite is an experimental feature");
+      expect(child.errors()).toContain("ExperimentalWarning: another warning, still shown");
+    },
+  );
 });

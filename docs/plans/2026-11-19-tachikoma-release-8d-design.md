@@ -4184,8 +4184,16 @@ What was seen, each a one-off command (open a lock file, `BEGIN EXCLUSIVE`, clos
 Before this step nothing in Tachikoma stopped Node's warnings (no `warning` listener, `emitWarning`, `--no-warnings` or
 `NODE_NO_WARNINGS` in `src/`), so on Node 22 the two lines would reach the user's screen.
 
-The user's choice (2026-11-20): drop only that one warning, as the filter above does, and load `node:sqlite` only when
+The user's choice (2026-11-20), word for word: "Drop just that warning". That is: drop only that one warning, as the
+filter above does (for a warning given as text and a type, or as a warning object), and load `node:sqlite` only when
 a lock is first taken, never at launch. Built in `src/memory/oslock.ts`.
+
+For the steps that use the lock (19, 20 and 22), from step 17's review:
+- make the lock's folder first; `tryLock` does not make it, and a missing folder fails with an error naming the lock;
+- let the lock go in a `finally`;
+- the save lock is one per palace (step 22), so each palace's save lock is given a folder of its own;
+- never take a name this process already holds: the second take is refused, and a waiter that retries it waits
+  forever.
 
 Checked on the built lock: `tests/memory/oslock.test.ts` (Node 24; Node 22's warning stood in by the child script)
 passes; and the test's child script, `tests/memory/oslock-child.ts hold`, run under Node 22.22.2 with `--import tsx`

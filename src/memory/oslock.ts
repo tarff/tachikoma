@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 
@@ -27,8 +28,10 @@ let sqlite: typeof import("node:sqlite") | undefined;
 function load(): typeof import("node:sqlite") {
   if (sqlite) return sqlite;
   const emit = process.emitWarning;
+  // Emitted as text with a type (or options holding one), or as a warning object whose name is its type.
   process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
-    const type = typeof rest[0] === "string" ? rest[0] : (rest[0] as { type?: string } | undefined)?.type;
+    const given = typeof rest[0] === "string" ? rest[0] : (rest[0] as { type?: string } | undefined)?.type;
+    const type = typeof warning === "string" ? given : warning.name;
     const text = typeof warning === "string" ? warning : warning.message;
     if (type === "ExperimentalWarning" && text.startsWith("SQLite is an experimental feature")) return;
     Reflect.apply(emit, process, [warning, ...rest]);
@@ -41,14 +44,24 @@ function load(): typeof import("node:sqlite") {
   return sqlite;
 }
 
-// Takes the lock, or returns null when another holds it.
+// Takes the lock, or returns null when another holds it, in this process or another. The folder is the caller's to
+// make; it is not made here.
 export function tryLock(folder: string, name: LockName): OsLock | null {
-  const db = new (load().DatabaseSync)(path.join(folder, `${name}.lock`), { timeout: 0 });
+  const { DatabaseSync: Database } = load();
+  let db: DatabaseSync;
+  try {
+    db = new Database(path.join(folder, `${name}.lock`), { timeout: 0 });
+  } catch (err) {
+    if (!existsSync(folder)) throw new Error(`the ${name} lock's folder is missing: ${folder}`, { cause: err });
+    throw err;
+  }
   try {
     db.exec("BEGIN EXCLUSIVE");
   } catch (err) {
     db.close();
-    if ((err as { errcode?: number }).errcode === 5) return null; // SQLITE_BUSY: "database is locked"
+    // SQLITE_BUSY, "database is locked". node:sqlite's `errcode` is SQLite's extended code (a unique-constraint
+    // failure gives 2067, not 19), so the busy codes' low 8 bits are compared.
+    if ((((err as { errcode?: number }).errcode ?? 0) & 0xff) === 5) return null;
     throw err;
   }
   held.add(db);
