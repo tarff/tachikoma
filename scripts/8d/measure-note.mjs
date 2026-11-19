@@ -23,7 +23,10 @@
 // comes before any of its turns end). Each session's first prompt (its first typed turn's words, cut to 250 characters
 // as step 24 will cut them) searches its own project's room, and, for the comparison, each other project's room. A
 // branch's copy has no first prompt of its own: its next prompt is a fork's (src/cli.tsx:814,
-// src/tui/app/queue.ts:833), and the note is never made for a fork (step 24).
+// src/tui/app/queue.ts:833), and the note is never made for a fork (step 24). Every search is made with the hub
+// already up, so every figure is an upper bound for a message sent while the hub is still starting, which goes without
+// a note (Q9): a `-p` run's one message is sent at launch. The figures are also given without the `-p` runs. The hub's
+// start is not modelled here.
 //
 // Nothing of the user's text goes into any output or file of this script's: no text, no session id, no file or folder
 // name. The palace's labels and rooms are stand-ins (`tachikoma session s<k>, turn <n>`, `project-<k>`); the real
@@ -34,13 +37,18 @@
 //
 // Hubs are started and stopped exactly as step 8 proved (Q24, Q8, Q25). The functions from PYTHON down to `finish`,
 // `removeTree`, and `sortNum`, `nearest` and `spread` are copied unchanged from scripts/8d/measure-lessons.mjs (its
-// lines 59-712, 1151-1166 and 1007-1015), except for the names of the run folder and palaces and the result line. That
-// script cannot be imported for them: they are not exported, and importing it runs its own commands. Each hub is the
-// build folder's `env\Scripts\python.exe -I -m mempalace.mcp_server --transport http --port <p> --palace <palace>
-// --backend sqlite_exact`, with MEMPALACE_EMBEDDING_MODEL=minilm, MEMPALACE_MCP_WRITER_WAIT_SECONDS=0 and
-// MEMPALACE_MCP_IDLE_HOURS=0, step 1's `install` environment (TEMP and TMP inside the build folder) and step 5's
-// offline settings with a dead-end proxy; it is stopped by its serving process's id after its start time is read
-// again, and at the end every process this script started is looked up again. Nothing is fetched.
+// lines 59-712, 1151-1166 and 1007-1015), except for the names of the run folder and palaces and the result line, and,
+// after step 14's review, `startHub`'s `wrapped` option, its two lines taken word for word from
+// scripts/8d/measure-hub.mjs (its lines 603 and 607), and the connection watch, which now fails when no hub was
+// hooked. That script cannot be imported for them: they are not exported, and importing it runs its own commands. Each
+// hub runs the build folder's `env\Scripts\python.exe -I` with MemPalace's server module, `mempalace.mcp_server
+// --transport http --port <p> --palace <palace> --backend sqlite_exact`, under step 5's audit-hook wrapper (WRAPPER,
+// copied unchanged from scripts/8d/measure-hub.mjs, its lines 109-157, as its filler hubs ran), which logs every
+// network and process event of the serving process; with MEMPALACE_EMBEDDING_MODEL=minilm,
+// MEMPALACE_MCP_WRITER_WAIT_SECONDS=0 and MEMPALACE_MCP_IDLE_HOURS=0, step 1's `install` environment (TEMP and TMP
+// inside the build folder) and step 5's offline settings with a dead-end proxy; it is stopped by its serving process's
+// id after its start time is read again, and at the end every process this script started is looked up again. Nothing
+// is fetched.
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmdirSync, statSync, unlinkSync,
   writeFileSync } from "node:fs";
@@ -54,6 +62,56 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { BUILD, throwaway } from "./throwaway.mjs";
 import { cut, turnsOf } from "./turns.mjs";
 import { QUERY_MAX } from "./lesson-query.mjs";
+
+// Step 5's audit-hook wrapper, as in scripts/8d/mempalace-checks.mjs: argv is the log file, the module, then the
+// module's own arguments.
+const WRAPPER = String.raw`
+import json, socket, sys
+phase = 'control'
+log = open(sys.argv[1], 'a', encoding='utf-8')
+def host_of(event, args):
+    if event in ('socket.connect', 'socket.sendto', 'socket.sendmsg'):
+        a = args[1]
+        return str(a[0]) if isinstance(a, tuple) else str(a)
+    if event in ('socket.getaddrinfo', 'socket.gethostbyname', 'socket.gethostbyaddr', 'socket.gethostbyname_ex'):
+        return str(args[0])
+    if event == 'http.client.connect':
+        return str(args[1])
+    if event == 'urllib.Request':
+        from urllib.parse import urlsplit
+        return str(urlsplit(args[0]).hostname)
+    return None
+WATCHED = {'socket.connect', 'socket.sendto', 'socket.sendmsg', 'socket.getaddrinfo', 'socket.gethostbyname',
+           'socket.gethostbyaddr', 'socket.gethostbyname_ex', 'http.client.connect', 'urllib.Request',
+           'subprocess.Popen', 'os.system', 'os.exec', 'os.posix_spawn', 'os.spawn', 'os.startfile'}
+def hook(event, args):
+    if event in WATCHED:
+        try:
+            host = host_of(event, args)
+        except Exception:
+            host = 'unparsed'
+        try:
+            log.write(json.dumps({'phase': phase, 'event': event, 'host': host, 'args': repr(args)[:300]}) + '\n')
+            log.flush()
+        except Exception:
+            pass
+sys.addaudithook(hook)
+s = socket.socket()
+s.bind(('127.0.0.1', 0))
+s.listen()
+socket.create_connection(s.getsockname()).close()
+s.close()
+import urllib.request
+from httpx._utils import get_environment_proxies
+log.write(json.dumps({'phase': phase, 'urllib_proxies': urllib.request.getproxies(),
+                      'httpx_proxies': {k: str(v) for k, v in get_environment_proxies().items()}}) + '\n')
+log.flush()
+phase = 'server'
+import runpy
+module = sys.argv[2]
+sys.argv = [module] + sys.argv[3:]
+runpy.run_module(module, run_name='__main__', alter_sys=True)
+`;
 
 const PYTHON = path.join(BUILD, "env", "Scripts", "python.exe");
 const POWERSHELL = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0",
@@ -485,11 +543,11 @@ const palaceDir = (x) => path.join(home, "palaces", `measure-note-${stamp}-${x}`
 const logs = (label) => ({ stdout: path.join(runDir, `${label}.stdout.log`), stderr: path.join(runDir,
   `${label}.stderr.log`), audit: path.join(runDir, `${label}.audit.jsonl`) });
 
-function startHub(label, { python = PYTHON, palace, port }) {
+function startHub(label, { python = PYTHON, palace, port, wrapped = false }) {
   const f = logs(label);
   const o = openSync(f.stdout, "w");
   const e = openSync(f.stderr, "w");
-  const args = hubArgs(port, palace);
+  const args = wrapped ? ["-I", "-c", WRAPPER, f.audit, ...hubArgs(port, palace).slice(2)] : hubArgs(port, palace);
   const before = nowUs();
   const t0 = performance.now();
   // Detached and hidden as a window starts it; not unref'd, so this script sees its end.
@@ -632,8 +690,8 @@ function connectionWatch() {
       children: server.filter((r) => PROCESS_EVENTS.has(r.event)).map((r) => r.args.slice(0, 120)),
     };
   }
-  w.ok = proxied.length === 0 && Object.values(w.logs).every((l) => l.outside.length === 0 && l.control > 0 &&
-    l.proxies && l.children.length === 0);
+  w.ok = proxied.length === 0 && Object.keys(w.logs).length > 0 && Object.values(w.logs).every((l) =>
+    l.outside.length === 0 && l.control > 0 && l.proxies && l.children.length === 0);
   if (!w.ok) fail("the connection watch");
   return w;
 }
@@ -820,8 +878,8 @@ export function readSessions(root = SESSIONS) {
 export function build(projects) {
   const c = { projects: projects.length, sessions: 0, print: 0, mixedFolders: 0, branchCopies: 0,
     copied: { typed: 0, background: 0 }, typed: 0, background: 0, apart: {}, damagedOutside: 0, marked: {},
-    typedNoText: 0, turnsSaved: 0, inParts: 0, mostParts: 0, entries: 0, firstPrompts: 0, firstSetApart: 0,
-    noTypedTurn: 0, cut: 0, withPicture: 0, noEarlierSession: 0 };
+    typedNoText: 0, turnsSaved: 0, inParts: 0, mostParts: 0, entries: 0, firstPrompts: 0, firstPrint: 0,
+    firstSetApart: 0, noTypedTurn: 0, cut: 0, withPicture: 0, noEarlierSession: 0 };
   const entries = [];
   const prompts = [];
   let k = 0;
@@ -876,12 +934,13 @@ export function build(projects) {
         continue;
       }
       c.firstPrompts++;
+      if (s.print) c.firstPrint++;
       if (codePoints(first.typed) > QUERY_MAX) c.cut++;
       if (/\[Image #\d+\]/.test(first.typed)) c.withPicture++;
       const at = first.lines[0].at;
       const earlier = sessions.filter((o) => o !== s && time(o.at) < time(at)).length;
       if (!earlier) c.noEarlierSession++;
-      prompts.push({ room, at, query: queryOf(first.typed), chars: codePoints(first.typed), earlier });
+      prompts.push({ room, at, query: queryOf(first.typed), chars: codePoints(first.typed), earlier, print: s.print });
     }
   }
   c.entries = entries.length;
@@ -896,8 +955,8 @@ export function build(projects) {
 
 const T0 = Date.parse("2026-01-01T00:00:00.000Z");
 const stampAt = (min, s) => new Date(T0 + min * 60_000 + s * 1000).toISOString();
-const startLine = (id, min, project) => ({ t: "start", at: stampAt(min, 0), v: 1, id, project, lead: "x",
-  version: "0", print: false, system: "", tools: [] });
+const startLine = (id, min, project, print = false) => ({ t: "start", at: stampAt(min, 0), v: 1, id, project,
+  lead: "x", version: "0", print, system: "", tools: [] });
 const say1 = (role, parts, min, s) => ({ t: "message", at: stampAt(min, s), message: { role, parts } });
 const user = (text, min, s, more = []) => say1("user", [{ type: "text", text }, ...more], min, s);
 const background = (text, min, s) => say1("user", [{ type: "text", text, from: "tasks" }], min, s);
@@ -950,24 +1009,79 @@ function madeUp() {
     { at: 240, born: 7, lines: [startLine("m7", 240, "/made-up/beta"),
       user("How do I run the tests for the cart module?", 240, 1),
       reply("This project has no cart module.", 240, 2)] },
+    { at: 300, born: 9, lines: [startLine("m9", 300, "/made-up/beta", true),
+      user("Which variable holds the weather service key again?", 300, 1),
+      reply("WEATHER_KEY, as before.", 300, 2)] },
   ];
   const gamma = [{ at: 200, born: 8, lines: [startLine("m8", 200, "/made-up/gamma")] }];
   const projects = [alpha, beta, gamma].map((list) => ({ sessions: list.map((x) => {
     const text = fileOf(x.lines);
     const first = startOf(text);
-    return { text, id: first.id, at: first.at, print: false, project: first.project, born: x.born };
+    return { text, id: first.id, at: first.at, print: first.print === true, project: first.project, born: x.born };
   }) }));
   return { read: { madeUp: true }, projects };
 }
 
 // What `check` must find, worked out by hand from the made-up sessions above.
-const EXPECT_BUILD = { projects: 3, sessions: 8, print: 0, mixedFolders: 0, branchCopies: 1,
-  copied: { typed: 2, background: 1 }, typed: 11, background: 1, apart: { "typed: damaged line": 1 },
-  damagedOutside: 0, marked: {}, typedNoText: 1, turnsSaved: 10, inParts: 1, mostParts: 2, entries: 11,
-  firstPrompts: 5, firstSetApart: 1, noTypedTurn: 1, cut: 1, withPicture: 1, noEarlierSession: 2 };
-const EXPECT_RUN = { added: 10, alreadyExists: 1, addFailed: 0, piecesWrong: 0, searches: 7, overLimit: 1,
-  failed: 0, notReturned: 0, otherRoom: 0, unknownHits: 0, ownNone: 2, withOwn: 3, sizeEntries: 10,
-  sizePieces: 134 };
+// After step 14's review, a `-p` session (m9, beta, 300 minutes in) was added: one more session, typed turn, entry and
+// first message, two more searches (beta, its own, of 2 pieces; alpha, of 132, over the limit) and one more piece.
+const EXPECT_BUILD = { projects: 3, sessions: 9, print: 1, mixedFolders: 0, branchCopies: 1,
+  copied: { typed: 2, background: 1 }, typed: 12, background: 1, apart: { "typed: damaged line": 1 },
+  damagedOutside: 0, marked: {}, typedNoText: 1, turnsSaved: 11, inParts: 1, mostParts: 2, entries: 12,
+  firstPrompts: 6, firstPrint: 1, firstSetApart: 1, noTypedTurn: 1, cut: 1, withPicture: 1, noEarlierSession: 2 };
+const EXPECT_RUN = { added: 11, alreadyExists: 1, addFailed: 0, piecesWrong: 0, searches: 9, overLimit: 2,
+  failed: 0, notReturned: 0, otherRoom: 0, unknownHits: 0, ownNone: 2, withOwn: 4, withOwnPrint: 1, sizeEntries: 11,
+  sizePieces: 135 };
+// A check of `figures` alone (step 14's review), on made-up hits whose distances are given here (no hub), so every
+// figure can be worked out by hand. Entries: e0 turn 1 (100 characters, first line 50), e1 and e2 two parts of turn 2
+// (200 and 300; 60 and 70), e3 turn 3 (400; 80). P1, a window's message: own hits 0.2 (e0, 100 characters), 0.5 (e1,
+// 150), 0.6 (e2, 120); other projects 0.4 and 0.9. P2, a `-p` run: own 0.3 (e3, 80); other 0.7. P3, a window's
+// message: nothing earlier.
+const FIGURE_ENTRIES = [{ turn: 1, chars: 100, headChars: 50 }, { turn: 2, chars: 200, headChars: 60 },
+  { turn: 2, chars: 300, headChars: 70 }, { turn: 3, chars: 400, headChars: 80 }];
+const FIGURE_PROMPTS = () => [
+  { print: false, earlier: 1, own: [{ d: 0.2, chars: 100, entry: 0, turn: 1 }, { d: 0.5, chars: 150, entry: 1,
+    turn: 2 }, { d: 0.6, chars: 120, entry: 2, turn: 2 }], others: [{ d: 0.4, entry: 3 }, { d: 0.9, entry: 3 }] },
+  { print: true, earlier: 1, own: [{ d: 0.3, chars: 80, entry: 3, turn: 3 }], others: [{ d: 0.7, entry: 0 }] },
+  { print: false, earlier: 0, own: null, others: [] }];
+// Worked out by hand. The closest same-project hits are 0.2 and 0.3, so the same-project candidates are 0.2 (25th and
+// middle) and 0.3 (75th, 90th, largest); the other-project hits are 0.4, 0.7 and 0.9, so every other-project candidate
+// is 0.4. At 0.3: P1's 0.2 and P2's 0.3 are inside (2 of 4, 2 prompts, 1 of them `-p`; without `-p`, 1), and no
+// other-project hit; a note of 1 is 80 and 100 characters. At 0.4: one other-project hit (P1's 0.4). At any distance:
+// count 1, text 80 and 100, whole note 85 + 2 + 80 + 1 + 80 = 248 and 85 + 2 + 50 + 1 + 100 = 238; count 2, P1 only,
+// text 100 + 150 = 250, whole 85 + 153 + 213 = 451, as whole entries e0 + e1 = 300; count 3, text 370, as whole
+// entries 100 + 200 + 300 = 600.
+const EXPECT_FIGURES = {
+  prompts: { all: 3, print: 1, withOwn: 2, withOwnPrint: 1, ownNone: 1, withOthers: 2 },
+  xs: [0.2, 0.3, 0.4],
+  at03: { same: [2, 4, 2, 1], other: [0, 3, 0], note1: [2, 80, 100], noPrintPrompts: 1 },
+  at04: { other: [1, 3, 1] },
+  len1: { prompts: 2, text: [80, 100], whole: [238, 248] },
+  len2: { prompts: 1, text: 250, whole: 451, entries: 300 },
+  len3: { text: 370, entries: 600 },
+};
+export function figureCheck() {
+  const f = figures(FIGURE_ENTRIES, FIGURE_PROMPTS());
+  const r3 = f.cutoffs.find((c) => c.x === 0.3);
+  const r4 = f.cutoffs.find((c) => c.x === 0.4);
+  const n3 = f.cutoffsNoPrint?.find((c) => c.x === 0.3);
+  const [l1, l2, l3] = f.lengths;
+  const got = {
+    prompts: { all: f.prompts.all, print: f.prompts.print, withOwn: f.prompts.withOwn,
+      withOwnPrint: f.prompts.withOwnPrint, ownNone: f.prompts.ownNone, withOthers: f.prompts.withOthers },
+    xs: f.cutoffs.map((c) => c.x),
+    at03: { same: [r3?.same.inside, r3?.same.of, r3?.same.prompts, r3?.same.promptsPrint],
+      other: [r3?.other.inside, r3?.other.of, r3?.other.prompts],
+      note1: [r3?.notes[0].prompts, r3?.notes[0].text.min, r3?.notes[0].text.max], noPrintPrompts: n3?.same.prompts },
+    at04: { other: [r4?.other.inside, r4?.other.of, r4?.other.prompts] },
+    len1: { prompts: l1.prompts, text: [l1.text.min, l1.text.max], whole: [l1.whole.min, l1.whole.max] },
+    len2: { prompts: l2.prompts, text: l2.text.max, whole: l2.whole.max, entries: l2.entries.chars.max },
+    len3: { text: l3.text.max, entries: l3.entries.chars.max },
+  };
+  const before = out.failures.length;
+  expectAll(got, EXPECT_FIGURES, "the figures");
+  return out.failures.length - before;
+}
 function expectAll(got, want, what) {
   for (const [key, value] of Object.entries(want)) {
     if (JSON.stringify(got[key]) !== JSON.stringify(value)) {
@@ -984,7 +1098,7 @@ async function measureNote(kind, entries, prompts) {
   const palace = palaceDir(kind);
   if (existsSync(palace)) throw new Error("the palace folder is there already");
   palaces.push(palace);
-  const h = startHub(kind, { palace, port: await freePort() });
+  const h = startHub(kind, { palace, port: await freePort(), wrapped: true });
   const up = await waitHealthy(h);
   if (!up.ok) throw new Error("the hub did not answer");
   r.startMs = up.ms;
@@ -1118,21 +1232,28 @@ function figures(entries, prompts) {
     .filter(([, d]) => d !== null && d !== undefined);
   const cand = new Map();
   for (const [from, d] of list) cand.set(d, [...(cand.get(d) ?? []), from]);
-  const cutoffs = [...cand].sort(([x], [y]) => x - y).map(([x, from]) => {
+  // The rows for a set of prompts, at the candidate cut-offs taken from all of them.
+  const rowsFor = (ownSet, otherSet) => [...cand].sort(([x], [y]) => x - y).map(([x, from]) => {
     const inside = (hits) => hits.filter((h) => h.d <= x);
-    const own = withOwn.map((p) => inside(p.own));
-    const others = withOthers.map((p) => inside(p.others));
+    const own = ownSet.map((p) => inside(p.own));
+    const others = otherSet.map((p) => inside(p.others));
     return { x, from,
-      same: { inside: own.reduce((n, h) => n + h.length, 0), of: same.length, prompts: own.filter((h) => h.length)
-        .length, perPrompt: spread(own.map((h) => h.length)), entriesMost: Math.max(0, ...own.map((h) =>
-        asEntries(h).length)) },
-      other: { inside: others.reduce((n, h) => n + h.length, 0), of: other.length, prompts: others
-        .filter((h) => h.length).length, perPrompt: spread(others.map((h) => h.length)) },
+      same: { inside: own.reduce((n, h) => n + h.length, 0), of: ownSet.reduce((n, p) => n + p.own.length, 0),
+        prompts: own.filter((h) => h.length).length, perPrompt: spread(own.map((h) => h.length)),
+        entriesMost: Math.max(0, ...own.map((h) => asEntries(h).length)) },
+      other: { inside: others.reduce((n, h) => n + h.length, 0), of: otherSet.reduce((n, p) => n + p.others.length,
+        0), prompts: others.filter((h) => h.length).length, perPrompt: spread(others.map((h) => h.length)) },
       notes: [1, 2, 3].map((count) => {
         const lens = own.filter((h) => h.length).map((h) => note(h.slice(0, count)).text);
         return { count, prompts: lens.length, text: spread(lens) };
       }) };
   });
+  // The same rows without the `-p` runs (step 14's review): in `-p` the one message is sent at launch, while the hub
+  // may still be starting, and then goes without a note (Q9), so for `-p` runs every figure is an upper bound.
+  const windowOnly = (set) => set.filter((p) => !p.print);
+  const cutoffs = rowsFor(withOwn, withOthers);
+  const cutoffsNoPrint = rowsFor(windowOnly(withOwn), windowOnly(withOthers));
+  for (const [i, c] of cutoffs.entries()) c.same.promptsPrint = c.same.prompts - cutoffsNoPrint[i].same.prompts;
   const lengths = NOTE_COUNTS.map((count) => {
     const hit = withOwn.filter((p) => p.own.length >= count).map((p) => note(p.own.slice(0, count)));
     const whole = withOwn.map((p) => asEntries(p.own)).filter((e) => e.length >= count)
@@ -1141,18 +1262,21 @@ function figures(entries, prompts) {
       entries: { prompts: whole.length, chars: spread(whole) } };
   });
   return {
-    prompts: { all: prompts.length, withOwn: withOwn.length, ownNone: prompts.length - withOwn.length,
+    prompts: { all: prompts.length, print: prompts.filter((p) => p.print).length, withOwn: withOwn.length,
+      withOwnPrint: withOwn.filter((p) => p.print).length, ownNone: prompts.length - withOwn.length,
+      withOthersPrint: withOthers.filter((p) => p.print).length,
       ownNoneEarlierSession: prompts.filter((p) => !p.own && p.earlier).length, withOthers: withOthers.length,
       ownHitsPerPrompt: spread(withOwn.map((p) => p.own.length)),
       ownEntriesPerPrompt: spread(withOwn.map((p) => asEntries(p.own).length)) },
     spreads: { same: spread(same), sameNearest: spread(sameNearest), other: spread(other),
       otherNearest: spread(otherNearest) },
-    cutoffs, lengths, headingChars: HEADING.length, headChars: spread(entries.map((e) => e.headChars)),
+    cutoffs, cutoffsNoPrint, lengths, headingChars: HEADING.length, headChars: spread(entries.map((e) => e.headChars)),
   };
 }
 
 // Per prompt, its scores and lengths only (no text), for the results file.
-const scoresOf = (prompts) => prompts.map((p) => ({ chars: p.chars, earlier: p.earlier, otherRooms: p.otherRooms,
+const scoresOf = (prompts) => prompts.map((p) => ({ print: p.print, chars: p.chars, earlier: p.earlier,
+  otherRooms: p.otherRooms,
   own: p.own?.map((h) => ({ d: h.d, chars: h.chars, turn: h.turn })) ?? null, others: p.others?.map((h) => h.d) }));
 
 // ---- output: counts, lengths and scores only ----
@@ -1169,7 +1293,8 @@ function showCounts(read, c) {
     `${JSON.stringify(c.marked)}`);
   say(`typed turns with no model text ${c.typedNoText}; typed turns saved ${c.turnsSaved}, of them in parts ` +
     `${c.inParts} (most parts ${c.mostParts}); entries ${c.entries}; pieces by room ${JSON.stringify(c.piecesByRoom)}`);
-  say(`first prompts ${c.firstPrompts}; first typed turn set apart ${c.firstSetApart}; sessions with no typed turn ` +
+  say(`first prompts ${c.firstPrompts} (-p runs ${c.firstPrint}); first typed turn set apart ${c.firstSetApart}; ` +
+    "sessions with no typed turn " +
     `${c.noTypedTurn} (branch copies not counted here); cut to ${QUERY_MAX} ${c.cut}; with a picture ` +
     `${c.withPicture}; with no other session of the project started before ${c.noEarlierSession}`);
   say(`first prompt length (code points): ${sp(c.promptChars)} (${c.promptChars.n})`);
@@ -1189,7 +1314,14 @@ function report(r, f) {
     say(`  ${c.x} (${c.from.join(", ")}): same ${c.same.inside}/${c.same.of}, ${c.same.prompts}/` +
       `${f.prompts.withOwn}, ${mm(c.same.perPrompt)}, ${c.same.entriesMost}; other ${c.other.inside}/${c.other.of}, ` +
       `${c.other.prompts}/${f.prompts.withOthers}, ${mm(c.other.perPrompt)}; notes ${c.notes.map((n) =>
-        `${n.count}: ${n.prompts}, ${mm(n.text)}`).join(" | ")}`);
+        `${n.count}: ${n.prompts}, ${mm(n.text)}`).join(" | ")}; -p among the prompts with one ${c.same.promptsPrint}`);
+  }
+  say(`the same without the -p runs (prompts with earlier entries ${f.prompts.withOwn - f.prompts.withOwnPrint}, ` +
+    `with other entries ${f.prompts.withOthers - f.prompts.withOthersPrint}):`);
+  for (const c of f.cutoffsNoPrint) {
+    say(`  ${c.x}: same ${c.same.inside}/${c.same.of}, ${c.same.prompts}, ${mm(c.same.perPrompt)}; other ` +
+      `${c.other.inside}/${c.other.of}, ${c.other.prompts}; notes ${c.notes.map((n) => `${n.count}: ${n.prompts}, ` +
+      `${mm(n.text)}`).join(" | ")}`);
   }
   say(`a note of k matches, closest first, any distance: prompts; text middle / 90th / longest; with the heading ` +
     `(${f.headingChars}) and first lines (${mm(f.headChars)}) middle / 90th / longest; as whole entries: prompts, ` +
@@ -1231,7 +1363,10 @@ async function mainRun(kind) {
     out.read = data.read;
     out.counts = b.counts;
     showCounts(data.read, b.counts);
-    if (kind === "check") expectAll(b.counts, EXPECT_BUILD, "the entries and prompts");
+    if (kind === "check") {
+      expectAll(b.counts, EXPECT_BUILD, "the entries and prompts");
+      say(`figure check: ${figureCheck()} failures`);
+    }
     init();
     await setUp(kind);
     const r = await measureNote(kind, b.entries, b.prompts);
@@ -1242,6 +1377,7 @@ async function mainRun(kind) {
     if (kind === "check") {
       expectAll({ added: r.add.added, alreadyExists: r.add.alreadyExists, addFailed: r.add.failed,
         piecesWrong: r.add.piecesWrong, ...r.queries, ownNone: f.prompts.ownNone, withOwn: f.prompts.withOwn,
+        withOwnPrint: f.prompts.withOwnPrint,
         sizeEntries: r.size.entries, sizePieces: r.size.pieces }, EXPECT_RUN, "the run");
     }
     report(r, f);

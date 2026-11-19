@@ -3767,21 +3767,44 @@ the commit after them.
 In short: the note works on half of the first messages that have anything to find, and very few other projects'
 entries come as close. Of the user's 35 first messages so far, 24 had earlier turns of the same project in the palace
 when they were sent; 11 had none (most were a project's first session). For those 24, the closest earlier turn of the
-same project sits at a distance of 0.4861 in the middle case (0 is the same text, 2 the opposite; lower is closer),
-while entries of other projects come no closer than 0.3111, and only 6 of their 1,397 matches are within 0.4861. A
-match is one piece of an entry, at most 800 characters, so a note of 3 matches holds at most 2,400 characters of text;
-here it held 1,099 at most at that cut-off. **The figures are few** (35 first messages, 76 entries, 10 projects), most
-sessions were the user's own tests of Tachikoma, and "same project" stands in for "relevant", which it is not always.
-**The count and the cut-off are the user's choice, not yet given** (end of this part).
+same project sits at a distance of 0.4861 in the middle case, while entries of other projects come no closer than
+0.3111, and only 6 of their 1,397 matches are within 0.4861. (Lower is closer. A distance of 0 would be the very same
+text; an entry holds the model's reply as well as the typed words, so even a message that repeats an earlier one
+word for word stays above 0: the closest seen was 0.028. Other projects' matches sit at 0.89 in the middle.) A match
+is one piece of an entry, at most 800 characters, so a note of 3 matches holds at most 2,400 characters of text; here
+it held 1,099 at most at that cut-off. **Every count of notes is an upper bound**: each search was made with the hub
+already up, while a message sent before memory is connected goes without a note (Q9). A `-p` run's one message is
+sent at launch, so "in `-p` that can mean no note" (Q9), and 14 of the 35 first messages are `-p` runs; without
+them, 8 of the 13 window messages with something earlier get a note at 0.4861 (below). The hub's start is not
+modelled here.
+**The figures are few** (35 first messages, 76 entries, 10 projects), most sessions were the user's own tests of
+Tachikoma, and "same project" stands in for "relevant", which it is not always. **The count and the cut-off are the
+user's choice, not yet given** (end of this part). (Changed after the review, 2026-11-20: the `-p` figures, the upper
+bound, the hooked hub, the check of the figures, the layout's effect, the duties for steps 22 and 28, and the
+recommendation's reason; the measurement was run once more and gave the same figures.)
 
 Script: `scripts/8d/measure-note.mjs`, three commands: `scan` (the transcripts only, counts only, starts nothing),
 `check` (the whole run on made-up sessions written in the script, with every count it must find worked out by hand
 beforehand; never the user's text) and `run` (the user's transcripts). Its hub start and stop, process tracking,
 palace removal and percentiles are copied unchanged from `scripts/8d/measure-lessons.mjs` (the lines are listed in its
-header) by an assembler that allowed only the run folder's and palaces' names and the result line to change; that
-script cannot be imported for them, as they are not exported and importing it runs its commands. It uses step 10's
-`scripts/8d/turns.mjs` for the turns and the cut into parts, and step 13's `QUERY_MAX` (250). After the runs one
-comment changed in the script (a cited line range, `candidates.py:182-214` to `:182-215`); no code changed.
+header) by an assembler that allowed only the run folder's and palaces' names and the result line to change (and,
+after the review, the hub's `wrapped` start and the watch, below); that script cannot be imported for them, as they
+are not exported and importing it runs its commands. It uses step 10's
+`scripts/8d/turns.mjs` for the turns and the cut into parts, and step 13's `QUERY_MAX` (250). After the first runs
+one comment changed in the script (a cited line range, `candidates.py:182-214` to `:182-215`); no code changed.
+
+After the review (2026-11-20) the script changed, and the check and the run were each run once more:
+- **The hub runs under step 5's audit hook.** The first runs started the hub without it, and their connection watch
+  passed with no hub watched, on the dead-end proxy alone. Now the hub runs the same server module through step 5's
+  audit-hook wrapper (copied unchanged from `scripts/8d/measure-hub.mjs`, as its filler hubs ran, with its own
+  `wrapped` start), which logs every network and process event of the serving process, and the watch fails when no
+  hub was hooked. This differs from the decided start (Q24) only by the hook around the module.
+- **`-p` runs are counted apart**, and every cut-off's figures are also worked out without them (below).
+- **The check gained a `-p` session** (one more session, typed turn, entry, first message and two searches) and a
+  check of the figures on made-up hits with given distances (no hub), worked out by hand and written before it was
+  run: the cut-off list, the rows at two cut-offs, the note's length for 1 to 3 matches, and the `-p` counts. Run
+  against the code as it was, it failed on the two new `-p` figures only (the `-p` counts and the count without
+  `-p`); the rest passed at once, as it tests code that was already there. After the change, 0 failures.
 
 Runs (2026-11-19 UTC; 2026-11-20 on this PC's clock), each between a pair of snapshots in the same command:
 - the check, `node scripts/8d/measure-note.mjs check`, 17:38:09 to 17:38:35: exit 0, "measure-note: passed"; all 22
@@ -3794,11 +3817,23 @@ Runs (2026-11-19 UTC; 2026-11-20 on this PC's clock), each between a pair of sna
   failures. Results: `tachi-8d-build\install\measure-note-real-2026-11-19T17-40-25-712Z\results.json` (counts, lengths
   and scores only). The run itself took 90.9 s, of which the 72 adds and 162 searches took 85.6 s; with both
   snapshots and the leftover scan the command took about 2.5 minutes.
+- after the review, the check again, 18:33:44 to 18:34:07: exit 0, "measure-note: passed"; all 23 counts of the
+  entries and prompts, the figure check (0 failures) and all 15 counts of the run were as expected (the `-p` session
+  among them; 2 searches of the 132-piece room now);
+- after the review, the run again, `node scripts/8d/measure-note.mjs run`, 18:35:19 to 18:36:50: exit 0,
+  "measure-note: passed", no failures. Results:
+  `tachi-8d-build\install\measure-note-real-2026-11-19T18-35-19-981Z\results.json`. It took 90.6 s. **Every count,
+  score and length in this part is the same as the first run's** (all four distance rows, every cut-off row, every
+  note length; the derived counts, by `extra.mjs`, are the same too). Only the hub's own times differ.
 
-Each run had one hub, started and stopped the decided way (Q24, Q8, Q25): it answered in 1,163.5 ms (check 1,216.7)
-and was gone 22.9 ms after its stop (check 25.3). 7 processes recorded in each, none left running; backend
-`sqlite_exact` and model `minilm` read back; nothing fetched (the dead-end proxy got 0 connections). The palace was
-deleted by its exact name after its hub stopped (7 files and its folder, each run).
+Each run had one hub, started and stopped the decided way (Q24, Q8, Q25), the re-runs under the audit hook: it
+answered in 1,163.5 ms (check 1,216.7; re-runs 1,131.2 and 1,269.3) and was gone 22.9 ms after its stop (check 25.3;
+re-runs 21.2 and 18.9). 7 processes recorded in each, none left running; backend `sqlite_exact` and model `minilm`
+read back; nothing fetched: the dead-end proxy got 0 connections in every run. In the first two runs that was the
+only watch (0 hubs hooked). In the two re-runs 1 hub was hooked in each: the hook logged its own test connection to
+127.0.0.1 and the proxy settings, and then, while the hub served, no network or process event at all, so no outside
+address and no child process. The palace was deleted by its exact name after its hub stopped (7 files and its folder,
+each run).
 
 #### What was read, and how the user's text was kept out
 
@@ -3808,12 +3843,18 @@ never saved). The user's text went into one palace in the build folder, as the p
 of the text, no session id and no file or folder name is in any output, in the results file or here: the script
 prints counts, lengths and scores only, and while the user's text is handled an error would say its name alone.
 MemPalace's write log redacts content and queries (`mempalace/wal.py:28-29, :92-93`); its warning when it rewrites a
-query gives two lengths and the method only (`mempalace/query_sanitizer.py:43-47`). A scan after the run (in
-the build folder's `scratch\step14\leftover-scan.mjs`) looked for the user's text, three 32-character slices of each
-entry and of each first message's query, plain and as JSON writes them (308 strings), in every file under the build
-folder's `install` folder written since the run began and in every file of this step's scratch folder (15 files, 13
-MB): found in none. Its control, a made-up string in a made-up file, was found, and that file was deleted by its exact
-name.
+query gives two lengths and the method only (`mempalace/query_sanitizer.py:43-47`). A scan after each real run (in
+the build folder's `scratch\step14\leftover-scan.mjs`) looked for the user's text: three 32-character slices of each
+entry and of each first message's query, plain and as JSON writes them (308 strings). What it read, and what it left
+out:
+- every file under the build folder's `install` folder changed at or after the run's start, and every file of this
+  step's scratch folder: 15 files (13 MB) after the first run, 24 (13 MB) after the re-run. None holds one of the
+  strings;
+- it left out the older files under `install` (11,935, then 11,950), as their last change came before the run began;
+- it skipped 1 link without following it: `install\python\cpython-3.13-windows-x86_64-none`, uv's version alias for
+  the build's own Python, pointing to `cpython-3.13.17-windows-x86_64-none` beside it, which the scan walked anyway.
+The scan says nothing of other folders. Its control, a made-up string in a made-up file, was found each time, and
+that file was deleted by its exact name.
 
 | What | Count |
 |---|---|
@@ -3828,16 +3869,37 @@ name.
 | Typed turns saved, as entries | 76, in 10 rooms |
 | of them over 100,000 characters, saved in parts (Q26) | 0 (so 76 entries, 1 part each) |
 | Pieces by room (the 4 repeats below included) | 1, 1, 8, 8, 10, 10, 11, 11, 11 and 20 (91) |
-| Sessions with no typed turn (no first message) | 15 |
+| Sessions with no typed turn (no first message) | 15 (1 of them a `-p` run, 14 window sessions) |
 | First messages searched (53 less 3 copies and 15 with no typed turn) | 35 |
+| of them `-p` runs | 14 |
 | of them cut to 250 characters / over 200 characters / with a picture | 1 / 3 / 0 |
 | of them with no other session of their project started before them | 9 |
+| of them with earlier entries in their own room when sent | 24 (11 of them `-p` runs) |
+
+The two 15s are not the same sessions (counted after the review, read only, counts only, by the build folder's
+`scratch\step14\pcount.mjs`): of the 15 `-p` runs, 14 have typed turns (21 in all) and 1 has none; of the 15
+sessions with no typed turn, that 1 is a `-p` run and 14 are window sessions. So 14 `-p` runs have a first message.
 
 These counts match step 10's corrected figures (M2, "With the copies left out": 82 typed turns, 76 entries) and M7's
 3 copies with 7 copied turns. The first messages' lengths, in code points: shortest 6, a quarter 40, middle 58, three
 quarters 127, nine tenths 176, longest 445. Of the 76 entries, 72 were added and 4 were answered `already_exists`:
 the very same text was already in the room from an earlier turn (step 6 item 9), which step 22 counts as saved. The
 palace read back 72 entries in 87 pieces (61 of 1 piece, 9 of 2, 1 of 3, 1 of 5).
+
+**Duties for steps 22 and 28, from the 4 repeats** (added after the review). The 4 are identical text in the same
+room: MemPalace's entry id is a hash of the wing, the room and the content (`mempalace/ids.py:71-80`, used by the add
+at `mcp_server/tools_write.py:518`), so it keeps one copy, under the first turn's label. For a repeated turn, step
+22's look-up by its own exact label finds nothing, so the saver adds it, gets `already_exists`, and counts the turn
+as saved; if that turn is ever saved again (a crash before its saved record), it does the same, one look-up and one
+add answered `already_exists`, as no entry ever carries its label. Step 22 should test exactly that. And
+`/memory`'s "Entries" (step 28) counts what the palace holds: here it would read 72 for 76 saved turns, so it must
+not be read, or worded, as a count of saved turns.
+
+**What depends on the entry's layout** (added after the review). An entry here is the typed words and each piece of
+the model's text joined by a blank line (`JOIN`, two characters, as step 10's scan); step 22 sets the exact layout. So
+these depend on it: the entries' lengths, the count of entries of one piece (61) and every piece count, the "as whole
+entries" lengths, and, a little, every distance, as the embedded text would differ. The joins are 2 characters per
+piece of model text, so a layout of similar size changes the lengths by a few characters an entry.
 
 #### How it was measured, and the builder's choices
 
@@ -3858,8 +3920,15 @@ palace read back 72 entries in 87 pieces (61 of 1 piece, 9 of 2, 1 of 3, 1 of 5)
   `src/tui/app/queue.ts:833`), and the note is never made for a fork (step 24). Its copied turns make no entry; its
   own later turns do, as they would be saved live.
 - **The query** is the first typed turn's words as Q4 makes them up (pictures as markers), cut to 250 code points as
-  step 24 will cut them (by code point, as `scripts/8d/lesson-query.mjs` cuts). `-p` runs are included: their one
-  message gets the note at launch (Q9).
+  step 24 will cut them (by code point, as `scripts/8d/lesson-query.mjs` cuts).
+- **`-p` runs and the hub's start** (corrected after the review). `-p` runs are searched like the rest, but every
+  search here was made with the hub already up. Live, if memory is not connected when a message is sent, that message
+  goes without a note, and the note is tried with the next message; "in `-p` that can mean no note" (Q9; the user
+  chose the one time limit at step 11). A `-p` run's one message is sent at launch, while the hub may still be
+  starting, and so is any first message typed while it starts. So every count of notes, and of matches a note gets,
+  below is an upper bound for `-p` runs and for any first message sent while the hub is still starting. How often
+  the hub is not yet connected is not measured here (the hub's start is not modelled); the figures are given without
+  the `-p` runs too, to show how far they could drop.
 - **The search**: one search of the message's own room (step 24's "project's room"; the `lessons` room is empty here,
   as there are no lessons yet, so the merged list of Q27 is the project's alone), and, for the comparison, one search
   of each other project's room that held an entry at the time, each with `limit` 100, MemPalace's most (`_MAX_RESULTS`,
@@ -3902,18 +3971,42 @@ same-project match inside, which would get a note. "Per message": matches inside
 and, among those with a note, the middle. "Other": other-project matches inside, of 1,397, and the messages, of the 29
 with other projects' entries at the time, with at least one of them inside.
 
-| Cut-off (from) | Notes | Same inside (of 156) | Per message (see above) | Other inside | Other: messages |
+"Notes" also gives, in brackets, how many of them are `-p` runs (added after the review; 11 of the 24 are).
+
+| Cut-off (from) | Notes (`-p`) | Same inside (of 156) | Per message (see above) | Other inside | Other: messages |
 |---|---|---|---|---|---|
-| 0.2323 (same closest, 25th) | 6 | 6 (3.8%) | 0 / 1 / 1; 1 | 0 (0%) | 0 |
-| 0.3111 (other, smallest) | 7 | 19 (12.2%) | 0 / 3 / 5; 3 | 1 (0.1%) | 1 |
-| 0.4861 (same closest, middle) | 12 | 44 (28.2%) | 0 / 6 / 11; 2 | 6 (0.4%) | 4 |
-| 0.615 (other, 1st) | 14 | 55 (35.3%) | 1 / 8 / 11; 2 | 15 (1.1%) | 7 |
-| 0.691 (other, 5th) | 16 | 62 (39.7%) | 1 / 8 / 11; 2 | 70 (5.0%) | 20 |
-| 0.742 (other, 10th) | 17 | 80 (51.3%) | 2 / 9 / 11; 4 | 140 (10.0%) | 25 |
-| 0.8076 (same closest, 75th) | 18 | 92 (59.0%) | 4 / 9 / 12; 4 | 318 (22.8%) | 29 |
-| 0.8157 (other, 25th) | 18 | 92 (59.0%) | 4 / 9 / 12; 4 | 350 (25.1%) | 29 |
-| 0.9356 (same closest, 90th) | 23 | 128 (82.1%) | 5 / 11 / 17; 6 | 928 (66.4%) | 29 |
-| 0.9368 (same closest, largest) | 24 | 133 (85.3%) | 5 / 11 / 18; 5 | 940 (67.3%) | 29 |
+| 0.2323 (same closest, 25th) | 6 (3) | 6 (3.8%) | 0 / 1 / 1; 1 | 0 (0%) | 0 |
+| 0.3111 (other, smallest) | 7 (3) | 19 (12.2%) | 0 / 3 / 5; 3 | 1 (0.1%) | 1 |
+| 0.4861 (same closest, middle) | 12 (4) | 44 (28.2%) | 0 / 6 / 11; 2 | 6 (0.4%) | 4 |
+| 0.615 (other, 1st) | 14 (5) | 55 (35.3%) | 1 / 8 / 11; 2 | 15 (1.1%) | 7 |
+| 0.691 (other, 5th) | 16 (5) | 62 (39.7%) | 1 / 8 / 11; 2 | 70 (5.0%) | 20 |
+| 0.742 (other, 10th) | 17 (6) | 80 (51.3%) | 2 / 9 / 11; 4 | 140 (10.0%) | 25 |
+| 0.8076 (same closest, 75th) | 18 (6) | 92 (59.0%) | 4 / 9 / 12; 4 | 318 (22.8%) | 29 |
+| 0.8157 (other, 25th) | 18 (6) | 92 (59.0%) | 4 / 9 / 12; 4 | 350 (25.1%) | 29 |
+| 0.9356 (same closest, 90th) | 23 (10) | 128 (82.1%) | 5 / 11 / 17; 6 | 928 (66.4%) | 29 |
+| 0.9368 (same closest, largest) | 24 (11) | 133 (85.3%) | 5 / 11 / 18; 5 | 940 (67.3%) | 29 |
+
+**Without the `-p` runs** (added after the review), at the same cut-offs: the 21 window messages, of which 13 had
+earlier entries in their room (114 same-project matches) and 18 had other projects' entries (683 matches). This is
+how far the figures could drop if no `-p` run ever got a note. The derived middles are by the build folder's
+`scratch\step14\extra2.mjs`, from the results file.
+
+| Cut-off | Notes (of 13) | Same inside (of 114) | Per message | Other inside (of 683) | Other: messages (of 18) |
+|---|---|---|---|---|---|
+| 0.2323 | 3 | 3 | 0 / 1 / 1; 1 | 0 | 0 |
+| 0.3111 | 4 | 13 | 0 / 4 / 5; 3 | 0 | 0 |
+| 0.4861 | 8 | 32 | 1 / 9 / 11; 1 | 2 | 2 |
+| 0.615 | 9 | 40 | 2 / 9 / 11; 2 | 4 | 2 |
+| 0.691 | 11 | 47 | 2 / 9 / 11; 3 | 24 | 9 |
+| 0.742 | 11 | 63 | 4 / 9 / 11; 6 | 48 | 14 |
+| 0.8076 | 12 | 72 | 5 / 11 / 12; 5 | 117 | 18 |
+| 0.8157 | 12 | 72 | 5 / 11 / 12; 5 | 121 | 18 |
+| 0.9356 | 13 | 100 | 8 / 11 / 17; 8 | 377 | 18 |
+| 0.9368 | 13 | 102 | 8 / 12 / 18; 8 | 386 | 18 |
+
+The note's text without the `-p` runs (count 1; 2; 3, each middle / 90th / longest): at 0.3111, 237 / 332 / 332;
+441 / 482 / 482; 773 / 788 / 788. At 0.4861, 245 / 800 / 800; 441 / 800 / 800; 610 / 800 / 800. At 0.615, 245 / 800 /
+800; 441 / 1,400 / 1,400; 773 / 1,400 / 1,400.
 
 Among the messages with a note, how many have 1, 2, or 3 or more matches inside: at 0.3111, 2 / 1 / 4; at 0.4861,
 5 / 2 / 5; at 0.615, 4 / 4 / 6; at 0.691, 4 / 4 / 8.
@@ -3953,8 +4046,11 @@ The derived counts (messages with 1, 2 or 3 or more inside) were worked out from
 What these figures cannot say:
 - Whether a match helps. "Same project" stands in for "might be relevant" and "other project" for "unrelated";
   neither is always so (two projects can share a subject).
-- How the user will work later. Most of these sessions were the user's own tests of Tachikoma: 15 are `-p` runs and
-  4 turns repeat an earlier one word for word, so some very close matches are a test prompt meeting its own repeat.
+- How the user will work later. Most of these sessions were the user's own tests of Tachikoma: 15 of the 53 are `-p`
+  runs (14 of the 35 first messages) and 4 turns repeat an earlier one word for word, so some very close matches are
+  a test prompt meeting its own repeat.
+- How many messages are sent before memory is connected, and so get no note (Q9). Every count of notes is an upper
+  bound for those; the table without the `-p` runs shows how far they could drop.
 - Lessons in the note: there are none yet, so the merged list (Q27) held the project's matches alone. A count and a
   cut-off apply to project matches and lessons together.
 - The user's own MemPalace (the `"use"` path, a palace of about 6.8 GB with its own settings), other embedding models,
@@ -3962,36 +4058,46 @@ What these figures cannot say:
 
 #### The user's folders
 
-Two pairs of snapshots, each taken in the same command just before and just after its run:
+Four pairs of snapshots, each taken in the same command just before and just after its run:
 - the check: `step14-check-before` (17:37:42 UTC) and `step14-check-after` (after 17:38:35): "no change" (exit 0),
   with only the set-apart daemon folder of the user's MemPalace;
-- the run: `step14-before` (17:39:58) and `step14-after` (after 17:41:56): "no change" (exit 0), the same.
+- the run: `step14-before` (17:39:58) and `step14-after` (after 17:41:56): "no change" (exit 0), the same;
+- after the review, the check: `step14-fix-check-before` (18:33:18) and `step14-fix-check-after` (after 18:34:07):
+  "no change" (exit 0), the same;
+- after the review, the run: `step14-fix-before` (18:34:53) and `step14-fix-after` (after 18:36:50): "no change"
+  (exit 0), the same.
 
 The same commands listed the top level of the user's Temp folder (names and times only, no file opened): no
-`uv-*.lock` in either. Around the check, one file was added and one removed (origin not traced); around the run,
-nothing was added, removed or rewritten. Every child process had the build's home, TEMP and TMP. The script reads the
+`uv-*.lock` in any of the four. Around the first check, one file was added and one removed; around the first run,
+nothing was added, removed or rewritten; around the second check, nothing; around the second run, one file was added
+(origin not traced, in each case). Every child process had the build's home, TEMP and TMP. The script reads the
 transcripts and writes only in the build folder; the palace `measure-note-<stamp>-real` (and the check's) is gone, and
 `palaces` holds no `measure-note-*` folder.
 
 #### The decision for the user: the note's cut-off and count
 
 What the two numbers do (design, section 4; step 24): at the first message after a launch, `/clear` or a shortening,
-the matches from the project's room and the lessons at or below the cut-off, closest first, up to the count, go in
-front of that message under the heading. With no match inside, the message goes as it is.
+if memory is connected by then, the matches from the project's room and the lessons at or below the cut-off, closest
+first, up to the count, go in front of that message under the heading. With no match inside, the message goes as it
+is. If memory is not connected yet, the message goes without a note and the note is tried with the next message, at
+most once per launch, `/clear` or shortening (Q9); in `-p`, whose one message is sent at launch, that can mean no
+note. So the counts of notes below are what the cut-off allows, at most; fewer will be made where a message comes
+before memory is connected, which was not measured.
 
 The options for the cut-off (of the 24 first messages with earlier entries; the other 11 get no note at any
-cut-off):
-- **N1. 0.2323**: 6 get a note, one match each; no other project's entry comes this close. Notes are rare (6 of 35
-  first messages).
-- **N2. 0.3111**, as close as any other project's entry came: 7 get a note, with up to 5 matches; 1 of 1,397
-  other-project matches is inside, the one at the edge.
-- **N3. 0.4861**, the middle of the messages' closest matches: 12 get a note, half of the 24 (12 of 35), with up to
-  11 matches inside; 6 of 1,397 other-project matches (0.4%) are inside, for 4 of 29 messages. It is almost the same
-  as the lesson cut-off the user chose (M5, 0.4862), so a lesson and a project match in the note are held to the same
-  closeness.
-- **N4. 0.615** (1% of other-project matches inside): 14 get a note; other projects' matches inside for 7 of 29
-  messages.
-- **N5. 0.691** (5% inside): 16 get a note; other projects' matches inside for 20 of 29.
+cut-off). Each gives, in brackets, the same without the `-p` runs (of 13 window messages with earlier entries, and of
+18 with other projects' entries):
+- **N1. 0.2323**: 6 get a note (3 of them `-p`; without `-p`, 3 of 13), one match each; no other project's entry
+  comes this close. Notes are rare (6 of 35 first messages).
+- **N2. 0.3111**, as close as any other project's entry came: 7 get a note (3 `-p`; without, 4 of 13), with up to 5
+  matches; 1 of 1,397 other-project matches is inside, the one at the edge (without `-p`, none).
+- **N3. 0.4861**, the middle of the messages' closest matches: 12 get a note (4 `-p`; without, 8 of 13), with up to
+  11 matches inside; 6 of 1,397 other-project matches (0.4%) are inside, for 4 of 29 messages (without `-p`, 2 of
+  683, for 2 of 18).
+- **N4. 0.615** (1% of other-project matches inside): 14 get a note (5 `-p`; without, 9 of 13); other projects'
+  matches inside for 7 of 29 messages (without, 2 of 18).
+- **N5. 0.691** (5% inside): 16 get a note (5 `-p`; without, 11 of 13); other projects' matches inside for 20 of 29
+  (without, 9 of 18).
 
 From 0.742 up, a tenth or more of all other-project matches are inside, for 25 to 29 of the 29 messages.
 
@@ -4000,12 +4106,20 @@ characters for 1; 441 and 1,099 for 2; 773 and 1,099 for 3; add 85 for the headi
 line. Since the lessons share the count (Q27), a count of 1 lets a closer lesson push the project's match out, and the
 other way round.
 
-Recommended, not chosen: **N3, 0.4861, with a count of 3.** Half of the messages with something earlier get a note,
-while other projects' entries come that close for few messages (4 of 29); a count of 3 holds the middle message's
-matches (2) and leaves room for a lesson beside them, at a cost of at most 1,099 characters of text here (2,400 at
-most, 3 pieces of 800). Its weak points: nothing here measures whether a second or third match helps; at 0.4861, 4 of
-29 messages have another project's entry inside, so an unrelated entry of the same project may get in about as
-often, which this cannot tell; and the figures rest on 35 messages, mostly tests. A more careful choice: **N3 with a
-count of 1** (one piece, at most 800 characters), or **N2, 0.3111, with a count of 1**.
+Recommended, not chosen: **N3, 0.4861, with a count of 3** (reasons rewritten after the review). Say first what N3
+is: it is the middle of the messages' closest same-project scores, so about half the messages with something earlier
+get a note by construction (12 of 24; 8 of the 13 window messages). That is not a finding about how useful notes
+are: **nothing here measures whether a match helps**. The reason to take N3 and not a wider cut-off is the other
+projects' entries, the only stand-in for unrelated text measured: up to N3 they stay rare (0.4% of them inside, for 4
+of 29 messages; 2 of 18 window messages), and at the next candidates they rise (1.1% and 7 of 29 at 0.615; 5% and
+20 of 29 at 0.691). Without the `-p` runs the step to N4 is smaller: 9 notes against 8, with other projects' matches
+inside for the same 2 of 18 window messages (4 matches against 2), so on the window messages alone N4 is about as
+safe; it rests on one more note. The reasons for a count of 3: the lessons share the count with the project's
+matches (Q27), so a count of 1 lets one push the other out; and the cost is small and bounded, at most 1,099
+characters of text here and 2,400 at most (3 pieces of 800), before the heading and first lines. Its weak points:
+whether a second or third match helps is not measured; at 0.4861, 4 of 29 messages have another project's entry
+inside, so an unrelated entry of the same project may get in about as often, which this cannot tell; every note
+count is an upper bound (Q9); and the figures rest on 35 messages, mostly tests. A more careful choice: **N3 with
+a count of 1** (one piece, at most 800 characters), or **N2, 0.3111, with a count of 1**.
 
 **The user's choice: not yet given.**
