@@ -4,13 +4,13 @@
 //   node scripts/8d/throwaway.mjs snapshot <label> [<earlier label>]
 //
 // Everything uv, Python or MemPalace does during the build happens in a sub-folder of the build folder, with an
-// environment from `throwaway`: the home, the uv cache and Pythons, MemPalace's config and the model cache all inside
-// that sub-folder, no API keys, and UV_NO_CONFIG=1 so uv reads no config file of the user's (APPDATA is not moved,
-// so %APPDATA%\uv\uv.toml would otherwise be read). The snapshot lists names, sizes and change times under the user's
-// own MemPalace and uv folders, opens no file in them, changes nothing and follows no link; it is saved in the build
-// folder as <label>.json, and, given an earlier label, compared with it, printing "no change" or each difference.
-// Changes in the two places the user's own MemPalace writes by itself are printed apart and do not count
-// (`ownMemPalace`, below).
+// environment from `throwaway`: the home, the uv cache and Pythons, MemPalace's config, the model cache and the Temp
+// folder (TEMP and TMP) all inside that sub-folder, no API keys, and UV_NO_CONFIG=1 so uv reads no config file of the
+// user's (APPDATA is not moved, so %APPDATA%\uv\uv.toml would otherwise be read). The snapshot lists names, sizes and
+// change times under the user's own MemPalace and uv folders, opens no file in them, changes nothing and follows no
+// link; it is saved in the build folder as <label>.json, and, given an earlier label, compared with it, printing "no
+// change" or each difference. Changes in the two places the user's own MemPalace writes by itself are printed apart and
+// do not count (`ownMemPalace`, below).
 import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -30,7 +30,13 @@ export function throwaway(name, { root = BUILD, env = process.env } = {}) {
   const dir = path.join(root, plain(name));
   const home = path.join(dir, "home");
   mkdirSync(home, { recursive: true });
+  // Temp folders inside the throwaway too: uv left empty `uv-<16 hex>.lock` files in the user's Temp folder when it
+  // was given the user's TEMP and TMP (step 8's review). The user's choice after that review.
+  const tmp = path.join(dir, "tmp");
+  mkdirSync(tmp, { recursive: true });
   const set = {
+    TEMP: tmp,
+    TMP: tmp,
     USERPROFILE: home,
     HOME: home,
     UV_CACHE_DIR: path.join(dir, "uv-cache"),

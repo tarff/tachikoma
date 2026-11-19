@@ -1520,8 +1520,8 @@ ran before the Python unpacking was added to `first-starts`; that change touches
 `first-starts` and the timings run used the script as first committed (01f4e71), but for its line endings: after the
 timings run ended (about 23:58 UTC), the only change to the file before that commit was turning every LF into CRLF,
 at 00:02:48 UTC, by a Node command that did nothing else (`replace(/\r?\n/g, "\r\n")`); no comment or code changed.
-Since then, the review fixes changed only `first-starts`' TEMP and TMP for uv (under "The first start after an
-install"), which produced no recorded figure; that change has not been run.
+Since then, the review fixes changed what produced no recorded figure: TEMP and TMP for every child (step 1's
+helper), the PC description's PowerShell, and `first-starts <n>` (see "TEMP and TMP inside the build folder").
 
 This PC: Intel Core i9-12900K (16 cores, 24 threads), 68.4 GB of memory, solid-state disks (the build folder is on
 C:), Windows 11 Pro 10.0.26200, Node v24.22.1. Microsoft Defender's real-time scanning is off on this PC
@@ -1637,14 +1637,41 @@ one, without the download:
   `uv-c14cb40c2cfa3352.lock` (made 23:46:29.980 UTC, run 1), `uv-e0f10f62b91f88d1.lock` (23:48:35.775),
   `uv-5f10f9bdd209eb04.lock` (23:49:05.439) and `uv-e794db0079c48ab4.lock` (23:49:25.444, run 2). The snapshots do
   not watch Temp, so they did not show them; the reviewer found them. On the user's word each was checked again to be
-  an empty file (0 bytes) and deleted by its exact name, on 2026-11-19; no other `uv-*.lock` was in Temp. The script
-  now gives uv TEMP and TMP in the install's own folder (`fresh-<n>\tmp`) and refuses to run uv if either is outside
-  the build folder; that change has not been run. uv logged
+  an empty file (0 bytes) and deleted by its exact name, on 2026-11-19; no other `uv-*.lock` was in Temp. uv logged
   "Found managed installation `cpython-3.13.17-windows-x86_64-none`" in the new folder. Its logs name no request
   ("Sending ... GET request" or "Downloading": 0 lines each), and the dead-end proxy got nothing. uv compiles no
   bytecode by default: the new `mempalace` package had 0 `__pycache__` folders before the first start and 6 after.
 - Then the first start of that install, and a second start of it, each on a new palace, each stopped by its serving
   process's id.
+
+#### TEMP and TMP inside the build folder (the user's choice after the review, 2026-11-19)
+
+- Step 1's helper, `scripts/8d/throwaway.mjs`, now sets TEMP and TMP to a `tmp` folder in the throwaway (made if
+  missing) for every child environment it builds, and drops every other spelling of the two, as it drops the user's
+  `MEMPALACE_*`. That covers uv, the hubs, `tar.exe`, the helper and the start-time reads in this script and in every
+  later step. The per-uv TEMP and TMP of the first review fix were removed from `measure-hub.mjs`, with their guard.
+  `tests/memory/throwaway.test.ts` checks it (both point inside the folder it makes, the folder is made, a `Temp` and
+  a `tmp` of the user's are dropped, and no value names the user's Temp): `node node_modules/vitest/vitest.mjs run
+  tests/memory/throwaway.test.ts`, 14 passed (the new test was seen failing first: the user's `Temp` and `tmp` were
+  kept).
+- The PC description's PowerShell call had the user's own environment, TEMP included, and was not among the recorded
+  processes. It now has the build's environment and is recorded.
+- The proof: `node scripts/8d/measure-hub.mjs first-starts 1` (one offline install; `<n>` is new), twice, each between
+  a listing of the user's Temp folder's top-level entries (names, kinds and last-written times; no file opened) and a
+  pair of snapshots of the user's folders.
+  - Run at 00:37:58 UTC (before the PowerShell fix): exit 0, "measure-hub: passed"; 0 `uv-*.lock` in the user's Temp
+    before and after; uv's own lock was in the build's `install\tmp` (`uv-9944703f12e302d3.lock`, 00:38:16.824 UTC,
+    the lock uv's log names for the project). New in Temp: `psi.json` (647 bytes, made 00:38:13.056 UTC, during the
+    Python unpacking) and a GUID-named `.tmp` gone before it could be looked at. Not opened, not traced; the run's
+    processes then were this script, its helper and `tar.exe`, the last two with the build's TEMP.
+  - Run at 00:41:15 UTC (after it): exit 0, passed; 0 `uv-*.lock` in the user's Temp before and after; uv's lock in
+    `install\tmp` (`uv-491d2fa86e042654.lock`, 00:41:34.751). `psi.json` not touched. Changed in Temp: one GUID-named
+    `.tmp` added, one removed, one rewritten, and the build folder itself.
+  - With nothing of the build running (two listings at 00:42:33 and 00:43:25 UTC): one GUID-named `.tmp` removed and
+    the same one rewritten again, so that churn is another program's. Left alone.
+  - Both runs' pairs of snapshots (`step8-temp-*`, `step8-temp2-*`): "no change", only the set-apart daemon line.
+  - `psi.json` is left in place, unopened, for the user.
+- For step 19: the installer gives every process it starts, uv and the hub, a TEMP and TMP inside `memory/`.
 
 #### The timings
 
@@ -1695,7 +1722,9 @@ Two kinds of row need a note:
   hubs as well), and each look includes a process listing; the fastest figure, 37.5 ms, is about what one look takes.
   So each figure is the time until the script had found the file, not when MemPalace wrote it, and the fastest and
   middle show the looking more than the lag. Only the slowest, 121.0 ms, is kept: the file is there within that time
-  of the first health answer on this PC.
+  of the first health answer on this PC. That figure is from the 30 installed starts of the timings run; the
+  first-start installs' stops did not store it. So decision 1's 7,806.5 + 121.0 adds an installed start's figure to a
+  first start's (the safe way; the user's 40 s is not affected).
 
 What the figures mean:
 - A hub's start does not depend on what the palace holds: 1.1 s for an empty palace and for one of 10,125 pieces.

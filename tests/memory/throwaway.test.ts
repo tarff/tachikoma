@@ -68,6 +68,22 @@ describe("throwaway", () => {
     expect(env.PATH).toBe("/bin");
   });
 
+  // The user's choice after step 8's review: uv left empty lock files in the user's Temp folder, so every child
+  // process gets a Temp folder inside the throwaway, made if missing, and no other spelling of TEMP or TMP.
+  it("points TEMP and TMP inside the folder it makes, made, and drops every other spelling of them", () => {
+    const root = made();
+    const userTemp = "C:\\Users\\me\\AppData\\Local\\Temp";
+    const given = { PATH: "/bin", Temp: userTemp, tmp: userTemp, TEMP: userTemp, TMP: userTemp };
+    const { dir, env } = throwaway("five", { root, env: given });
+    expect(Object.keys(env).filter((k) => /^(TEMP|TMP)$/i.test(k)).toSorted()).toEqual(["TEMP", "TMP"]);
+    for (const name of ["TEMP", "TMP"]) {
+      expect(env[name]).toBe(path.join(dir, "tmp"));
+      expect(inside(dir, env[name] ?? ""), name).toBe(true);
+    }
+    expect(lstatSync(path.join(dir, "tmp")).isDirectory()).toBe(true);
+    expect(Object.values(env).filter((v) => String(v).includes(userTemp))).toEqual([]);
+  });
+
   it("leaves no API key, in any case", () => {
     const keys = Object.fromEntries(API_KEYS.flatMap((k) => [[k, "sk-1"], [k.toLowerCase(), "sk-2"]]));
     const { env } = throwaway("two", { root: made(), env: { PATH: "/bin", ...keys } });

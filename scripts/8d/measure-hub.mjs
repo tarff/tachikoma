@@ -3,6 +3,7 @@
 //
 //   node scripts/8d/measure-hub.mjs proof          the proof (Q24): run first; the timings rely on it
 //   node scripts/8d/measure-hub.mjs first-starts   the first start after an install, from offline installs
+//                                                  (`first-starts <n>` makes n installs in place of three)
 //   node scripts/8d/measure-hub.mjs timings        the other timings
 //
 // Every hub is started the way the user decided after step 6 (Q24, Q8, Q25), never as `mempalace serve`: the
@@ -56,7 +57,6 @@ import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { commandEnv } from "../../src/exec/env.ts";
 import { BUILD, throwaway } from "./throwaway.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -782,9 +782,11 @@ function pcDescription() {
     "$m = (Get-MpComputerStatus).RealTimeProtectionEnabled; " +
     "ConvertTo-Json -Compress @{ cpu = $p.Name; cores = $p.NumberOfCores; threads = $p.NumberOfLogicalProcessors; " +
     "disks = $d; defenderRealTime = $m }";
+  // With the build's environment (TEMP and TMP inside the build folder), and recorded as this script's.
+  const before = nowUs();
   const ps = spawnSync(POWERSHELL, ["-NoProfile", "-NonInteractive", "-EncodedCommand",
-    Buffer.from(script, "utf16le").toString("base64")], { env: commandEnv(process.env), encoding: "utf8",
-    windowsHide: true });
+    Buffer.from(script, "utf16le").toString("base64")], { env: processEnv, encoding: "utf8", windowsHide: true });
+  if (ps.pid) recordDirect("pc description", ps.pid, before, "powershell.exe");
   let hw = {};
   try {
     hw = JSON.parse(ps.stdout);
@@ -971,7 +973,9 @@ async function firstStarts() {
     mkdirSync(fresh);
     const v = spawnSync("uv", ["--version"], { env: processEnv, encoding: "utf8" });
     out.firstStarts.uv = v.stdout.trim();
-    for (let i = 1; i <= FRESH_INSTALLS; i++) {
+    const installs = process.argv[3] === undefined ? FRESH_INSTALLS : Number(process.argv[3]);
+    if (!Number.isInteger(installs) || installs < 1) throw new Error(`not a count of installs: ${process.argv[3]}`);
+    for (let i = 1; i <= installs; i++) {
       const dir = path.join(fresh, `fresh-${i}`);
       const project = path.join(dir, "project");
       mkdirSync(project, { recursive: true });
@@ -979,15 +983,10 @@ async function firstStarts() {
       copyFileSync(path.join(REPO, "memory", "uv.lock"), path.join(project, "uv.lock"));
       // Step 4's install, again, but offline: the same wheel and Python archive caches (step 4's), a new Python
       // folder and a new environment folder, every file copied (not linked), as a first install has new files.
-      // TEMP and TMP point inside the install's folder too: the runs of this command before this was added left one
-      // empty `uv-<16 hex>.lock` per `uv sync` in the user's Temp folder (removed by exact name).
-      const uvEnv = Object.fromEntries(Object.entries(processEnv).filter(([k]) => !(/^UV_/i.test(k) &&
-        k.toUpperCase() !== "UV_NO_CONFIG") && !/^(TEMP|TMP)$/i.test(k)));
-      const tmp = path.join(dir, "tmp");
-      mkdirSync(tmp, { recursive: true });
+      // TEMP and TMP are step 1's helper's, inside the build folder (`install\tmp`), as for every child here.
+      const uvEnv = Object.fromEntries(Object.entries(processEnv).filter(([k]) => !/^UV_/i.test(k) ||
+        k.toUpperCase() === "UV_NO_CONFIG"));
       Object.assign(uvEnv, {
-        TEMP: tmp,
-        TMP: tmp,
         UV_CACHE_DIR: path.join(installDir, "uv-cache"),
         UV_PYTHON_CACHE_DIR: path.join(installDir, "python-cache"),
         UV_PYTHON_INSTALL_DIR: path.join(dir, "python"),
@@ -1026,9 +1025,7 @@ async function firstStarts() {
         if (r.status !== 0 || !inside(BUILD, where)) throw new Error(`uv ${args.join(" ")}: ${where} ${r.stderr}`);
       }
       for (const k of Object.keys(uvEnv)) {
-        if (/^(UV_.*(DIR|ENVIRONMENT)|TEMP|TMP)$/i.test(k) && !inside(BUILD, uvEnv[k])) {
-          throw new Error(`${k} outside the build`);
-        }
+        if (/^UV_.*(DIR|ENVIRONMENT)$/i.test(k) && !inside(BUILD, uvEnv[k])) throw new Error(`${k} outside the build`);
       }
       const log = path.join(dir, "sync.log");
       const fd = openSync(log, "w");
