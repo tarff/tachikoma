@@ -843,7 +843,7 @@ The snapshots of the user's folders:
   - `hook_state/last_checkpoint`;
   - two `hook_state/<session>_last_save` files. One is
     `hook_state/<session>_last_save`. Its name matches the session folder in the build's
-    scratchpad path (in a folder of another program in Temp, `...\<id>\<session>\scratchpad`), so it is
+    scratchpad path (`...\Temp\claude\<id>\<session>\scratchpad`), so it is
     taken to be this build's Claude Code session. The commit trailers carry a different session ID
     (`<session>`).
 
@@ -1661,13 +1661,13 @@ one, without the download:
   pair of snapshots of the user's folders.
   - Run at 00:37:58 UTC (before the PowerShell fix): exit 0, "measure-hub: passed"; 0 `uv-*.lock` in the user's Temp
     before and after; uv's own lock was in the build's `install\tmp` (`uv-9944703f12e302d3.lock`, 00:38:16.824 UTC,
-    the lock uv's log names for the project). New in Temp: a file of another program (647 bytes, made 00:38:13.056
-    UTC, during the Python unpacking) and a file of another program gone before it could be looked at. Not opened,
+    the lock uv's log names for the project). New in Temp: a file (origin not traced; 647 bytes, made 00:38:13.056
+    UTC, during the Python unpacking) and a file (origin not traced) gone before it could be looked at. Not opened,
     not traced; the run's processes then were this script, its helper and `tar.exe`, the last two with the build's
     TEMP.
   - Run at 00:41:15 UTC (after it): exit 0, passed; 0 `uv-*.lock` in the user's Temp before and after; uv's lock in
-    `install\tmp` (`uv-491d2fa86e042654.lock`, 00:41:34.751). The 647-byte file not touched. Changed in Temp: a file
-    of another program added, one removed, one rewritten, and the build folder itself.
+    `install\tmp` (`uv-491d2fa86e042654.lock`, 00:41:34.751). The 647-byte file not touched. Changed in Temp: files
+    of origin not traced, one added, one removed and one rewritten, and the build folder itself.
   - With nothing of the build running (two listings at 00:42:33 and 00:43:25 UTC): a file of another program removed
     and the same one rewritten again, so that churn is another program's. Left alone.
   - Both runs' pairs of snapshots (`step8-temp-*`, `step8-temp2-*`): "no change", only the set-apart daemon line.
@@ -2184,7 +2184,7 @@ no other source.
 Read on this computer, read only, as lengths and counts alone. Nothing from the Tachikoma transcripts (no text, no
 session id, no file name) is in any output, in the results files or here. The snapshot listings of the user's folders
 are another matter: as approved at step 1, they hold the names of the files in those folders (among them the user's
-MemPalace plugin's `hook_state` files, named by Claude Code session ids, and files of other programs in Temp), and they
+MemPalace plugin's `hook_state` files, named by Claude Code session ids, and the other files in Temp), and they
 stay in the build folder until step 31 deletes it; none of those names is printed here. Subagents' own files were not
 read (their messages are never saved).
 
@@ -2377,11 +2377,11 @@ bytes, 02:19:40.720) and the folder `locks` (02:19:40.994). Set apart as usual: 
 in the main session's log that a reply ended at 02:19:09.431 UTC (`end_turn`); the plugin's files changed 2.1 s later
 (02:19:11.49) and the palace about 29 s after them (02:19:40.69), the full chain the rule names. The pair failed, and
 counts as explained. The run's Temp listing:
-no `uv-*.lock`; added, a file of another program (02:17:16); rewritten, a file of another program (02:38:16);
+no `uv-*.lock`; added, a file (origin not traced, 02:17:16); rewritten, a file (origin not traced, 02:38:16);
 neither opened.
 
 The same command listed the top level of the user's Temp folder before and after (step 8's `templist2.cjs`: names,
-kinds and last-written times only, no file opened): no `uv-*.lock`; added, two files of other programs (written
+kinds and last-written times only, no file opened): no `uv-*.lock`; added, two files (origin not traced; written
 01:37:53 UTC and 01:54:36), neither opened; nothing removed or rewritten. No tsx ran.
 
 #### The decision for the user: the exit save's time limit
@@ -2718,8 +2718,11 @@ folder. What changed, in two groups:
 Both have the shape of the plugin's save, and the first the full chain of the user's rule (the plugin's files, then
 the palace about 30 s later). **Traced afterwards, so explained** (the orchestrator, 2026-11-19, under the user's rule
 as widened during step 11 to a plugin save by any of the user's Claude Code sessions, traced in that session's own
-log): (1) the main session's reply ended at 04:59:29.670 UTC (`end_turn`); the plugin's files changed at 04:59:31.6,
-about 2 s later, and the palace's write-ahead log at 05:00:04.96; (2) another of the user's Claude Code sessions
+log: the "Snapshot rule widened" entry of
+`C:\Users\<user>\.claude\orch\Agent Harness\2026-11-19-memory-and-lessons\user-decisions-after-step-6.md`, the
+run folder's record of the user's decisions; the times are its "Step 11's pair, traced" entry): (1) the main
+session's reply ended at 04:59:29.670 UTC (`end_turn`); the plugin's files changed at 04:59:31.6, about 2 s later,
+and the palace's write-ahead log at 05:00:04.96; (2) another of the user's Claude Code sessions
 (`<session>`) ended a reply at 04:29:37.773; its own `_last_save` changed at 04:29:38.7, and nothing else. The pair
 failed, and counts as explained.
 
@@ -2727,12 +2730,11 @@ The trial's pair, `step11-trial-before` (03:05:35 UTC) and `step11-trial-after` 
 only the set-apart daemon folder.
 
 The same commands listed the top level of the user's Temp folder before and after (step 8's `templist2.cjs`: names,
-kinds and last-written times only, no file opened). Around the run: no `uv-*.lock`; added, five files of other
-programs (written 03:17:16, 04:17:16, 05:17:16, 04:25:47 and 05:30:48.9; the last 2 s before the run ended, a file of
-another program of a kind that comes and goes in Temp with nothing of the build running, as step 8's idle listings
-showed, so taken as another program's, not traced); removed, a file of another program; rewritten, two files of other
-programs (05:14:16.9 and 04:29:43.6). None was opened. Around the trial: no `uv-*.lock`; a file of another program
-removed. No tsx ran.
+kinds and last-written times only, no file opened). Around the run: no `uv-*.lock`; added, five files (origin not
+traced; written 03:17:16, 04:17:16, 05:17:16, 04:25:47 and 05:30:48.9, the last 2 s before the run ended, of a kind
+step 8's idle listings saw come and go in Temp with nothing of the build running); removed, a file (origin not
+traced); rewritten, two files (origin not traced; 05:14:16.9 and 04:29:43.6). None was opened. Around the trial: no
+`uv-*.lock`; a file (origin not traced) removed. No tsx ran.
 
 #### The decision for the user: the lesson search's time limit, and Q9
 
@@ -2795,10 +2797,11 @@ but with a margin of only 2.6 times (1,746.0 over 678.3 ms).
 #### The user's choice (step 11), 2026-11-19
 
 The user approved the figures above and chose **L3** (cover the first search after a start) with **Q9-A** (one limit
-for both, from the pair's figure): **one limit of 3.4 s**, 5 x 678.3 ms (the slowest of two searches at once, as the
-first search after a start, 9,800 pieces, limit 100) = 3,391.5 ms, rounded up to 0.1 s. It serves both the lesson
-search when a tool fails (step 25) and the note's two searches at once (step 24), and step 23's `memory_search` if it
-uses a limit. For one search it is above L3's own 3.1 s. The margin of 5 times is the user's, from M3; it was not
+for both, from the pair's figure), as recorded in the "Step 11 (M8) and Q9" entry of the run folder's
+`user-decisions-after-step-6.md` (above): **one limit of 3.4 s**, 5 x 678.3 ms (the slowest of two searches at once,
+as the first search after a start, 9,800 pieces, limit 100) = 3,391.5 ms, rounded up to 0.1 s. It serves both the
+lesson search when a tool fails (step 25) and the note's two searches at once (step 24). For one search it is above
+L3's own 3.1 s. The margin of 5 times is the user's, from M3; it was not
 measured (no slower PC was run).
 - Covered: on this PC's figures with the user's margin, a search of a 9,800-piece palace warm, just after a write, and
   as the first search after a hub start, one search or two at once, at any `limit` from 5 to 100.
