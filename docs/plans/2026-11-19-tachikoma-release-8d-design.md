@@ -3418,8 +3418,9 @@ In short: with lessons written as sentences and the new rule, **failed commands 
 rest only partly**. Of the 36 made-up failed commands whose family has a lesson, at a cut-off of 0.4862 and a count
 of 1, 26 are handed their own lesson and none of the 48 failed commands is handed a wrong one (at a count of 2 or 3,
 2 are); under the old rule not one of them ever gets its own lesson first. Over all 88 made-up failures that have a
-lesson, the same cut-off hands 57 their own lesson at a count of 1, but 10 get another family's lesson first, and 12 of the 28 failures with nothing to learn
-from are handed one anyway. Tighter cut-offs hand out fewer wrong lessons and fewer right ones. **Everything here is
+lesson, the same cut-off hands 57 their own lesson at a count of 1, but 10 get another family's lesson first, and 12
+of the 28 failures with nothing to learn from are handed one anyway. Tighter cut-offs hand out fewer wrong lessons
+and fewer right ones. **Everything here is
 made up by the builder, failures and lessons both, so words they share are partly the builder's doing; real lessons
 may sit closer or farther.** The user's 6 real failures, a side figure only and possibly test-polluted, are handed
 none of the made-up lessons at or below 0.3480. The cut-off and the count wait on the user (end of this part).
