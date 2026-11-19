@@ -979,9 +979,15 @@ async function firstStarts() {
       copyFileSync(path.join(REPO, "memory", "uv.lock"), path.join(project, "uv.lock"));
       // Step 4's install, again, but offline: the same wheel and Python archive caches (step 4's), a new Python
       // folder and a new environment folder, every file copied (not linked), as a first install has new files.
-      const uvEnv = Object.fromEntries(Object.entries(processEnv).filter(([k]) => !/^UV_/i.test(k) ||
-        k.toUpperCase() === "UV_NO_CONFIG"));
+      // TEMP and TMP point inside the install's folder too: the runs of this command before this was added left one
+      // empty `uv-<16 hex>.lock` per `uv sync` in the user's Temp folder (removed by exact name).
+      const uvEnv = Object.fromEntries(Object.entries(processEnv).filter(([k]) => !(/^UV_/i.test(k) &&
+        k.toUpperCase() !== "UV_NO_CONFIG") && !/^(TEMP|TMP)$/i.test(k)));
+      const tmp = path.join(dir, "tmp");
+      mkdirSync(tmp, { recursive: true });
       Object.assign(uvEnv, {
+        TEMP: tmp,
+        TMP: tmp,
         UV_CACHE_DIR: path.join(installDir, "uv-cache"),
         UV_PYTHON_CACHE_DIR: path.join(installDir, "python-cache"),
         UV_PYTHON_INSTALL_DIR: path.join(dir, "python"),
@@ -1020,7 +1026,9 @@ async function firstStarts() {
         if (r.status !== 0 || !inside(BUILD, where)) throw new Error(`uv ${args.join(" ")}: ${where} ${r.stderr}`);
       }
       for (const k of Object.keys(uvEnv)) {
-        if (/^UV_.*(DIR|ENVIRONMENT)$/i.test(k) && !inside(BUILD, uvEnv[k])) throw new Error(`${k} outside the build`);
+        if (/^(UV_.*(DIR|ENVIRONMENT)|TEMP|TMP)$/i.test(k) && !inside(BUILD, uvEnv[k])) {
+          throw new Error(`${k} outside the build`);
+        }
       }
       const log = path.join(dir, "sync.log");
       const fd = openSync(log, "w");
