@@ -2501,3 +2501,272 @@ not measured (no slower PC was run).
 
 Step 10 was committed (8b71e01, with the fixes b0b4937 and 9a8bdbf) before the user's answer, as steps 8 and 9 were;
 the answer is in the commit after them.
+
+### M8 The time limit on the lesson search when a tool fails (step 11, 2026-11-19)
+
+In short: a search of one room takes about 0.1 s on a hub that is up and has searched before, in a palace of 9,800
+pieces (about the largest earlier steps used). It takes about 0.2 s when anything was saved since the last search,
+because every save empties the hub's search cache. It takes about 0.45 s when it is the first search after the hub
+started. Two searches sent at once, as the note and `memory_search` send them, take about 1.4 to 2.0 times one
+search. In the smallest palace (98 pieces, about what the user's transcripts would make today) every search but the
+first after a start is under 45 ms. **The lesson search's time limit, and Q9 (whether the note's pair of searches
+uses the same one), wait on the user ("The decision for the user", below). The pair of snapshots failed, on the
+user's MemPalace plugin's files only; it is not traced yet ("The user's folders").**
+
+Script: `scripts/8d/measure-search.mjs`, two commands: `timings` (the run) and `trial` (the same run cut short, to
+check the script first; its figures are not used). The timings ran once, `node scripts/8d/measure-search.mjs
+timings`, from 03:09:15 to 05:30:51 UTC, between a pair of snapshots: exit 0, "measure-search: passed", no failures.
+Results: `tachi-8d-build\install\measure-search-timings-2026-11-19T03-09-15-212Z\results.json`, with every hub's log
+beside it. Nothing was fetched; the dead-end proxy got 0 connections. No transcript or error log of the user's was
+read. 373 processes were recorded; at the end none was still running and none was unsettled. One process was listed
+apart and left alone: a `sleep.exe` of another program that started at 05:30:46.5 UTC under an id that had belonged
+to one of this run's hub processes. All 123 hubs were started the decided way and stopped by the serving process's
+id after its start time was read again; each was wholly gone within 19.9 to 24.6 ms.
+
+This PC, as in M2, M3 and M4: Intel Core i9-12900K (16 cores, 24 threads), 68.4 GB of memory, solid-state disks (the
+build folder is on C:), Windows 11 Pro 10.0.26200, Node v24.22.1, Defender's real-time scanning off (read again in
+this run). Other programs of the user's were running as usual; their load was not measured (a look before the run
+showed the processors 3 to 29% busy).
+
+#### What a search does, in MemPalace 3.12.0's source
+
+Read in the build's installed copy (`tachi-8d-build\env\Lib\site-packages\mempalace`), read only. These shape what was
+timed:
+- **Every room's pieces are read for every search.** With the `sqlite_exact` backend a search ranks the vectors of
+  the palace's one collection, all rooms together, and keeps the asked room's by checking each piece's room in Python
+  (`backends/sqlite_exact.py:1108-1156`, the room check at `:1148`). So a search's cost follows the palace's size,
+  whichever room it asks for.
+- **A cache, emptied by every write.** The vectors are read from the palace file once and kept in the hub
+  (`:1130-1136`). Every write through the hub empties that cache (`:520-521`), and so does a write by another
+  connection (`PRAGMA data_version`, `:1130-1132`). Each turn's save is a write, so the search after it reads every
+  vector again. That is why "just after a write" is timed as a case of its own.
+- **Reads take one lock.** A read takes the handle's lock (`:505-506`; writes take a lock of their own), so two
+  searches sent at once do not run side by side all the way.
+- **The limit.** The pool of candidates is at least 4 times `limit` (`searcher/candidates.py:26`, `:30-54`). Both ends
+  of `limit` were timed: MemPalace's default, 5 (`mcp_server/tools_read.py:611`), and its most, 100 (`_MAX_RESULTS`,
+  `mcp_server/_session.py:681`). The count Tachikoma will ask for is set later (M5, step 13; M6, step 14).
+- A search folds hits that copy the same text, and then searches again with a pool 4 times wider, up to 16 times and
+  500 candidates (`searcher/query.py:163-164`, `:177-186`, `:488-506`). Every text here was different, so that never
+  happened in this run.
+
+#### How the searches were timed
+
+Every hub was started and stopped as step 8 proved (Q24, Q8, Q25): the build folder's `env\Scripts\python.exe -I -m
+mempalace.mcp_server --transport http --port <p> --palace <palace> --backend sqlite_exact`, with
+`MEMPALACE_EMBEDDING_MODEL=minilm`, `MEMPALACE_MCP_WRITER_WAIT_SECONDS=0` and `MEMPALACE_MCP_IDLE_HOURS=0`, in step 1's
+`install` environment (TEMP and TMP inside the build folder) with step 5's offline settings and a dead-end proxy. The
+script's code for starting, finding and stopping hubs and for keeping track of processes is copied unchanged from
+`scripts/8d/measure-save.mjs` (its lines 44-697 and 699-709, which it copied from `scripts/8d/measure-hub.mjs`), but
+for the run folder's and palaces' names, the result line and one comment. Every stage's palace read back
+`sqlite_exact` (from `mempalace_status` and `/statusz`) and the model `minilm` (the palace file's `meta` table).
+
+One new palace, in the wing `tachikoma`, with two rooms, `lessons` and a project's room (`measure-search-project`),
+the entries alternating between them. It was filled in three stages, each a number of times over one pattern of
+made-up filler (step 8's word filler, each text with a seed of its own): M2's "today" palace, 83 entries in 98 pieces
+(72 of 1 piece, 9 of 2, 1 of 3 and 1 of 5), at M2's lengths for those pieces, 251 characters (the real middle), 870
+(the real 90th) and 3,828 (the real longest); the one 3-piece entry has no recorded real length, so it was given the
+most 3 pieces hold, 2,400. So the palace is laid out in pieces as the user's would be. The stages:
+
+| Stage | Pattern times | Entries (project's room, `lessons`) | Pieces (each room) | Palace file |
+|---|---|---|---|---|
+| 1 | 1 | 83 (42, 41) | 98 (51, 47) | 4.5 MB |
+| 2 | 10 | 830 (415, 415) | 980 (490, 490) | 9.1 MB |
+| 3 | 100 | 8,300 (4,150, 4,150) | 9,800 (4,900, 4,900) | 54.4 MB |
+
+Stage 1 is about the palace the user's transcripts make today (M2), stage 2 the size of M3's 1,000-piece palace, and
+stage 3 about M2's and M3's largest (10,000 pieces), so the figures line up with theirs. Entries are counted with
+`mempalace_list_drawers`, pieces with `mempalace_list_rooms` and `mempalace_status`; the file is the palace file and
+its write-ahead log. Each stage's size was read again after its timings and had not changed.
+
+At each stage, for each `limit` (5 and 100), these were timed:
+- **One search**: of `lessons`, as the lesson search when a tool fails sends it (step 25), from the sending to the
+  answer.
+- **Two at once**: one search of the project's room and one of `lessons`, sent together on one connection, as the note
+  and `memory_search`'s "this project" send them (Q27; step 18's client), from the sending of both to the arrival of
+  the later answer.
+
+Each of the two in three cases:
+- **Warm**: on the stage's hub, after one search that was not timed, with nothing written since. 50 runs.
+- **Just after a write**: one entry of 251 characters (a real turn's middle length) added to the project's room, as a
+  turn's save, then the search, then that entry removed by its label (not timed), so the palace kept its size.
+  50 runs.
+- **The first search after the hub starts**: a new hub on the palace, its first good health answer, connected, then
+  the search, then the hub stopped. 10 runs, each a start of its own.
+
+50 runs of each case that needs no start, as M3's health checks (each is cheap, so more runs show the rare slow one);
+10 of each that needs a start, as M3's starts. Every query was made-up text of 250 characters (the most MemPalace
+takes, step 6 item 7), each different, shaped like the lesson search's: a tool's name and the start of an error. No
+`max_distance` was sent (none is set yet). Connecting is not in any search figure: a window is already connected when
+it searches. Here connecting took 2.7 to 7.2 ms, and the starts took 1,093.6 to 1,234.3 ms to the first health answer
+(120 starts).
+
+A trial run first (`node scripts/8d/measure-search.mjs trial`, 03:06:02 to 03:07:25 UTC, stage 1 only, 3 runs of
+each case and 1 start): exit 0, "measure-search: passed", 19 processes recorded, none left running, its own pair of
+snapshots "no change". Its figures are not used. After the run, only comments in the script changed (three source
+citations corrected); no code.
+
+#### The figures
+
+| Search time (ms) | Fastest | Middle | Slowest | Runs |
+|---|---|---|---|---|
+| 98 pieces, one search, warm, limit 5 | 21.3 | 23.6 | 29.7 | 50 |
+| 98 pieces, one search, warm, limit 100 | 22.4 | 25.3 | 29.6 | 50 |
+| 98 pieces, one search, just after a write, limit 5 | 22.1 | 25.2 | 30.0 | 50 |
+| 98 pieces, one search, just after a write, limit 100 | 23.3 | 26.5 | 36.2 | 50 |
+| 98 pieces, one search, first after a start, limit 5 | 268.6 | 285.4 | 416.4 | 10 |
+| 98 pieces, one search, first after a start, limit 100 | 271.3 | 281.5 | 337.7 | 10 |
+| 98 pieces, two at once, warm, limit 5 | 31.0 | 33.6 | 36.0 | 50 |
+| 98 pieces, two at once, warm, limit 100 | 34.4 | 37.7 | 40.3 | 50 |
+| 98 pieces, two at once, just after a write, limit 5 | 32.9 | 36.0 | 43.0 | 50 |
+| 98 pieces, two at once, just after a write, limit 100 | 35.0 | 39.0 | 43.6 | 50 |
+| 98 pieces, two at once, first after a start, limit 5 | 363.1 | 405.0 | 433.9 | 10 |
+| 98 pieces, two at once, first after a start, limit 100 | 369.0 | 423.9 | 465.1 | 10 |
+| 980 pieces, one search, warm, limit 5 | 25.9 | 29.1 | 34.3 | 50 |
+| 980 pieces, one search, warm, limit 100 | 39.4 | 42.6 | 50.5 | 50 |
+| 980 pieces, one search, just after a write, limit 5 | 35.7 | 41.1 | 52.9 | 50 |
+| 980 pieces, one search, just after a write, limit 100 | 46.8 | 55.1 | 66.3 | 50 |
+| 980 pieces, one search, first after a start, limit 5 | 278.7 | 303.0 | 423.1 | 10 |
+| 980 pieces, one search, first after a start, limit 100 | 294.3 | 307.0 | 328.0 | 10 |
+| 980 pieces, two at once, warm, limit 5 | 39.6 | 44.7 | 50.6 | 50 |
+| 980 pieces, two at once, warm, limit 100 | 68.9 | 78.2 | 110.1 | 50 |
+| 980 pieces, two at once, just after a write, limit 5 | 50.4 | 56.7 | 67.8 | 50 |
+| 980 pieces, two at once, just after a write, limit 100 | 84.1 | 90.2 | 104.0 | 50 |
+| 980 pieces, two at once, first after a start, limit 5 | 407.2 | 450.0 | 482.4 | 10 |
+| 980 pieces, two at once, first after a start, limit 100 | 424.4 | 462.6 | 533.8 | 10 |
+| 9,800 pieces, one search, warm, limit 5 | 81.5 | 89.9 | 118.2 | 50 |
+| 9,800 pieces, one search, warm, limit 100 | 97.3 | 105.5 | **125.1** | 50 |
+| 9,800 pieces, one search, just after a write, limit 5 | 184.3 | 200.3 | 250.3 | 50 |
+| 9,800 pieces, one search, just after a write, limit 100 | 189.9 | 219.9 | **257.0** | 50 |
+| 9,800 pieces, one search, first after a start, limit 5 | 407.9 | 433.5 | **611.9** | 10 |
+| 9,800 pieces, one search, first after a start, limit 100 | 428.8 | 450.0 | 465.6 | 10 |
+| 9,800 pieces, two at once, warm, limit 5 | 150.4 | 164.9 | 206.2 | 50 |
+| 9,800 pieces, two at once, warm, limit 100 | 190.2 | 207.9 | **252.5** | 50 |
+| 9,800 pieces, two at once, just after a write, limit 5 | 255.3 | 277.4 | 315.7 | 50 |
+| 9,800 pieces, two at once, just after a write, limit 100 | 278.2 | 315.7 | **349.2** | 50 |
+| 9,800 pieces, two at once, first after a start, limit 5 | 557.3 | 609.3 | 641.8 | 10 |
+| 9,800 pieces, two at once, first after a start, limit 100 | 599.7 | 624.1 | **678.3** | 10 |
+
+The hits: every search at limit 5 gave 5. At limit 100, every search at 980 and 9,800 pieces gave 100; at 98 pieces
+a search of `lessons` gave 47 (all its pieces) and of the project's room 51, or 52 with the entry just written.
+
+Two at once, the earlier of the two answers against the later (middles, ms): at 9,800 pieces warm 163.1 / 164.9
+(limit 5) and 192.0 / 207.8 (limit 100); just after a write 276.3 / 277.4 and 299.3 / 315.7; first after a start
+608.3 / 609.3 and 613.3 / 624.1. The earlier answer comes only a little before the later one.
+
+Filling, plain adds (no lock or look-up), ms per add: stage 1 639.1 / 672.2 / 992.7 (83 adds); stage 2 653.4 / 718.0
+/ 978.7 (747); stage 3 712.8 / 971.1 / 3,920.7 (7,470).
+
+What the figures mean:
+- A warm search grows with the palace: one search at limit 5, middles 23.6, 29.1 and 89.9 ms at 98, 980 and 9,800
+  pieces.
+- A search just after a write is about twice a warm one at 9,800 pieces (middles 200.3 against 89.9 ms), as the
+  source says: the hub reads every vector again. In the small palaces the difference is a few milliseconds.
+- The first search after a start costs about 230 to 260 ms more than one just after a write (middles 285.4 against
+  25.2 at 98 pieces, 433.5 against 200.3 at 9,800). Most likely the hub loads the embedding model on its first query,
+  as M2 found for the first add; that is an inference, as the load was not timed on its own.
+- Two at once take 1.4 to 2.0 times one search, warm or just after a write, and 1.4 to 1.5 times as the first search
+  after a start. The earlier of the two answers is not much earlier than the later, so giving one room's results alone
+  when the other is late (step 18) would rarely save much time.
+- `limit` 100 adds up to about 20 ms to a search's middle: warm 1.7 to 15.6 ms (the most at 9,800 pieces, 105.5
+  against 89.9 ms), just after a write 1.3 to 19.6 ms.
+- **A note for M2 (step 10):** the adds here were slower than in M2's runs: middles 672.2 to 971.1 ms against M2's
+  226.0 to 623.0 ms for its fills (whose entries had other sizes), with a slowest of 3,920.7 ms in stage 3. M2's chosen
+  exit save limit, 14 s, rests on X = 1,146.9 ms for one save. Which entry size the slowest add here was is not
+  recorded, and this PC's load at either time was not measured. This is reported, not acted on.
+- Not measured: other systems; a slower PC; real-time scanning (off here); palaces larger than 9,800 pieces; a search
+  while another window is writing (reads and writes take different locks, but the cache is emptied); a search of the
+  whole wing ("everything"); a search with `max_distance` set.
+- **The user's own MemPalace** (the `"use"` setting): its palace file was 6,822,883,328 bytes at step 10's second pair
+  (M2, "The user's folders"), about 125 times this run's largest (54,538,416 bytes). How many pieces it holds is not
+  known (it was not opened), and no search of a palace that size was timed. Its searches may take far longer than any
+  figure here.
+
+#### The user's folders
+
+One pair of snapshots, taken in the same command just before and just after the run: `step11-before` (03:08:47 UTC)
+and `step11-after` (taken after 05:30:51, finished 05:31:21). **It failed (exit 1)**, on the user's MemPalace only;
+nothing else in any watched folder changed. Every child of the run had the build's home, TEMP and TMP; the script
+itself (run with the user's TEMP, as in M2 and M3, since the build folder is found from it) wrote only in the build
+folder. What changed, in two groups:
+- **04:59:31.575 to 04:59:31.923 UTC**: `wal/write_log.jsonl` (2,403,134 to 2,404,492 bytes, 04:59:31.575),
+  `hook_state/last_checkpoint` (04:59:31.802), one session's `hook_state/<session>_last_save` (04:59:31.899) and
+  `locks/mine_palace_<palace key>.lock` (04:59:31.923); then, 33 s later, `palace/sqlite_exact.sqlite3-wal` (same
+  size, 05:00:04.962) and the folder `locks` (05:00:04.968). Set apart as usual: `hook.log` (04:59:49.819),
+  `queue.sqlite3` (05:00:04.987) and the daemon folder (05:31:07.379).
+- **04:29:38.687 UTC**: another session's `hook_state/<session>_last_save`, alone. (A later change hides any other file
+  that changed then.)
+
+Both have the shape of the plugin's save, and the first the full chain of the user's rule (the plugin's files, then
+the palace about 30 s later). **Neither is traced yet**: tracing needs the main session's reply-end times near
+04:59:29 UTC, and the other session's near 04:29:36 UTC. Until then the pair counts as failed and not explained.
+
+The trial's pair, `step11-trial-before` (03:05:35 UTC) and `step11-trial-after` (finished 03:07:52): "no change", with
+only the set-apart daemon folder.
+
+The same commands listed the top level of the user's Temp folder before and after (step 8's `templist2.cjs`: names,
+kinds and last-written times only, no file opened). Around the run: no `uv-*.lock`; added by other programs
+`mat-debug-291832.log` (03:17:16), `mat-debug-292944.log` (04:17:16), `mat-debug-293412.log` (05:17:16), `pr5.md`
+(04:25:47) and a GUID-named `.tmp` (written 05:30:48.9, 2 s before the run ended; GUID-named `.tmp` files come and
+go in Temp with nothing of the build running, as step 8's idle listings showed, so it is taken as another program's,
+not traced); a GUID-named `.tmp` removed; rewritten a GUID-named `.tmp` (05:14:16.9) and `AdobeARM.log` (04:29:43.6).
+None was opened. Around the trial: no `uv-*.lock`; one GUID-named `.tmp` removed. No tsx ran.
+
+#### The decision for the user: the lesson search's time limit, and Q9
+
+What the limit does: when a tool fails, Tachikoma searches `lessons` and waits up to this long; past it, the error
+goes to the model as it is, without lessons (design, section 5). So:
+- **Too short**: lessons are left off a failure when the search is slow, most likely the first search after a hub
+  start or one just after a save.
+- **Too long**: a failed tool's result is held for up to the limit when the hub is slow or hung.
+
+When each case meets the lesson search: just after a write is the usual case, since every turn's save is a write;
+warm, when a search ran since the last save; the first after a start, when the window's first failure comes before
+any search on a hub that has just started.
+
+The inputs, each this PC's slowest at 9,800 pieces, the slower of the two limits (5 and 100), since the count is not
+set yet (ms):
+
+| Input | What it is | One search | Two at once |
+|---|---|---|---|
+| W | warm | 125.1 (limit 100) | 252.5 (limit 100) |
+| A | just after a write | 257.0 (limit 100) | 349.2 (limit 100) |
+| F | the first search after a start | 611.9 (limit 5) | 678.3 (limit 100) |
+
+Each figure is the margin times the input, rounded up to the next 0.1 s. **The margin for slower machines is not
+measured** (no slower PC was run); 5 times is the user's margin from M3, M4 and M2.
+
+| Option | What it covers | One search: input | 3 times | 5 times | 10 times |
+|---|---|---|---|---|---|
+| L1 | warm only | W = 125.1 | 0.4 s | 0.7 s | 1.3 s |
+| L2 | also just after a write | A = 257.0 | 0.8 s | 1.3 s | 2.6 s |
+| L3 | also the first search after a start | F = 611.9 | 1.9 s | 3.1 s | 6.2 s |
+
+For example L2 at 5 times: 5 x 257.0 = 1,285.0 ms, so 1.3 s. Each row also covers the rows above it, as its input is
+the largest.
+
+**Q9: does the note's pair fit the same limit?** Not at the same margin, in any row. The same cases for two at once:
+
+| Pair case | Two at once: input | 3 times | 5 times | 10 times | Lesson limit at 5 times: its margin over the pair |
+|---|---|---|---|---|---|
+| warm | 252.5 | 0.8 s | 1.3 s | 2.6 s | L1 0.7 s: 2.5 times |
+| just after a write | 349.2 | 1.1 s | 1.8 s | 3.5 s | L2 1.3 s: 3.7 times |
+| first after a start | 678.3 | 2.1 s | 3.4 s | 6.8 s | L3 3.1 s: 4.5 times |
+
+(The last column: the lesson limit's figure before rounding, 625.5, 1,285.0 and 3,059.5 ms, over the pair's input.)
+The note meets the first-after-a-start case more often than the lesson search does: at a launch, the note's search is
+often the first search after the window's hub started (Q9).
+
+So the options for Q9:
+- **Q9-A. One limit for both, taken from the pair's figure** (the pair's row in place of the one-search row): it
+  covers both with the full margin; the lesson search then gets a little more room than its own figure needs.
+- **Q9-B. One limit for both, taken from the one search**: the note's pair then has a smaller margin (the last column).
+- **Q9-C. Two limits**, one from each table.
+
+Recommended (not chosen): the first-after-a-start case with the user's margin of 5 times, as one limit for both from
+the pair's figure (L3 with Q9-A): 5 x 678.3 = 3,391.5 ms, so **3.4 s**. It covers the note at a launch and a window's
+first failure on a hub it has just started, in a palace of 9,800 pieces, and one figure is simpler. Its weak points: a
+hung hub holds every failed tool's result for up to 3.4 s, and the user's own MemPalace (a far larger palace) was not
+timed. A shorter choice, L2 with Q9-A at 5 times (1.8 s), also covers the first search after a start on this PC,
+but with a margin of only 2.7 times (1,746.0 over 678.3 ms).
+
+The user's OK on these figures, the lesson search's limit and Q9: not yet given.
