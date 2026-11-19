@@ -4,6 +4,9 @@ import { type Message, marker as typesMarker, type Part } from "../../src/core/t
 import { lastTurn } from "../../src/tui/describe.js";
 // @ts-expect-error: a build script in plain JavaScript, with no type file.
 import { cut, FEEDBACK, marker, turnsOf } from "../../scripts/8d/turns.mjs";
+// @ts-expect-error: a build script in plain JavaScript, with no type file.
+import { asksOf, keyOf, truncate } from "../../scripts/8d/measure-lesson-ask.mjs";
+import { truncate as sessionTruncate } from "../../src/core/session.js";
 
 // Made-up transcripts only, never the user's (8d plan, step 10). Each line as transcript.ts writes it: one JSON object
 // a line, the start line first.
@@ -132,5 +135,71 @@ describe("turns.mjs, cutting a long turn into parts", () => {
   it("never cuts between the two halves of a character Node holds as a pair", () => {
     const text = `${"a".repeat(9)}\u{1F600}b`;
     expect(cut(text, 10)).toEqual(["a".repeat(9), "\u{1F600}b"]);
+  });
+});
+
+// Made-up transcripts and made-up log rows only (8d plan, step 12). Each line has its own time, `s` seconds in.
+describe("measure-lesson-ask.mjs, the pairs and the matching of log rows", () => {
+  const when = (s: number) => new Date(Date.UTC(2026, 10, 19, 0, 0, s)).toISOString();
+  const line = (s: number, m: Message) => ({ t: "message", at: when(s), message: m });
+  const ask = (text: string, ...calls: [string, string, unknown][]): Message => ({
+    role: "assistant",
+    parts: [
+      ...(text ? [{ type: "text" as const, text }] : []),
+      ...calls.map(([id, name, input]) => ({ type: "tool_call" as const, id, name, input })),
+    ],
+  });
+  const answers = (...given: [string, boolean][]): Message => ({
+    role: "user",
+    parts: given.map(([id, isError]) => ({ type: "tool_result" as const, callId: id, output: "x", isError })),
+  });
+  const row = (s: number, name: string, input: unknown) =>
+    ({ at: when(s), session: "s1", kind: "tool", attempted: keyOf(name, input), message: "x", lead: "x" });
+  const test = { command: "npm test" };
+
+  it("cuts the key as the session's truncate cuts the log's text", () => {
+    const long = { command: "a".repeat(40_000) };
+    expect(truncate(`shell ${JSON.stringify(long)}`)).toBe(sessionTruncate(`shell ${JSON.stringify(long)}`));
+    expect(keyOf("shell", long)).toBe(sessionTruncate(`shell ${JSON.stringify(long)}`));
+  });
+
+  it("does not pair a failure in a typed turn with a success in the background turn after it", () => {
+    const r = asksOf(file(line(1, typed("run the tests")), line(2, ask("", ["c1", "shell", test])),
+      line(4, answers(["c1", true])), line(5, ask("They fail.")), line(6, background("A command finished.")),
+      line(7, ask("", ["c2", "shell", test])), line(8, answers(["c2", false])), line(9, ask("They pass."))),
+    [row(3, "shell", test)]);
+    expect(r.results).toEqual({ errors: 1, confirmed: 1, unclear: 0, noRow: 0 });
+    expect(r.turns.map((t: { kind: string; failed: boolean; low: boolean; high: boolean; ceiling: boolean }) =>
+      [t.kind, t.failed, t.low, t.high, t.ceiling])).toEqual([["typed", true, false, false, false],
+      ["background", false, false, false, false]]);
+  });
+
+  it("pairs a failure and a success on either side of a Stop hook's feedback", () => {
+    const r = asksOf(file(line(1, typed("run the tests")), line(2, ask("", ["c1", "shell", test])),
+      line(4, answers(["c1", true])), line(5, ask("Done.")), line(6, feedback("Run them again.")),
+      line(7, ask("", ["c2", "shell", { command: "npm run test:all" }])), line(8, answers(["c2", false])),
+      line(9, ask("They pass."))), [row(3, "shell", test)]);
+    expect(r.turns).toHaveLength(1);
+    expect(r.turns[0]).toMatchObject({ kind: "typed", failed: true, low: true, high: true });
+  });
+
+  it("does not let a real failure's row confirm a declined call with the same text", () => {
+    const write = { path: "a.txt", content: "x" };
+    const r = asksOf(file(line(1, typed("write it")), line(2, ask("", ["c1", "write_file", write])),
+      line(3, answers(["c1", true])), line(4, ask("", ["c2", "write_file", write])), line(6, answers(["c2", true])),
+      line(7, ask("", ["c3", "edit_file", { path: "a.txt", old_text: "x", new_text: "y" }])),
+      line(8, answers(["c3", false])), line(9, ask("Written."))), [row(5, "write_file", write)]);
+    expect(r.results).toEqual({ errors: 2, confirmed: 1, unclear: 0, noRow: 1 });
+    expect(r.calls.map((c: { state: string | null }) => c.state)).toEqual([null, "confirmed", null]);
+    expect(r.turns[0]).toMatchObject({ failed: true, low: true, high: true, ceiling: true });
+  });
+
+  it("counts two close identical calls with one row as unclear", () => {
+    const r = asksOf(file(line(1, typed("run the tests")),
+      line(2, ask("", ["c1", "shell", test], ["c2", "shell", test])), line(4, answers(["c1", true], ["c2", true])),
+      line(5, ask("", ["c3", "shell", { command: "npm run build" }])),
+      line(6, answers(["c3", false])), line(7, ask("Built."))), [row(3, "shell", test)]);
+    expect(r.results).toEqual({ errors: 2, confirmed: 0, unclear: 2, noRow: 0 });
+    expect(r.turns[0]).toMatchObject({ failed: false, failedHigh: true, low: false, high: true });
   });
 });

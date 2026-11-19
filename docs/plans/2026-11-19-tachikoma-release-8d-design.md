@@ -2811,3 +2811,172 @@ measured (no slower PC was run).
 
 Step 11 was committed (ac6f4a9) before the user's answer, as steps 8 to 10 were; the answer is in the commit after
 it.
+
+### M7 How often the lesson ask would fire (step 12, 2026-11-19)
+
+In short: in the user's Tachikoma sessions so far, the lesson ask would never have fired. It would have sent 0
+requests in 80 whole turns over 7 days of use, 0 a day, at both the low and the high figure. In all those turns only
+3 tool calls were real failures that the error log confirms, and in none of their turns did a later call doing the
+same job work. Counting every error result as a failure, declined and cancelled calls too, it is still 0. Zero in 80
+turns does not prove the rate is zero: the data fit anything up to about 1 ask in 27 turns, about 0.4 a day of use
+at the user's pace ("What the zero means"). Live asks will be fewer still, as they are sent only while memory is on
+(Q16). **The decision waits on the user** (at the end of this part).
+
+Script: `scripts/8d/measure-lesson-ask.mjs`, with its tests in `tests/memory/turns.test.ts`. It needs no MemPalace
+and starts nothing. It reads the user's transcripts (`%LOCALAPPDATA%\tachikoma\sessions\<project>\<id>.jsonl`) and
+error logs (`%LOCALAPPDATA%\tachikoma\errors\<project>.jsonl`; `src/cli.tsx:415`, `projectFile` in
+`src/core/datadir.ts:18-26`, named by the same sha256 as the project's sessions folder, `src/core/sessions.ts:13-18`),
+read only, and prints counts alone: no text, no session id, no file or folder name. It ran twice, each time between
+a pair of snapshots: run 1, `node scripts/8d/measure-lesson-ask.mjs`, at 06:09:41 UTC, exit 0, with the plan's
+figures; run 2 at 06:12:16 UTC, exit 0, after two lines were added (the ceiling and where the error results with no
+row are, below), with the same figures and those two. The output is in the scratchpad's `step12\run-1.txt` and
+`run-2.txt`, not committed.
+
+#### How the turns and the failures were found
+
+- **The turns**: step 10's rule (`scripts/8d/turns.mjs`, M2), so "in the same turn" means what it will mean live. A
+  background turn is a turn of its own; a Stop hook's feedback does not split a turn. Typed and background turns are
+  both counted, as the ask would fire in either. Whole turns only: a turn with a damaged line, one the file ends in
+  and one with a call left without a result are left out and counted apart, by reason.
+- **Branch copies** (found in this step; the plan does not name them): `/branch` copies a transcript whole under a
+  new id, its lines' times kept (`src/core/sessions.ts:95-103`). Its copied turns would be counted twice, and their
+  error results could find no row, as the rows carry the first session's id. A transcript whose start line has the
+  same time as another's in the same project folder is taken as a copy. Its turns whose first line is one of the
+  earlier transcript's (by the files' creation times) are left out as "copied by a branch".
+- **The key**: for each error result, the text the log would hold for it (`src/core/session.ts:1064`): the tool's
+  name, a space and the input that ran (a hook's rewrite from the transcript's `rewritten` line where there is one,
+  `src/core/transcript.ts:249-256`), cut exactly as `truncate` cuts it (`src/core/session.ts:41-43`; the test checks
+  the script's copy against the code's on a 40,000-character input).
+- **One row, one result, in time order**, within one session. A row can belong to an error result with its key whose
+  call was sent no later than the row's time and whose result was saved at or after it. "Sent" is the reply's line,
+  written before its calls run (`src/core/session.ts:661`, `:1320-1324`), and the row is written while the call
+  runs. Both are stamped by the same clock to the millisecond, so a tie counts as sent before. A row with one such
+  result confirms it, and a confirmed result is no other row's. A row with more than one makes them all "unclear":
+  counted apart, as failures only in the high figure.
+- **Rows from subagents** reach the lead's log with the task's id in front (`src/core/tasks.ts:371`); their calls are
+  in the subagent's own file, which is not read. They are counted apart.
+- **The same job**, the design's rule (section 5), on the inputs that ran:
+  - a command (the `shell` tool): the same first word of the command, split at white space;
+  - a file edit (`write_file` or `edit_file`): the same file, its path resolved against the session's project folder
+    and compared without regard to letter case, as on Windows;
+  - otherwise: the same tool.
+
+  A turn asks when a failed call is followed, later in the turn's order of calls, by a call doing the same job
+  whose result is no error. A turn asks once at most. The low figure leaves unclear results out; the high figure
+  counts them as failures.
+- **The ceiling**, beyond the plan's figures, as a bound: every error result counted as a failure, matched or not,
+  declined and cancelled calls among them.
+
+`tests/memory/turns.test.ts`, the plan's four cases, on made-up transcripts and made-up log rows only:
+- a failure in a typed turn and a matching success in the background turn after it are not a pair;
+- a failure and a matching success on either side of a Stop hook's feedback are a pair;
+- a declined call with the same text as a real failure is not confirmed by that failure's row;
+- two close identical calls with one row are counted unclear.
+
+Also, beyond the plan's list: the key is cut as the session's `truncate` cuts it; and the ceiling in two of the cases
+above. The tests were written first and failed, as the script did not exist. Then all 15 in the file passed (10 from
+step 10 and 5 new). Each break was then tried on its own and put back:
+- with the time window taken out of the match, the declined-call test failed;
+- with unclear matches made to confirm, the unclear test failed.
+
+The ceiling's expectations were added before its code and failed first (2 tests). `tsc` exit 0.
+
+#### The figures
+
+Days are on this PC's clock (UTC+11). All counts are from run 2; run 1's are the same, its per-session lines too.
+
+| What | Count |
+|---|---|
+| Transcripts (main sessions) read | 53, in 10 project folders |
+| Sessions | 53 (15 of them `-p` runs); none without a start line |
+| Of them, branch copies | 3 |
+| Sessions with at least one whole turn | 34 |
+| Days of use (a day with a whole turn) | 7, from 2026-11-07 to 2026-11-18 |
+| Whole turns | 80: 79 typed, 1 background |
+| Left out: copied by a branch | 7 (all typed) |
+| Left out: the file ends mid-turn | 2 |
+| Left out: a call without a result | 1 |
+| Left out: a damaged line | 0 (and 0 damaged lines before a first turn) |
+| Error results in the turns read | 8: 3 confirmed, 0 unclear, 5 with no row |
+| Turns with a confirmed failure | 3, all typed, in 3 sessions (2 on 2026-11-12, 1 on 2026-11-16) |
+| The same, counting unclear results | 3 |
+| **Turns that would ask, low figure** | **0** |
+| **Turns that would ask, high figure** | **0** |
+| Turns that would ask, ceiling (every error result a failure) | 0 |
+
+Per day of use:
+
+| Day | Sessions with a whole turn | Typed turns | Background turns | Confirmed failures | Asks, low | Asks, high |
+|---|---|---|---|---|---|---|
+| 2026-11-07 | 7 | 11 | 0 | 0 | 0 | 0 |
+| 2026-11-10 | 2 | 7 | 0 | 0 | 0 | 0 |
+| 2026-11-12 | 7 | 15 | 0 | 2 | 0 | 0 |
+| 2026-11-13 | 4 | 11 | 1 | 0 | 0 | 0 |
+| 2026-11-16 | 2 | 13 | 0 | 1 | 0 | 0 |
+| 2026-11-17 | 7 | 16 | 0 | 0 | 0 | 0 |
+| 2026-11-18 | 5 | 6 | 0 | 0 | 0 | 0 |
+
+Per session, in start order, the whole typed turns: 0 0 2 0 1 0 0 0 3 1 1 1 2 6 1 0 0 5 0 1 0 0 1 3 3 1 1 7 1 1 0 2
+0 2 0 0 0 0 0 11 7 1 0 1 1 2 2 2 1 1 1 2 1. The one background turn is in session 29. The confirmed failures are one
+each in sessions 18, 24 and 34. No session would ask, at any of the three figures. In requests: 0 a day of use, and 0
+in the busiest day (16 typed turns).
+
+#### The limits of the method
+
+- **Turns that could not be rebuilt**: 3 (2 the file ends in, 1 with a call without a result). Another 7 were left
+  out as branch copies. All are outside the low and high figures.
+- **Error results with no row**: 5. These are declined, cancelled or cut-off calls, or failures whose row is missing;
+  the transcript cannot tell which. All 5 are in sessions whose project folder has an error log. With all 5 counted
+  as failures (the ceiling), the count is still 0.
+- **Unclear results**: 0.
+- **Rows that matched no result**: 0. All 3 `tool` rows of these sessions confirmed one result each. 0 rows came from
+  subagents, and 0 had no session id. 1 row in the same logs names a session with no transcript in its folder; it was
+  not matched, and why that session has none was not looked into.
+- **Sessions with no error log to match against**: 23, in the 4 project folders that have no log. They hold no error
+  result at all, so the missing logs hide no failure. Another 27 sessions are in a folder with a log, with no row of
+  theirs.
+- **Only the sessions still kept**: older sessions deleted by the sweep (`src/core/sessions.ts:147-151`) are not here.
+- **A small sample**: 80 whole turns over 7 days, with 3 real failures in all.
+- **A looser rule was not counted**: for example any later success in the turn, or the same tool for a command.
+  Under the design's rule even the ceiling is 0. A looser rule could give more.
+
+#### What the zero means
+
+0 asks in 80 whole turns. A count of zero cannot rule out a small rate. The highest rate that 0 in 80 still fits,
+with 95% confidence, is 1 - 0.05^(1/80) = 3.7% of turns (the exact one-sided bound for no events in 80 tries). At the
+user's pace, 80 / 7 = 11.4 whole turns a day of use, that is below about 0.42 asks a day of use. Each ask is one small
+paid request to the lead (Q16), its spend reported like the judge's. No price is given here, as no cost per request
+has been measured or sourced. Live asks will be fewer still, as they are sent only while memory is on (Q16).
+
+#### The user's folders
+
+Two pairs of snapshots, each taken in the same command just before and just after its run:
+- `step12-before` (06:09:14 UTC) and `step12-after` (06:09:41);
+- `step12-2-before` (06:11:49) and `step12-2-after` (06:12:16).
+
+**Both printed "no change" (exit 0)**; only the set-apart daemon folder of the user's MemPalace changed, as usual. The
+script reads only, writes nothing and starts nothing; the snapshot tools write only in the build folder. No tsx ran.
+
+The same commands listed the top level of the user's Temp folder (step 8's `templist2.cjs`; names and times only, no
+file opened). No `uv-*.lock` was found. Around run 1, a file was added at 06:09:51.2, 10 s after the run ended, while
+the after-snapshot was being taken (origin not traced). Around run 2, a file was added at 06:12:10.2, while the
+before-snapshot was being taken and 6 s before the run started (origin not traced), and a file was removed (origin
+not traced). None was opened.
+
+#### The decision for the user: build the ask as designed at this rate, or change it
+
+What the rate means: under the design's rule, the ask would have sent no request at all in the user's 7 days of use
+so far. The data allow up to about 0.4 a day. So the ask would cost little; it also has, so far, found nothing to
+learn from. Lessons can still come from `record_lesson` and `/lesson`, which do not depend on this ask.
+
+The options:
+- **A. Build the ask as designed** (steps 26 and 27). It sends a request only when a failure is followed by a fix
+  in the same turn, and only while memory is on. At the rate seen, that is 0 requests a day.
+- **B. Change the rule so it fires more often**, for example any later success in the turn. That figure was not
+  counted; it would need a new count before choosing.
+- **C. Drop the ask**, and keep lessons only from `record_lesson` and `/lesson`.
+
+Recommended, not chosen: **A**. It costs nothing at the rate seen, and costs only when there is a fix to learn
+from. Its weak point: with no ask seen, nothing here shows that its lessons would be useful for this user's work.
+
+**The user's choice: not yet given.**
