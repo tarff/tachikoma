@@ -1,6 +1,6 @@
 import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -20,6 +20,13 @@ const STANDIN = path.resolve("tests/memory/standin.mjs");
 // The tests' own limit for a call that should answer: long enough never to be reached by one that does.
 const LIMIT = 10_000;
 const ROOM = "agent-harness-3f9a1c2b";
+// A connect to a program that answers `initialize` late and lists nothing: the test's own limit, when the program
+// answers, and how far past the limit the connect may answer. The margin is 5 times the most measured on this PC, 15
+// ms in 40 runs (20 alone, 20 beside this file's and oslock's tests), as the user's margins are (the step 18 report,
+// "Review fixes").
+const HANG_LIMIT = 1_000;
+const HANG_START = 600;
+const HANG_MARGIN = 75;
 
 type Hub = ChildProcessByStdio<null, Readable, Readable>;
 const hubs: Hub[] = [];
@@ -262,6 +269,21 @@ describe.each(["hub", "stdio"] as const)("the palace client, %s", (form) => {
     expect(use.offers.missing).toEqual(["mempalace_add_drawer"]);
   });
 
+  // The stand-in's own stop (step 22's "stop between two adds"): after its first add it answers nothing and changes
+  // nothing until its gate exists.
+  it("stops the stand-in between two adds until its gate exists", async () => {
+    const gate = path.join(await folder(), "gate");
+    const s = await start(["--stop-after", "mempalace_add_drawer=1", "--gate", gate]);
+    const palace = await open(s.target);
+    expect(await palace.add(ROOM, "part 1", "first part", LIMIT)).toEqual({ is: "added" });
+    expect(await palace.add(ROOM, "part 2", "second part", 500)).toEqual({ is: "timed out" });
+    expect(await palace.pieces("part 2", 500)).toEqual({ is: "timed out" });
+    writeFileSync(gate, "");
+    expect(await palace.pieces("part 2", LIMIT)).toEqual({ is: "counted", pieces: 0 });
+    expect(await palace.add(ROOM, "part 2", "second part", LIMIT)).toEqual({ is: "added" });
+    expect(await palace.entries(ROOM, LIMIT)).toEqual({ is: "counted", entries: 2 });
+  });
+
   it("reports a palace with search and add only as lacking the look-up, the removal and the counts", async () => {
     const s = await start(["--lack", "mempalace_delete_by_source", "--lack", "mempalace_list_drawers"]);
     const palace = await open(s.target, "use");
@@ -275,6 +297,23 @@ describe.each(["hub", "stdio"] as const)("the palace client, %s", (form) => {
 });
 
 describe("the palace client, over stdio", () => {
+  // A program that answers `initialize` late, then never lists its tools, and ignores its input's end. The connect and
+  // the list share the one limit, and the caller does not wait for the library's close, which would take about 4 s
+  // (2 s, SIGTERM, 2 s; @modelcontextprotocol/client/dist/stdio.mjs:193-198). The program stays in `running` until it
+  // is gone, so it still dies with the window.
+  it("answers a connect that passes its limit within that limit, without waiting for the program's close", async () => {
+    const p = await startProgram(["--hang", String(HANG_START)]);
+    const began = performance.now();
+    expect(await connect(p.target, "use", { timeout: HANG_LIMIT })).toEqual({ is: "timed out" });
+    expect(performance.now() - began).toBeLessThan(HANG_LIMIT + HANG_MARGIN);
+    const [start] = readLog(p.record).filter((l) => l.start).map((l) => l.start);
+    const child = [...running].find((c) => c.pid === start.pid);
+    expect(child).toBeDefined();
+    const exited = new Promise((resolve) => child!.once("exit", resolve));
+    child!.kill("SIGKILL");
+    await exited;
+  });
+
   it("starts the program with the commands' environment, no key and no backend, model or palace; owns it", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-not-real");
     vi.stubEnv("OPENAI_API_KEY", "sk-not-real");
@@ -336,6 +375,33 @@ describe("the palace client, against the hub", () => {
     const made = await connect(h.target, "own", { timeout: LIMIT, onLost: () => lost++ });
     expect(made.is).toBe("failed");
     expect(lost).toBe(0);
+  });
+
+  it("says a malformed hub address failed, without throwing", async () => {
+    const made = await connect({ url: "not an address" }, "own", { timeout: LIMIT });
+    expect(made).toEqual({ is: "failed", reason: expect.any(String) });
+  });
+
+  // node:sqlite's load failing (here, the shared loader replaced) gives no model, never an error.
+  it("reads back no model when node:sqlite cannot be loaded", async () => {
+    vi.resetModules();
+    vi.doMock("../../src/memory/oslock.js", () => ({
+      load: () => {
+        throw new Error("no node:sqlite");
+      },
+    }));
+    try {
+      const fresh = await import("../../src/memory/client.js");
+      const h = await startHub();
+      const made = await fresh.connect(h.target, "own", { timeout: LIMIT });
+      if (made.is !== "connected") throw new Error(`not connected: ${JSON.stringify(made)}`);
+      palaces.push(made.palace);
+      await made.palace.add(ROOM, "label", "text", LIMIT);
+      expect(await made.palace.inForce(h.palace, LIMIT)).toEqual({ is: "read", backend: "sqlite_exact" });
+    } finally {
+      vi.doUnmock("../../src/memory/oslock.js");
+      vi.resetModules();
+    }
   });
 });
 

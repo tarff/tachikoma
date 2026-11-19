@@ -23,9 +23,9 @@ const held = new Set<DatabaseSync>();
 
 let sqlite: typeof import("node:sqlite") | undefined;
 
-// Loaded at the first take, never at launch. Node 22 prints an ExperimentalWarning when node:sqlite is first loaded;
-// the user's choice after step 17 is to drop only that one warning, for the length of the load, and show every other.
-// The palace client reads the palace file with it too (step 18).
+// Loaded at the first take, or at the palace client's first read of the model (step 18), never at launch. Node 22
+// prints an ExperimentalWarning when node:sqlite is first loaded; the user's choice after step 17 is to drop only that
+// one warning, for the length of the load, and show every other.
 export function load(): typeof import("node:sqlite") {
   if (sqlite) return sqlite;
   const emit = process.emitWarning;

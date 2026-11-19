@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import {
   Client,
   SdkError,
@@ -131,26 +132,37 @@ export async function connect(
   client.onerror = (err) => {
     if (lostHub(err)) link.lose();
   };
-  const transport: Transport =
-    "url" in target
-      ? new StreamableHTTPClientTransport(new URL(target.url))
-      : new Program({
-          command: target.command,
-          args: target.args,
-          env: commandEnv() as Record<string, string>,
-          stderr: "ignore",
-        });
+  // One limit for the whole connect: the list gets what the connect left of it.
+  const began = performance.now();
+  const left = () => opts.timeout - (performance.now() - began);
   try {
+    const transport: Transport =
+      "url" in target
+        ? new StreamableHTTPClientTransport(new URL(target.url))
+        : new Program({
+            command: target.command,
+            args: target.args,
+            env: commandEnv() as Record<string, string>,
+            stderr: "ignore",
+          });
     await client.connect(transport, { timeout: opts.timeout });
-    const { tools } = await client.listTools(undefined, { timeout: opts.timeout });
+    if (left() <= 0) return given(client, link, { is: "timed out" });
+    const { tools } = await client.listTools(undefined, { timeout: left() });
     const names = new Set(tools.map((t) => t.name));
     link.connected = true;
     return { is: "connected", palace: new Palace(client, link, names, kind) };
   } catch (err) {
-    link.closing = true;
-    await client.close().catch(() => {});
-    return timedOut(err) ? { is: "timed out" } : { is: "failed", reason: message(err) };
+    return given(client, link, timedOut(err) ? { is: "timed out" } : { is: "failed", reason: message(err) });
   }
+}
+
+// A connect that did not succeed answers at once. The library's close goes on in the background: a program that
+// ignores its input's end is waited for and then stopped by the library, and stays in `running` until it is gone, so
+// it still dies with the window.
+function given(client: Client, link: Link, answer: Connected): Connected {
+  link.closing = true;
+  void client.close().catch(() => {});
+  return answer;
 }
 
 export class Palace {
@@ -304,11 +316,12 @@ function objectIn(text: string): Record<string, unknown> | undefined {
   }
 }
 
+// The model, or none when node:sqlite cannot be loaded or the file or its record is not there. node:sqlite is loaded
+// through the locks' loader (src/memory/oslock.ts), so it may load here first, with only its one warning hidden.
 function modelIn(palace: string): string | undefined {
-  const { DatabaseSync } = load();
-  let db: InstanceType<typeof DatabaseSync>;
+  let db: DatabaseSync;
   try {
-    db = new DatabaseSync(path.join(palace, PALACE_FILE), { readOnly: true });
+    db = new (load().DatabaseSync)(path.join(palace, PALACE_FILE), { readOnly: true });
   } catch {
     return undefined;
   }

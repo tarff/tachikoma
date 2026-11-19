@@ -4200,3 +4200,8 @@ passes; and the test's child script, `tests/memory/oslock-child.ts hold`, run un
 (TEMP and TMP in the build's folder): it took the lock with nothing on stderr; a second process was refused ("busy",
 nothing on stderr); after the holder was killed outright (`SIGKILL`), a third took it, then let it go on "release".
 The suite does not need Node 22.
+
+Since step 18 (2026-11-20, the user's choice "Share the loader" at its review): the palace client reads the
+model from the palace file through the same loader (`load`, exported from `src/memory/oslock.ts`), so `node:sqlite`
+may also load first at that read-back, after a hub start or a join (step 20), still never at launch and still with
+only that one warning hidden. A load that fails gives no model, not an error (`src/memory/client.ts`, `modelIn`).

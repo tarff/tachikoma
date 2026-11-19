@@ -26,7 +26,9 @@
 // --hold-room <room>         a search of that room is never answered (repeatable);
 // --refuse-writes            adding and removing are refused;
 // --stop-after <tool>=<n>    once that tool's nth call is answered, it stops: later calls get no answer and change
-//                            nothing, until the file `--gate <file>` exists (never, without --gate).
+//                            nothing, until the file `--gate <file>` exists (never, without --gate);
+// --hang <ms>                over stdio, it answers `initialize` that much later and nothing after it, and keeps
+//                            running when its input closes, as a program stuck in its start.
 // Over HTTP it prints { "port": <p> } on a line of its own once it listens (port 0, or none given: any free one).
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -69,6 +71,7 @@ for (let i = 0; i < argv.length; i++) {
       break;
     }
     case "--gate": opt.gate = next(); break;
+    case "--hang": opt.hang = Number(next()); break;
   }
 }
 
@@ -275,8 +278,11 @@ function serveStdio() {
     if (!line.trim()) return;
     const m = JSON.parse(line);
     if (m.id === undefined || m.method === undefined) return;
-    answer(m, (r) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, ...r }) + "\n"));
+    const reply = (r) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, ...r }) + "\n");
+    if (opt.hang === undefined) return answer(m, reply);
+    if (m.method === "initialize") setTimeout(() => answer(m, reply), opt.hang);
   });
+  if (opt.hang !== undefined) return setInterval(() => {}, 60_000);
   rl.on("close", () => process.exit(0));
 }
 
