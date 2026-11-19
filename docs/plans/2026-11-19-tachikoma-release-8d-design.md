@@ -843,7 +843,7 @@ The snapshots of the user's folders:
   - `hook_state/last_checkpoint`;
   - two `hook_state/<session>_last_save` files. One is
     `hook_state/<session>_last_save`. Its name matches the session folder in the build's
-    scratchpad path (`...\Temp\claude\<id>\<session>\scratchpad`), so it is
+    scratchpad path (in a folder of another program in Temp, `...\<id>\<session>\scratchpad`), so it is
     taken to be this build's Claude Code session. The commit trailers carry a different session ID
     (`<session>`).
 
@@ -1661,16 +1661,17 @@ one, without the download:
   pair of snapshots of the user's folders.
   - Run at 00:37:58 UTC (before the PowerShell fix): exit 0, "measure-hub: passed"; 0 `uv-*.lock` in the user's Temp
     before and after; uv's own lock was in the build's `install\tmp` (`uv-9944703f12e302d3.lock`, 00:38:16.824 UTC,
-    the lock uv's log names for the project). New in Temp: `psi.json` (647 bytes, made 00:38:13.056 UTC, during the
-    Python unpacking) and a GUID-named `.tmp` gone before it could be looked at. Not opened, not traced; the run's
-    processes then were this script, its helper and `tar.exe`, the last two with the build's TEMP.
+    the lock uv's log names for the project). New in Temp: a file of another program (647 bytes, made 00:38:13.056
+    UTC, during the Python unpacking) and a file of another program gone before it could be looked at. Not opened,
+    not traced; the run's processes then were this script, its helper and `tar.exe`, the last two with the build's
+    TEMP.
   - Run at 00:41:15 UTC (after it): exit 0, passed; 0 `uv-*.lock` in the user's Temp before and after; uv's lock in
-    `install\tmp` (`uv-491d2fa86e042654.lock`, 00:41:34.751). `psi.json` not touched. Changed in Temp: one GUID-named
-    `.tmp` added, one removed, one rewritten, and the build folder itself.
-  - With nothing of the build running (two listings at 00:42:33 and 00:43:25 UTC): one GUID-named `.tmp` removed and
-    the same one rewritten again, so that churn is another program's. Left alone.
+    `install\tmp` (`uv-491d2fa86e042654.lock`, 00:41:34.751). The 647-byte file not touched. Changed in Temp: a file
+    of another program added, one removed, one rewritten, and the build folder itself.
+  - With nothing of the build running (two listings at 00:42:33 and 00:43:25 UTC): a file of another program removed
+    and the same one rewritten again, so that churn is another program's. Left alone.
   - Both runs' pairs of snapshots (`step8-temp-*`, `step8-temp2-*`): "no change", only the set-apart daemon line.
-  - `psi.json` is left in place, unopened, for the user.
+  - The 647-byte file is left in place, unopened, for the user.
 - For step 19: the installer gives every process it starts, uv and the hub, a TEMP and TMP inside `memory/`.
 
 #### The timings
@@ -2183,7 +2184,7 @@ no other source.
 Read on this computer, read only, as lengths and counts alone. Nothing from the Tachikoma transcripts (no text, no
 session id, no file name) is in any output, in the results files or here. The snapshot listings of the user's folders
 are another matter: as approved at step 1, they hold the names of the files in those folders (among them the user's
-MemPalace plugin's `hook_state` files, named by Claude Code session ids, and the GUID-named files in Temp), and they
+MemPalace plugin's `hook_state` files, named by Claude Code session ids, and files of other programs in Temp), and they
 stay in the build folder until step 31 deletes it; none of those names is printed here. Subagents' own files were not
 read (their messages are never saved).
 
@@ -2376,12 +2377,12 @@ bytes, 02:19:40.720) and the folder `locks` (02:19:40.994). Set apart as usual: 
 in the main session's log that a reply ended at 02:19:09.431 UTC (`end_turn`); the plugin's files changed 2.1 s later
 (02:19:11.49) and the palace about 29 s after them (02:19:40.69), the full chain the rule names. The pair failed, and
 counts as explained. The run's Temp listing:
-no `uv-*.lock`; added by another program `mat-debug-291060.log` (02:17:16); a GUID-named `.tmp` rewritten (02:38:16);
+no `uv-*.lock`; added, a file of another program (02:17:16); rewritten, a file of another program (02:38:16);
 neither opened.
 
 The same command listed the top level of the user's Temp folder before and after (step 8's `templist2.cjs`: names,
-kinds and last-written times only, no file opened): no `uv-*.lock`; added, by other programs, `pr4.md` (written
-01:37:53 UTC) and a GUID-named `.tmp` (01:54:36), neither opened; nothing removed or rewritten. No tsx ran.
+kinds and last-written times only, no file opened): no `uv-*.lock`; added, two files of other programs (written
+01:37:53 UTC and 01:54:36), neither opened; nothing removed or rewritten. No tsx ran.
 
 #### The decision for the user: the exit save's time limit
 
@@ -2509,9 +2510,9 @@ pieces (about the largest earlier steps used). It takes about 0.2 s when anythin
 because every save empties the hub's search cache. It takes about 0.45 s when it is the first search after the hub
 started. Two searches sent at once, as the note and `memory_search` send them, take about 1.4 to 2.0 times one
 search. In the smallest palace (98 pieces, about what the user's transcripts would make today) every search but the
-first after a start is under 45 ms. **The lesson search's time limit, and Q9 (whether the note's pair of searches
-uses the same one), wait on the user ("The decision for the user", below). The pair of snapshots failed, on the
-user's MemPalace plugin's files only; it is not traced yet ("The user's folders").**
+first after a start is under 45 ms. **The user approved the figures and chose one limit of 3.4 s for the lesson
+search and the note's pair of searches (L3 with Q9-A), on 2026-11-19 (at the end of this part). The pair of snapshots
+failed, on the user's MemPalace plugin's files only, and is traced under the user's rule ("The user's folders").**
 
 Script: `scripts/8d/measure-search.mjs`, two commands: `timings` (the run) and `trial` (the same run cut short, to
 check the script first; its figures are not used). The timings ran once, `node scripts/8d/measure-search.mjs
@@ -2519,8 +2520,9 @@ timings`, from 03:09:15 to 05:30:51 UTC, between a pair of snapshots: exit 0, "m
 Results: `tachi-8d-build\install\measure-search-timings-2026-11-19T03-09-15-212Z\results.json`, with every hub's log
 beside it. Nothing was fetched; the dead-end proxy got 0 connections. No transcript or error log of the user's was
 read. 373 processes were recorded; at the end none was still running and none was unsettled. One process was listed
-apart and left alone: a `sleep.exe` of another program that started at 05:30:46.5 UTC under an id that had belonged
-to one of this run's hub processes. All 123 hubs were started the decided way and stopped by the serving process's
+apart and left alone: a `sleep.exe` that started at 05:30:46.5 UTC under an id that had belonged to one of this run's
+hub processes; whose it was is not traced (the builder ran wait loops in this session at the time, and they use
+`sleep`). All 123 hubs were started the decided way and stopped by the serving process's
 id after its start time was read again; each was wholly gone within 19.9 to 24.6 ms.
 
 This PC, as in M2, M3 and M4: Intel Core i9-12900K (16 cores, 24 threads), 68.4 GB of memory, solid-state disks (the
@@ -2576,7 +2578,10 @@ most 3 pieces hold, 2,400. So the palace is laid out in pieces as the user's wou
 Stage 1 is about the palace the user's transcripts make today (M2), stage 2 the size of M3's 1,000-piece palace, and
 stage 3 about M2's and M3's largest (10,000 pieces), so the figures line up with theirs. Entries are counted with
 `mempalace_list_drawers`, pieces with `mempalace_list_rooms` and `mempalace_status`; the file is the palace file and
-its write-ahead log. Each stage's size was read again after its timings and had not changed.
+its write-ahead log. Each stage's entries and pieces were read again after its timings and had not changed; the
+palace files did grow (4,513,368 to 4,783,944 bytes; 9,117,536 to 9,310,048; 54,431,920 to 54,538,416), as the
+writes and removals of the "just after a write" case left their marks. The table gives the sizes before the timings;
+the comparison with the user's own palace below uses stage 3's size after them, 54,538,416 bytes.
 
 At each stage, for each `limit` (5 and 100), these were timed:
 - **One search**: of `lessons`, as the lesson search when a tool fails sends it (step 25), from the sending to the
@@ -2598,7 +2603,10 @@ Each of the two in three cases:
 takes, step 6 item 7), each different, shaped like the lesson search's: a tool's name and the start of an error. No
 `max_distance` was sent (none is set yet). Connecting is not in any search figure: a window is already connected when
 it searches. Here connecting took 2.7 to 7.2 ms, and the starts took 1,093.6 to 1,234.3 ms to the first health answer
-(120 starts).
+(120 starts). The hub's start is not in the limit either: the lesson search runs only while memory is on, and with
+memory off, or a hub not up, the failed tool's result stays byte for byte as today (step 25: "no match, a slow search
+or memory off leaves the result byte for byte as today", plan.md:1349; design, section 5: "when it runs out, or the
+hub is down, the error goes through unchanged").
 
 A trial run first (`node scripts/8d/measure-search.mjs trial`, 03:06:02 to 03:07:25 UTC, stage 1 only, 3 runs of
 each case and 1 start): exit 0, "measure-search: passed", 19 processes recorded, none left running, its own pair of
@@ -2669,17 +2677,28 @@ What the figures mean:
   when the other is late (step 18) would rarely save much time.
 - `limit` 100 adds up to about 20 ms to a search's middle: warm 1.7 to 15.6 ms (the most at 9,800 pieces, 105.5
   against 89.9 ms), just after a write 1.3 to 19.6 ms.
-- **A note for M2 (step 10):** the adds here were slower than in M2's runs: middles 672.2 to 971.1 ms against M2's
-  226.0 to 623.0 ms for its fills (whose entries had other sizes), with a slowest of 3,920.7 ms in stage 3. M2's chosen
-  exit save limit, 14 s, rests on X = 1,146.9 ms for one save. Which entry size the slowest add here was is not
-  recorded, and this PC's load at either time was not measured. This is reported, not acted on.
+- **A note for M2 (step 10):** the fill adds here were slower than M2's fill adds, and the cause is not determined
+  (this PC's load, the filler text, or something else; none was measured). It is not an effect of entry size. From
+  the hubs' own logs (`stage-<n>.stderr.log`, each add's `run=` time): stage 1, with M2's own 72/9/1/1 profile, took
+  636 to 985 ms (middle 668, 83 adds) against M2's first 83 adds, 212 to 589 ms (middle 222, `today-series.stderr.log`
+  of M2's run 1). In stage 3's fill the middles by pieces were 966 (1 piece), 981 (2), 998 (3) and 1,023.5 ms (5), and
+  the slowest add, 3,916 ms (3,920.7 as the script timed it), was a 2-piece entry. Like for like with M2's X, the gap
+  closes: a 5-piece add at about 10,000 pieces took a middle of 1,023.5 ms here (90 adds, slowest 1,148), against M2
+  run 2's first-save add of 1,018.8 ms in the 2,000-entry palace. So the gap is against M2's fill, not against X's add.
+  The chosen 14 s is not shown to fail: even with this run's slowest add, S + 3,916 + 100 = 1,445.9 + 3,916 + 100 =
+  5,461.9 ms, about 5.5 s.
 - Not measured: other systems; a slower PC; real-time scanning (off here); palaces larger than 9,800 pieces; a search
-  while another window is writing (reads and writes take different locks, but the cache is emptied); a search of the
-  whole wing ("everything"); a search with `max_distance` set.
-- **The user's own MemPalace** (the `"use"` setting): its palace file was 6,822,883,328 bytes at step 10's second pair
-  (M2, "The user's folders"), about 125 times this run's largest (54,538,416 bytes). How many pieces it holds is not
-  known (it was not opened), and no search of a palace that size was timed. Its searches may take far longer than any
-  figure here.
+  while another window is writing (reads and writes take different locks, but the cache is emptied); a search while
+  the saver's own write is still running; a search of the whole wing ("everything"); a search with `max_distance` set.
+  Also: the two rooms here were of almost the same size, while the real `lessons` room will be much smaller than a
+  project's room; and the first-after-a-start figures rest on 10 runs per case, with limit 5 slower than limit 100 at
+  9,800 pieces (611.9 against 465.6 ms), so that tail is noisy.
+- **The user's own MemPalace** (the `"use"` setting): this table does not describe it. That path runs the user's own
+  program, which opens the user's own palace with the user's own settings (design, section 2, "The user's own
+  MemPalace instead"), and MemPalace's default backend is chroma (plan.md:57, item 9); every figure here is
+  `sqlite_exact` with `minilm`. The user's palace file was 6,822,883,328 bytes at step 10's second pair (M2, "The
+  user's folders"), about 125 times this run's largest after its timings (54,538,416 bytes); how many pieces it holds
+  is not known (it was not opened), and no search of it, or of any palace that size, was timed.
 
 #### The user's folders
 
@@ -2697,19 +2716,23 @@ folder. What changed, in two groups:
   that changed then.)
 
 Both have the shape of the plugin's save, and the first the full chain of the user's rule (the plugin's files, then
-the palace about 30 s later). **Neither is traced yet**: tracing needs the main session's reply-end times near
-04:59:29 UTC, and the other session's near 04:29:36 UTC. Until then the pair counts as failed and not explained.
+the palace about 30 s later). **Traced afterwards, so explained** (the orchestrator, 2026-11-19, under the user's rule
+as widened during step 11 to a plugin save by any of the user's Claude Code sessions, traced in that session's own
+log): (1) the main session's reply ended at 04:59:29.670 UTC (`end_turn`); the plugin's files changed at 04:59:31.6,
+about 2 s later, and the palace's write-ahead log at 05:00:04.96; (2) another of the user's Claude Code sessions
+(`<session>`) ended a reply at 04:29:37.773; its own `_last_save` changed at 04:29:38.7, and nothing else. The pair
+failed, and counts as explained.
 
 The trial's pair, `step11-trial-before` (03:05:35 UTC) and `step11-trial-after` (finished 03:07:52): "no change", with
 only the set-apart daemon folder.
 
 The same commands listed the top level of the user's Temp folder before and after (step 8's `templist2.cjs`: names,
-kinds and last-written times only, no file opened). Around the run: no `uv-*.lock`; added by other programs
-`mat-debug-291832.log` (03:17:16), `mat-debug-292944.log` (04:17:16), `mat-debug-293412.log` (05:17:16), `pr5.md`
-(04:25:47) and a GUID-named `.tmp` (written 05:30:48.9, 2 s before the run ended; GUID-named `.tmp` files come and
-go in Temp with nothing of the build running, as step 8's idle listings showed, so it is taken as another program's,
-not traced); a GUID-named `.tmp` removed; rewritten a GUID-named `.tmp` (05:14:16.9) and `AdobeARM.log` (04:29:43.6).
-None was opened. Around the trial: no `uv-*.lock`; one GUID-named `.tmp` removed. No tsx ran.
+kinds and last-written times only, no file opened). Around the run: no `uv-*.lock`; added, five files of other
+programs (written 03:17:16, 04:17:16, 05:17:16, 04:25:47 and 05:30:48.9; the last 2 s before the run ended, a file of
+another program of a kind that comes and goes in Temp with nothing of the build running, as step 8's idle listings
+showed, so taken as another program's, not traced); removed, a file of another program; rewritten, two files of other
+programs (05:14:16.9 and 04:29:43.6). None was opened. Around the trial: no `uv-*.lock`; a file of another program
+removed. No tsx ran.
 
 #### The decision for the user: the lesson search's time limit, and Q9
 
@@ -2767,6 +2790,21 @@ the pair's figure (L3 with Q9-A): 5 x 678.3 = 3,391.5 ms, so **3.4 s**. It cover
 first failure on a hub it has just started, in a palace of 9,800 pieces, and one figure is simpler. Its weak points: a
 hung hub holds every failed tool's result for up to 3.4 s, and the user's own MemPalace (a far larger palace) was not
 timed. A shorter choice, L2 with Q9-A at 5 times (1.8 s), also covers the first search after a start on this PC,
-but with a margin of only 2.7 times (1,746.0 over 678.3 ms).
+but with a margin of only 2.6 times (1,746.0 over 678.3 ms).
 
-The user's OK on these figures, the lesson search's limit and Q9: not yet given.
+#### The user's choice (step 11), 2026-11-19
+
+The user approved the figures above and chose **L3** (cover the first search after a start) with **Q9-A** (one limit
+for both, from the pair's figure): **one limit of 3.4 s**, 5 x 678.3 ms (the slowest of two searches at once, as the
+first search after a start, 9,800 pieces, limit 100) = 3,391.5 ms, rounded up to 0.1 s. It serves both the lesson
+search when a tool fails (step 25) and the note's two searches at once (step 24), and step 23's `memory_search` if it
+uses a limit. For one search it is above L3's own 3.1 s. The margin of 5 times is the user's, from M3; it was not
+measured (no slower PC was run).
+- Covered: on this PC's figures with the user's margin, a search of a 9,800-piece palace warm, just after a write, and
+  as the first search after a hub start, one search or two at once, at any `limit` from 5 to 100.
+- Not covered: the user's own MemPalace (another backend and palace, not timed), palaces larger than 9,800 pieces, and
+  the cases under "Not measured" above. A search that passes the limit leaves the failure's result as today, or the
+  message without a note.
+
+Step 11 was committed (ac6f4a9) before the user's answer, as steps 8 to 10 were; the answer is in the commit after
+it.
