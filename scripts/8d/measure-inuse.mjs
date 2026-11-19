@@ -349,15 +349,22 @@ async function kills() {
   });
 }
 
-// Every process whose parent is one of the shells and which started after that shell: left by this run.
+// Every process whose parent is one of the shells and which started after that shell: left by this run. Null, and the
+// run fails, when the look itself fails, so a failed look never reads as "none".
 function leftUnderShells() {
   const ids = shells.map((r) => r.pid).join(",");
   if (!ids) return [];
-  const script = `$ids = @(${ids}); @(Get-CimInstance Win32_Process | Where-Object { $ids -contains ` +
+  const script = "$ErrorActionPreference = 'Stop'; " +
+    `$ids = @(${ids}); @(Get-CimInstance Win32_Process | Where-Object { $ids -contains ` +
     "$_.ParentProcessId } | ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; ppid = $_.ParentProcessId; " +
     "name = $_.Name; start = $_.CreationDate.ToUniversalTime().ToString('o') } }) | ConvertTo-Json -Compress";
   const ps = spawnSync(POWERSHELL, ["-NoProfile", "-NonInteractive", "-EncodedCommand",
     Buffer.from(script, "utf16le").toString("base64")], { env: process.env, encoding: "utf8", windowsHide: true });
+  if (ps.error || ps.status !== 0 || ps.stderr.trim()) {
+    fail(`the look for processes left under the shells failed (exit ${ps.status}${ps.error ? `, ${ps.error.message}` :
+      ""}): ${String(ps.stderr).trim().slice(0, 200)}`);
+    return null;
+  }
   const rows = ps.stdout.trim() ? [JSON.parse(ps.stdout)].flat() : [];
   return rows.filter((row) => {
     const parent = shells.find((r) => r.pid === row.ppid);
@@ -426,8 +433,8 @@ async function main() {
   out.kill = (await kills()).result;
   out.shells = shells;
   out.leftUnderShells = leftUnderShells();
-  if (out.leftUnderShells.length) fail(`processes left under the shells: ${JSON.stringify(out.leftUnderShells)}`);
-  else say(`left under the ${shells.length} shells: none`);
+  if (out.leftUnderShells?.length) fail(`processes left under the shells: ${JSON.stringify(out.leftUnderShells)}`);
+  else if (out.leftUnderShells) say(`left under the ${shells.length} shells: none`);
   out.read = (await reads()).result;
   say(`the archive read as text: ${out.readLines} lines`);
   Object.assign(out, await hashes());
