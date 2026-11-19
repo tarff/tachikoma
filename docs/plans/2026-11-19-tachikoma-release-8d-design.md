@@ -2576,7 +2576,8 @@ timed:
 - **The limit.** The pool of candidates is at least 4 times `limit` (`searcher/candidates.py:26`, `:30-54`). Both ends
   of `limit` were timed: MemPalace's default, 5 (`mcp_server/tools_read.py:611`), and its most, 100 (`_MAX_RESULTS`,
   `mcp_server/_session.py:681`). The count Tachikoma will ask for is set later (M5, step 13; M6, step 14). (Set
-  since: M5's count is 1 lesson, at a cut-off of 0.4862, the user's choice at step 13.)
+  since: M5's count is 1 lesson, at a cut-off of 0.4862, the user's choice at step 13; M6's, for the note, is up to 3
+  matches at a cut-off of 0.4861, the user's choice at step 14, "The user's choice (step 14)" at the end of M6.)
 - A search folds hits that copy the same text, and then searches again with a pool 4 times wider, up to 16 times and
   500 candidates (`searcher/query.py:163-164`, `:177-186`, `:488-506`). Every text here was different, so that never
   happened in this run.
@@ -3771,17 +3772,19 @@ same project sits at a distance of 0.4861 in the middle case, while entries of o
 0.3111, and only 6 of their 1,397 matches are within 0.4861. (Lower is closer. A distance of 0 would be the very same
 text; an entry holds the model's reply as well as the typed words, so even a message that repeats an earlier one
 word for word stays above 0: the closest seen was 0.028. Other projects' matches sit at 0.89 in the middle.) A match
-is one piece of an entry, at most 800 characters, so a note of 3 matches holds at most 2,400 characters of text; here
-it held 1,099 at most at that cut-off. **Every count of notes is an upper bound**: each search was made with the hub
-already up, while a message sent before memory is connected goes without a note (Q9). A `-p` run's one message is
-sent at launch, so "in `-p` that can mean no note" (Q9), and 14 of the 35 first messages are `-p` runs; without
-them, 8 of the 13 window messages with something earlier get a note at 0.4861 (below). The hub's start is not
-modelled here.
-**The figures are few** (35 first messages, 76 entries, 10 projects), most sessions were the user's own tests of
-Tachikoma, and "same project" stands in for "relevant", which it is not always. **The count and the cut-off are the
-user's choice, not yet given** (end of this part). (Changed after the review, 2026-11-20: the `-p` figures, the upper
-bound, the hooked hub, the check of the figures, the layout's effect, the duties for steps 22 and 28, and the
-recommendation's reason; the measurement was run once more and gave the same figures.)
+is one piece of an entry, at most 800 characters, if a match is shown as its piece (step 23's reading, not yet
+decided), so a note of 3 matches then holds at most 2,400 characters of text; here it held 1,099 at most at that
+cut-off. **The counts are of notes on first messages only.** Each search was made with the hub already up, so for a
+first message sent before memory is connected, which goes without a note, the count is an upper bound: a `-p` run's
+one message is sent at launch, so "in `-p` that can mean no note" (Q9's recommended text in the plan), and 14 of the
+35 first messages are `-p` runs; without them, 8 of the 13 window messages with something earlier get a note at
+0.4861 (below). A note tried again with the next message, as that rule has it, is neither counted nor measured here.
+The hub's start is not modelled here. **The figures are few** (35 first messages, 76 entries, 10 projects), most
+sessions were the user's own tests of Tachikoma, and "same project" stands in for "relevant", which it is not always.
+**The user chose N3: a cut-off of 0.4861 and up to 3 matches** (2026-11-20, end of this part). (Changed after the
+review, 2026-11-20: the `-p` figures, the upper bound, the hooked hub, the check of the figures, the layout's effect,
+the duties for steps 22 and 28, and the recommendation's reason; the measurement was run once more and gave the same
+figures.)
 
 Script: `scripts/8d/measure-note.mjs`, three commands: `scan` (the transcripts only, counts only, starts nothing),
 `check` (the whole run on made-up sessions written in the script, with every count it must find worked out by hand
@@ -3877,8 +3880,9 @@ that file was deleted by its exact name.
 | of them with earlier entries in their own room when sent | 24 (11 of them `-p` runs) |
 
 The two 15s are not the same sessions (counted after the review, read only, counts only, by the build folder's
-`scratch\step14\pcount.mjs`): of the 15 `-p` runs, 14 have typed turns (21 in all) and 1 has none; of the 15
-sessions with no typed turn, that 1 is a `-p` run and 14 are window sessions. So 14 `-p` runs have a first message.
+`scratch\step14\pcount.mjs`, its output saved beside it as `pcount-1.txt`): of the 15 `-p` runs, 14 have typed
+turns (21 in all) and 1 has none; of the 15 sessions with no typed turn, that 1 is a `-p` run and 14 are window
+sessions. So 14 `-p` runs have a first message.
 
 These counts match step 10's corrected figures (M2, "With the copies left out": 82 typed turns, 76 entries) and M7's
 3 copies with 7 copied turns. The first messages' lengths, in code points: shortest 6, a quarter 40, middle 58, three
@@ -3923,12 +3927,13 @@ piece of model text, so a layout of similar size changes the lengths by a few ch
   step 24 will cut them (by code point, as `scripts/8d/lesson-query.mjs` cuts).
 - **`-p` runs and the hub's start** (corrected after the review). `-p` runs are searched like the rest, but every
   search here was made with the hub already up. Live, if memory is not connected when a message is sent, that message
-  goes without a note, and the note is tried with the next message; "in `-p` that can mean no note" (Q9; the user
-  chose the one time limit at step 11). A `-p` run's one message is sent at launch, while the hub may still be
-  starting, and so is any first message typed while it starts. So every count of notes, and of matches a note gets,
-  below is an upper bound for `-p` runs and for any first message sent while the hub is still starting. How often
-  the hub is not yet connected is not measured here (the hub's start is not modelled); the figures are given without
-  the `-p` runs too, to show how far they could drop.
+  goes without a note, and the note is tried with the next message; "in `-p` that can mean no note". That is Q9's
+  recommended text in the plan, which the steps are written on; the user's own answer at step 11 was the time limit
+  (one limit, from the pair). A `-p` run's one message is sent at launch, while the hub may still be starting, and so
+  is any first message typed while it starts. So every count below is of notes on first messages only: for `-p` runs
+  and for any first message sent while the hub is still starting it is an upper bound, and a note tried again with
+  the next message is neither counted nor measured. How often the hub is not yet connected is not measured here (the
+  hub's start is not modelled); the figures are given without the `-p` runs too, to show how far they could drop.
 - **The search**: one search of the message's own room (step 24's "project's room"; the `lessons` room is empty here,
   as there are no lessons yet, so the merged list of Q27 is the project's alone), and, for the comparison, one search
   of each other project's room that held an entry at the time, each with `limit` 100, MemPalace's most (`_MAX_RESULTS`,
@@ -4049,10 +4054,12 @@ What these figures cannot say:
 - How the user will work later. Most of these sessions were the user's own tests of Tachikoma: 15 of the 53 are `-p`
   runs (14 of the 35 first messages) and 4 turns repeat an earlier one word for word, so some very close matches are
   a test prompt meeting its own repeat.
-- How many messages are sent before memory is connected, and so get no note (Q9). Every count of notes is an upper
-  bound for those; the table without the `-p` runs shows how far they could drop.
-- Lessons in the note: there are none yet, so the merged list (Q27) held the project's matches alone. A count and a
-  cut-off apply to project matches and lessons together.
+- How many first messages are sent before memory is connected, and so get no note, and what the note then tried with
+  the next message finds (Q9's recommended text in the plan): neither is counted or measured. The counts of notes are
+  an upper bound for those first messages; the table without the `-p` runs shows how far they could drop.
+- Lessons in the note: there are none yet, so the merged list (Q27) held the project's matches alone. The cut-off and
+  the count apply to project matches and lessons together (step 24: "the cut-off and the count are then applied to
+  the merged list").
 - The user's own MemPalace (the `"use"` path, a palace of about 6.8 GB with its own settings), other embedding models,
   other languages, and larger palaces: not measured.
 
@@ -4080,9 +4087,11 @@ What the two numbers do (design, section 4; step 24): at the first message after
 if memory is connected by then, the matches from the project's room and the lessons at or below the cut-off, closest
 first, up to the count, go in front of that message under the heading. With no match inside, the message goes as it
 is. If memory is not connected yet, the message goes without a note and the note is tried with the next message, at
-most once per launch, `/clear` or shortening (Q9); in `-p`, whose one message is sent at launch, that can mean no
-note. So the counts of notes below are what the cut-off allows, at most; fewer will be made where a message comes
-before memory is connected, which was not measured.
+most once per launch, `/clear` or shortening (Q9's recommended text in the plan); in `-p`, whose one message is sent
+at launch, that can mean no note. The counts below are of notes on first messages only, and a note tried again with
+the next message is neither counted nor measured. So the counts of notes below are what the cut-off allows on first
+messages, at most; fewer will be made there where a message comes before memory is connected, which was not
+measured.
 
 The options for the cut-off (of the 24 first messages with earlier entries; the other 11 get no note at any
 cut-off). Each gives, in brackets, the same without the `-p` runs (of 13 window messages with earlier entries, and of
@@ -4103,10 +4112,12 @@ From 0.742 up, a tenth or more of all other-project matches are inside, for 25 t
 
 The options for the count: **1**, **2** or **3**. At N3 the note's text is, middle and longest, 291 and 800
 characters for 1; 441 and 1,099 for 2; 773 and 1,099 for 3; add 85 for the heading and about 100 a match for its first
-line. Since the lessons share the count (Q27), a count of 1 lets a closer lesson push the project's match out, and the
-other way round.
+line. Since the lessons share the count (step 24: "the cut-off and the count are then applied to the merged list",
+plan.md:1455-1457; Q27 only merges the two rooms by distance), a count of 1 lets a closer lesson push the project's
+match out, and the other way round.
 
-Recommended, not chosen: **N3, 0.4861, with a count of 3** (reasons rewritten after the review). Say first what N3
+Recommended, and chosen by the user (below): **N3, 0.4861, with a count of 3** (reasons rewritten after the review).
+Say first what N3
 is: it is the middle of the messages' closest same-project scores, so about half the messages with something earlier
 get a note by construction (12 of 24; 8 of the 13 window messages). That is not a finding about how useful notes
 are: **nothing here measures whether a match helps**. The reason to take N3 and not a wider cut-off is the other
@@ -4115,11 +4126,36 @@ of 29 messages; 2 of 18 window messages), and at the next candidates they rise (
 20 of 29 at 0.691). Without the `-p` runs the step to N4 is smaller: 9 notes against 8, with other projects' matches
 inside for the same 2 of 18 window messages (4 matches against 2), so on the window messages alone N4 is about as
 safe; it rests on one more note. The reasons for a count of 3: the lessons share the count with the project's
-matches (Q27), so a count of 1 lets one push the other out; and the cost is small and bounded, at most 1,099
-characters of text here and 2,400 at most (3 pieces of 800), before the heading and first lines. Its weak points:
-whether a second or third match helps is not measured; at 0.4861, 4 of 29 messages have another project's entry
-inside, so an unrelated entry of the same project may get in about as often, which this cannot tell; every note
-count is an upper bound (Q9); and the figures rest on 35 messages, mostly tests. A more careful choice: **N3 with
-a count of 1** (one piece, at most 800 characters), or **N2, 0.3111, with a count of 1**.
+matches (step 24, the merged list), so a count of 1 lets one push the other out; and the cost is small and bounded:
+at most 1,099 characters of text here, and 2,400 at most if a match is shown as its piece (3 pieces of 800; step
+23's reading, not yet decided). Shown as whole entries, 3 matches reached 2,618 characters here (the length table,
+"As whole entries"), bounded only by the entries' 100,000 each. All before the heading and first lines. Its weak
+points: whether a second or third match helps is not measured; at 0.4861, 4 of 29 messages have another project's
+entry inside, so an unrelated entry of the same project may get in about as often, which this cannot tell; the
+counts are of first messages' notes, an upper bound for those sent before memory is connected, and a note retried
+on the next message is not counted (Q9's recommended text in the plan); and the figures rest on 35 messages, mostly
+tests. A more careful choice: **N3 with a count of 1** (one piece, at most 800 characters), or **N2, 0.3111, with
+a count of 1**.
 
-**The user's choice: not yet given.**
+**The user's choice: not yet given.** (Answered below.)
+
+#### The user's choice (step 14), 2026-11-20
+
+The user chose **N3: a note cut-off of 0.4861 and a count of up to 3** (the answer "N3 0.4861, up to 3",
+2026-11-20). These are the M6 figures for step 24: at the first message after a launch, `/clear` or a shortening,
+the matches from the project's room and from `lessons`, merged by distance (Q27), at a distance of 0.4861 or less are
+taken, closest first by their own distance, and at most 3 go in the note (the cut-off and the count applied to the
+merged list, step 24). They are recorded here for steps 23, 24 and 28 to take from.
+
+The user chose with these before them:
+- 12 of the 24 first messages with something earlier get a note at 0.4861; of the window messages alone, 8 of 13;
+- 6 other-project matches (pieces of other projects' turns) come inside the cut-off (window messages alone: 2);
+- a note's text is typically about 770 characters and at most about 1,100 (text only, before the heading and
+  first lines);
+- the counts are an upper bound (a first message sent before memory is connected gets no note);
+- the count is shared with lessons in the merged list;
+- nothing here measures whether a match helps.
+
+Not covered: real lessons in the note, the user's own MemPalace, a note tried again on the next message, other
+languages and larger palaces. Step 14 was committed (0668f98, with the review fixes aa1b266) before the user's
+answer; the answer is in the commit after them.
