@@ -845,7 +845,7 @@ The snapshots of the user's folders:
     `hook_state/<session>_last_save`. Its name matches the session folder in the build's
     scratchpad path (`...\Temp\claude\<id>\<session>\scratchpad`), so it is
     taken to be this build's Claude Code session. The commit trailers carry a different session ID
-    (`session_011HyFwUUVRarEnjhRmMcKdH`).
+    (`<session>`).
 
   These set-apart items changed too (they do not fail):
   - `hook_state/hook.log` at 21:28:37 UTC;
@@ -2120,8 +2120,9 @@ on a warm hub in a palace the size the user's turns make today, about 0.5 s in a
 Almost all of it is MemPalace's add; the lock and the look-up take a few milliseconds. The slowest real backlog (all
 11 turns of the user's longest session) takes about 5 s in the large palace, and a window behind another window
 saving it waits up to 5.4 s for the lock. A made-up turn in 3 parts of 100,000 characters takes about 6.3 s.
-**The exit save's time limit waits on the user (at the end of this part). Both pairs of snapshots failed: the
-user explained the first; the second is traced under the user's rule ("The user's folders").**
+**The user approved the figures and chose the exit save's time limit, 14 s (option A1), on 2026-11-19 (at the end
+of this part). Both pairs of snapshots failed: the user explained the first; the second is traced under the user's
+rule ("The user's folders").**
 
 Scripts: `scripts/8d/turns.mjs` (the rule for cutting a transcript into turns, for steps 10, 12 and 14) with its test
 `tests/memory/turns.test.ts`, and `scripts/8d/measure-save.mjs`, three commands: `scan` (the transcripts only, starts
@@ -2485,4 +2486,18 @@ After the re-check of those fixes (2026-11-19), all fixed, with no new run:
 - Private details masked through this file, by the user's decision: Claude Code's session id as `<session>`, its
   temp folder id as `<id>`, the user's own palace key as `<palace key>`, the Windows user name in paths as `<user>`.
 
-**The user's OK on these figures and the exit save's time limit: not yet given.**
+#### The user's choice (step 10), 2026-11-19
+
+The user approved the figures above and chose the exit save's time limit: **option A1, 14 s**, by the rule 5 x (S +
+X) + the fixed check interval: 5 x (1,445.9 + 1,146.9) + 100 = 13,064 ms, rounded up to 14 s. S is the rest of a hub's
+start (1,321.4 + 121.0 + 3.5 ms) and X one real turn as the first save after a start in the 2,000-entry palace (run
+2); the 100 ms is M3's check interval, a setting, not multiplied. The margin of 5 times is the user's, from M3; it was
+not measured (no slower PC was run).
+- Covered: the last real turn, at every real size, as the first save after a hub start, while the hub is still
+  starting.
+- Left to the next resume: an exit waiting behind another window saving a backlog (option A, 41 s), and the first
+  hub start just after an install (option A1i, 46 s); also a backlog and a turn in parts (B, C). README's known limits
+  should say so, at step 30.
+
+Step 10 was committed (8b71e01, with the fixes b0b4937 and 9a8bdbf) before the user's answer, as steps 8 and 9 were;
+the answer is in the commit after them.
