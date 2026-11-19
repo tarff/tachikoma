@@ -70,6 +70,7 @@ export type Why =
   | { is: "folder"; detail: string } // memory's folders could not be made (privateDir's or Node's own words)
   | { is: "lock" } // the join lock could not be taken (oslock's own words are never passed on)
   | { is: "newer palace"; version: string } // the design's reason, with the version
+  | { is: "no port"; detail: string } // no free port on loopback (Node's own words)
   | { is: "exited"; code: number | null } // the start exited, and no other hub answers
   | { is: "not started"; detail: string } // the program could not be started (Node's own words)
   | { is: "start limit" } // no answer, or no serverinfo.json naming the port, within the start limit
@@ -80,9 +81,13 @@ export type Joined = { is: "on"; url: string } | { is: "off"; why: Why } | { is:
 export type HubEvent = { is: "failing" } | { is: "on"; url: string } | { is: "off"; why: Why };
 export type Left =
   | { is: "left" } // this window's file is gone; the hub is another window's, or there was none
-  | { is: "stopped" }
-  | { is: "not stopped"; why: "the id is another program's" }
-  | { is: "gave up" }; // the caller's signal ended the wait for the join lock
+  | { is: "stopped" } // the helper said the serving process ended
+  // Not confirmed: the record stays, marked stopping, for the next window to handle.
+  | { is: "not stopped"; why: "the id is another program's" | "the process could not be opened" |
+    "the helper gave no answer" }
+  // The join lock was not taken: the caller's signal ended the wait, or the take failed (then, as the last window,
+  // the record is marked stopping for the next window).
+  | { is: "gave up" };
 
 export interface HubOptions {
   paths: MemoryPaths;
@@ -98,13 +103,15 @@ export interface HubOptions {
 }
 
 // The supervisor's process helper, run by the environment's own Python with -I (step 6 item 2: Node cannot read
-// another process's start time), word for word as step 20's proof ran it (scripts/8d/hub-proof.mjs). `start <pid>`
-// prints the process's start time, or "gone". `stop <pid> <start> <ms> <environments' folder>` opens the process,
-// reads its start time from that same handle, and only if it is the given one ends it and waits up to <ms> for every
-// process of the hub: on Windows also the environment's launcher that started it (its parent, a Scripts\python.exe one
-// folder below the folder given, started before it) and its console host (started after it). It prints "stopped" or
-// "running", the milliseconds it waited and the ids waited for; or "differs" (the id now belongs to another program:
-// nothing is stopped), or "gone". On Windows the end is forced (TerminateProcess, the user's approval after step 20's
+// another process's start time), word for word as step 20's proof has it (scripts/8d/hub-proof.mjs; its runs had the
+// text before the review's split of "gone" from "unopened"). `start <pid>` prints the process's start time, or "gone"
+// (no such process, or it has ended), or "unopened <error>" (it could not be opened, which is no proof that it ended).
+// `stop <pid> <start> <ms> <environments' folder>` opens the process, reads its start time from that same handle,
+// and only if it is the given one ends it and waits up to <ms> for every process of the hub: on Windows also the
+// environment's launcher that started it (its parent, a Scripts\python.exe one folder below the folder given, started
+// before it) and its console host (started after it). It prints "stopped" or "running", the milliseconds it waited
+// and the ids waited for; or "differs" (the id now belongs to another program: nothing is stopped), "gone" or
+// "unopened <error>" as above. On Windows the end is forced (TerminateProcess, the user's approval after step 20's
 // proof; only idle hubs were stopped there); elsewhere it is SIGTERM, MemPalace's clean exit (runtime.py:332-358). Not
 // run: Linux (/proc/<pid>/stat, the proc(5) manual; os.pidfd_open and select) and macOS (`ps -o lstart= -p <pid>`, to
 // the second; kqueue), the README's known limits.
@@ -138,13 +145,18 @@ if sys.platform == 'win32':
     def opened(p, access):
         h = k.OpenProcess(access, False, p)
         if not h:
-            return None, None
+            err = ctypes.get_last_error()
+            return None, 'gone' if err == 87 else 'unopened %d' % err
         c, e, kt, u, code = FT(), FT(), FT(), FT(), D()
-        if (k.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(kt), ctypes.byref(u))
-                and k.GetExitCodeProcess(h, ctypes.byref(code)) and code.value == 259):
-            return h, (c.dwHighDateTime << 32) | c.dwLowDateTime
-        k.CloseHandle(h)
-        return None, None
+        if not (k.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(kt), ctypes.byref(u))
+                and k.GetExitCodeProcess(h, ctypes.byref(code))):
+            err = ctypes.get_last_error()
+            k.CloseHandle(h)
+            return None, 'unopened %d' % err
+        if code.value != 259:
+            k.CloseHandle(h)
+            return None, 'gone'
+        return h, (c.dwHighDateTime << 32) | c.dwLowDateTime
     def launcher(h, top):
         buf, n = ctypes.create_unicode_buffer(32768), D(32768)
         if not k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
@@ -153,14 +165,14 @@ if sys.platform == 'win32':
         return len(parts) > 3 and '\\'.join(parts[:-3]) == top and parts[-2:] == ['scripts', 'python.exe']
     if op == 'start':
         h, st = opened(pid, QUERY)
-        print(st if h else 'gone')
+        print(st)
         if h:
             k.CloseHandle(h)
         sys.exit()
     want, ms, top = sys.argv[3], int(sys.argv[4]), os.path.normcase(os.path.abspath(sys.argv[5]))
     h, st = opened(pid, QUERY | SYNC | TERM)
     if not h:
-        print('gone')
+        print(st)
         sys.exit()
     if str(st) != want:
         k.CloseHandle(h)
@@ -217,8 +229,11 @@ try:
         q.control([select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD, select.KQ_NOTE_EXIT)], 0, 0)
     else:
         fd = os.pidfd_open(pid)
-except OSError:
+except ProcessLookupError:
     print('gone')
+    sys.exit()
+except OSError as e:
+    print('unopened %d' % e.errno)
     sys.exit()
 st = started(pid)
 if st is None:
@@ -255,6 +270,14 @@ const wait = (ms: number, signal?: AbortSignal) =>
     };
     const timer = setTimeout(done, ms);
     signal?.addEventListener("abort", done, { once: true });
+  });
+
+// Settles when the signal fires; never, without one.
+const fired = (signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (!signal) return;
+    if (signal.aborted) return resolve();
+    signal.addEventListener("abort", () => resolve(), { once: true });
   });
 
 // A port the system gives on loopback, never MemPalace's default 8765, so a hub of the user's own is never met.
@@ -441,7 +464,10 @@ export class Hub {
         }
         return undefined;
       }
-      if (r.is === "refused" && palaceFile(this.paths.palace).holds === "no file") return undefined;
+      // A palace with no file, or a file that opens with no model row, is new (the user's "Treat as new").
+      if (r.is === "refused" && ["no file", "no model row"].includes(palaceFile(this.paths.palace).holds)) {
+        return undefined;
+      }
       return { is: "read-back", failed: r.is };
     } finally {
       await c.palace.close();
@@ -455,7 +481,12 @@ export class Hub {
   // hub is found the same way and used. A start that passes the limit is ended (only the child this window started,
   // whose exit it has not seen, as killTree requires).
   private async start(): Promise<{ record: HubRecord } | { why: Why }> {
-    const port = await freePort();
+    let port: number;
+    try {
+      port = await freePort();
+    } catch (err) {
+      return { why: { is: "no port", detail: message(err) } };
+    }
     const p = this.launch(this.paths.envPython);
     const began = performance.now();
     const left = () => this.f.startLimit - (performance.now() - began);
@@ -546,7 +577,7 @@ export class Hub {
 
   private async startTime(pid: number): Promise<string | undefined> {
     const said = await this.helper(["start", String(pid)], this.f.startRead);
-    return said && said !== "gone" ? said : undefined;
+    return said && said !== "gone" && !said.startsWith("unopened") ? said : undefined;
   }
 
   // The helper, run by the environment's own Python with -I, in `running` so it dies with the window, ended when it
@@ -580,34 +611,62 @@ export class Hub {
 
   // The design's leave: take the lock, remove this window's file, and if no other fresh file is left: mark the hub
   // stopping, stop it by the serving process's id once its start time is read again and is the recorded one, wait for
-  // every process of it, clear the record, let go. A stop past its limit counts as stopped (the user's choice at step
-  // 20's run 3: the serving process is ended first). MemPalace's own files are left as MemPalace leaves them.
+  // every process of it, clear the record, let go. Only the helper's word that the serving process ended clears the
+  // record (the user's choice at step 20's review): "stopped", or "running", the wait after TerminateProcess past its
+  // limit, which the user's late-stop rule counts as stopped (step 20's run 3), or "gone", no such process any more.
+  // Anything else (another program's id, a process that could not be opened, no answer within the stop's limit)
+  // keeps the record, marked stopping, so the next window starts or finds the hub again and stops it when it leaves.
+  // The caller's signal ends the wait for a join under way, as it ends the wait for the lock. MemPalace's own files
+  // are left as MemPalace leaves them.
   private async leave(signal?: AbortSignal): Promise<Left> {
     this.closing.abort();
     this.stopTimer();
-    await this.busy;
+    await Promise.race([this.busy, fired(signal)]);
     let lock: OsLock | null;
+    let failed = false;
     try {
       lock = await this.take(signal);
     } catch {
       lock = null;
+      failed = true;
     }
     try {
       rmSync(this.inUse, { force: true });
-      if (!lock) return { is: "gave up" };
+      if (!lock) {
+        if (failed) this.markStopping();
+        return { is: "gave up" };
+      }
       if (this.others()) return { is: "left" };
       const rec = this.record();
       if (!rec) return { is: "left" };
       this.write(hubRecord(this.paths), { ...rec, stopping: true });
       const said = await this.helper(["stop", String(rec.pid), rec.start, String(this.f.stop),
         path.dirname(this.paths.env)], this.f.stop);
-      rmSync(hubRecord(this.paths), { force: true });
-      if (said === "differs") return { is: "not stopped", why: "the id is another program's" };
-      return said === "gone" ? { is: "left" } : { is: "stopped" };
+      const word = said?.split(" ")[0];
+      if (word === "stopped" || word === "running" || word === "gone") {
+        rmSync(hubRecord(this.paths), { force: true });
+        return word === "gone" ? { is: "left" } : { is: "stopped" };
+      }
+      if (word === "differs") return { is: "not stopped", why: "the id is another program's" };
+      if (word === "unopened") return { is: "not stopped", why: "the process could not be opened" };
+      return { is: "not stopped", why: "the helper gave no answer" };
     } catch {
       return { is: "left" };
     } finally {
       lock?.release();
+    }
+  }
+
+  // A leave whose take of the lock failed: as the last window, the record is marked stopping, so the next window
+  // treats the hub as one to start or find again, and stops it when it leaves (the user's choice at step 20's
+  // review). Done without the lock, as it could not be taken; a window still using the hub would only join it again.
+  private markStopping(): void {
+    try {
+      if (this.others()) return;
+      const rec = this.record();
+      if (rec && !rec.stopping) this.write(hubRecord(this.paths), { ...rec, stopping: true });
+    } catch {
+      // the folder is gone or cannot be written: there is no record left to mark
     }
   }
 

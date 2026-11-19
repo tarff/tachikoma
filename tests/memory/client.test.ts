@@ -1,6 +1,6 @@
 import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -54,6 +54,24 @@ async function folder(): Promise<string> {
   return made;
 }
 
+// The stand-in hub's environment: its home, the user's AppData folders and an empty PATH folder all in the folder
+// `dir` the test made, the PATH variable replaced in every spelling (Windows' is `Path`), as tests/memory/hub.test.ts
+// builds its own.
+function ownEnv(dir: string, more: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const home = path.join(dir, "home");
+  const bin = path.join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toUpperCase() !== "PATH")),
+    PATH: bin,
+    USERPROFILE: home,
+    HOME: home,
+    APPDATA: path.join(home, "AppData", "Roaming"),
+    LOCALAPPDATA: path.join(home, "AppData", "Local"),
+    ...more,
+  };
+}
+
 // The stand-in started as the hub, with its home and palace in a folder the test made and the hub's model setting.
 async function startHub(args: string[] = []) {
   const dir = await folder();
@@ -65,7 +83,7 @@ async function startHub(args: string[] = []) {
     [STANDIN, "--transport", "http", "--port", "0", "--palace", palace, "--backend", "sqlite_exact", "--record", record,
       ...args],
     {
-      env: { ...process.env, USERPROFILE: home, HOME: home, MEMPALACE_EMBEDDING_MODEL: "minilm" },
+      env: ownEnv(dir, { MEMPALACE_EMBEDDING_MODEL: "minilm" }),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     },
@@ -259,6 +277,15 @@ describe.each(["hub", "stdio"] as const)("the palace client, %s", (form) => {
     expect(await palace.inForce(s.palace, LIMIT)).toEqual({ is: "read", backend: "sqlite_exact" });
     await palace.add(ROOM, "label", "text", LIMIT);
     expect(await palace.inForce(s.palace, LIMIT)).toEqual({ is: "read", backend: "sqlite_exact", model: "minilm" });
+  });
+
+  // A status that answers is taken as it is, with no model, when the palace file cannot be opened (step 20's review).
+  it("reads back the backend and no model when the palace file cannot be opened", async () => {
+    const s = await start();
+    const palace = await open(s.target);
+    mkdirSync(s.palace, { recursive: true });
+    writeFileSync(path.join(s.palace, "sqlite_exact.sqlite3"), "not a database: broken on purpose\n");
+    expect(await palace.inForce(s.palace, LIMIT)).toEqual({ is: "read", backend: "sqlite_exact" });
   });
 
   it("reports a missing required tool by name", async () => {
@@ -481,7 +508,7 @@ describe("the stand-in hub", () => {
       process.execPath,
       [STANDIN, "--transport", "http", "--port", "0", "--palace", h.palace, "--backend", "sqlite_exact"],
       {
-        env: { ...process.env, USERPROFILE: h.home, HOME: h.home },
+        env: ownEnv(path.dirname(h.home)),
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       },

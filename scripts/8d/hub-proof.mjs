@@ -88,13 +88,15 @@ for (const name of ["TEMP", "TMP"]) {
 
 // The supervisor's process helper, run by the environment's own Python with -I (step 6 item 2: Node cannot read
 // another process's start time; this way was the fastest on Windows). `start <pid>` prints the process's start time,
-// or "gone". `stop <pid> <start> <ms> <environments' folder>` opens the process, reads its start time from that same
-// handle, and only if it is the given one ends it and waits up to <ms> for every process of the hub to end: on Windows
-// also the environment's launcher that started it (its parent, a Scripts\python.exe one folder below the folder given,
-// started before it) and what it started (its console host, started after it). It prints "stopped" or "running", the
-// milliseconds it waited, and the ids waited for; or "differs" (the id now belongs to another program: nothing is
-// stopped), or "gone". On Windows the end is forced (TerminateProcess); elsewhere it is SIGTERM, MemPalace's clean
-// exit (runtime.py:332-358). Not run: Linux (/proc/<pid>/stat's start time, the proc(5) manual; os.pidfd_open and
+// or "gone" (no such process, or it has ended), or "unopened <error>" (it could not be opened; split from "gone" after
+// step 20's code review, after runs 1 to 3, which had the earlier text). `stop <pid> <start> <ms> <environments'
+// folder>` opens the process, reads its start time from that same handle, and only if it is the given one ends it
+// and waits up to <ms> for every process of the hub to end: on Windows also the environment's launcher that started
+// it (its parent, a Scripts\python.exe one folder below the folder given, started before it) and what it started (its
+// console host, started after it). It prints "stopped" or "running", the milliseconds it waited, and the ids waited
+// for; or "differs" (the id now belongs to another program: nothing is stopped), "gone" or "unopened <error>". On
+// Windows the end is forced (TerminateProcess); elsewhere it is SIGTERM, MemPalace's clean exit
+// (runtime.py:332-358). Not run: Linux (/proc/<pid>/stat's start time, the proc(5) manual; os.pidfd_open and
 // select for the wait) and macOS (`ps -o lstart= -p <pid>`, to the second, the user's choice after the review; kqueue
 // for the wait).
 const HELPER = String.raw`
@@ -127,13 +129,18 @@ if sys.platform == 'win32':
     def opened(p, access):
         h = k.OpenProcess(access, False, p)
         if not h:
-            return None, None
+            err = ctypes.get_last_error()
+            return None, 'gone' if err == 87 else 'unopened %d' % err
         c, e, kt, u, code = FT(), FT(), FT(), FT(), D()
-        if (k.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(kt), ctypes.byref(u))
-                and k.GetExitCodeProcess(h, ctypes.byref(code)) and code.value == 259):
-            return h, (c.dwHighDateTime << 32) | c.dwLowDateTime
-        k.CloseHandle(h)
-        return None, None
+        if not (k.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(kt), ctypes.byref(u))
+                and k.GetExitCodeProcess(h, ctypes.byref(code))):
+            err = ctypes.get_last_error()
+            k.CloseHandle(h)
+            return None, 'unopened %d' % err
+        if code.value != 259:
+            k.CloseHandle(h)
+            return None, 'gone'
+        return h, (c.dwHighDateTime << 32) | c.dwLowDateTime
     def launcher(h, top):
         buf, n = ctypes.create_unicode_buffer(32768), D(32768)
         if not k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
@@ -142,14 +149,14 @@ if sys.platform == 'win32':
         return len(parts) > 3 and '\\'.join(parts[:-3]) == top and parts[-2:] == ['scripts', 'python.exe']
     if op == 'start':
         h, st = opened(pid, QUERY)
-        print(st if h else 'gone')
+        print(st)
         if h:
             k.CloseHandle(h)
         sys.exit()
     want, ms, top = sys.argv[3], int(sys.argv[4]), os.path.normcase(os.path.abspath(sys.argv[5]))
     h, st = opened(pid, QUERY | SYNC | TERM)
     if not h:
-        print('gone')
+        print(st)
         sys.exit()
     if str(st) != want:
         k.CloseHandle(h)
@@ -206,8 +213,11 @@ try:
         q.control([select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD, select.KQ_NOTE_EXIT)], 0, 0)
     else:
         fd = os.pidfd_open(pid)
-except OSError:
+except ProcessLookupError:
     print('gone')
+    sys.exit()
+except OSError as e:
+    print('unopened %d' % e.errno)
     sys.exit()
 st = started(pid)
 if st is None:

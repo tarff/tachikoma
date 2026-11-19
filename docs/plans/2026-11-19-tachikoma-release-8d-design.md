@@ -4310,3 +4310,29 @@ backend collection.", the same hint. So the refusal cannot tell them apart. The 
 - Linux: the start time from `/proc/<pid>/stat` (the `proc(5)` manual); the wait with `os.pidfd_open` and `select`.
 - macOS: the start time from `ps -o lstart= -p <pid>`, to the second (the user's choice); the wait with `kqueue`.
 - On both the stop is SIGTERM, MemPalace's clean exit.
+
+**After the code review (2026-11-20).** The user said "Fix them". The changes:
+- **A stop counts only when the helper says the serving process ended:**
+  - "stopped";
+  - "running", the wait after TerminateProcess past its limit, under the late-stop rule;
+  - "gone", no such process.
+
+  Anything else keeps the record, marked stopping, for the next window, and the leave answers "not stopped":
+  another program's id, a process that could not be opened, or no answer within the stop's limit (a killed, crashed
+  or unstartable helper).
+- **The helper now tells "gone" apart from "unopened <error>".** On Windows, OpenProcess's error 87 means no such
+  process, and any other error means it could not be opened; a process that has exited is "gone". Elsewhere,
+  ProcessLookupError means gone, and any other OSError means unopened. Runs 1 to 3 had the text before this split.
+  The split was not run against a real process.
+- **The leave's signal** now also ends its wait for a join under way.
+- **A last window's leave whose take of the lock fails** marks the record stopping (without the lock, which could not
+  be taken), so the next window starts or finds the hub again and stops it when it leaves.
+- **"Treat as new":** a refused status with a palace file that opens but has no model row means memory on, like "no
+  file".
+- **A free port that cannot be had** has its own reason.
+
+Known limits, for step 30's README:
+- **An exit-2 join records the hub's folder as not known (`env: null`), so old environment folders wait for a later
+  clean-up.** The user chose "Accept, README note".
+- **On Windows the record's rename can fail while another window holds the file open to read it.** Then that join,
+  or that leave's stopping mark, fails once. The rename is Node's `renameSync` over the old file.

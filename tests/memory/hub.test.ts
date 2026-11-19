@@ -14,6 +14,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hubEnv } from "../../src/memory/env.js";
 import { FIGURES, type Figures, Hub, type HubEvent, hubRecord, type HubRecord } from "../../src/memory/hub.js";
@@ -43,8 +44,10 @@ const SHORT_START = 1_500;
 // The stand-in Python. Its control: `record` (a JSON line per start), `exit` (exit at once with that code), `hold` (a
 // file whose existence lets the stand-in start), `backend` (passed to the stand-in in place of sqlite_exact),
 // `upper` (the palace folder's own name in capitals, so serverinfo.json's palace_path differs in letter case only),
-// `key` (serverinfo.json written under that folder name in place of MemPalace's own) and `args` (more for the
-// stand-in).
+// `key` (serverinfo.json written under that folder name in place of MemPalace's own), `args` (more for the
+// stand-in); and, as the helper, `startDelay` and `stopDelay` (answer that much later) and `stopSays` ("unopened": the
+// process could not be opened; "nothing": no answer at all; "running": the process is ended but the wait after it
+// passed its limit).
 const PYTHON = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
@@ -69,20 +72,27 @@ if (args[1] === "-c") {
   const [op, p, want, ms] = args.slice(3);
   const pid = Number(p);
   log({ helper: { op, pid } });
-  const st = startTime(pid);
-  if (op === "start") process.stdout.write((st ?? "gone") + "\n");
-  else if (st === null) process.stdout.write("gone\n");
-  else if (st !== want) process.stdout.write("differs\n");
-  else {
+  const say = (t) => process.stdout.write(t + "\n");
+  const act = () => {
+    const st = startTime(pid);
+    if (op === "start") return say(st ?? "gone");
+    if (c.stopSays === "unopened") return say("unopened 5");
+    if (c.stopSays === "nothing") return;
+    if (st === null) return say("gone");
+    if (st !== want) return say("differs");
     process.kill(pid);
+    if (c.stopSays === "running") return say("running " + ms + " " + pid);
     const began = Date.now();
     const wait = () => {
-      if (!alive(pid)) process.stdout.write("stopped " + (Date.now() - began) + " " + pid + "\n");
-      else if (Date.now() - began > Number(ms)) process.stdout.write("running " + (Date.now() - began) + "\n");
+      if (!alive(pid)) say("stopped " + (Date.now() - began) + " " + pid);
+      else if (Date.now() - began > Number(ms)) say("running " + (Date.now() - began) + " " + pid);
       else return setTimeout(wait, 10);
     };
     wait();
-  }
+  };
+  const delay = op === "start" ? c.startDelay : c.stopDelay;
+  if (delay) setTimeout(act, delay);
+  else act();
 } else {
   log({ hub: { file: __filename, args, env: process.env, pid: process.pid } });
   fs.writeFileSync(startOf(process.pid), String(Date.now()) + "-" + String(process.hrtime.bigint()));
@@ -117,6 +127,9 @@ interface Control {
   upper?: boolean;
   key?: string;
   args?: string[];
+  startDelay?: number;
+  stopDelay?: number;
+  stopSays?: "unopened" | "nothing" | "running";
 }
 
 const folders: string[] = [];
@@ -345,7 +358,72 @@ describe("the hub's supervisor", () => {
     writeFileSync(hubRecord(s.paths), JSON.stringify({ ...s.record(), start: "another start" }));
     expect(await h.close()).toEqual({ is: "not stopped", why: "the id is another program's" });
     expect(alive(pid)).toBe(true);
+    expect(s.record()).toMatchObject({ pid, stopping: true });
   });
+
+  // Only an answer that the serving process ended is a stop (the user's choice at step 20's review); anything else
+  // keeps the record, marked stopping, for the next window.
+  it.each([
+    { name: "the helper could not open the process", control: { stopSays: "unopened" as const }, figures: {},
+      why: "the process could not be opened" },
+    { name: "the helper gave no answer", control: { stopSays: "nothing" as const }, figures: {},
+      why: "the helper gave no answer" },
+    { name: "the whole stop run passed its limit", control: { stopDelay: 3_000 }, figures: { stop: 500 },
+      why: "the helper gave no answer" },
+  ])("is not stopped when $name, and keeps the record marked stopping", async ({ control, figures, why }) => {
+    const s = await setup();
+    const h = s.hub(figures);
+    expect((await h.join()).is).toBe("on");
+    const { pid } = s.launched()[0]!;
+    s.control(control);
+    expect(await h.close()).toEqual({ is: "not stopped", why });
+    expect(alive(pid)).toBe(true);
+    expect(s.record()).toMatchObject({ pid, stopping: true });
+  });
+
+  it("counts a stop whose wait passed its limit after the process was ended as stopped (the late-stop rule)",
+    async () => {
+      const s = await setup();
+      const h = s.hub();
+      expect((await h.join()).is).toBe("on");
+      const { pid } = s.launched()[0]!;
+      s.control({ stopSays: "running" });
+      expect(await h.close()).toEqual({ is: "stopped" });
+      await until(() => !alive(pid), "the hub to end");
+      expect(s.record()).toBeUndefined();
+    });
+
+  it("clears the record of a hub the helper finds already gone", async () => {
+    const s = await setup();
+    const h = s.hub();
+    expect((await h.join()).is).toBe("on");
+    const { pid } = s.launched()[0]!;
+    process.kill(pid);
+    await until(() => !alive(pid), "the hub to die");
+    expect(await h.close()).toEqual({ is: "left" });
+    expect(s.record()).toBeUndefined();
+  });
+
+  it("keeps the stopping mark when the last window's leave cannot take the lock, so the next window handles it",
+    async () => {
+      const s = await setup();
+      const a = s.hub();
+      expect((await a.join()).is).toBe("on");
+      const { pid } = s.launched()[0]!;
+      const lock = path.join(s.paths.home, "join.lock");
+      rmSync(lock, { force: true });
+      mkdirSync(lock); // a folder where the lock file goes: the take fails with an error, not as busy
+      expect(await a.close()).toEqual({ is: "gave up" });
+      expect(s.inUse()).toEqual([]);
+      expect(s.record()).toMatchObject({ pid, stopping: true });
+      expect(alive(pid)).toBe(true);
+      rmSync(lock, { recursive: true });
+      const b = s.hub();
+      expect((await b.join()).is).toBe("on");
+      expect(s.record()).toMatchObject({ pid, stopping: false });
+      expect(await b.close()).toEqual({ is: "stopped" });
+      expect(alive(pid)).toBe(false);
+    });
 
   it("joins another window's hub when its own start exits with code 2, writing the record from it", async () => {
     const s = await setup();
@@ -395,6 +473,38 @@ describe("the hub's supervisor", () => {
     const s = await setup();
     s.control({ args: ["--refuse-status"] });
     expect((await s.hub().join()).is).toBe("on");
+  });
+
+  it("counts a refused status on a palace file with no model row as new, and memory is on", async () => {
+    const s = await setup();
+    s.control({ args: ["--refuse-status"] });
+    mkdirSync(s.paths.palace, { recursive: true });
+    const db = new (load().DatabaseSync)(path.join(s.paths.palace, "sqlite_exact.sqlite3"));
+    db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)");
+    db.close();
+    expect((await s.hub().join()).is).toBe("on");
+  });
+
+  it("takes a status that answers as it is, with no model, when the palace file cannot be opened", async () => {
+    const s = await setup();
+    mkdirSync(s.paths.palace, { recursive: true });
+    writeFileSync(path.join(s.paths.palace, "sqlite_exact.sqlite3"), "not a database: broken on purpose\n");
+    expect((await s.hub().join()).is).toBe("on");
+  });
+
+  it("turns memory off when the read-back passes its limit", async () => {
+    const s = await setup();
+    s.control({ args: ["--slow", "3000"] });
+    expect(await s.hub({ readBack: 500 }).join()).toEqual({ is: "off", why: { is: "read-back", failed: "timed out" } });
+  });
+
+  it("turns memory off, and ends the hub it started, when the start-time read passes its limit", async () => {
+    const s = await setup();
+    s.control({ startDelay: 3_000 });
+    expect(await s.hub({ startRead: 500 }).join()).toEqual({ is: "off", why: { is: "start time" } });
+    const { pid } = s.launched()[0]!;
+    await until(() => !alive(pid), "the started hub to be ended");
+    expect(s.record()).toBeUndefined();
   });
 
   it("turns memory off for a refused status on a palace file that cannot be opened", async () => {
@@ -523,6 +633,55 @@ describe("the hub's supervisor", () => {
       } finally {
         held.release();
       }
+    });
+
+    it("ends the leave's wait at once when the caller's signal fires while a join is starting a hub", async () => {
+      const s = await setup();
+      const gate = path.join(s.top, "gate");
+      s.control({ hold: gate });
+      const h = s.hub();
+      const joining = h.join();
+      await until(() => s.launched().length === 1, "the start");
+      const stop = new AbortController();
+      const closing = h.close(stop.signal);
+      await sleep(100);
+      const began = Date.now();
+      stop.abort();
+      expect(await closing).toEqual({ is: "gave up" });
+      expect(Date.now() - began).toBeLessThan(FIGURES.lockRetry);
+      expect(s.inUse()).toEqual([]);
+      writeFileSync(gate, "");
+      expect(await joining).toEqual({ is: "closed" });
+    });
+
+    // A process of Node's own that joins and leaves must then end by itself, within the tests' limit.
+    it("holds nothing of the process open once it has left", async () => {
+      const s = await setup();
+      const tmp = path.join(s.top, "tmp");
+      mkdirSync(tmp);
+      const code = [
+        `const { Hub } = await import(${JSON.stringify(pathToFileURL(path.resolve("src/memory/hub.ts")).href)});`,
+        "const o = JSON.parse(process.env.TACHI_TEST_HUB);",
+        "const h = new Hub({ paths: o.paths, env: process.env, figures: o.figures,",
+        "  launch: (file) => ({ command: process.execPath, args: [file] }) });",
+        "const joined = await h.join();",
+        "const left = await h.close();",
+        "process.stdout.write(JSON.stringify([joined.is, left.is]));",
+      ].join("\n");
+      const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], {
+        env: { ...s.env, TEMP: tmp, TMP: tmp, TACHI_TEST_HUB: JSON.stringify({ paths: s.paths, figures: TEST }) },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      let out = "";
+      child.stdout.on("data", (d) => (out += d));
+      const ended = await Promise.race([
+        new Promise<number | null>((resolve) => child.on("exit", resolve)),
+        sleep(LIMIT).then(() => "still running" as const),
+      ]);
+      if (ended === "still running") child.kill();
+      expect(ended).toBe(0);
+      expect(JSON.parse(out)).toEqual(["on", "stopped"]);
     });
 
     it("is the same when closed twice", async () => {
