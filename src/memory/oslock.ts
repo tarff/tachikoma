@@ -25,7 +25,8 @@ let sqlite: typeof import("node:sqlite") | undefined;
 
 // Loaded at the first take, never at launch. Node 22 prints an ExperimentalWarning when node:sqlite is first loaded;
 // the user's choice after step 17 is to drop only that one warning, for the length of the load, and show every other.
-function load(): typeof import("node:sqlite") {
+// The palace client reads the palace file with it too (step 18).
+export function load(): typeof import("node:sqlite") {
   if (sqlite) return sqlite;
   const emit = process.emitWarning;
   // Emitted as text with a type (or options holding one), or as a warning object whose name is its type.
