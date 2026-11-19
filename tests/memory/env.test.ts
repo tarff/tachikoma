@@ -105,12 +105,18 @@ describe("the memory environments", () => {
   });
 
   // The user's choice at step 16's review, "Keep download ones": uv's settings that only decide where and how it
-  // downloads (uv's own list, https://docs.astral.sh/uv/reference/environment/, read 2026-11-20).
+  // downloads (uv's own list, https://docs.astral.sh/uv/reference/environment/, read 2026-11-20): certificates and
+  // Python mirrors.
   const DOWNLOADS: NodeJS.ProcessEnv = {
     UV_NATIVE_TLS: "1",
     UV_SYSTEM_CERTS: "1",
     UV_PYTHON_INSTALL_MIRROR: "https://example.invalid/python",
     UV_ASTRAL_MIRROR_URL: "https://example.invalid/astral",
+  };
+  // The package indexes and their log-ins, no longer passed (the user's choice at step 19, "Drop the mirror
+  // settings"): with one set, uv refuses a --locked install (uv issue #6349), and a locked install downloads from the
+  // lock's own addresses.
+  const INDEXES: NodeJS.ProcessEnv = {
     UV_INDEX: "company=https://example.invalid/index",
     UV_DEFAULT_INDEX: "https://example.invalid/default",
     UV_INDEX_URL: "https://example.invalid/simple",
@@ -129,6 +135,14 @@ describe("the memory environments", () => {
     }
   });
 
+  it("pass none of the user's package indexes or their log-ins to uv", () => {
+    for (const platform of PLATFORMS) {
+      const uv = uvEnv(paths(platform), { ...user, ...DOWNLOADS, ...INDEXES }, platform);
+      for (const name of Object.keys(INDEXES)) expect(names(uv), name).not.toContain(name);
+      expect(Object.keys(uv)).not.toContain("uv_index_url");
+    }
+  });
+
   it("still drop every other uv setting of the user's, and override the user's UV_CACHE_DIR", () => {
     for (const platform of PLATFORMS) {
       const p = paths(platform);
@@ -144,9 +158,9 @@ describe("the memory environments", () => {
   // kept, under its own spelling.
   it("keep a download setting written in lowercase, as it is", () => {
     for (const platform of PLATFORMS) {
-      const uv = uvEnv(paths(platform), user, platform);
-      expect(uv.uv_index_url).toBe(user.uv_index_url);
-      expect(names(uv).filter((k) => k === "UV_INDEX_URL")).toHaveLength(1);
+      const uv = uvEnv(paths(platform), { ...user, uv_native_tls: "1" }, platform);
+      expect(uv.uv_native_tls).toBe("1");
+      expect(names(uv).filter((k) => k === "UV_NATIVE_TLS")).toHaveLength(1);
     }
   });
 

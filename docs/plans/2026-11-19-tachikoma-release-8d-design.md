@@ -4205,3 +4205,19 @@ Since step 18 (2026-11-20, the user's choice "Share the loader" at its review): 
 model from the palace file through the same loader (`load`, exported from `src/memory/oslock.ts`), so `node:sqlite`
 may also load first at that read-back, after a hub start or a join (step 20), still never at launch and still with
 only that one warning hidden. A load that fails gives no model, not an error (`src/memory/client.ts`, `modelIn`).
+
+### uv's package-index settings and the locked install (step 19, 2026-11-20)
+
+This replaces part of step 16's "Keep download ones" (the user's choice at step 16's review). Tachikoma's installer
+no longer passes these settings of the user's to the uv it starts: `UV_INDEX`, `UV_DEFAULT_INDEX`, `UV_INDEX_URL`,
+`UV_EXTRA_INDEX_URL`, `UV_INDEX_<name>_USERNAME` and `_PASSWORD`, and `UV_KEYRING_PROVIDER`. It still passes
+`UV_NATIVE_TLS`, `UV_SYSTEM_CERTS`, `UV_PYTHON_INSTALL_MIRROR` and `UV_ASTRAL_MIRROR_URL` (`src/memory/env.ts`,
+`uvEnv`). Nothing of the user's own settings is changed: the names are only left out of the child's environment.
+
+Why: uv's documentation does not say how a set index meets a lock file (concepts/indexes, concepts/projects/sync and
+concepts/resolution on docs.astral.sh, read 2026-11-20). uv's issue #6349 (read 2026-11-20, closed 2026-11-19) does:
+a reporter with another index set got "error: The lockfile at `uv.lock` needs to be updated, but `--locked` was
+provided.", which would stop Tachikoma's `uv sync --locked`; the same reporter says a locked install "downloads from
+the URLs recorded in the lock", and a maintainer: "I consider it fairly critical that the lockfile includes the URLs
+directly." Not tried here: no uv was run against an index. The user's choice, "Drop the mirror settings". A user who
+can reach only a mirror, not PyPI, cannot set memory up; step 30's README lists it.

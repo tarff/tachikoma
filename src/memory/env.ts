@@ -21,19 +21,11 @@ const USERS = (name: string) =>
 
 // The user's uv settings that only decide where and how uv downloads, which uv keeps (the user's choice at step 16's
 // review, "Keep download ones"; names from https://docs.astral.sh/uv/reference/environment/, read 2026-11-20):
-// certificates, Python mirrors, package indexes and their log-ins. Compared without regard to case, as above.
+// certificates and Python mirrors. Package indexes and their log-ins are no longer kept (the user's choice at step 19,
+// "Drop the mirror settings"): with one set, uv refuses the --locked install (uv issue #6349), and a locked install
+// downloads from the lock's own addresses. Compared without regard to case, as above.
 const DOWNLOADS = (name: string) =>
-  [
-    "UV_NATIVE_TLS",
-    "UV_SYSTEM_CERTS",
-    "UV_PYTHON_INSTALL_MIRROR",
-    "UV_ASTRAL_MIRROR_URL",
-    "UV_INDEX",
-    "UV_DEFAULT_INDEX",
-    "UV_INDEX_URL",
-    "UV_EXTRA_INDEX_URL",
-    "UV_KEYRING_PROVIDER",
-  ].includes(name) || /^UV_INDEX_.+_(USERNAME|PASSWORD)$/.test(name);
+  ["UV_NATIVE_TLS", "UV_SYSTEM_CERTS", "UV_PYTHON_INSTALL_MIRROR", "UV_ASTRAL_MIRROR_URL"].includes(name);
 
 // The given environment without the user's settings above (but those `keep` names) or any spelling of a name set
 // here, then those names. The home folder is the platform's own variable: Python's home is USERPROFILE on Windows and
