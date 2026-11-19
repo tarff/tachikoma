@@ -3051,3 +3051,315 @@ it, or it is built so they do. Step 14 leaves `/branch` copies out of its counts
 
 Step 12 was committed (5021fce) before the user's answer, as steps 8 to 11 were; the answer and the fixes are in the
 commit after it.
+
+### M5 The lesson cut-off and count, from the error logs (step 13, 2026-11-19)
+
+In short: there are no lessons yet, so past tool failures stood in for them. Each failure's text (the tool's name and
+the first line of its error, Q18) was put in a palace, and each failure in turn was searched for, scoring every other.
+**Real lessons will be sentences written by the model or the user, not raw errors, so both sets here are
+stand-ins:** the figures say how MemPalace scores one error line against another, not how it will score an error
+against a lesson. What was found:
+- **The user's error logs hold 6 tool failures**, too few to set a figure. Among them is one pair that is "the same"
+  by the plan's rule (the two failed commands), at a distance of 0.2016; the closest pair that is not is at 0.4039.
+- **A made-up set of 94 failures**, in the shapes of Tachikoma's own tool errors (the user's addition), shows the
+  scores of "same" and "different" failures overlapping widely. Where a path is most of the line, two "same" failures
+  score far apart (up to 0.68); where two different errors share most of their words, they score very close (down to
+  0.038). No cut-off keeps most "same" matches in and the others out: at the cut-off that lets in 1% of the
+  different pairs (0.2526), 46% of the same pairs are in.
+- **Every failed command looks alike to this search.** A failed `shell` call's first line is its exit status alone
+  (`exit code: <n>`, `src/tools/shell.ts:5-7`), so with Q18's rule the query carries no part of the command, and any
+  two failed commands are "the same" by the rule. A lesson about one command would attach to every failed command
+  within the cut-off.
+- The cut-off and the count wait on the user (the options are at the end of this part).
+
+Script: `scripts/8d/measure-lessons.mjs`, two commands: `madeup` (the made-up failures alone, to check the script
+before it read the user's logs) and `run` (the made-up failures, then the real ones). It ran three times, each between
+a pair of snapshots: the check, `node scripts/8d/measure-lessons.mjs madeup`, 06:54:34 to 06:56:27 UTC; run 1, `node
+scripts/8d/measure-lessons.mjs run`, 06:58:27 to 07:00:24; and run 2, the same command, 07:04:18 to 07:06:15, after
+the tables were changed to show every source's candidate cut-offs on both sources. All three: exit 0,
+"measure-lessons: passed", no failures. Every count and score that runs 1 and 2 both print is the same in both,
+the made-up ones the same as in the check too; the figures below are run 2's. Results:
+`tachi-8d-build\install\measure-lessons-run-2026-11-19T07-04-18-601Z\results.json` (counts and scores only). After
+run 2, one comment in the script changed (a source line corrected); no code.
+
+Each run started two hubs, one per source, the way step 8 proved (Q24, Q8, Q25), with code copied unchanged from
+`scripts/8d/measure-search.mjs` (its lines 38-691) but for the run folder's and palaces' names and the result line.
+Each was stopped by its serving process's id after its start time was read again, and was wholly gone within 24.4
+to 27.2 ms. Run 2 recorded 10 processes; none was left running, none unsettled, none another program's. Each hub read
+back `sqlite_exact` (`mempalace_status` and `/statusz`) and the model `minilm` (the palace's `meta` table). Nothing was
+fetched; the dead-end proxy got 0 connections. Every child had the build's home, TEMP and TMP.
+
+#### What was read, and how the user's text was kept out
+
+The user's error logs, `%LOCALAPPDATA%\tachikoma\errors\*.jsonl`, read only, each row as `src/core/errorlog.ts` reads
+one (`parse`: `kind`, `attempted` and `message` are text):
+
+| What | Count |
+|---|---|
+| Log files | 634 |
+| Rows | 640, 0 unreadable |
+| Rows of other kinds | 634 (582 `provider`, 45 `judge`, 4 `mcp`, 2 `hook`, 1 `shortening`) |
+| `tool` rows, the failures | 6: 2 of `shell`, 2 of `read_file`, 2 of MCP tools; 0 from subagents |
+| Of them, first lines that are a command's exit status | 2 (the two `shell` rows) |
+
+Noticed, not looked into: 631 of the 634 files hold one row, and 628 were last written between 2026-10-30 and
+2026-11-05; of all 640 rows, 627 are `provider` or `judge` rows. They are not tool failures and play no part here.
+
+No text of the user's left the script: no error, input, path or session id is in any output, file or commit; the
+output and `results.json` hold counts and scores only, and a failure while the real rows were handled would have said
+its error's name alone. The palace held the texts while it ran, as the plan says, and was then deleted by its exact
+name (below). MemPalace's own write log keeps no text (it redacts content and queries, `mempalace/wal.py:28-29`,
+`:92-93`), and the hub's log holds lengths and times only. After run 2 a scan, in one process, for each real text and
+each first line alone (22 strings of 12 characters or more, plain and as JSON would write them) through every file in
+the build folder's `install` folder and this step's outputs (11,927 files, 935 MB) found them in no file of MemPalace's
+or of the runs. Its one hit was a scratch file of the builder's own, a check of the script on hand-made data; the
+string it shares is one of Tachikoma's own fixed status lines, not text of the user's. A scan for the made-up texts
+after the check run found none outside the palace either, and the same scan found filler text in an older palace
+file, so it does find text where there is some.
+
+#### How it was measured
+
+- **The text** of a failure: the tool's name, a space and the error's first line, as `/errors` shows that line
+  (`src/core/errorlog.ts:60`; Q18). The tool's name is the first word of the row's `attempted`, after a subagent's
+  task id. The joining space is the script's reading; step 25 builds the live query.
+- **The palace**: one per source, in the build folder, wing `tachikoma`, room `lessons`. Each failure was added in
+  turn, the whole text as the entry. Identical texts are stored once: MemPalace answers `already_exists` for the rest
+  (step 6 item 9), and the script counted the repeats itself to compare.
+- **The searches**: each failure in turn, its text cut to 250 characters (step 6 item 7, as step 25 will cut it), one
+  search of `lessons` with `limit` 100, MemPalace's most (`_MAX_RESULTS`, `mempalace/mcp_server/_session.py:681`), so
+  that every entry came back: each palace held 100 entries or fewer, and every search returned all of them.
+- **The score**: MemPalace's `distance` for a hit (`mempalace/searcher/query.py:425`), the cosine distance of the two
+  vectors: 0 is identical, lower is closer; MemPalace's `similarity` is 1 minus it (`mempalace/search_util.py:158`).
+  For an entry in several pieces the closest piece counts (every entry here was one piece). No hit had a closet boost
+  (its `effective_distance` equalled its `distance` every time).
+- **MemPalace's query rewriting**: MemPalace rewrites a query of over 200 characters that it takes for a pasted prompt
+  (`mempalace/query_sanitizer.py:77-189`). A one-line query of 250 characters or fewer comes through unchanged but for
+  quotes around the whole; the script compared each answer's query with the one sent, without keeping it.
+- **"The same"**, the plan's rule: the same tool, and the same first line once quoted text, paths and numbers are
+  blanked, in that order. The script's exact reading (`blank`): quoted text is a span in `''`, `""` or backquotes that
+  begins and ends at a word's edge, so the apostrophe in "Tachikoma's" opens none; a path is a URL, a run of
+  characters holding a slash or a backslash, with or without a drive letter, or a file name with an extension
+  (`package.json`); a number is a run of digits. So `ENOENT: no such file or directory, open 'C:\work\a.ts'` becomes
+  `ENOENT: no such file or directory, open <q>`, and `old_text appears 12 times in src/a.ts; ...` becomes `old_text
+  appears <n> times in <p>; ...`. A pattern given to `search_files` is not blanked (it is none of the three), so two of
+  its errors for different patterns count as different.
+- **The pairs**: for each failure, every entry but its own, "same" or "different" by the rule. A failure whose text
+  another failure also has is given its own entry as an "identical" match, at its own score, standing in for the
+  lesson of an identical earlier failure.
+- **The candidate cut-offs**, taken from the scores: for each source, the middle, 75th and 90th percentile and the
+  largest of its "same" scores, and the smallest and the 1st, 5th and 10th percentile of its "different" scores
+  (nearest rank, so each is a score that occurred). Both sources' candidates are shown in both sources' tables; each
+  table's figures are its own source's alone.
+- **What a count attaches**: for each failure, the entries inside the cut-off, closest first, up to the count.
+  "Like" is an identical or same match.
+
+#### The made-up failures (written for this measurement; never taken from the user's logs)
+
+Each is a tool's name and the first line of an error in the shape Tachikoma's own code gives it, from `src/tools/`,
+`src/exec/` and `src/mcp/` (the source lines below; Node's and zod's own wording where Tachikoma passes it on, checked
+by making those errors happen in the build folder). Every path, number, server and pattern in them is made up. They
+are in the script, marked as made-up. A family's 5 members differ only in what the rule blanks, so any two are the
+same; a single has no member like it, and its nearest neighbours differ in words or in the tool, the hard cases for a
+cut-off. Before any hub started, the script checked every pair against the rule: two are the same exactly when they
+are in one group.
+
+How many, and why: one search returns at most 100 results, so the set was held to 100 entries or fewer, so that every
+search scores every other entry. The shapes used are 16 with a part the rule blanks and 13 without; (100 - 13) / 16 =
+5.4, so each family has 5 members: 16 x 5 + 13 = 93 entries. One single is given twice, the fewest that checks
+MemPalace's `already_exists` against the script's own count: 94 failures. That makes 320 same pairs (16 families x 5 x
+4, both ways), 2 identical and 8,328 different. The number of same matches a made-up failure has (4 in a family, 0
+for a single) is set by this design; what the set measures is how the scores of same and different pairs lie.
+
+In the table, G is the tool `mcp__github__create_issue` and D is `mcp__docs__search`.
+
+| Group | Tool | Error's first line (what varies) | Source |
+|---|---|---|---|
+| F1 | `shell` | `exit code: <n>` (1, 2, 127, 128, 255) | `src/tools/shell.ts:5`, `commands.ts:87` |
+| F2 | `shell` | `Stopped: the command did not complete within its <n>s timeout. ...` | `commands.ts:72-75` |
+| F3 | `read_file` | `ENOENT: no such file or directory, open '<path>'` (5 paths) | `src/exec/local.ts:163` |
+| F4 | `read_file` | `<path> is in Tachikoma's data folder, ...` | `src/tools/files.ts:253` |
+| F5 | `read_file` | `<path> is a program's environment, ...` (5 `.env` files) | `files.ts:260` |
+| F6 | `read_file` | `<path> is a network or device path not written as a path in the project, ...` | `files.ts:237` |
+| F7 | `edit_file` | `old_text was not found in <path>` | `files.ts:373` |
+| F8 | `edit_file` | `old_text was not found in <path> (the file uses CRLF line endings in places)` | `files.ts:373` |
+| F9 | `edit_file` | `old_text appears <n> times in <path>; include more surrounding text ...` | `files.ts:374` |
+| F10 | `edit_file` | `<path> is not UTF-8 text, so edit_file would damage it` | `files.ts:366` |
+| F11 | `edit_file` | `ENOENT: no such file or directory, open '<path>'` (other paths than F3) | `local.ts:163` |
+| F12 | `write_file` | `EPERM: operation not permitted, open '<path>'` | `local.ts:169` |
+| F13 | `write_file` | `EBUSY: resource busy or locked, open '<path>'` (F12's paths) | `local.ts:169` |
+| F14 | `write_file` | `<path> is one of Tachikoma's settings files, ...` | `files.ts:258` |
+| F15 | `find_files` | `ENOENT: no such file or directory, realpath '<folder>'` | `src/tools/search.ts:81` |
+| F16 | D | `https://docs.example.com/mcp answered <n>` (500, 502, 503, 504, 429) | `src/mcp/server.ts:1003` |
+| S1, S2 | `shell` | `killed by SIGTERM`; `killed by SIGKILL` | `shell.ts:5` |
+| S3 (twice) | `read_file` | `EISDIR: illegal operation on a directory, read` | `local.ts:163` |
+| S4, S5 | `read_file` | zod's `Invalid input for read_file: ...`, for two problems | `src/tools/tool.ts:47` |
+| S6, S7 | `search_files` | `(?i)error is not a regular expression: ...`; the same for `(?i)warning` | `search.ts:243` |
+| S8, S9 | G; D | `The MCP server <name> has stopped; ...` | `src/mcp/tools.ts:30` |
+| S10 | G | `Stopped: the MCP server github restarted while the call ran.` | `tools.ts:31` |
+| S11 | G | `Not run: github's tool "create_issue" changed while this call waited; ...` | `tools.ts:27-29` |
+| S12 | G | `The MCP server github needs sign-in, which the user does from /mcp.` | `server.ts:93` |
+| S13 | G | `its new connection failed, so the call was not sent: connect ECONNREFUSED ...` | `tools.ts:36` |
+
+#### The figures
+
+| What | Made-up | Real |
+|---|---|---|
+| Failures | 94 | 6 |
+| Distinct texts (entries) | 93 | 6 |
+| `already_exists` answers / the script's own count of repeats | 1 / 1 | 0 / 0 |
+| Entries by `mempalace_list_drawers`; pieces | 93; 93 | 6; 6 |
+| Queries cut at 250 characters | 1 | 0 |
+| Queries MemPalace rewrote | 0 (2 marked, unchanged) | 0 |
+| Pairs: identical / same / different | 2 / 320 / 8,328 | 0 / 2 / 28 |
+| Failures with an identical or same match | 82 of 94 | 2 of 6 |
+| Same matches per failure: middle / most | 4 / 4 (set by the design) | 0 / 1 |
+
+Distances, lower is closer (percentiles by nearest rank):
+
+| Pairs | Source | Count | Smallest | 10th | 25th | Middle | 75th | 90th | Largest |
+|---|---|---|---|---|---|---|---|---|---|
+| A failure against its own entry | made-up | 94 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0087 |
+| A failure against its own entry | real | 6 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Identical | made-up | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Same | made-up | 320 | 0.0022 | 0.0173 | 0.1200 | 0.2715 | 0.3901 | 0.5267 | 0.6785 |
+| Same | real | 2 | 0.2016 | 0.2016 | 0.2016 | 0.2016 | 0.2016 | 0.2016 | 0.2016 |
+| Different | made-up | 8,328 | 0.0377 | 0.5825 | 0.6864 | 0.7851 | 0.8837 | 0.9401 | 1.1079 |
+| Different | real | 28 | 0.4039 | 0.6905 | 0.7233 | 0.8141 | 0.8416 | 0.9004 | 0.9425 |
+
+The one made-up failure scored 0.0087 against its own entry is the one whose query was cut at 250 characters.
+
+**The made-up failures at each candidate cut-off.** Inside: of the 320 same and the 8,328 different pairs. Per
+failure: how many entries fall inside, middle / 90th / most. Then what a count of 1 to 5 attaches over all 94
+failures, like / different, and how many failures get any lesson (the same at every count). Where each cut-off
+comes from: 0.0377 made-up different, smallest; 0.2016 real same (all four percentiles: there is one pair); 0.2526
+made-up different, 1st; 0.2715 made-up same, middle; 0.3901 made-up same, 75th; 0.4039 real different, smallest,
+1st and 5th; 0.5123 made-up different, 5th; 0.5267 made-up same, 90th; 0.5825 made-up different, 10th; 0.6785
+made-up same, largest; 0.6905 real different, 10th.
+
+| Cut-off | Same in | Different in | Per failure | 1 | 2 | 3 | 4 | 5 | Get any |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.0377 | 46 (14.4%) | 1 (0.01%) | 0 / 4 / 4 | 17 / 1 | 28 / 1 | 38 / 1 | 48 / 1 | 48 / 1 | 18 |
+| 0.2016 | 112 (35.0%) | 36 (0.4%) | 1 / 4 / 4 | 33 / 20 | 65 / 29 | 91 / 35 | 114 / 36 | 114 / 36 | 53 |
+| 0.2526 | 146 (45.6%) | 84 (1.0%) | 2 / 5 / 9 | 36 / 30 | 73 / 42 | 107 / 53 | 140 / 58 | 147 / 66 | 66 |
+| 0.2715 | 160 (50.0%) | 106 (1.3%) | 2 / 6 / 9 | 38 / 32 | 77 / 45 | 112 / 56 | 147 / 62 | 157 / 74 | 70 |
+| 0.3901 | 240 (75.0%) | 202 (2.4%) | 4 / 11 / 12 | 46 / 38 | 99 / 56 | 149 / 74 | 203 / 85 | 221 / 105 | 84 |
+| 0.4039 | 242 (75.6%) | 214 (2.6%) | 4 / 11 / 13 | 46 / 38 | 99 / 56 | 149 / 75 | 204 / 87 | 223 / 108 | 84 |
+| 0.5123 | 284 (88.8%) | 418 (5.0%) | 5 / 17 / 19 | 49 / 43 | 108 / 70 | 168 / 93 | 231 / 111 | 257 / 147 | 92 |
+| 0.5267 | 288 (90.0%) | 464 (5.6%) | 6 / 17 / 19 | 49 / 43 | 108 / 70 | 168 / 95 | 233 / 115 | 259 / 162 | 92 |
+| 0.5825 | 298 (93.1%) | 836 (10.0%) | 11 / 20 / 27 | 50 / 44 | 110 / 76 | 171 / 105 | 236 / 129 | 262 / 191 | 94 |
+| 0.6785 | 320 (100%) | 1,938 (23.3%) | 24 / 39 / 54 | 50 / 44 | 110 / 77 | 171 / 108 | 236 / 135 | 262 / 201 | 94 |
+| 0.6905 | 320 (100%) | 2,163 (26.0%) | 27 / 45 / 58 | 50 / 44 | 110 / 78 | 171 / 111 | 236 / 138 | 262 / 204 | 94 |
+
+At a count of 1, how many failures get a different lesson as their first, and how many of the 82 failures that have
+a like match get none: 1 and 65 at 0.0377; 20 and 49 at 0.2016; 30 and 46 at 0.2526; 32 and 44 at 0.2715; 38 and 36
+at 0.3901 and 0.4039; 43 and 33 at 0.5123 and 0.5267; 44 and 32 at 0.5825 and above.
+
+**The real failures at the same cut-offs** (2 same pairs, 28 different). No failure has more than one entry inside
+at any of them, so every count from 1 to 5 attaches the same:
+
+| Cut-off | Same in | Different in | Attached: like / different | Get any |
+|---|---|---|---|---|
+| 0.0377 | 0 | 0 | 0 / 0 (the two failed commands get nothing) | 0 |
+| 0.2016, 0.2526, 0.2715, 0.3901 | 2 (100%) | 0 | 2 / 0 (each failed command gets the other's) | 2 |
+| 0.4039 up to 0.6785 | 2 (100%) | 2 (7.1%) | 2 / 2 | 4 |
+| 0.6905 | 2 (100%) | 4 (14.3%) | 2 / 4 | 6 |
+
+**Which made-up pairs score closest though different, and farthest though the same** (the groups are in the table of
+made-up failures above). Closest different: S6 and S7 (`search_files`, two patterns), 0.0377; F7 and F8 (`old_text
+was not found`, with and without the line-endings note), 0.0440; S10 and S11 (an MCP server restarted; a tool
+changed), 0.0930; S8 and S12 (a server stopped; it needs sign-in), 0.1022; S8 and S10, 0.1147; S1 and S2 (`killed by
+SIGTERM`; `SIGKILL`), 0.1421; S10 and S12, 0.1564; F7 and F9, 0.1715; S11 and S12, 0.1773; F8 and F9, 0.1925; S8 and
+S11, 0.2042; S4 and S5 (two kinds of invalid input), 0.2166. Farthest same, each family's farthest pair: F11 0.6785,
+F3 0.6459, F15 0.5031, F6 0.4909, F13 0.4180, F12 0.4151, F10 0.3841, F5 0.3765, F7 0.3206, F8 0.3201, F9 0.2764, F1
+0.2060, F4 0.1620, F14 0.1059, F2 0.0303, F16 0.0143.
+
+What the figures mean:
+- **The score follows the words, not the rule.** Where the error's own words are few and a path is most of the line
+  (the `ENOENT` families F3, F11 and F15, and network paths F6), the path decides the score, and two failures that
+  are the same by the rule score as far apart as 0.50 to 0.68, farther than most different pairs. Where the words are
+  many and only a number changes (timeouts F2, HTTP statuses F16), same pairs score within 0.03. And two different
+  errors that share most of their words score very close, from 0.038.
+- **So no cut-off separates them.** Taking in half the same pairs (0.2715) lets in 106 different ones; taking them
+  all (0.6785) lets in 1,938, about 1 in 4. At a count of 1, the first lesson is a different one for 1 failure at the
+  tightest cut-off and for up to 44 of the 94 at the loosest.
+- **The count matters only where many entries fall inside.** In the real set no failure had more than one; in the
+  made-up set the likes per failure are capped at 4 by design, so a count above 1 mostly adds different ones at the
+  looser cut-offs (at 0.3901: count 1 attaches 46 like and 38 different, count 3 149 and 74, count 5 221 and 105).
+- **The real set is too small to set a figure**: 6 failures, one same pair. That pair is the two failed commands,
+  whose texts differ only in the exit code; its 0.2016 says how close `exit code: <n>` lines are, not whether the two
+  commands were alike.
+- **Failed commands**: as F1 shows, every failed command's text is `shell exit code: <n>` (or `killed by <signal>`):
+  the command and its error output are on later lines (`src/tools/shell.ts:5-7`), which Q18's rule leaves out. So
+  every failed command is the same as every other by the rule, and close by the score (F1's farthest pair 0.2060). A
+  lesson filed from one failed command would attach to any failed command, at any cut-off from 0.2060 up.
+- **Real lessons will score differently.** A lesson is a sentence ("what went wrong, what fixed it, and how to spot
+  it", the ask's approved wording), not an error line, so its distance from a new error will most likely be larger
+  than these error-to-error distances; that was not measured, as there are no lessons yet. A cut-off taken from these
+  tables may then let fewer lessons through than the tables show.
+
+Not measured: lessons written as sentences against errors; the user's own MemPalace (the `"use"` setting; another
+backend and model); errors in other languages than English (the model is English-focused); first lines longer than
+250 characters among real failures (none, 0 cut); a palace of more than 100 lessons, where a search would return only
+the closest 100.
+
+#### The user's folders
+
+Three pairs of snapshots, each taken in the same command just before and just after its run:
+- the check: `step13-madeup-before` (06:54:08 UTC) and `step13-madeup-after` (after 06:56:27): "no change" (exit 0),
+  with only the set-apart daemon folder of the user's MemPalace;
+- run 1: `step13-before` (06:58:00) and `step13-after` (after 07:00:24): "no change" (exit 0), the same;
+- run 2: `step13-2-before` (07:03:51 to 07:04:18) and `step13-2-after` (after 07:06:15): **failed (exit 1)**, on the
+  user's MemPalace only. Changed: `palace/sqlite_exact.sqlite3-wal` (same size, written 07:03:22.200 and again
+  07:03:52.719 UTC) and the folder `locks` (07:03:45.914, then 07:03:52.722), with one lock file in it,
+  `locks/<lock id>.lock`, removed; set apart as usual, the daemon folder and its `queue.sqlite3` (07:03:52.740). So a
+  save of the user's palace was under way as run 2's before-snapshot was taken (its lock already there, the palace
+  written 2.7 s later). Nothing of the build writes to `~/.mempalace`: every child had the build's home. **Not
+  traced yet**: it needs the reply-end times of the user's Claude Code sessions near 07:03:20 to 07:03:50 UTC, under
+  the user's rule. Until then the pair counts as failed. Run 1, with the same figures, had a clean pair.
+
+The same commands listed the top level of the user's Temp folder (step 8's `templist2.cjs`; names and times only, no
+file opened). No `uv-*.lock` in any of the three. In each, one file was removed (origin not traced) and nothing was
+added or rewritten. None was opened.
+
+The palaces, each deleted by its exact name after its hub had stopped, file by file, following no link:
+`measure-lessons-<stamp>-madeup` (7 files and its folder) and `measure-lessons-<stamp>-real` (3 files and its folder)
+in each run, under `tachi-8d-build\install\home\palaces`. None is left: `palaces` holds no `measure-lessons-*`
+folder. MemPalace's own server records and lock files for them stay in the build home, as at earlier steps, for step
+31.
+
+#### The decision for the user: the lesson cut-off and the count
+
+What the two numbers do (design, section 5): when a tool fails, Tachikoma searches `lessons` and adds the matches at
+or below the cut-off, closest first, up to the count, after the error the model sees (and only as many as fit the cap,
+Q23). Too loose a cut-off or too high a count gives the model lessons from other failures; too tight gives none.
+
+The options for the cut-off, from the tables, each with what it attaches on both sets (at a count of 1):
+- **A. 0.0377** (the closest made-up different pair). Made-up: 18 of 94 failures get a lesson, 17 of them a like
+  one; 65 of the 82 that have a like one get none. Real: nothing is attached at all. In practice: only near-copies
+  of one error, where a number or a short path differs.
+- **B. 0.2016** (the real same pair). Made-up: 53 get one, 33 like and 20 different. Real: each failed command gets
+  the other's, nothing else. In practice: failed commands always match one another (above); errors that name a file
+  mostly do not match the same error on another file (the farthest same pairs of F3, F5, F6, F10 to F13 and F15
+  are 0.38 to 0.68).
+- **C. 0.2715** (half the made-up same pairs). Made-up: 70 get one, 38 like and 32 different. Real: as B.
+- **D. 0.3901** (three quarters of the made-up same pairs). Made-up: 84 get one, 46 like and 38 different. Real: as
+  B.
+- **E. 0.5267** (nine tenths of the made-up same pairs). Made-up: 92 get one, 49 like and 43 different. Real: 4 get
+  one, 2 like and 2 different.
+
+The options for the count, from the same tables: **1** (the closest only); **2** or **3**, which at B add 32 and 58
+like ones and 9 and 15 different ones over a count of 1 in the made-up set, and nothing in the real one; or more,
+which past 3 add few likes (a made-up failure has 4 at most by design) and more different ones.
+
+Two further options, not measured, because the tables measure raw error lines against each other:
+- **M. Measure again with made-up lessons written as sentences** (in the ask's one-line form), against the made-up
+  failures, before fixing the figures. New work: a new set to write and a new run.
+- **Q. Change what is searched** (Q18), for example blank numbers, paths and quoted text in the query and in the
+  stored text, or add a failed command's first word to its text. New work too, and it changes step 25.
+
+Recommended (not chosen): **M** before choosing, as every figure here is error against error while live it is error
+against lesson. If figures are wanted now: **B with a count of 1**, the real data's one same pair: on the real set it
+attaches only that, and on the made-up set 33 like against 20 different. Its weak points: failed commands match one
+another whatever the command, and the made-up set gives a different lesson first for 20 of 94 failures.
+
+**The user's choice: not yet given.**
