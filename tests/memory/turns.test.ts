@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { FEEDBACK as SESSION_FEEDBACK } from "../../src/core/session.js";
 import { type Message, marker as typesMarker, type Part } from "../../src/core/types.js";
@@ -5,7 +6,7 @@ import { lastTurn } from "../../src/tui/describe.js";
 // @ts-expect-error: a build script in plain JavaScript, with no type file.
 import { cut, FEEDBACK, marker, turnsOf } from "../../scripts/8d/turns.mjs";
 // @ts-expect-error: a build script in plain JavaScript, with no type file.
-import { asksOf, keyOf, truncate } from "../../scripts/8d/measure-lesson-ask.mjs";
+import { asksOf, keyOf, run as runOn, truncate } from "../../scripts/8d/measure-lesson-ask.mjs";
 import { truncate as sessionTruncate } from "../../src/core/session.js";
 
 // Made-up transcripts only, never the user's (8d plan, step 10). Each line as transcript.ts writes it: one JSON object
@@ -201,5 +202,27 @@ describe("measure-lesson-ask.mjs, the pairs and the matching of log rows", () =>
       line(6, answers(["c3", false])), line(7, ask("Built."))), [row(3, "shell", test)]);
     expect(r.results).toEqual({ errors: 2, confirmed: 0, unclear: 2, noRow: 0 });
     expect(r.turns[0]).toMatchObject({ failed: false, failedHigh: true, low: false, high: true });
+  });
+
+  it("builds the key from a hook's rewrite of the call, the input that ran", () => {
+    const given = { command: "npm tset" };
+    const r = asksOf(file(line(1, typed("run the tests")), line(2, ask("", ["c1", "shell", given])),
+      { t: "rewritten", at: when(3), id: "c1", input: test }, line(5, answers(["c1", true])),
+      line(6, ask("They fail."))), [row(4, "shell", test)]);
+    expect(r.results).toEqual({ errors: 1, confirmed: 1, unclear: 0, noRow: 0 });
+    expect(r.rows).toMatchObject({ total: 1, confirmed: 1, none: 0 });
+  });
+
+  it("counts option B's looser rule apart: a confirmed failure, then any later success in the turn", () => {
+    const r = asksOf(file(line(1, typed("run the tests")), line(2, ask("", ["c1", "shell", test])),
+      line(4, answers(["c1", true])), line(5, ask("", ["c2", "read_file", { path: "package.json" }])),
+      line(6, answers(["c2", false])), line(7, ask("Read."))), [row(3, "shell", test)]);
+    expect(r.turns[0]).toMatchObject({ failed: true, low: false, high: false, ceiling: false, anyLater: true });
+  });
+
+  it("takes a missing sessions or errors folder as empty", () => {
+    const r = runOn(path.join(import.meta.dirname, "no-such-data-folder"));
+    expect(r.s).toMatchObject({ projects: 0, sessions: 0, logsRead: 0 });
+    expect(r.all).toMatchObject({ typed: 0, background: 0, low: 0, high: 0 });
   });
 });

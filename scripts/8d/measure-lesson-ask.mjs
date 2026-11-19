@@ -94,7 +94,8 @@ function sameJob(a, b, project) {
 // One session: its transcript's text and its own `tool` rows of the error log. `copied`: the first lines of turns
 // another transcript holds, which a branch copied here. Returns, per whole turn, its kind, its first line's time,
 // whether it has a confirmed failure (`failed`; `failedHigh` with unclear ones too) and whether it would ask (`low`,
-// `high`; `ceiling` with every error result a failure); the turns left out, by reason; the error results and rows by
+// `high`; `ceiling` with every error result a failure; `anyLater` by option B's looser rule); the turns left out, by
+// reason; the error results and rows by
 // outcome; each call's state (null, "confirmed" or "unclear"); and `starts`, its turns' first lines, for a branch made
 // from it.
 export function asksOf(text, rows, copied = new Set()) {
@@ -146,8 +147,12 @@ export function asksOf(text, rows, copied = new Set()) {
     // Beyond the plan's figures, a bound: every error result a failure, matched or not, declined and cancelled ones
     // among them.
     const anyError = (c) => c.saved !== undefined && c.isError;
+    // Option B's looser rule (step 12's review): a confirmed failure followed later in the turn by any call that
+    // worked, whatever its job.
+    const anyLater = seq.some((c, i) => confirmed(c) && seq.slice(i + 1).some((d) => d.saved !== undefined &&
+      !d.isError));
     return { kind: t.kind, start: t.lines[0].at, failed: seq.some(confirmed), failedHigh: seq.some(either),
-      low: asks(confirmed), high: asks(either), ceiling: asks(anyError) };
+      low: asks(confirmed), high: asks(either), ceiling: asks(anyError), anyLater };
   });
   const results = { errors: errors.length, confirmed: errors.filter((e) => e.state === "confirmed").length,
     unclear: errors.filter((e) => e.state === "unclear").length, noRow: errors.filter((e) => e.state === null).length };
@@ -158,8 +163,15 @@ export function asksOf(text, rows, copied = new Set()) {
 // ---- the run, on the user's files ----
 
 const DATA = path.join(process.env.LOCALAPPDATA ?? "", "tachikoma");
-const SESSIONS = path.join(DATA, "sessions");
-const ERRORS = path.join(DATA, "errors");
+// A folder's entries with their types; none when it is not there (step 12's review).
+const entries = (dir) => {
+  try {
+    return readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") return [];
+    throw err;
+  }
+};
 // A subagent's failure reaches the lead's log with its task id in front (src/core/tasks.ts:371), and its calls are in
 // its own file, which is not read: such rows are counted apart.
 const SUBAGENT = /^t\d+: /;
@@ -175,17 +187,20 @@ const dayOf = (iso) => {
 };
 const lines = (text) => text.split("\n").filter((l) => l.trim());
 
-function run() {
+// The counts over Tachikoma's data folder `data`: its `sessions` and `errors` folders.
+export function run(data = DATA) {
+  const SESSIONS = path.join(data, "sessions");
+  const ERRORS = path.join(data, "errors");
   const s = { projects: 0, files: 0, sessions: 0, notSessions: 0, print: 0, branchCopies: 0, noLog: 0, logNoRows: 0,
     left: {}, damagedOutside: 0, results: {}, rows: {}, subagentRows: 0, badLogLines: 0, rowsNoSession: 0,
     rowsOtherSessions: 0, logsRead: 0, noRowNoLog: 0 };
-  const tally = () => ({ typed: 0, background: 0, failed: 0, failedHigh: 0, low: 0, high: 0, ceiling: 0 });
+  const tally = () => ({ typed: 0, background: 0, failed: 0, failedHigh: 0, low: 0, high: 0, ceiling: 0,
+    anyLater: 0 });
   const all = tally();
   const perSession = [];
   const perDay = new Map();
-  const logs = new Set(readdirSync(ERRORS, { withFileTypes: true }).filter((e) => e.isFile() &&
-    e.name.endsWith(".jsonl")).map((e) => e.name));
-  for (const d of readdirSync(SESSIONS, { withFileTypes: true })) {
+  const logs = new Set(entries(ERRORS).filter((e) => e.isFile() && e.name.endsWith(".jsonl")).map((e) => e.name));
+  for (const d of entries(SESSIONS)) {
     if (!d.isDirectory()) continue;
     s.projects++;
     const dir = path.join(SESSIONS, d.name);
@@ -253,6 +268,7 @@ function run() {
           into.low += t.low ? 1 : 0;
           into.high += t.high ? 1 : 0;
           into.ceiling += t.ceiling ? 1 : 0;
+          into.anyLater += t.anyLater ? 1 : 0;
         }
       }
       perSession.push({ at: x.at, print: x.print, ...mine });
@@ -277,7 +293,8 @@ function show({ s, all, perSession, perDay }) {
   say(`tool rows of these sessions, by outcome ${JSON.stringify(s.rows)}; from subagents ${s.subagentRows}; with no ` +
     `session id ${s.rowsNoSession}; of sessions with no transcript here ${s.rowsOtherSessions}`);
   say(`turns with a confirmed failure ${all.failed} (with unclear ones ${all.failedHigh}); turns that would ask: low ` +
-    `${all.low}, high ${all.high}; ceiling, every error result a failure, ${all.ceiling}`);
+    `${all.low}, high ${all.high}; ceiling, every error result a failure, ${all.ceiling}; option B, a confirmed ` +
+    `failure then any later success in the turn, ${all.anyLater}`);
   say("per session, by start time (n, -p, typed, background, failed, failed with unclear, low, high):");
   for (const [i, x] of perSession.entries()) {
     say(`  ${i + 1} ${x.print ? "p" : "-"} ${x.typed} ${x.background} ${x.failed} ${x.failedHigh} ${x.low} ${x.high}`);
@@ -292,6 +309,8 @@ function show({ s, all, perSession, perDay }) {
   say(`days of use ${n}; asks per day of use: low ${per(all.low)}, high ${per(all.high)}, ceiling ` +
     `${per(all.ceiling)}; most in one day: low ${Math.max(0, ...days.map(([, x]) => x.low))}, high ` +
     `${Math.max(0, ...days.map(([, x]) => x.high))}, ceiling ${Math.max(0, ...days.map(([, x]) => x.ceiling))}`);
+  say(`option B per day of use ${per(all.anyLater)}; most in one day ` +
+    `${Math.max(0, ...days.map(([, x]) => x.anyLater))}`);
 }
 
 // A failure says its code alone, as its message or stack could name a file of the user's.

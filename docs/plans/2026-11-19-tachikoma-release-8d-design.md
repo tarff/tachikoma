@@ -2125,6 +2125,12 @@ saving it waits up to 5.4 s for the lock. A made-up turn in 3 parts of 100,000 c
 of this part). Both pairs of snapshots failed: the user explained the first; the second is traced under the user's
 rule ("The user's folders").**
 
+**Correction (step 12's review, 2026-11-19):** the figures in this part count 7 typed turns twice: `/branch` copied
+them into 3 new sessions (found in M7). With the copies left out, 76 typed turns would be saved, not 83, and 85.5% of
+them, not 86.7%, fit in one 800-character piece. The longest entry (3,828), the largest backlog (11 turns) and the
+count over 100,000 (0) do not change, so X, the backlog and the user's 14 s limit stand. The corrected figures are
+under "The user's transcripts, read only".
+
 Scripts: `scripts/8d/turns.mjs` (the rule for cutting a transcript into turns, for steps 10, 12 and 14) with its test
 `tests/memory/turns.test.ts`, and `scripts/8d/measure-save.mjs`, three commands: `scan` (the transcripts only, starts
 nothing), `timings` (the hubs) and, added after the review, `first-large` (run 2, below). The timings ran once,
@@ -2223,6 +2229,29 @@ The bands go by pieces, a factor of 5 each, since MemPalace's work on an add gro
 is exactly the 100,000-character limit. **Long turns (Q26): 0 real typed turns are over 100,000 characters, so none
 would be saved in parts; the most parts a real turn makes is 1.** So the turns in parts were timed at 2 and at 3
 parts, as the plan says when no real turn has more.
+
+**Correction (step 12's review, 2026-11-19).** The figures above count, twice, 7 typed turns that `/branch` copied
+whole into 3 new sessions (`src/core/sessions.ts:95-103`; found in M7, which leaves them out). All 7 have model text.
+The figures above are kept as they were shown; with the copies left out they are:
+
+| Figure | As shown above | With the copies left out |
+|---|---|---|
+| Typed turns rebuilt | 89 | 82 |
+| Typed turns that make an entry | 83 | 76 |
+| Entry length: middle | 251 | 278 |
+| Entry length: 90th | 870 | 875 |
+| Entry length: all together | 31,974 | 31,331 |
+| Entries of 1 / 2 / 3 / 5 pieces | 72 / 9 / 1 / 1 | 65 / 9 / 1 / 1 |
+| Sessions with no saved turn | 17 | 19 |
+| Band 1 to 800 characters | 72 (86.7%) | 65 (85.5%) |
+| Band 801 to 4,000 characters | 11 (13.3%) | 11 (14.5%) |
+
+Unchanged: the shortest (34) and the longest (3,828) entry, the most saved turns in one session (11, the backlog),
+and 0 turns over 100,000 characters. So X (the first save of the longest real turn), the backlog's figures and the
+user's 14 s exit save limit stand. Counted after the review from `scripts/8d/turns.mjs`, read only and as counts
+alone, by a scratch script (`m2-copies.mjs`, in the session's scratchpad; its output is in the build folder's
+`scratch\step12\run-3.txt`). It finds the copies as M7 does and printed both columns; the first matches the figures
+above. That run was inside the third pair of M7's snapshots, which printed "no change".
 
 #### How the save was timed
 
@@ -2818,9 +2847,10 @@ In short: in the user's Tachikoma sessions so far, the lesson ask would never ha
 requests in 80 whole turns over 7 days of use, 0 a day, at both the low and the high figure. In all those turns only
 3 tool calls were real failures that the error log confirms, and in none of their turns did a later call doing the
 same job work. Counting every error result as a failure, declined and cancelled calls too, it is still 0. Zero in 80
-turns does not prove the rate is zero: the data fit anything up to about 1 ask in 27 turns, about 0.4 a day of use
-at the user's pace ("What the zero means"). Live asks will be fewer still, as they are sent only while memory is on
-(Q16). **The decision waits on the user** (at the end of this part).
+turns does not prove the rate is zero: the data fit anything up to about 1 ask in 27 turns (95% bound), about 0.4 a
+day of use at the user's pace ("What the zero means"). Live asks will be fewer still, as they are sent only while
+memory is on (Q16). **The user chose option A, the ask as designed, on 2026-11-19** (at the end of this part). A
+looser rule, any later success after a confirmed failure (option B), would have asked in 1 of the 80 turns.
 
 Script: `scripts/8d/measure-lesson-ask.mjs`, with its tests in `tests/memory/turns.test.ts`. It needs no MemPalace
 and starts nothing. It reads the user's transcripts (`%LOCALAPPDATA%\tachikoma\sessions\<project>\<id>.jsonl`) and
@@ -2829,8 +2859,9 @@ error logs (`%LOCALAPPDATA%\tachikoma\errors\<project>.jsonl`; `src/cli.tsx:415`
 read only, and prints counts alone: no text, no session id, no file or folder name. It ran twice, each time between
 a pair of snapshots: run 1, `node scripts/8d/measure-lesson-ask.mjs`, at 06:09:41 UTC, exit 0, with the plan's
 figures; run 2 at 06:12:16 UTC, exit 0, after two lines were added (the ceiling and where the error results with no
-row are, below), with the same figures and those two. The output is in the scratchpad's `step12\run-1.txt` and
-`run-2.txt`, not committed.
+row are, below), with the same figures and those two. After the review, run 3 at 06:33:00 UTC, exit 0, added option
+B's figure (below), with every earlier figure the same. The output is in the build folder's `scratch\step12\run-1.txt`
+to `run-3.txt`, not committed (step 31 deletes the build folder).
 
 #### How the turns and the failures were found
 
@@ -2866,6 +2897,8 @@ row are, below), with the same figures and those two. The output is in the scrat
   counts them as failures.
 - **The ceiling**, beyond the plan's figures, as a bound: every error result counted as a failure, matched or not,
   declined and cancelled calls among them.
+- **Option B's looser rule**, added after the review: a confirmed failure followed, later in the same turn, by any
+  call whose result is no error, whatever its job. Same turn rule as above.
 
 `tests/memory/turns.test.ts`, the plan's four cases, on made-up transcripts and made-up log rows only:
 - a failure in a typed turn and a matching success in the background turn after it are not a pair;
@@ -2881,15 +2914,23 @@ step 10 and 5 new). Each break was then tried on its own and put back:
 
 The ceiling's expectations were added before its code and failed first (2 tests). `tsc` exit 0.
 
+After the review, 3 more tests (18 in all, all passing; `tsc` exit 0):
+- the key is built from a hook's rewrite of the call, the input that ran. It passed at once, as that code was
+  already there; with the rewrite's branch broken it failed, and the branch was put back;
+- option B's rule: a confirmed failure, then a successful call of another tool. It failed first, as the field did not
+  exist;
+- a missing `sessions` or `errors` folder is taken as empty, not a crash. It failed first, as `run` was not exported.
+
 #### The figures
 
-Days are on this PC's clock (UTC+11). All counts are from run 2; run 1's are the same, its per-session lines too.
+Days are on this PC's clock (UTC+11). All counts are from run 2; runs 1 and 3 give the same, their per-session lines
+too. Option B's figure is from run 3.
 
 | What | Count |
 |---|---|
 | Transcripts (main sessions) read | 53, in 10 project folders |
 | Sessions | 53 (15 of them `-p` runs); none without a start line |
-| Of them, branch copies | 3 |
+| Of them, branch copies | 3, so 50 distinct sessions; the 15 `-p` runs stand (none is a copy) |
 | Sessions with at least one whole turn | 34 |
 | Days of use (a day with a whole turn) | 7, from 2026-11-07 to 2026-11-18 |
 | Whole turns | 80: 79 typed, 1 background |
@@ -2903,6 +2944,7 @@ Days are on this PC's clock (UTC+11). All counts are from run 2; run 1's are the
 | **Turns that would ask, low figure** | **0** |
 | **Turns that would ask, high figure** | **0** |
 | Turns that would ask, ceiling (every error result a failure) | 0 |
+| Option B: a confirmed failure, then any later success in the turn | 1 (0.14 a day of use; at most 1 in a day) |
 
 Per day of use:
 
@@ -2925,20 +2967,23 @@ in the busiest day (16 typed turns).
 
 - **Turns that could not be rebuilt**: 3 (2 the file ends in, 1 with a call without a result). Another 7 were left
   out as branch copies. All are outside the low and high figures.
-- **Error results with no row**: 5. These are declined, cancelled or cut-off calls, or failures whose row is missing;
-  the transcript cannot tell which. All 5 are in sessions whose project folder has an error log. With all 5 counted
-  as failures (the ceiling), the count is still 0.
+- **Error results with no row**: 5. By kind, as counted at the review (counts only): 3 declined, 1 cancelled and 1
+  other refusal. None is from a cut-off reply, and none is a real failure with its row missing. All 5 are in
+  sessions whose project folder has an error log. With all 5 counted as failures (the ceiling), the count is still 0.
 - **Unclear results**: 0.
 - **Rows that matched no result**: 0. All 3 `tool` rows of these sessions confirmed one result each. 0 rows came from
   subagents, and 0 had no session id. 1 row in the same logs names a session with no transcript in its folder; it was
-  not matched, and why that session has none was not looked into.
+  not matched, and why that session has none was not looked into. Across all of the user's error logs there are 6
+  `tool` rows (counted at the review). The script reads only the logs of folders that hold transcripts, so 2 more
+  rows are in other logs. None of these 3 rows (the 1 here and those 2) matches any transcript's key (the review).
 - **Sessions with no error log to match against**: 23, in the 4 project folders that have no log. They hold no error
   result at all, so the missing logs hide no failure. Another 27 sessions are in a folder with a log, with no row of
   theirs.
 - **Only the sessions still kept**: older sessions deleted by the sweep (`src/core/sessions.ts:147-151`) are not here.
 - **A small sample**: 80 whole turns over 7 days, with 3 real failures in all.
-- **A looser rule was not counted**: for example any later success in the turn, or the same tool for a command.
-  Under the design's rule even the ceiling is 0. A looser rule could give more.
+- **A looser rule**: under the design's rule even the ceiling is 0. Any later success in the turn after a confirmed
+  failure (option B) gives 1 turn of 80 (run 3). The same tool for a command, in place of the same first word, gave
+  0 at the review; the script does not count it.
 
 #### What the zero means
 
@@ -2950,33 +2995,59 @@ has been measured or sourced. Live asks will be fewer still, as they are sent on
 
 #### The user's folders
 
-Two pairs of snapshots, each taken in the same command just before and just after its run:
+Three pairs of snapshots, each taken in the same command just before and just after its run:
 - `step12-before` (06:09:14 UTC) and `step12-after` (06:09:41);
-- `step12-2-before` (06:11:49) and `step12-2-after` (06:12:16).
+- `step12-2-before` (06:11:49) and `step12-2-after` (06:12:16);
+- after the review, `step12-3-before` (06:32:33) and `step12-3-after` (06:33:00), around run 3 and the M2
+  correction's count.
 
-**Both printed "no change" (exit 0)**; only the set-apart daemon folder of the user's MemPalace changed, as usual. The
-script reads only, writes nothing and starts nothing; the snapshot tools write only in the build folder. No tsx ran.
+**All three printed "no change" (exit 0)**; only the set-apart daemon folder of the user's MemPalace changed, as
+usual. The script reads only, writes nothing and starts nothing; the snapshot tools write only in the build folder.
+No tsx ran.
 
 The same commands listed the top level of the user's Temp folder (step 8's `templist2.cjs`; names and times only, no
 file opened). No `uv-*.lock` was found. Around run 1, a file was added at 06:09:51.2, 10 s after the run ended, while
 the after-snapshot was being taken (origin not traced). Around run 2, a file was added at 06:12:10.2, while the
 before-snapshot was being taken and 6 s before the run started (origin not traced), and a file was removed (origin
-not traced). None was opened.
+not traced). Around run 3, a file was added at 06:32:52.5, while the before-snapshot was being taken (origin not
+traced). None was opened. **Open:** these Temp changes, in each of the three pairs, are not traced, as at the
+earlier steps; nothing of this step's ran at those times but the snapshot tools, which write only in the build
+folder.
+
+One file of this step's own did land in the user's Temp, between the second and third pairs:
+`Temp\step12-added.txt`, at 06:14 UTC. A scan of the step's own added lines for private details sent its output to
+`/tmp`, which Git Bash maps to the user's Temp folder. It held only the step's own added lines (code, tests and this
+record; no user data). It was deleted by exact name at once, and checked gone.
 
 #### The decision for the user: build the ask as designed at this rate, or change it
 
 What the rate means: under the design's rule, the ask would have sent no request at all in the user's 7 days of use
-so far. The data allow up to about 0.4 a day. So the ask would cost little; it also has, so far, found nothing to
-learn from. Lessons can still come from `record_lesson` and `/lesson`, which do not depend on this ask.
+so far. The data allow up to about 0.4 a day. It has, so far, found nothing to learn from. Lessons can still come
+from `record_lesson` and `/lesson`, which do not depend on this ask.
 
 The options:
 - **A. Build the ask as designed** (steps 26 and 27). It sends a request only when a failure is followed by a fix
   in the same turn, and only while memory is on. At the rate seen, that is 0 requests a day.
-- **B. Change the rule so it fires more often**, for example any later success in the turn. That figure was not
-  counted; it would need a new count before choosing.
+- **B. Change the rule so it fires more often**, for example any later success in the turn. Counted after the
+  review (run 3): 1 of the 80 whole turns, about 0.14 a day of use, at most 1 in a day.
 - **C. Drop the ask**, and keep lessons only from `record_lesson` and `/lesson`.
 
 Recommended, not chosen: **A**. It costs nothing at the rate seen, and costs only when there is a fix to learn
 from. Its weak point: with no ask seen, nothing here shows that its lessons would be useful for this user's work.
 
-**The user's choice: not yet given.**
+**The user's choice: not yet given.** (Answered below.)
+
+#### The user's choice (step 12), 2026-11-19
+
+The user chose **option A: build the lesson ask as designed** (steps 26 and 27), as recorded in the "Step 12 (M7)"
+entry of the run folder's `user-decisions-after-step-6.md`. The ask fires when a failure is followed, in the same
+turn, by a call doing the same job. It was seen 0 times in 80 whole turns over 7 days, with a 95% bound of about 1 in
+27 turns, about 0.4 a day. Not B (any later success: 1 in 80, about 0.14 a day), and not C (drop the ask). The user
+also said to fix all of the review's points; this part and the correction note in M2 (above) are those fixes.
+
+From the same answer, for later steps: step 22's saver must not save turns that `/branch` copied into a new session
+as new entries again; its label and MemPalace's exact-duplicate answer (`already_exists`) must be checked to cover
+it, or it is built so they do. Step 14 leaves `/branch` copies out of its counts.
+
+Step 12 was committed (5021fce) before the user's answer, as steps 8 to 11 were; the answer and the fixes are in the
+commit after it.
