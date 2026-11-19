@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -264,7 +264,8 @@ export class Palace {
     const r = await this.call(STATUS, {}, timeout);
     if (r.is !== "answer") return r;
     const backend = typeof r.json.backend === "string" ? r.json.backend : undefined;
-    return { is: "read", backend, model: modelIn(palace) };
+    const file = palaceFile(palace);
+    return { is: "read", backend, model: file.holds === "model" ? file.model : undefined };
   }
 
   async close(): Promise<void> {
@@ -316,20 +317,31 @@ function objectIn(text: string): Record<string, unknown> | undefined {
   }
 }
 
-// The model, or none when node:sqlite cannot be loaded or the file or its record is not there. node:sqlite is loaded
-// through the locks' loader (src/memory/oslock.ts), so it may load here first, with only its one warning hidden.
-function modelIn(palace: string): string | undefined {
+// What the palace file in the folder `palace` holds, read only: no file yet (a new palace has none until its first
+// write, step 20's run 3), a file that cannot be opened (not a database, or node:sqlite not loading), a file with no
+// model recorded (a missing `meta` table, SQLite's plain error, counts as no row), or the model. The supervisor tells
+// them apart when the status is refused (the user's choice at step 20's run 3). node:sqlite is loaded through the
+// locks' loader (src/memory/oslock.ts), so it may load here first, with only its one warning hidden.
+export type PalaceFile =
+  | { holds: "no file" }
+  | { holds: "can't open" }
+  | { holds: "no model row" }
+  | { holds: "model"; model: string };
+
+export function palaceFile(palace: string): PalaceFile {
+  const file = path.join(palace, PALACE_FILE);
+  if (!existsSync(file)) return { holds: "no file" };
   let db: DatabaseSync;
   try {
-    db = new (load().DatabaseSync)(path.join(palace, PALACE_FILE), { readOnly: true });
+    db = new (load().DatabaseSync)(file, { readOnly: true });
   } catch {
-    return undefined;
+    return { holds: "can't open" };
   }
   try {
     const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(MODEL_KEY);
-    return typeof row?.value === "string" ? row.value : undefined;
-  } catch {
-    return undefined;
+    return typeof row?.value === "string" ? { holds: "model", model: row.value } : { holds: "no model row" };
+  } catch (err) {
+    return ((err as { errcode?: number }).errcode ?? 0) === 1 ? { holds: "no model row" } : { holds: "can't open" };
   } finally {
     db.close();
   }

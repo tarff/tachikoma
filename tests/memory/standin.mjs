@@ -25,6 +25,8 @@
 // --slow <ms>                every tool call is answered that much later;
 // --hold-room <room>         a search of that room is never answered (repeatable);
 // --refuse-writes            adding and removing are refused;
+// --refuse-status            mempalace_status is refused as MemPalace refuses it on a palace with no entry yet, or
+//                            with a palace file it cannot open (step 20's run 3, in the same words);
 // --stop-after <tool>=<n>    once that tool's nth call is answered, it stops: later calls get no answer and change
 //                            nothing, until the file `--gate <file>` exists (never, without --gate);
 // --hang <ms>                over stdio, it answers `initialize` that much later and nothing after it, and keeps
@@ -65,6 +67,7 @@ for (let i = 0; i < argv.length; i++) {
     case "--slow": opt.slow = Number(next()); break;
     case "--hold-room": opt.holdRoom.add(next()); break;
     case "--refuse-writes": opt.refuseWrites = true; break;
+    case "--refuse-status": opt.refuseStatus = true; break;
     case "--stop-after": {
       const [tool, n] = next().split("=");
       opt.stopAfter = { tool, n: Number(n) };
@@ -215,6 +218,10 @@ const TOOLS = {
     return { drawers: page, total: all.length, count: page.length, offset, limit };
   },
   mempalace_status() {
+    if (opt.refuseStatus) {
+      return { error: "Backend open failed", details: "Could not open the selected backend collection.",
+        hint: "Run: mempalace status or mempalace repair-status for diagnostics.", backend: opt.backend };
+    }
     const rooms = {};
     for (const e of entries) rooms[e.room] = piecesOf(e.room);
     const total = entries.reduce((n, e) => n + e.pieces.length, 0);

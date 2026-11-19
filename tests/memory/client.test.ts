@@ -8,7 +8,8 @@ import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { running } from "../../src/exec/local.js";
-import { connect, type Kind, type Palace, type Target } from "../../src/memory/client.js";
+import { connect, type Kind, type Palace, palaceFile, type Target } from "../../src/memory/client.js";
+import { load } from "../../src/memory/oslock.js";
 import { LESSONS, WING } from "../../src/memory/paths.js";
 import { readLog } from "../mcp/fake.js";
 import { removeTree } from "../helpers.js";
@@ -398,6 +399,59 @@ describe("the palace client, against the hub", () => {
       palaces.push(made.palace);
       await made.palace.add(ROOM, "label", "text", LIMIT);
       expect(await made.palace.inForce(h.palace, LIMIT)).toEqual({ is: "read", backend: "sqlite_exact" });
+    } finally {
+      vi.doUnmock("../../src/memory/oslock.js");
+      vi.resetModules();
+    }
+  });
+});
+
+// What the palace file holds, told apart (the user's choice at step 20's run 3): a refused status with no file is a
+// palace not written yet, and with a file that cannot be opened a broken one.
+describe("the palace file", () => {
+  const meta = (file: string, model?: string) => {
+    const db = new (load().DatabaseSync)(file);
+    db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)");
+    if (model) db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)").run("embedder_model:mempalace_drawers", model);
+    db.close();
+  };
+
+  it("holds no file in a palace folder that is missing or empty", async () => {
+    const dir = await folder();
+    expect(palaceFile(path.join(dir, "palace"))).toEqual({ holds: "no file" });
+    expect(palaceFile(dir)).toEqual({ holds: "no file" });
+  });
+
+  it("holds a file but no model row before the model is recorded", async () => {
+    const dir = await folder();
+    meta(path.join(dir, "sqlite_exact.sqlite3"));
+    expect(palaceFile(dir)).toEqual({ holds: "no model row" });
+  });
+
+  it("holds the model once it is recorded", async () => {
+    const dir = await folder();
+    meta(path.join(dir, "sqlite_exact.sqlite3"), "minilm");
+    expect(palaceFile(dir)).toEqual({ holds: "model", model: "minilm" });
+  });
+
+  it("cannot be opened when the file is not a database", async () => {
+    const dir = await folder();
+    writeFileSync(path.join(dir, "sqlite_exact.sqlite3"), "not a database: broken on purpose\n");
+    expect(palaceFile(dir)).toEqual({ holds: "can't open" });
+  });
+
+  it("cannot be opened when node:sqlite cannot be loaded", async () => {
+    const dir = await folder();
+    meta(path.join(dir, "sqlite_exact.sqlite3"), "minilm");
+    vi.resetModules();
+    vi.doMock("../../src/memory/oslock.js", () => ({
+      load: () => {
+        throw new Error("no node:sqlite");
+      },
+    }));
+    try {
+      const fresh = await import("../../src/memory/client.js");
+      expect(fresh.palaceFile(dir)).toEqual({ holds: "can't open" });
     } finally {
       vi.doUnmock("../../src/memory/oslock.js");
       vi.resetModules();

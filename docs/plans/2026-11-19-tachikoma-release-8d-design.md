@@ -4221,3 +4221,92 @@ provided.", which would stop Tachikoma's `uv sync --locked`; the same reporter s
 the URLs recorded in the lock", and a maintainer: "I consider it fairly critical that the lockfile includes the URLs
 directly." Not tried here: no uv was run against an index. The user's choice, "Drop the mirror settings". A user who
 can reach only a mirror, not PyPI, cannot set memory up; step 30's README lists it.
+
+### The hub's supervisor: the proof, its figures and the user's choices (step 20, 2026-11-20)
+
+**The proof** (`scripts/8d/hub-proof.mjs`), run before any of the supervisor was written. It started real hubs in the
+build folder with the supervisor's program, arguments and environment:
+- the environment's own Python, `-I -m mempalace.mcp_server --transport http --host 127.0.0.1 --port <p> --palace
+  <palace> --backend sqlite_exact`;
+- step 16's `hubEnv` on the build's own environment, with step 5's `HF_HUB_OFFLINE=1` and a dead-end proxy;
+- step 16's paths in a new data folder of the build folder;
+- hidden and detached, with no input or output, from a starter that then exits.
+
+It showed the hub serves, is found and is stopped by its id with nothing left running.
+- **Run 1** (2026-11-19 22:11 UTC): the exact form; one hooked copy for the connection watch.
+  - Serves: a health answer about 1.3 s after the start; one add and one search worked.
+  - Found: listing `<home>\.mempalace\server\*\serverinfo.json` and matching `palace_path` without regard to letter
+    case gave the file naming the port, 0.6 ms after the health answer.
+  - Stopped: the serving process's start time was read by the environment's Python and equalled the script's own
+    reading to the microsecond. A stop given another start time said "differs" and stopped nothing.
+  - The real stop ended the serving process, the launcher the starter had started and the console host, and all were
+    gone afterwards, listed by id before and after.
+  - The snapshot pair: "no change".
+  - Finding: on a new, empty palace `mempalace_status` is refused, "Backend open failed: Could not open the selected
+    backend collection.", until the first entry is saved.
+- **The review** found faults in the script's clean-up and Temp folder, and in its macOS start time. The user chose
+  "Fix script, measure again".
+- **Run 3** (22:31:41 to 22:32:39 UTC, after the fixes): passed, 0 failures, 27 hubs, all through step 5's audit-hook
+  wrapper (`-c <wrapper> <log> mempalace.mcp_server`, the user's choice for the watch). The supervisor runs the hub
+  without it.
+  - The run's own Node and tsx had their Temp in the build folder.
+  - Every hub served, was found, refused a stop given a wrong start time, and was stopped with its three processes
+    gone.
+  - The proxy got 0 connections; the hooks saw no outside address and no child process.
+  - 81 processes were recorded with their start times; none was left. The snapshot pair: "no change". No `uv-*.lock`
+    in the user's Temp. Nothing was fetched.
+  - Run 2 had stopped at once on the script's own Temp guard, before any set-up.
+
+**Run 3's figures** (this PC, as in M3; 20 starts on a palace holding 3 entries; ms):
+
+| Figure | Fastest | Middle | Slowest |
+|---|---|---|---|
+| Start-time read (the environment's Python, spawned) | 147.2 | 159.5 | 195.5 |
+| Read-back: connect, with the tool list | 6.6 | 7.4 | 15.1 |
+| Read-back: `mempalace_status`, first after the start | 107.9 | 116.5 | 155.1 |
+| Read-back: the palace file's model | 1.3 | 1.5 | 2.1 |
+| Read-back: all three | 117.6 | 126.5 | 165.2 |
+| Stop: the whole run of the environment's Python (all 27 stops) | 188.3 | | 257.5 |
+| Stop: the wait inside it (all 27 stops) | 11.8 | | 23.3 |
+
+**Empty and broken palaces.** For 5 new, empty palaces and one broken on purpose (a palace file that is not a
+database), the status call was refused with the same words: "Backend open failed", "Could not open the selected
+backend collection.", the same hint. So the refusal cannot tell them apart. The palace file can:
+- the empty palaces had no `sqlite_exact.sqlite3` at all, even after a start, the status call and a search;
+- the broken one's could not be opened.
+
+**The user's choices (2026-11-20).**
+- The stop's limit: 1.3 s for the whole stop run (5 x 257.5 ms). It replaces M3's 1 s for the stop. A stop that passes
+  it counts as stopped, and the record is cleared.
+- The read-back's limit: 0.9 s (5 x 165.2 ms). On a timeout memory is off for this launch; the next launch tries
+  again.
+- The start-time read after a start: its own limit, 1 s (5 x 195.5 ms). The 40 s start limit stays as M3 measured
+  it, from the start until the hub answers and its serverinfo.json names its port.
+- The empty-palace rule: a refused status with no palace file is "not read yet", and memory is on. A refused status
+  with a palace file that cannot be opened turns memory off. Step 18's client now tells "no file", "can't open" and
+  "no model row" apart (`palaceFile`).
+- Approved:
+  - the stop is forced on Windows (`TerminateProcess`; only idle hubs were stopped);
+  - the hub's output is not kept, so a failed start reports its exit code (the wording waits for step 21);
+  - the palace's version record is `tachikoma-version.json` in the palace folder, holding `{"mempalace":"3.12.0"}`.
+- Known limits, for step 30's README:
+  - a backend mismatch exits with code 2 like another window's hub, so it waits the 40 s start limit and then reports
+    exit code 2;
+  - an unwritable or missing palace folder, or a deleted palace file, also reads "no file" (memory on until the first
+    save fails);
+  - the Linux and macOS ways are not run (below).
+
+**Built** (`src/memory/hub.ts`):
+- the start, the finding and the stop as the proof ran them, with the proof's helper word for word;
+- Tachikoma's hub record, written only under the join lock;
+- an exit with code 2 leading to another window's hub;
+- joining and leaving as "Joining and stopping" says, with "in use" files refreshed every 5 s and gone after 27 s
+  (M4);
+- the timer that rejoins a hub found gone or stopping;
+- the version record, and an old environment folder removed only under the join lock;
+- a closing state entered once.
+
+**Not run here**, from the systems' own manuals:
+- Linux: the start time from `/proc/<pid>/stat` (the `proc(5)` manual); the wait with `os.pidfd_open` and `select`.
+- macOS: the start time from `ps -o lstart= -p <pid>`, to the second (the user's choice); the wait with `kqueue`.
+- On both the stop is SIGTERM, MemPalace's clean exit.
