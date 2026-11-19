@@ -3761,3 +3761,251 @@ The user chose with three things before them:
 Not covered: real lessons, the user's own MemPalace, other languages, a room of more than 100 lessons. Step 13's
 re-run was committed (0bc17c4, with eded6c9 and the review fixes 87b237a) before the user's answer; the answer is in
 the commit after them.
+
+### M6 The note's count and cut-off, from the transcripts (step 14, 2026-11-20)
+
+In short: the note works on half of the first messages that have anything to find, and very few other projects'
+entries come as close. Of the user's 35 first messages so far, 24 had earlier turns of the same project in the palace
+when they were sent; 11 had none (most were a project's first session). For those 24, the closest earlier turn of the
+same project sits at a distance of 0.4861 in the middle case (0 is the same text, 2 the opposite; lower is closer),
+while entries of other projects come no closer than 0.3111, and only 6 of their 1,397 matches are within 0.4861. A
+match is one piece of an entry, at most 800 characters, so a note of 3 matches holds at most 2,400 characters of text;
+here it held 1,099 at most at that cut-off. **The figures are few** (35 first messages, 76 entries, 10 projects), most
+sessions were the user's own tests of Tachikoma, and "same project" stands in for "relevant", which it is not always.
+**The count and the cut-off are the user's choice, not yet given** (end of this part).
+
+Script: `scripts/8d/measure-note.mjs`, three commands: `scan` (the transcripts only, counts only, starts nothing),
+`check` (the whole run on made-up sessions written in the script, with every count it must find worked out by hand
+beforehand; never the user's text) and `run` (the user's transcripts). Its hub start and stop, process tracking,
+palace removal and percentiles are copied unchanged from `scripts/8d/measure-lessons.mjs` (the lines are listed in its
+header) by an assembler that allowed only the run folder's and palaces' names and the result line to change; that
+script cannot be imported for them, as they are not exported and importing it runs its commands. It uses step 10's
+`scripts/8d/turns.mjs` for the turns and the cut into parts, and step 13's `QUERY_MAX` (250). After the runs one
+comment changed in the script (a cited line range, `candidates.py:182-214` to `:182-215`); no code changed.
+
+Runs (2026-11-19 UTC; 2026-11-20 on this PC's clock), each between a pair of snapshots in the same command:
+- the check, `node scripts/8d/measure-note.mjs check`, 17:38:09 to 17:38:35: exit 0, "measure-note: passed"; all 22
+  counts of the entries and prompts and all 14 of the run were as expected (among them a branch copy, a background
+  turn, a turn with no model text, a damaged line, a turn of 100,524 characters saved in 2 parts, a turn repeated word
+  for word answered `already_exists`, a first message over 250 characters, a picture, and a search of a room of 132
+  pieces, over the limit, counted as such);
+- the scan, `node scripts/8d/measure-note.mjs scan`, read only, no hub: the counts below, the same as the run's;
+- the run, `node scripts/8d/measure-note.mjs run`, 17:40:25 to 17:41:56: exit 0, "measure-note: passed", no
+  failures. Results: `tachi-8d-build\install\measure-note-real-2026-11-19T17-40-25-712Z\results.json` (counts, lengths
+  and scores only). The run itself took 90.9 s, of which the 72 adds and 162 searches took 85.6 s; with both
+  snapshots and the leftover scan the command took about 2.5 minutes.
+
+Each run had one hub, started and stopped the decided way (Q24, Q8, Q25): it answered in 1,163.5 ms (check 1,216.7)
+and was gone 22.9 ms after its stop (check 25.3). 7 processes recorded in each, none left running; backend
+`sqlite_exact` and model `minilm` read back; nothing fetched (the dead-end proxy got 0 connections). The palace was
+deleted by its exact name after its hub stopped (7 files and its folder, each run).
+
+#### What was read, and how the user's text was kept out
+
+The user's Tachikoma transcripts, read only, on this computer. Subagents' own files were not read (their messages are
+never saved). The user's text went into one palace in the build folder, as the plan says, under stand-in labels
+(`tachikoma session s<k>, turn <n>`) and stand-in rooms (`project-<k>`); the palace was deleted after the run. Nothing
+of the text, no session id and no file or folder name is in any output, in the results file or here: the script
+prints counts, lengths and scores only, and while the user's text is handled an error would say its name alone.
+MemPalace's write log redacts content and queries (`mempalace/wal.py:28-29, :92-93`); its warning when it rewrites a
+query gives two lengths and the method only (`mempalace/query_sanitizer.py:43-47`). A scan after the run (in
+the build folder's `scratch\step14\leftover-scan.mjs`) looked for the user's text, three 32-character slices of each
+entry and of each first message's query, plain and as JSON writes them (308 strings), in every file under the build
+folder's `install` folder written since the run began and in every file of this step's scratch folder (15 files, 13
+MB): found in none. Its control, a made-up string in a made-up file, was found, and that file was deleted by its exact
+name.
+
+| What | Count |
+|---|---|
+| Transcripts (main sessions) read | 53 files, 1,621,473 bytes, in 10 project folders; all with a start line |
+| Sessions | 53 (15 of them `-p` runs) |
+| `/branch` copies (left out, the user's rule after step 12) | 3 sessions, 7 copied typed turns, 0 copied background |
+| Typed turns, copied ones left out | 82 |
+| of them marked: the file ends mid-turn / a call without a result | 2 / 1 (none has model text) |
+| Background turns (make no entry) | 1 |
+| Turns set apart (a damaged line) | 0 (and 0 damaged lines before a first turn) |
+| Typed turns with no model text (make no entry) | 6 |
+| Typed turns saved, as entries | 76, in 10 rooms |
+| of them over 100,000 characters, saved in parts (Q26) | 0 (so 76 entries, 1 part each) |
+| Pieces by room (the 4 repeats below included) | 1, 1, 8, 8, 10, 10, 11, 11, 11 and 20 (91) |
+| Sessions with no typed turn (no first message) | 15 |
+| First messages searched (53 less 3 copies and 15 with no typed turn) | 35 |
+| of them cut to 250 characters / over 200 characters / with a picture | 1 / 3 / 0 |
+| of them with no other session of their project started before them | 9 |
+
+These counts match step 10's corrected figures (M2, "With the copies left out": 82 typed turns, 76 entries) and M7's
+3 copies with 7 copied turns. The first messages' lengths, in code points: shortest 6, a quarter 40, middle 58, three
+quarters 127, nine tenths 176, longest 445. Of the 76 entries, 72 were added and 4 were answered `already_exists`:
+the very same text was already in the room from an earlier turn (step 6 item 9), which step 22 counts as saved. The
+palace read back 72 entries in 87 pieces (61 of 1 piece, 9 of 2, 1 of 3, 1 of 5).
+
+#### How it was measured, and the builder's choices
+
+- **The same project** is the same project folder under `sessions` (one per project path, named after its sha256,
+  `src/core/sessions.ts:13-18`), and so the same room; no folder's sessions name more than one project path (0).
+- **The order.** Each entry goes in when its turn ended (the turn's last line's time), and each first message is
+  searched at its own time (its first typed message's line); at the same millisecond the search goes first. So each
+  search finds the palace as it stood when that message was sent: every turn that had ended by then, in any session
+  of any project, those of sessions still open at the time included. Within a folder the sessions are ordered by their
+  start line's time, then by when the file was made, only to find the branch copies, as M7 does.
+- **The message's own session is left out** by that order: its first message comes before any of its turns end. No
+  later turn is ever in a search.
+- **Messages with nothing earlier.** 11 of the 35 had no entry in their own room when sent: 9 had no other session
+  of their project started before them, and 2 had other sessions started before them, none of which had a saved
+  turn by then. They would get no note. They are counted here and have no score; they were still searched against
+  the other projects, for the comparison.
+- **A branch's copy** has no first message of its own: its next message is a fork's (`src/cli.tsx:814`,
+  `src/tui/app/queue.ts:833`), and the note is never made for a fork (step 24). Its copied turns make no entry; its
+  own later turns do, as they would be saved live.
+- **The query** is the first typed turn's words as Q4 makes them up (pictures as markers), cut to 250 code points as
+  step 24 will cut them (by code point, as `scripts/8d/lesson-query.mjs` cuts). `-p` runs are included: their one
+  message gets the note at launch (Q9).
+- **The search**: one search of the message's own room (step 24's "project's room"; the `lessons` room is empty here,
+  as there are no lessons yet, so the merged list of Q27 is the project's alone), and, for the comparison, one search
+  of each other project's room that held an entry at the time, each with `limit` 100, MemPalace's most (`_MAX_RESULTS`,
+  `mempalace/mcp_server/_session.py:681`). No room held more than 20 pieces, so every search returned every piece in
+  its room; the script checked this at every search (0 short, 0 over the limit, 0 from another room, 0 unknown, 0
+  folded). Each hit is ranked by its own `distance` (closest first), not the hub's order, as in M5; 0 had a closet
+  boost.
+- **A match is one hit, and a hit is one piece** of an entry, at most 800 characters: MemPalace returns the matched
+  piece's text (`mempalace/searcher/query.py:412-426`; `searcher/candidates.py:123-129`, "`text` is the matched
+  drawer, verbatim"). So several hits can come from one long entry. The length tables give the other reading too, a
+  match shown as its whole entry, each entry once; steps 23 and 24 set what a match shows.
+- **The candidate cut-offs** are taken from the scores, each a score that occurred (nearest rank): the 25th, middle,
+  75th and 90th percentile and the largest of each message's closest same-project match, and the smallest, 1st, 5th,
+  10th and 25th percentile of all other-project matches.
+
+**Found: MemPalace rewrites a query of over 200 characters.** Its sanitizer (`mempalace/query_sanitizer.py:29-30`,
+`:77-189`: `SAFE_QUERY_LENGTH = 200`, `MAX_QUERY_LENGTH = 250`) passes a query of 200 characters or fewer
+through as it is, and replaces a longer one with its last sentence that ends in a question mark, else its last
+meaningful sentence, else its last 250 characters; it is meant for agents that put a system prompt in front of a
+query. 3 of the 35 first messages are over 200 code points, and all 22 of their searches were rewritten ("sanitized
+22, changed 22"). So live, a first message over 200 characters is searched by the part MemPalace picks, not by the
+first 250 characters step 24 sends. The figures here include that, as live. A note for step 24; nothing here depends
+on a choice about it.
+
+#### The figures
+
+Distances (lower is closer): smallest / 10th / 25th / middle / 75th / 90th / largest.
+
+| Matches | Count | Distances |
+|---|---|---|
+| Same project, every match | 156 | 0.028 / 0.2884 / 0.4396 / 0.7352 / 0.8748 / 0.9654 / 1.0566 |
+| Same project, each message's closest | 24 | 0.028 / 0.1615 / 0.2323 / 0.4861 / 0.8076 / 0.9356 / 0.9368 |
+| Other projects, every match | 1,397 | 0.3111 / 0.742 / 0.8157 / 0.8922 / 0.9573 / 1.0038 / 1.1217 |
+| Other projects, each message's closest | 29 | 0.3111 / 0.3742 / 0.6234 / 0.6615 / 0.7076 / 0.752 / 0.7929 |
+
+The same-project matches per message (of the 24): middle 7, most 19, from middle 5 and most 19 distinct entries.
+
+What each candidate cut-off lets in. "Notes": the messages, of the 24 with earlier entries, with at least one
+same-project match inside, which would get a note. "Per message": matches inside, over the 24 (middle / 90th / most),
+and, among those with a note, the middle. "Other": other-project matches inside, of 1,397, and the messages, of the 29
+with other projects' entries at the time, with at least one of them inside.
+
+| Cut-off (from) | Notes | Same inside (of 156) | Per message (see above) | Other inside | Other: messages |
+|---|---|---|---|---|---|
+| 0.2323 (same closest, 25th) | 6 | 6 (3.8%) | 0 / 1 / 1; 1 | 0 (0%) | 0 |
+| 0.3111 (other, smallest) | 7 | 19 (12.2%) | 0 / 3 / 5; 3 | 1 (0.1%) | 1 |
+| 0.4861 (same closest, middle) | 12 | 44 (28.2%) | 0 / 6 / 11; 2 | 6 (0.4%) | 4 |
+| 0.615 (other, 1st) | 14 | 55 (35.3%) | 1 / 8 / 11; 2 | 15 (1.1%) | 7 |
+| 0.691 (other, 5th) | 16 | 62 (39.7%) | 1 / 8 / 11; 2 | 70 (5.0%) | 20 |
+| 0.742 (other, 10th) | 17 | 80 (51.3%) | 2 / 9 / 11; 4 | 140 (10.0%) | 25 |
+| 0.8076 (same closest, 75th) | 18 | 92 (59.0%) | 4 / 9 / 12; 4 | 318 (22.8%) | 29 |
+| 0.8157 (other, 25th) | 18 | 92 (59.0%) | 4 / 9 / 12; 4 | 350 (25.1%) | 29 |
+| 0.9356 (same closest, 90th) | 23 | 128 (82.1%) | 5 / 11 / 17; 6 | 928 (66.4%) | 29 |
+| 0.9368 (same closest, largest) | 24 | 133 (85.3%) | 5 / 11 / 18; 5 | 940 (67.3%) | 29 |
+
+Among the messages with a note, how many have 1, 2, or 3 or more matches inside: at 0.3111, 2 / 1 / 4; at 0.4861,
+5 / 2 / 5; at 0.615, 4 / 4 / 6; at 0.691, 4 / 4 / 8.
+
+The note's text at each cut-off, for a count of 1, 2 and 3 (the closest matches inside, up to the count), in
+characters, over the messages with a note: middle / 90th / longest.
+
+| Cut-off | Count 1 | Count 2 | Count 3 |
+|---|---|---|---|
+| 0.2323 | 291 / 347 / 347 | 291 / 347 / 347 | 291 / 347 / 347 |
+| 0.3111 | 291 / 347 / 347 | 441 / 638 / 638 | 773 / 1,016 / 1,016 |
+| 0.4861 | 291 / 365 / 800 | 441 / 800 / 1,099 | 773 / 1,016 / 1,099 |
+| 0.615 | 245 / 365 / 800 | 441 / 1,099 / 1,400 | 773 / 1,099 / 1,400 |
+| 0.691 | 245 / 800 / 800 | 441 / 1,099 / 1,400 | 788 / 1,400 / 1,825 |
+| 0.742 | 291 / 800 / 800 | 482 / 1,099 / 1,400 | 829 / 1,400 / 1,825 |
+
+A note of 1 to 5 matches at any distance (the closest ones), over the messages with at least that many: its text;
+the whole note with step 24's draft heading (85 characters) and each match's first line (91 to 104 characters, middle
+96, with the real lengths of the label and room name, a 10-character date and a line break and a blank line around
+each match: the builder's reading, as neither the date's form nor the layout is set); and, for the other reading, the
+matches shown as whole entries. Middle / 90th / longest, in characters.
+
+| Matches | Messages | Text | Whole note | As whole entries (messages) |
+|---|---|---|---|---|
+| 1 | 24 | 237 / 365 / 800 | 421 / 549 / 988 | 245 / 828 / 1,400 (24) |
+| 2 | 21 | 510 / 1,025 / 1,400 | 793 / 1,316 / 1,691 | 560 / 1,395 / 2,556 (21) |
+| 3 | 19 | 875 / 1,825 / 2,200 | 1,257 / 2,219 / 2,594 | 829 / 2,606 / 2,618 (18) |
+| 4 | 17 | 1,223 / 2,235 / 2,556 | 1,724 / 2,708 / 3,053 | 1,223 / 3,774 / 4,067 (16) |
+| 5 | 15 | 1,619 / 2,269 / 2,618 | 2,239 / 2,843 / 3,218 | 1,416 / 4,176 / 4,195 (13) |
+
+A note's text can never be longer than 800 characters a match when a match is a piece; as whole entries, it is
+bounded only by the entries' 100,000.
+
+The derived counts (messages with 1, 2 or 3 or more inside) were worked out from the results file by
+`scratch\step14\extra.mjs` in the build folder, scores and lengths only.
+
+What these figures cannot say:
+- Whether a match helps. "Same project" stands in for "might be relevant" and "other project" for "unrelated";
+  neither is always so (two projects can share a subject).
+- How the user will work later. Most of these sessions were the user's own tests of Tachikoma: 15 are `-p` runs and
+  4 turns repeat an earlier one word for word, so some very close matches are a test prompt meeting its own repeat.
+- Lessons in the note: there are none yet, so the merged list (Q27) held the project's matches alone. A count and a
+  cut-off apply to project matches and lessons together.
+- The user's own MemPalace (the `"use"` path, a palace of about 6.8 GB with its own settings), other embedding models,
+  other languages, and larger palaces: not measured.
+
+#### The user's folders
+
+Two pairs of snapshots, each taken in the same command just before and just after its run:
+- the check: `step14-check-before` (17:37:42 UTC) and `step14-check-after` (after 17:38:35): "no change" (exit 0),
+  with only the set-apart daemon folder of the user's MemPalace;
+- the run: `step14-before` (17:39:58) and `step14-after` (after 17:41:56): "no change" (exit 0), the same.
+
+The same commands listed the top level of the user's Temp folder (names and times only, no file opened): no
+`uv-*.lock` in either. Around the check, one file was added and one removed (origin not traced); around the run,
+nothing was added, removed or rewritten. Every child process had the build's home, TEMP and TMP. The script reads the
+transcripts and writes only in the build folder; the palace `measure-note-<stamp>-real` (and the check's) is gone, and
+`palaces` holds no `measure-note-*` folder.
+
+#### The decision for the user: the note's cut-off and count
+
+What the two numbers do (design, section 4; step 24): at the first message after a launch, `/clear` or a shortening,
+the matches from the project's room and the lessons at or below the cut-off, closest first, up to the count, go in
+front of that message under the heading. With no match inside, the message goes as it is.
+
+The options for the cut-off (of the 24 first messages with earlier entries; the other 11 get no note at any
+cut-off):
+- **N1. 0.2323**: 6 get a note, one match each; no other project's entry comes this close. Notes are rare (6 of 35
+  first messages).
+- **N2. 0.3111**, as close as any other project's entry came: 7 get a note, with up to 5 matches; 1 of 1,397
+  other-project matches is inside, the one at the edge.
+- **N3. 0.4861**, the middle of the messages' closest matches: 12 get a note, half of the 24 (12 of 35), with up to
+  11 matches inside; 6 of 1,397 other-project matches (0.4%) are inside, for 4 of 29 messages. It is almost the same
+  as the lesson cut-off the user chose (M5, 0.4862), so a lesson and a project match in the note are held to the same
+  closeness.
+- **N4. 0.615** (1% of other-project matches inside): 14 get a note; other projects' matches inside for 7 of 29
+  messages.
+- **N5. 0.691** (5% inside): 16 get a note; other projects' matches inside for 20 of 29.
+
+From 0.742 up, a tenth or more of all other-project matches are inside, for 25 to 29 of the 29 messages.
+
+The options for the count: **1**, **2** or **3**. At N3 the note's text is, middle and longest, 291 and 800
+characters for 1; 441 and 1,099 for 2; 773 and 1,099 for 3; add 85 for the heading and about 100 a match for its first
+line. Since the lessons share the count (Q27), a count of 1 lets a closer lesson push the project's match out, and the
+other way round.
+
+Recommended, not chosen: **N3, 0.4861, with a count of 3.** Half of the messages with something earlier get a note,
+while other projects' entries come that close for few messages (4 of 29); a count of 3 holds the middle message's
+matches (2) and leaves room for a lesson beside them, at a cost of at most 1,099 characters of text here (2,400 at
+most, 3 pieces of 800). Its weak points: nothing here measures whether a second or third match helps; at 0.4861, 4 of
+29 messages have another project's entry inside, so an unrelated entry of the same project may get in about as
+often, which this cannot tell; and the figures rest on 35 messages, mostly tests. A more careful choice: **N3 with a
+count of 1** (one piece, at most 800 characters), or **N2, 0.3111, with a count of 1**.
+
+**The user's choice: not yet given.**
