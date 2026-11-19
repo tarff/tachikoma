@@ -1894,7 +1894,7 @@ The cache switch: `--import tsx` loads `node_modules/tsx/dist/loader.mjs` (tsx 4
 which loads `node_modules/tsx/dist/index-DE3OBZuV.mjs`; there, at line 13,
 `var J=process.env.TSX_DISABLE_CACHE?new Map:new Er`, where `Er` is tsx's file cache (`class Er extends Map`), whose
 folder is `tsx-<user name>` in the Temp folder (``q=m.join(n.tmpdir(),`tsx-${j}`)``,
-`node_modules/tsx/dist/temporary-directory-Du7LpLp9.mjs:23`): here `Temp\tsx-<user>`. So with `TSX_DISABLE_CACHE=1`
+`node_modules/tsx/dist/temporary-directory-Du7LpLp9.mjs:1`): here `Temp\tsx-<user>`. So with `TSX_DISABLE_CACHE=1`
 tsx keeps its cache in memory, in a plain `Map`.
 
 This PC, as in M3: Intel Core i9-12900K (16 cores, 24 threads), 68.4 GB of memory, solid-state disks (the build
@@ -2026,9 +2026,12 @@ The from-step-8 Temp rule was broken once, before the run. A two-line probe that
 user's TEMP and tsx's cache on, so tsx used its cache folder in the user's Temp, `Temp\tsx-<user>` (the folder
 `npm run dev` uses too). That was before the listings, so neither listing saw it. A listing of Temp taken after it
 showed `tsx-<user>`'s own last-written time as 00:50:44 UTC, the probe's time; the coordinator checked `tsx-<user>` and
-found no file in it written between 00:45 and 00:55 UTC. What changed in the folder at 00:50:44 is not known. The run
-itself had the cache off (above). Every PowerShell start, here as in Tachikoma, may also update PowerShell's own files
-under `AppData\Local\Microsoft\Windows\PowerShell`, which no listing watches.
+found no file in it written between 00:45 and 00:55 UTC. The orchestrator then listed `Temp\tsx-<user>` again (names
+and times only, read only): of its 1,587 entries, counted recursively, none was created or last written after 00:30
+UTC on 2026-11-19. A folder's last-written time also moves when an entry in it is removed or renamed, so the change
+at 00:50:44 was a removal or a rename; which entry it was is not known. The run itself had the cache off (above).
+Every PowerShell start, here as in Tachikoma, may also update PowerShell's own files under
+`AppData\Local\Microsoft\Windows\PowerShell`, which no listing watches.
 
 #### The decisions for the user
 
