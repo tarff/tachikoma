@@ -2575,7 +2575,8 @@ timed:
   searches sent at once do not run side by side all the way.
 - **The limit.** The pool of candidates is at least 4 times `limit` (`searcher/candidates.py:26`, `:30-54`). Both ends
   of `limit` were timed: MemPalace's default, 5 (`mcp_server/tools_read.py:611`), and its most, 100 (`_MAX_RESULTS`,
-  `mcp_server/_session.py:681`). The count Tachikoma will ask for is set later (M5, step 13; M6, step 14).
+  `mcp_server/_session.py:681`). The count Tachikoma will ask for is set later (M5, step 13; M6, step 14). (Set
+  since: M5's count is 1 lesson, at a cut-off of 0.4862, the user's choice at step 13.)
 - A search folds hits that copy the same text, and then searches again with a pool 4 times wider, up to 16 times and
   500 candidates (`searcher/query.py:163-164`, `:177-186`, `:488-506`). Every text here was different, so that never
   happened in this run.
@@ -3426,8 +3427,8 @@ may sit closer or farther.** (Added after the review.) A count of those shared w
 made-up lesson shares about a quarter of its words with its own family's failures and about a twenty-fifth with any
 other family's ("Shared words", below). So the rates of right lessons are likely too good, and the rates of wrong
 lessons may be too low; neither could be measured from these results. The user's 6 real failures, a side figure
-only and possibly test-polluted, are handed none of the made-up lessons at or below 0.3480. The cut-off and the
-count wait on the user (end of this part).
+only and possibly test-polluted, are handed none of the made-up lessons at or below 0.3480. **The user chose R3: a
+cut-off of 0.4862 and 1 lesson per failure** (end of this part).
 
 Script: `scripts/8d/measure-lessons.mjs`, two new commands, `lessons-check` (made-up only, to check the run first)
 and `lessons` (the same, then the old rule's comparison and the real side figure; the old-rule comparison runs in
@@ -3480,7 +3481,9 @@ all passing; with `turns.test.ts`, 33):
 No figure above changes: the rule as committed before the fix and as fixed, applied to the 116 made-up failures and
 to the 6 real rows' messages in a pure script (`scratch\step13\query-diff.mjs`; counts only), give 0 different queries
 under the new rule, 0 under the old rule for the 48 failed commands, and the same counts of status-shaped errors (48
-made-up, 2 real). The same comparison does tell the two apart on the fixed cases, so it would have seen a difference.
+made-up, 2 real). That the two versions do differ where the fixes apply is shown by the two new unit tests, which
+failed against the rule before the fix and pass after it (corrected after the re-check: the script itself holds no
+such control, and the one-off check run beside it was not saved).
 **Duties for step 25** (`src/memory/lessonQuery.ts`): take a trailing `\r` off the error's first line on every path,
 and count `exit code: null` as a status line, as `scripts/8d/lesson-query.mjs` now does; the shared test cases hold
 both.
@@ -3634,19 +3637,27 @@ What the figures mean:
 **Shared words** (added after the review). The review counted, and the builder counted again with a small script
 (`scratch\step13\overlap.mjs` in the build folder, which reads `scripts/8d/lesson-families.mjs` only: no model, no
 hub), how many of each made-up lesson's words also appear in failures' text. Words are runs of letters, lower-cased,
-of 4 letters or more, with common English stopwords left out; a lesson's share with a family is the part of its
-distinct words found anywhere in that family's 4 failures; "other" is the mean over the 28 other families; the
-figures are means over the 28 lessons.
+of 4 letters or more, with common English stopwords left out. The measure differs by row (named in the table):
+pooled recall is the part of the lesson's distinct words found anywhere in the family's 4 failures; per-failure
+recall and Jaccard take each failure on its own and average over the family's 4. "Other" is the mean over the other
+families (or their 112 failures); the figures are means over the 28 lessons.
 
-| Counted against | Own family | Other families |
+| Measure, and what the lesson is counted against | Own family | Other families |
 |---|---|---|
-| Each failure's tool name and whole error text (the builder's count) | 0.273 | 0.040 |
-| Each failure's query, what the search is sent (the builder's count) | 0.223 | 0.032 |
-| The review's count (content words of 4 letters or more, minus stopwords) | 0.142 | 0.013 |
+| Pooled recall: share of the lesson's words found in the family's 4 failures together (whole text) | 0.273 | 0.040 |
+| Pooled recall, against the 4 failures' queries (what the search is sent) | 0.223 | 0.032 |
+| Per-failure recall: share of the lesson's words in one failure's whole text, averaged | 0.268 | 0.036 |
+| Per-failure Jaccard: shared words over all words of the lesson and one failure, averaged | 0.171 | 0.020 |
+| The review's first count: per-failure Jaccard, with its own word list | 0.142 | 0.013 |
 
-The counts differ with the text and the stopword list used, but every one finds a lesson sharing about 7 to 11 times
-as many of its words with its own family as with another. Highest against the whole text: N10 0.545, N13 0.455, N8
-0.400, C2 0.396, C7 0.375 (the review's highest: N13 0.417, N8 0.286, N10 0.273, C10 0.271, C7 0.248, C2 0.194).
+(Corrected after the re-check.) The figures differ mainly by the measure, not by the text or the skipped words:
+"recall" asks what part of the lesson's words the failures hold; "Jaccard" divides the shared words by every word of
+the lesson and the failure together, so it is smaller. Pooling the 4 failures or taking them one at a time changes
+little (0.273 against 0.268). The builder's four counts (the first four rows, `scratch\step13\overlap.mjs`; its last
+two rows match the review's re-check of the same lessons) find a lesson sharing about 7 to 9 times as many of its
+words with its own family as with another (6.8, 7.0, 7.4 and 8.6); the review's first count gives about 11.
+Highest against the whole text: N10 0.545, N13 0.455, N8 0.400, C2 0.396, C7 0.375 (the review's highest: N13
+0.417, N8 0.286, N10 0.273, C10 0.271, C7 0.248, C2 0.194).
 Against the queries, C2 shares none (git writes the remote's name first, so its query holds none of the lesson's
 words), and 2 lessons share no word with their own family's queries.
 
@@ -3714,9 +3725,10 @@ The options for the count: **1**; **2**; or **3**. At R2 they hand a right lesso
 wrong one to 16, 18 and 19; at R3 to 57, 58 and 62 and 22, 34 and 35. A family here has at most two lessons, so the
 gain from a higher count is bounded by the made-up design.
 
-Recommended (not chosen): **R3, 0.4862, with a count of 1.** It hands their own lesson to 57 of the 88 made-up
-failures that have one (65%; 49% of all 116; corrected after the review), hands no made-up failed command a wrong one
-(26 of the 36 get their own), and keeps the wrong-first count close to the tighter options' (10 against 7 at R2). Its
+Recommended, and chosen by the user (below): **R3, 0.4862, with a count of 1.** It hands their own lesson to 57 of
+the 88 made-up failures that have one (65%; 49% of all 116; corrected after the review), hands no made-up failed
+command a wrong one (26 of the 36 get their own), and keeps the wrong-first count close to the tighter options' (10
+against 7 at R2). Its
 weak points: 12 of the 28 made-up failures with nothing to learn from are handed some other lesson; 2 of the user's 6
 real failures would be handed a made-up lesson that is not theirs; and every figure rests on the builder's own
 failures and lessons. A more careful choice is **R2, 0.3480, with a count of 1**: 17 fewer failures get their own
@@ -3727,4 +3739,25 @@ failures than with others ("Shared words", above), so at any cut-off the right-l
 than they will be live, and the wrong-lesson figures may be lower than live. Neither could be measured here. Whichever
 cut-off is chosen, it rests on that.
 
-**The user's choice: not yet given.**
+**The user's choice: not yet given.** (Answered below.)
+
+#### The user's choice (step 13), 2026-11-19
+
+The user chose **R3: a cut-off of 0.4862 and 1 lesson per failure** (the answer "R3, 0.4862, 1 lesson", 2026-11-19).
+These are the M5 figures, the cut-off and the count, for step 25: when a lead's tool call fails, the lessons in
+`lessons` at a distance of 0.4862 or less are taken, closest first by their own distance, and at most 1 is attached
+(and only if it fits the cap, Q23). The first run's figures play no part.
+
+The user chose with three things before them:
+- **The shared-words caveat**: the made-up lessons share far more words with their own family's failures than with
+  others ("Shared words", above), so the right-lesson counts are likely too good and the wrong-lesson counts may be
+  too low; neither could be measured.
+- **The counts at R3**: a count of 1, 2 or 3 hands a right lesson to 57, 58 and 62 of the 88 made-up failures that
+  have one, and a wrong one to 22, 34 and 35 of all 116.
+- **The `git push` consequence**: git writes the remote's name first, so a failed push's search text is `shell git To
+  <remote>`, which holds nothing of the error; its lessons sat at up to 0.7846, past this cut-off, behind other
+  lessons (C2).
+
+Not covered: real lessons, the user's own MemPalace, other languages, a room of more than 100 lessons. Step 13's
+re-run was committed (0bc17c4, with eded6c9 and the review fixes 87b237a) before the user's answer; the answer is in
+the commit after them.
