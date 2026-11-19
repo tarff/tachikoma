@@ -91,14 +91,16 @@ describe("turns.mjs, the grouping rule", () => {
     expect(r.turns[0]).toMatchObject({ kind: "typed", typed: "look at [Image #3] please", texts: ["Seen."] });
   });
 
-  it("sets apart a turn with a damaged line, a call with no result, and a turn the file ends in", () => {
+  it("sets apart a turn with a damaged line, and marks one with a call with no result or that the file ends in", () => {
     const r = turnsOf(file(msg(typed("one")), msg(reply("A.")), "{not json", msg(typed("two")),
       msg(reply("B.", "c1")), msg(typed("three")), msg(reply("C.")), msg(typed("four")), msg(reply("D.", "c2"))));
-    expect(r.turns.map((t: { n: number }) => t.n)).toEqual([3]);
-    expect(r.apart).toEqual([
-      { kind: "typed", n: 1, reason: "damaged line" },
-      { kind: "typed", n: 2, reason: "call without a result" },
-      { kind: "typed", n: 4, reason: "file ends mid-turn" },
+    expect(r.apart).toEqual([{ kind: "typed", n: 1, reason: "damaged line" }]);
+    // Q4 saves a turn however it ended, so a marked turn keeps its words and text (the user's choice, 2026-11-19).
+    expect(r.turns.map((t: { n: number; mark: string | null; typed: string; texts: string[] }) =>
+      [t.n, t.mark, t.typed, t.texts])).toEqual([
+      [2, "call without a result", "two", ["B."]],
+      [3, null, "three", ["C."]],
+      [4, "file ends mid-turn", "four", ["D."]],
     ]);
   });
 

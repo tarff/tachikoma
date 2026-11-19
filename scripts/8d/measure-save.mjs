@@ -3,6 +3,8 @@
 //   node scripts/8d/measure-save.mjs scan       the sizes of the user's real typed turns; starts nothing
 //   node scripts/8d/measure-save.mjs timings    the save timings, through hubs in the build folder; run between two
 //                                               snapshots of the user's folders
+//   node scripts/8d/measure-save.mjs first-large  the first save after a start in a 2,000-entry palace (step 10's
+//                                               review); run between two snapshots of the user's folders
 //   (node scripts/8d/measure-save.mjs saver ... is one of the two savers `timings` starts at once; not run by hand)
 //
 // The scan reads the user's Tachikoma transcripts under %LOCALAPPDATA%\tachikoma\sessions, read only, and keeps
@@ -19,7 +21,8 @@
 // Hubs are started and stopped exactly as step 8 proved (Q24, Q8, Q25): the functions from the helper LISTER down to
 // `finish`, and `filler`, are copied unchanged from scripts/8d/measure-hub.mjs (its lines 100-107, 178-306, 330-350,
 // 363-396, 398-591, 593-734, 757-798, 800-845 and 1093-1103), except for the names of the run folder and palaces, the
-// result line, and `startHub`'s audit-hook option, which no hub here uses. Each hub is the build folder's
+// result line, `startHub`'s audit-hook option, which no hub here uses, and, after step 10's review, the build's
+// environment for the helper's self-test child, which inherited the user's TEMP and TMP. Each hub is the build folder's
 // `env\Scripts\python.exe -I -m mempalace.mcp_server --transport http --port <p> --palace <palace> --backend
 // sqlite_exact`, with MEMPALACE_EMBEDDING_MODEL=minilm, MEMPALACE_MCP_WRITER_WAIT_SECONDS=0 and
 // MEMPALACE_MCP_IDLE_HOURS=0, step 1's `install` environment (TEMP and TMP inside the build folder) and step 5's
@@ -654,7 +657,9 @@ async function setUp(kind) {
   startLister(processEnv);
   // The helper's own check, before any hub starts: it must list itself, and list and stop a child of this script's.
   const before = nowUs();
-  const dummy = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+  // With the build's environment (TEMP and TMP inside the build folder), as every other child (step 10's review).
+  const dummy = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { env: processEnv, stdio: "ignore",
+    windowsHide: true });
   const dummyRec = recordDirect("self-test", dummy.pid, before, "node.exe (self-test)", dummy);
   dummyRec.child = dummy;
   await look();
@@ -713,13 +718,18 @@ const LONGEST_ENTRY = 100_000;
 // DEFAULT_CHUNK_SIZE; mempalace/mcp_server/tools_write.py:457-468; step 6 item 8).
 const PIECE = 800;
 // The join between the typed words and the model's text, and between two pieces of the model's text. Step 22 sets the
-// entry's exact layout; this script counts each join as these two characters, and reports how many turns lie within
-// NEAR characters below the limit, so a layout a few characters longer cannot change the count over the limit unseen.
+// entry's exact layout; this script counts each join as these two characters.
 const JOIN = "\n\n";
-const NEAR = 1_000;
-// The size bands, by MemPalace's pieces: 1 piece, up to 5, up to 25, up to 125 (a factor of 5 each; 125 pieces of 800
-// is exactly the 100,000-character limit), then over the limit, saved in parts.
-const BANDS = [800, 4_000, 20_000, LONGEST_ENTRY];
+// NEAR and BANDS only group this report; neither is a setting of Tachikoma's. NEAR: how many turns lie within this
+// many characters below the 100,000-character limit, so that a layout a little longer than JOIN's (step 22's) cannot
+// change the count over the limit unseen. Its value is the limit's 1 in 100 (100,000 / 100), more than a layout's
+// joins would add to any real turn (each join is two characters here; the most pieces of model text in a real turn
+// is printed by `scan`).
+const NEAR = LONGEST_ENTRY / 100;
+// BANDS: the size bands, by MemPalace's pieces of PIECE (800) characters: 1 piece, up to 5, up to 25, up to 125, then
+// over the limit, saved in parts. A factor of 5 each, chosen so that four steps from 1 piece end exactly at the cut
+// for parts: 125 pieces of 800 is the 100,000-character limit (5 x 5 x 5 = 125). The factor has no other source.
+const BANDS = [PIECE, 5 * PIECE, 25 * PIECE, 125 * PIECE];
 
 const codePoints = (s) => {
   let n = 0;
@@ -746,11 +756,14 @@ function transcripts() {
 }
 
 // Counts and lengths only. `sessionLengths`: each session's saved entries' lengths, in the session's order, the
-// sessions in no particular order and unnamed.
+// sessions in no particular order and unnamed. `marked`: the typed turns turns.mjs marks (the file ends mid-turn, or
+// a call has no result), by mark: how many, how many have model text, and their entries' lengths. They are in every
+// save figure, as Q4 saves a turn however it ended (the user's choice, step 10's review); `sessionMarked` counts them
+// in each session, beside `sessionLengths`.
 function scan() {
   const s = { files: 0, bytes: 0, sessions: 0, notSessions: 0, print: 0, projects: 0, typed: 0, background: 0,
     apart: {}, damagedOutside: 0, typedNoText: 0, saved: 0, lengths: [], codePoints: [], sessionLengths: [],
-    typedPerSession: [], overLimit: [], nearLimit: 0 };
+    sessionMarked: [], typedPerSession: [], overLimit: [], nearLimit: 0, marked: {}, mostTexts: 0 };
   const projects = new Set();
   for (const file of transcripts()) {
     s.files++;
@@ -775,6 +788,7 @@ function scan() {
     }
     let typed = r.apart.filter((a) => a.kind === "typed").length;
     const lengths = [];
+    let marked = 0;
     for (const t of r.turns) {
       if (t.kind === "background") {
         s.background++;
@@ -782,11 +796,19 @@ function scan() {
       }
       typed++;
       s.typed++;
+      const m = t.mark && (s.marked[t.mark] ??= { turns: 0, withText: 0, lengths: [] });
+      if (m) m.turns++;
       if (!t.texts.length) {
         s.typedNoText++;
         continue;
       }
       const entry = entryOf(t);
+      if (m) {
+        m.withText++;
+        m.lengths.push(entry.length);
+        marked++;
+      }
+      s.mostTexts = Math.max(s.mostTexts, t.texts.length);
       lengths.push(entry.length);
       s.codePoints.push(codePoints(entry));
       if (entry.length > LONGEST_ENTRY) {
@@ -795,13 +817,19 @@ function scan() {
     }
     s.typedPerSession.push(typed);
     s.sessionLengths.push(lengths);
+    s.sessionMarked.push(marked);
     s.saved += lengths.length;
   }
   s.projects = projects.size;
   s.lengths = s.sessionLengths.flat().sort((a, b) => a - b);
   s.codePoints.sort((a, b) => a - b);
   s.typedPerSession.sort((a, b) => a - b);
-  s.sessionLengths.sort((a, b) => a.length - b.length);
+  // The sessions by their count of saved turns, each keeping its count of marked turns.
+  const order = s.sessionLengths.map((_, i) => i).sort((a, b) => s.sessionLengths[a].length -
+    s.sessionLengths[b].length);
+  s.sessionLengths = order.map((i) => s.sessionLengths[i]);
+  s.sessionMarked = order.map((i) => s.sessionMarked[i]);
+  for (const m of Object.values(s.marked)) m.lengths.sort((a, b) => a - b);
   s.overLimit.sort((a, b) => a.length - b.length);
   let below = 0;
   s.bands = [...BANDS, Infinity].map((top) => {
@@ -820,6 +848,8 @@ function showScan(s) {
   say(`turns: typed ${s.typed} rebuilt, background ${s.background}; set apart ${JSON.stringify(s.apart)}; damaged ` +
     `lines before a first turn ${s.damagedOutside}`);
   say(`typed turns with no model text (not saved): ${s.typedNoText}; typed turns that make an entry: ${s.saved}`);
+  say(`marked typed turns (in every figure here): ${JSON.stringify(s.marked)}; the most pieces of model text in one ` +
+    `entry: ${s.mostTexts}`);
   const L = s.lengths;
   if (L.length) {
     say(`entry length (characters): shortest ${L[0]}, middle ${at(L, 0.5)}, 90th ${at(L, 0.9)}, 99th ${at(L, 0.99)}, ` +
@@ -832,6 +862,8 @@ function showScan(s) {
     `${s.nearLimit}`);
   say(`typed turns per session: ${JSON.stringify(s.typedPerSession)}`);
   say(`saved turns per session: ${JSON.stringify(s.sessionLengths.map((x) => x.length))}`);
+  say(`marked turns among them: ${JSON.stringify(s.sessionMarked)}`);
+  say(`the session with the most saved turns: ${JSON.stringify(s.sessionLengths.at(-1))}`);
 }
 
 // ---- the save, as step 22 will do it ----
@@ -1089,8 +1121,10 @@ async function palaceTimings(name, palace, fill, plan) {
 }
 
 // The first save after a hub starts, as a -p run's only turn meets it: a new hub on the palace, connected, one turn
-// of the longest real size saved, then the hub stopped; each run a start of its own.
-async function firstSaves(palace, length) {
+// of the longest real size saved, then the hub stopped; each run a start of its own. With `second`, one more turn of
+// the same size is saved on the same hub just after the first, so each run also gives a warm save in the same palace
+// at the same size (step 10's review: the first figures compared palaces of different sizes).
+async function firstSaves(palace, length, room, { second = false } = {}) {
   const runs = [];
   for (let i = 0; i < RUNS; i++) {
     const h = startHub(`first-${i}`, { palace, port: await freePort() });
@@ -1105,18 +1139,80 @@ async function firstSaves(palace, length) {
     const { client, call } = await mcpClient(h.port);
     const connectMs = since(t0);
     const t = withText(turnOf(`first-${i}`, 1, length));
-    const s = await saveTurn(call, path.join(runDir, "save-first.lock"), "measure-save-today", t);
-    const v = await verify(call, [t]);
+    const lockFile = path.join(runDir, "save-first.lock");
+    const s = await saveTurn(call, lockFile, room, t);
+    const t2 = second ? withText(turnOf(`first-${i}`, 2, length)) : null;
+    const s2 = t2 ? await saveTurn(call, lockFile, room, t2) : null;
+    const v = await verify(call, t2 ? [t, t2] : [t]);
     await client.close();
     const stop = await stopHub(h, `first save ${i}`);
     runs.push({ startMs: up.ms, connectMs, saveMs: s.ms, lookupMs: s.entries[0].lookupMs, addMs: s.entries[0].addMs,
-      whole: v.wrong === 0, stopMs: stop.goneMs });
-    say(`first save ${i + 1}: start ${up.ms} ms, connect ${connectMs} ms, save ${s.ms} ms`);
+      secondSaveMs: s2?.ms, secondAddMs: s2?.entries[0].addMs, whole: v.wrong === 0, stopMs: stop.goneMs });
+    say(`first save ${i + 1}: start ${up.ms} ms, connect ${connectMs} ms, save ${s.ms} ms` +
+      (s2 ? `, then a second save ${s2.ms} ms` : ""));
   }
   return { chars: length, runs: runs.length, start: stats(runs.map((r) => r.startMs)),
     connect: stats(runs.map((r) => r.connectMs)), save: stats(runs.map((r) => r.saveMs)),
     lookup: stats(runs.map((r) => r.lookupMs)), add: stats(runs.map((r) => r.addMs)),
-    connectAndSave: stats(runs.map((r) => r.connectMs + r.saveMs)), allWhole: runs.every((r) => r.whole) };
+    connectAndSave: stats(runs.map((r) => r.connectMs + r.saveMs)), allWhole: runs.every((r) => r.whole),
+    ...(second ? { secondSave: stats(runs.map((r) => r.secondSaveMs)), secondAdd: stats(runs.map((r) =>
+      r.secondAddMs)) } : {}) };
+}
+
+// The first save after a start in a palace of LARGE_ENTRIES entries (step 10's review): a new palace filled as the
+// "large" one of `timings` (the hub then stopped), then RUNS first saves after a start, each with a second save.
+async function firstLarge() {
+  const t = (out.firstLarge = {});
+  try {
+    const s = scan();
+    const L = s.lengths;
+    if (!L.length) throw new Error("no real typed turn to take sizes from");
+    out.scan = { ...s, lengths: L };
+    init();
+    await setUp("first-large");
+    const palace = palaceDir("large");
+    const room = "measure-save-large";
+    const h = startHub("large-fill", { palace, port: await freePort() });
+    const up = await waitHealthy(h);
+    if (!up.ok) throw new Error(`the filling hub did not answer: ${tail(h.stderr).join(" | ")}`);
+    const { client, call } = await mcpClient(h.port);
+    const adds = [];
+    for (let i = 0; i < LARGE_ENTRIES; i++) {
+      const t0 = performance.now();
+      const r = await call("mempalace_add_drawer", { wing: WING, room, source_file: `measure-save large fill ${i}`,
+        content: filler(i + 1, LARGE_CHARS) });
+      adds.push(performance.now() - t0);
+      if (r.json?.success !== true || r.json?.reason) throw new Error(`fill ${i}: ${JSON.stringify(r.json ?? r)}`);
+    }
+    t.fill = { entries: LARGE_ENTRIES, chars: LARGE_CHARS, add: stats(adds),
+      entriesInPalace: (await call("mempalace_list_drawers", { wing: WING, room, limit: 1 })).json?.total,
+      pieces: (await call("mempalace_status", {})).json?.total_drawers };
+    await client.close();
+    t.fillStop = (await stopHub(h, "large: filled")).goneMs;
+    say(`large: filled, ${JSON.stringify(t.fill)}`);
+    t.first = await firstSaves(palace, L.at(-1), room, { second: true });
+    for (const [k, v] of Object.entries(t.first)) if (v?.n) say(line(`large, first save after a start, ${k}`, v));
+    const h2 = startHub("large-check", { palace, port: await freePort() });
+    if (!(await waitHealthy(h2)).ok) throw new Error("the checking hub did not answer");
+    const c2 = await mcpClient(h2.port);
+    t.after = { entries: (await c2.call("mempalace_list_drawers", { wing: WING, room, limit: 1 })).json?.total,
+      backend: (await c2.call("mempalace_status", {})).json?.backend, statusz: await statusz(h2.port) };
+    await c2.client.close();
+    t.checkStop = (await stopHub(h2, "large: checked")).goneMs;
+    t.model = palaceModel(palace);
+    say(`large: after, ${JSON.stringify(t.after)}, model ${t.model}`);
+    if (t.after.backend !== "sqlite_exact" || t.after.statusz.backend !== "sqlite_exact" || t.model !== "minilm") {
+      fail(`large: backend ${t.after.backend} / ${t.after.statusz.backend}, model ${t.model}`);
+    }
+  } catch (e) {
+    fail(`first-large: ${e.stack ?? e.message}`);
+  } finally {
+    if (lister) await finish();
+    else {
+      say(`measure-save: FAILED (${out.failures.length})`);
+      process.exitCode = 1;
+    }
+  }
 }
 
 async function timings() {
@@ -1136,11 +1232,11 @@ async function timings() {
     });
     say(`plan: ${JSON.stringify(plan)}`);
     // The palace as the user's transcripts would make it today: one filler entry per real saved typed turn, at its
-    // length; then the first saves after a start on it, then the timings.
+    // length; then the timings, then the first saves after a start on it (so on the palace the timings had grown).
     const today = palaceDir("today");
     const fillToday = s.sessionLengths.flat().map((length, i) => ({ seed: LARGE_ENTRIES + 100_000 + i, length }));
     t.today = await palaceTimings("today", today, fillToday, plan);
-    t.first = await firstSaves(today, plan.sizes.longest);
+    t.first = await firstSaves(today, plan.sizes.longest, "measure-save-today");
     for (const [k, v] of Object.entries(t.first)) if (v?.n) say(line(`first save after a start, ${k}`, v));
     const large = palaceDir("large");
     const fillLarge = Array.from({ length: LARGE_ENTRIES }, (_, i) => ({ seed: i + 1, length: LARGE_CHARS }));
@@ -1159,8 +1255,9 @@ async function timings() {
 const command = process.argv[2];
 if (command === "scan") showScan(scan());
 else if (command === "timings") await timings();
+else if (command === "first-large") await firstLarge();
 else if (command === "saver") await saver(process.argv[3], process.argv[4]);
 else {
-  console.error("usage: node scripts/8d/measure-save.mjs scan | timings");
+  console.error("usage: node scripts/8d/measure-save.mjs scan | timings | first-large");
   process.exitCode = 2;
 }

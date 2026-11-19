@@ -13,9 +13,12 @@
 // them); and all of the model's text in the turn, in order, tool calls and their outputs left out. `n` is a typed
 // turn's place among the session's typed prompts, counted from 1, as `Session.prompts` counts them (transcript.ts:248).
 //
-// A turn that cannot be rebuilt is set apart with its reason, in this order: a damaged line inside it; the file ends in
-// the middle of it (the file's last turn, unless its last message is a reply with no calls); a call left without a
-// result (a crash: the message after the call's reply is not a user message holding a result for each call).
+// A turn with a damaged line inside it cannot be rebuilt and is set apart with that reason. A turn is marked, and kept
+// with its words and text, when the file ends in the middle of it (the file's last turn, unless its last message is a
+// reply with no calls), or else when a call in it was left without a result (a crash: the message after the call's
+// reply is not a user message holding a result for each call). Q4 saves a turn however it ended, so the save figures
+// count marked turns; the plan's "left out of every figure" gave way to Q4 there (the user's choice, step 10's review,
+// 2026-11-19). A measurement that needs whole turns, such as step 12's, can leave the marked ones out by their mark.
 
 // The session's own heading for a Stop hook's feedback (src/core/session.ts:68) and a picture's marker
 // (src/core/types.ts:42); tests/memory/turns.test.ts checks both against the code.
@@ -53,8 +56,8 @@ const feedback = (m) => m.parts[0]?.type === "text" && m.parts[0].from === "hook
 const starts = (m) => m.role === "user" && !m.parts.some((p) => p.type === "tool_result") && !feedback(m);
 const calls = (m) => (m.role === "assistant" ? m.parts.filter((p) => p.type === "tool_call") : []);
 
-// The turns of a transcript's text: `turns`, those rebuilt; `apart`, those set apart, with their reason; and
-// `damagedOutside`, damaged lines before the first turn.
+// The turns of a transcript's text: `turns`, those rebuilt, each with its `mark` (null, or why it may not be whole);
+// `apart`, those set apart, with their reason; and `damagedOutside`, damaged lines before the first turn.
 export function turnsOf(text) {
   const all = rows(text);
   const spans = [];
@@ -81,18 +84,17 @@ export function turnsOf(text) {
       return next?.role !== "user" || !ids.every((id) => next.parts.some((p) => p.type === "tool_result" &&
         p.callId === id));
     });
-    let reason = null;
-    if (s.damaged) reason = "damaged line";
-    else if (i === spans.length - 1 && !(last.role === "assistant" && !calls(last).length)) {
-      reason = "file ends mid-turn";
-    } else if (unanswered) reason = "call without a result";
-    if (reason) {
-      apart.push({ ...head, reason });
+    if (s.damaged) {
+      apart.push({ ...head, reason: "damaged line" });
       continue;
     }
+    let mark = null;
+    if (i === spans.length - 1 && !(last.role === "assistant" && !calls(last).length)) mark = "file ends mid-turn";
+    else if (unanswered) mark = "call without a result";
     const texts = messages.flatMap((m) =>
       m.role === "assistant" ? m.parts.flatMap((p) => (p.type === "text" && p.text ? [p.text] : [])) : []);
-    turns.push({ ...head, typed, texts, calls: messages.reduce((k, m) => k + calls(m).length, 0), lines: s.lines });
+    turns.push({ ...head, mark, typed, texts, calls: messages.reduce((k, m) => k + calls(m).length, 0),
+      lines: s.lines });
   }
   return { turns, apart, damagedOutside };
 }
