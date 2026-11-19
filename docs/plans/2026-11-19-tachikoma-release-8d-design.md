@@ -2109,3 +2109,248 @@ re-run.
    non-zero exit, a spawn error or any error output fails the run. This change is not run. In the run, the checks per
    process showed all 20 shells exited and all 20 Node programs gone, looked up again by id and start time.
 7. The order of commits: recorded above.
+
+### M2 The exit save's time limit; and the rule for cutting old transcripts into turns (step 10, 2026-11-19)
+
+In short: the user's real turns are short. Of the 83 typed turns that would be saved, the longest entry is 3,828
+characters, and 86.7% fit in one of MemPalace's 800-character pieces; none is over 100,000 characters, so none would
+be saved in parts. Saving one such turn the way step 22 will (lock, look-up, add, let go) takes about 0.25 to 0.3 s
+on a warm hub in a palace the size the user's turns make today, about 0.5 s in a palace of 2,000 entries, and about
+0.65 s (0.7 s at the slowest) when it is the first save after the hub starts, as in a `-p` run. Almost all of it is
+MemPalace's add; the lock and the look-up take a few milliseconds. The slowest real backlog (all 11 turns of the
+user's longest session) takes about 5 s in the large palace, and two savers working through it at once about 5.5 s.
+A made-up turn in 3 parts of 100,000 characters takes about 6.3 s. **The exit save's time limit waits on the user
+(at the end of this part). The pair of snapshots around the run failed and waits on the user too ("The user's
+folders").**
+
+Scripts: `scripts/8d/turns.mjs` (the rule for cutting a transcript into turns, for steps 10, 12 and 14) with its test
+`tests/memory/turns.test.ts`, and `scripts/8d/measure-save.mjs`, two commands: `scan` (the transcripts only, starts
+nothing) and `timings` (the hubs). The timings ran once, `node scripts/8d/measure-save.mjs timings`, from 01:33:43 to
+01:54:54 UTC, between a pair of snapshots: exit 0, "measure-save: passed", no failures. Results:
+`tachi-8d-build\install\measure-save-timings-2026-11-19T01-33-43-682Z\results.json`, with every hub's log beside it.
+Nothing was fetched; the dead-end proxy got 0 connections. 80 processes were recorded; at the end none was still
+running, none was unsettled and none of another program's was found under a reused id. All 12 hubs were stopped by
+the serving process's id after its start time was read again (13 stops with the helper's self-test child); each hub
+was wholly gone within 20.3 to 22.8 ms. The two savers of each pair were Node processes of the script's own,
+recorded and seen to exit.
+
+This PC, as in M3 and M4: Intel Core i9-12900K (16 cores, 24 threads), 68.4 GB of memory, solid-state disks (the
+build folder is on C:), Windows 11 Pro 10.0.26200, Node v24.22.1, Defender's real-time scanning off (read again in
+this run). Other programs of the user's were running as usual; their load was not measured.
+
+#### The rule for cutting old transcripts into turns
+
+Transcripts saved before this release have no turn boundary (Q22's line is new), so the measurements cut them into
+turns themselves, by one rule in `scripts/8d/turns.mjs`: the code's own rule for where a turn starts, `lastTurn`
+(`src/tui/describe.ts:288-297`). A turn starts at a user message that holds no tool result and is not a Stop hook's
+feedback (`src/core/session.ts:68`, `:691-695`), and runs to the next such start; a shortening's line is not a message
+and starts nothing, and its summary is in no turn. A turn whose starting message holds typed words is typed; one whose
+starting message holds none is a background turn, a turn of its own (`src/clilib.ts:321`). A typed turn's entry is
+built as the user answered Q4 and Q5: the typed words, each picture as its marker and none of the text hooks,
+subagents, servers or notes added (as `src/core/session.ts:513-515` takes them), then all of the model's text in the
+turn, in order; tool calls and outputs left out. A turn with typed words and no model text makes no entry (Q4). A turn
+that cannot be rebuilt is set apart, by the first reason that holds: a damaged line inside it; the file ends in the
+middle of it (the file's last turn, unless its last message is a reply with no calls); a call left without a result.
+
+`tests/memory/turns.test.ts`, on made-up transcripts only: a typed turn with tool rounds is one turn; a typed turn and
+a background turn after it are two, with the background turn's calls and text not in the first; a Stop hook's
+feedback does not start a turn; a shortening does not split a turn, and its summary is not in it; the typed words
+leave out hook, server, task and note text and give each picture its marker; a damaged line, a call with no result
+and a file ending mid-turn are each set apart with their reason; on four made-up histories the script's last turn
+holds the same number of tool calls as `lastTurn`'s header gives (so a wrong start would show); the heading and the
+marker equal the code's (`FEEDBACK`, `marker`). Also, beyond the plan's list of tests, the cut of a long turn into
+parts (step 22's rule): a text at the limit is one part, a longer one is cut with every part but the last as long as
+allowed, and a cut never falls between the two halves of a character Node holds as a pair. Written first and seen to
+fail (the script did not exist), then 10 of 10 passed; with the feedback rule taken out, 2 failed as they should.
+
+Where step 22 differs, the counts here may differ a little: the entry's exact layout is step 22's; this script joins
+the typed words and each piece of the model's text with two characters ("\n\n"). No turn lies within 1,000 characters
+below the 100,000 limit, so a layout a few characters longer cannot change the count of turns over it.
+
+#### The user's transcripts, read only
+
+Read on this computer, read only, as lengths and counts alone; no text, session id or file name is in any output, in
+the results file or here. Subagents' own files were not read (their messages are never saved).
+
+| What | Count |
+|---|---|
+| Transcripts (main sessions) read | 53 files, 1,621,473 bytes, in 10 project folders |
+| Sessions with a start line | 53 (15 of them `-p` runs); none without |
+| Sessions with no typed turn | 15 |
+| Typed turns rebuilt | 86 |
+| Background turns rebuilt | 1 |
+| Typed turns set apart: the file ends mid-turn | 2 |
+| Typed turns set apart: a call without a result | 1 |
+| Typed turns set apart: a damaged line | 0 |
+| Background turns set apart | 0 |
+| Damaged lines before a session's first turn | 0 |
+| Typed turns with no model text (make no entry) | 3 |
+| Typed turns that make an entry | 83 |
+
+Entry length, in characters as Node counts them: shortest 34, middle 251, 90th of 100 870, longest 3,828; all 83
+together 31,974. In MemPalace's pieces of 800 code points: 72 entries of 1 piece, 9 of 2, 1 of 3 and 1 of 5. Saved
+turns per session: 17 sessions none; the most in one session 11.
+
+| Size band (characters) | MemPalace pieces | Typed turns | Share |
+|---|---|---|---|
+| 1 to 800 | 1 | 72 | 86.7% |
+| 801 to 4,000 | 2 to 5 | 11 | 13.3% |
+| 4,001 to 20,000 | 6 to 25 | 0 | 0% |
+| 20,001 to 100,000 | 26 to 125 | 0 | 0% |
+| Over 100,000 (saved in parts) | | 0 | 0% |
+
+The bands go by pieces, a factor of 5 each, since MemPalace's work on an add grows with its pieces; 125 pieces of 800
+is exactly the 100,000-character limit. **Long turns (Q26): 0 real typed turns are over 100,000 characters, so none
+would be saved in parts; the most parts a real turn makes is 1.** So the turns in parts were timed at 2 and at 3
+parts, as the plan says when no real turn has more.
+
+#### How the save was timed
+
+Every hub was started and stopped as step 8 proved (Q24, Q8, Q25): the build folder's `env\Scripts\python.exe -I -m
+mempalace.mcp_server --transport http --port <p> --palace <new palace> --backend sqlite_exact`, with
+`MEMPALACE_EMBEDDING_MODEL=minilm`, `MEMPALACE_MCP_WRITER_WAIT_SECONDS=0` and `MEMPALACE_MCP_IDLE_HOURS=0`, in step 1's
+`install` environment (TEMP and TMP inside the build folder) with step 5's offline settings and a dead-end proxy. The
+script's code for starting, finding and stopping hubs and for keeping track of processes is copied unchanged from
+`scripts/8d/measure-hub.mjs` (the lines are listed in the script's header), but for the run folder's and palaces'
+names, the result line, and the audit-hook option, which no hub here used. Every palace read back `sqlite_exact` (from
+`mempalace_status` and `/statusz`) and the model `minilm` (the palace file's `meta` table).
+
+The text saved was made-up filler (step 8's word filler) at the real turns' lengths, never the user's text, each with
+a seed of its own so no two were the same. Each turn was saved as step 22 will save it: take the save lock (step 2's
+kind, an exclusive `node:sqlite` transaction on a lock file in the run folder, tried again after the user's 500 ms
+while held, M3 decision 5); for each of the turn's entries, look up its exact label (`mempalace_delete_by_source` with
+`dry_run: true`, which gives the pieces there) and add it (`mempalace_add_drawer`, the label as `source_file`) when it
+is not there; let go. Not timed here: writing the transcript's saved record (an append to the transcript), which step
+22 does after the last entry and before letting go. After the timings, not timed, every entry saved was looked up
+again: all 600, and the 10 first saves after a start, were whole (the pieces there equal to the pieces their text
+makes), and every add's reported pieces matched.
+
+The sizes: one turn at the real middle (251 characters), the real 90th of 100 (870) and the real longest (3,828). The
+backlog: all 11 saved turns of the real session with the most, at their real lengths, one after another (4,129
+characters), as a window would face it if the hub had been down all session. Two savers: two Node processes of the
+script's, as two windows, each with its own connection and the same lock, told to start at once on the same backlog.
+Turns in parts: 200,000 and 300,000 characters, 2 and 3 full parts of 100,000, the slowest turns of those part
+counts. Ten runs of each, as step 8's starts: ten give a middle and show the spread.
+
+Two palaces, each new:
+- **"Today"**: one filler entry for each of the 83 real entries, at its length (98 pieces), the palace the user's
+  transcripts would make today. The timings ran in this order, and the palace grew with them: one turn, backlog, two
+  savers, then parts (383 entries and 6,648 pieces by the end).
+- **"Large"**: 2,000 entries of 4,000 characters (10,000 pieces), the shape of step 8's largest palace, where step 8's
+  adds were slower than in its 200-entry palace (middle 189.6 ms against 105.6 ms). Same order (2,300 entries and
+  16,550 pieces by the end).
+
+The first save after a start: ten times, a new hub on the "today" palace (after its timings, so 383 to 392 entries),
+connected, one turn of 3,828 characters saved, the hub stopped.
+
+#### The figures
+
+| Timing (ms) | Fastest | Middle | Slowest | Runs |
+|---|---|---|---|---|
+| "Today": one turn of 251 characters | 230.7 | 237.7 | 244.2 | 10 |
+| "Today": one turn of 870 characters | 248.9 | 253.3 | 256.7 | 10 |
+| "Today": one turn of 3,828 characters | 285.4 | 294.8 | 308.8 | 10 |
+| "Today": a backlog of 11 turns | 2,654.0 | 2,705.1 | 2,733.3 | 10 |
+| "Today": two savers on that backlog, until both are done | 2,868.4 | 3,346.9 | 3,390.3 | 10 |
+| "Today": a turn in 2 parts | 3,671.8 | 3,731.2 | 4,200.3 | 10 |
+| "Today": a turn in 3 parts | 5,649.8 | 5,711.6 | 5,862.8 | 10 |
+| First save after a start: connect and save 3,828 characters | 623.9 | 649.0 | **704.5** | 10 |
+| Large: one turn of 251 characters | 443.5 | 456.9 | 460.4 | 10 |
+| Large: one turn of 870 characters | 455.1 | 468.1 | 477.2 | 10 |
+| Large: one turn of 3,828 characters | 490.7 | 503.4 | 511.8 | 10 |
+| Large: a backlog of 11 turns | 5,005.4 | 5,066.4 | 5,131.9 | 10 |
+| Large: two savers on that backlog, until both are done | 5,509.6 | 5,534.0 | **5,589.7** | 10 |
+| Large: a turn in 2 parts | 4,100.0 | 4,125.3 | 4,642.6 | 10 |
+| Large: a turn in 3 parts | 6,235.1 | 6,300.7 | **6,367.2** | 10 |
+
+What one save is made of (ms, fastest / middle / slowest):
+- The lock, held by no one else: fastest 0.6, slowest 2.2, the six series' middles 1.1 to 1.3 (one-turn saves, 10 a
+  series, both palaces; the results file keeps each series' figures, not each save's, so no middle over all 60).
+- The look-up by label: one-turn saves fastest 6.1, slowest 15.5, middles 7.2 to 10.0 (six series of 10); a part
+  fastest 5.9, slowest 14.5, middles 7.7 to 9.1 (four series, 100 parts).
+- The add: "today" 220.4 to 293.6 by size; large 432.8 to 496.7; a 100,000-character part 1,800.4 / 1,851.6 / 2,318.4
+  ("today", 20 of 2-part turns) up to 2,044.8 / 2,093.1 / 2,129.4 (large, 30 of 3-part turns).
+- The first save after a start: the hub's start to its first health answer 1,093.6 / 1,153.4 / 1,321.4 (as M3);
+  connecting 3.1 / 3.6 / 6.7; the look-up 13.0 / 16.1 / 17.9; the add 603.9 / 625.0 / 683.0.
+- Filling (plain adds, no lock or look-up): "today" 216.6 / 226.0 / 595.4 ms per add (83); large 311.8 / 414.9 / 678.6
+  (2,000).
+
+Two savers: in every run of both palaces one saver made all 11 adds and the other found all 11 entries there (11 adds
+and 11 found in each run); no entry was added twice. The saver that got the lock first kept getting it, as it takes
+it again at once after letting go, so it never waited (11 tries for 11 turns); the other waited 5 to 10 times (16 to 21
+tries) and then went through the 11 look-ups. So "both done" is about the first saver's time, plus up to one 500 ms
+wait, plus 11 look-ups.
+
+What the figures mean:
+- Nearly all of a save is MemPalace's add, which grows with the entry's pieces and with the palace: about 0.23 s for a
+  short turn in a small palace, 0.45 s in a palace of 10,000 pieces, about 1.9 to 2.1 s for a full 100,000-character
+  part. The lock and the look-up add about 10 ms.
+- The first save after a hub starts took about twice a warm one (an add of 625.0 ms against 281.5 ms, the middles, in
+  the same palace when it was smaller), most likely MemPalace loading the embedding model on its first add. That is
+  an inference: the load was not timed on its own. The "large" palace's first save after a start was not timed; at
+  10,000 pieces a warm add is about 210 ms slower than in the "today" palace before its parts, so a cold one there
+  may be slower than the 704.5 ms here.
+- A `-p` run's turn is usually the first save after its hub started, if this window started it, so its exit save is
+  the first-save figure. A hub that is still starting when the window exits (start limit 40 s, M3) adds the rest of its
+  start; not timed here.
+- A backlog is saved one turn after another, so its time is the sum of its turns.
+- Not measured: other systems; a slower PC; real-time scanning (off here); palaces larger than 16,550 pieces; turns of
+  sizes between 3,828 characters and a full part (only the real sizes and full parts were timed); a saver whose lock
+  is held by a crashed window (the operating system frees it, step 2).
+
+#### The user's folders
+
+One pair of snapshots, taken in the same command just before and just after the run: `step10-before` (01:33:07 UTC)
+and `step10-after` (taken after 01:54:54, finished 01:55:22). **It failed (exit 1)**, on two groups of changes; neither
+is in a place the build writes, and no process of the build touched them (every child had the build's home, TEMP and
+TMP; the script itself reads the transcripts and writes only in the build folder):
+- **The user's MemPalace, 01:38:31.954 to 01:38:32.270 UTC**: `wal/write_log.jsonl` (+261 bytes, 01:38:31.954),
+  `palace/sqlite_exact.sqlite3-wal` (same size, 01:38:32.126), `hook_state/last_checkpoint` (01:38:32.172), one
+  session's `hook_state/<session>_last_save` (01:38:32.250) and `locks/mine_palace_<key>.lock` (01:38:32.270). Set
+  apart as usual: the daemon folder, `queue.sqlite3` (01:38:53.697) and `hook.log` (01:45:18.254). These are the
+  names of the user's MemPalace plugin's save, but the shape differs from the user's rule for a traced pair: the palace
+  file changed in the same 0.3 s as the plugin's files, not about 30 s later. Not traced: the main session's reply
+  end times are needed to trace it, and they were not to hand.
+- **Claude Code updating itself, 01:35:58 to 01:36:02 UTC**: `~/.local/bin/claude.exe` rewritten (379,536,544 to
+  379,651,744 bytes), `~/.local/bin/claude.exe.old.<number>` added, and the folder `~/.cache/claude/staging` changed.
+  The user's rule covers only the MemPalace plugin's save, so this change goes to the user.
+
+The same command listed the top level of the user's Temp folder before and after (step 8's `templist2.cjs`: names,
+kinds and last-written times only, no file opened): no `uv-*.lock`; added, by other programs, `pr4.md` (written
+01:37:53 UTC) and a GUID-named `.tmp` (01:54:36), neither opened; nothing removed or rewritten. No tsx ran.
+
+#### The decision for the user: the exit save's time limit
+
+What the limit does: at exit, the saver gets one last chance to save the turns not yet saved, for up to this long.
+When the queue is empty or empties sooner, the window does not wait. What is left stays marked unsaved and is saved
+when that session is next resumed (step 22); a session never resumed, as most `-p` runs are, keeps it unsaved. So:
+- **Too short**: the last turns of a session that is not resumed are not saved. A turn in parts that the limit cuts
+  short stays unsaved with its first parts in, and is finished at the next resume.
+- **Too long**: a window whose hub has stopped answering is held at exit for up to the limit.
+
+Each case at the user's margin of 5 times (M3, M4) and, for comparison, 3 and 10 times, rounded up to a whole second.
+**The margin for slower machines is not measured** (no slower PC was run).
+
+| What the limit covers (this PC's slowest) | 3 times | 5 times | 10 times |
+|---|---|---|---|
+| One real turn, warm, large palace (511.8 ms) | 2 s | 3 s | 6 s |
+| One real turn, the first save after a start (704.5 ms) | 3 s | 4 s | 8 s |
+| A turn in 2 parts, large palace (4,642.6 ms) | 14 s | 24 s | 47 s |
+| The real largest backlog, large palace (5,131.9 ms) | 16 s | 26 s | 52 s |
+| That backlog, two savers at once (5,589.7 ms) | 17 s | 28 s | 56 s |
+| A turn in 3 parts, large palace (6,367.2 ms) | 20 s | 32 s | 64 s |
+
+Options:
+- A. **4 s**: the last turn at any real size, even when it is the first save after a start (5 x 704.5 = 3.5 s), so a
+  `-p` run's turn is saved. A backlog or a turn in parts may be left for the next resume.
+- B. **28 s**: also the user's largest real backlog in a palace of 10,000 pieces, with a second window saving it at
+  the same time (5 x 5,589.7 = 27.9 s). A turn in 3 parts may be left for the next resume.
+- C. **32 s**: also a turn in 3 full parts (5 x 6,367.2 = 31.8 s), a size no real turn here has.
+- Or another figure from the table.
+
+Recommended (not chosen): A, 4 s. Every real turn here is under 4,000 characters, the turn most at risk is a `-p`
+run's only turn, which A covers with the user's margin, and anything larger is not lost, only left for the next
+resume; a hung hub then holds an exit for 4 s rather than half a minute. Its weak point: the first save after a start
+was timed in the "today" palace only (see "What the figures mean").
+
+**The user's OK on these figures, the exit save's time limit, and the failed pair of snapshots: not yet given.**
