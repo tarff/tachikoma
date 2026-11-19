@@ -91,9 +91,26 @@ describe("the room name", () => {
     const dir = folder(base, "Mixed Case");
     const room = roomName(dir);
     expect(roomName(dir)).toBe(room);
-    expect(roomName(path.join(base, "elsewhere", "..", "Mixed Case"))).toBe(room);
     expect(room.startsWith("Mixed Case-")).toBe(true);
     if (process.platform === "win32") expect(roomName(dir.toUpperCase())).toBe(room);
+  });
+
+  // projectFile gives one file for each of these forms too (measured at step 16's review), and the room matches it.
+  it("gives the same room for the folder written with a trailing separator", async () => {
+    const dir = folder(await folders(), "Mixed Case");
+    const room = roomName(dir);
+    for (const form of [`${dir}${path.sep}`, `${dir}/`]) {
+      expect(roomName(form)).toBe(room);
+      expect(projectFile("x", form, "data")).toBe(projectFile("x", dir, "data"));
+    }
+  });
+
+  it.runIf(process.platform === "win32")("gives the same room for the folder with a lowercase drive", async () => {
+    const dir = folder(await folders(), "Mixed Case");
+    const lower = dir[0]!.toLowerCase() + dir.slice(1);
+    expect(lower).not.toBe(dir);
+    expect(roomName(lower)).toBe(roomName(dir));
+    expect(projectFile("x", lower, "data")).toBe(projectFile("x", dir, "data"));
   });
 
   it("cuts a name of 200 characters to a room of exactly 128", async () => {

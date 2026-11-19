@@ -24,6 +24,8 @@ const user: NodeJS.ProcessEnv = {
   UV_CACHE_DIR: "C:\\Users\\someone\\AppData\\Local\\uv\\cache",
   uv_index_url: "https://example.invalid/simple",
   UV_PYTHON_PREFERENCE: "system",
+  UV_OFFLINE: "1",
+  UV_INDEX_STRATEGY: "unsafe-best-match",
   VIRTUAL_ENV: "C:\\Users\\someone\\.venv",
   PYTHONPATH: "C:\\Users\\someone\\lib",
   PythonHome: "C:\\Python",
@@ -35,6 +37,8 @@ const user: NodeJS.ProcessEnv = {
   TMPDIR: "/tmp",
   HF_HOME: "C:\\Users\\someone\\.cache\\huggingface",
   HF_HUB_OFFLINE: "0",
+  HF_HUB_CACHE: "C:\\Users\\someone\\.cache\\huggingface\\hub",
+  huggingface_hub_cache: "C:\\Users\\someone\\.cache\\huggingface\\hub",
   TRANSFORMERS_OFFLINE: "0",
   ANONYMIZED_TELEMETRY: "true",
   CHROMA_OTEL_COLLECTION_ENDPOINT: "https://example.invalid/otel",
@@ -90,12 +94,59 @@ describe("the memory environments", () => {
         expect(env.MEMPALACE_MCP_ALLOW_PEER_WRITER).toBeUndefined();
         expect(env.MEMPALACE_PALACE_PATH).toBeUndefined();
         expect(env.mempalace_embedding_model).toBeUndefined();
-        expect(env.uv_index_url).toBeUndefined();
+        expect(env.UV_OFFLINE).toBeUndefined();
+        expect(env.UV_INDEX_STRATEGY).toBeUndefined();
         expect(env.VIRTUAL_ENV).toBeUndefined();
         expect(names(env).filter((k) => k.startsWith("PYTHON"))).toEqual([]);
       }
       expect(names(uv).filter((k) => k.startsWith("MEMPALACE_"))).toEqual([]);
       expect(names(hub).filter((k) => k.startsWith("UV_"))).toEqual([]);
+    }
+  });
+
+  // The user's choice at step 16's review, "Keep download ones": uv's settings that only decide where and how it
+  // downloads (uv's own list, https://docs.astral.sh/uv/reference/environment/, read 2026-11-20).
+  const DOWNLOADS: NodeJS.ProcessEnv = {
+    UV_NATIVE_TLS: "1",
+    UV_SYSTEM_CERTS: "1",
+    UV_PYTHON_INSTALL_MIRROR: "https://example.invalid/python",
+    UV_ASTRAL_MIRROR_URL: "https://example.invalid/astral",
+    UV_INDEX: "company=https://example.invalid/index",
+    UV_DEFAULT_INDEX: "https://example.invalid/default",
+    UV_INDEX_URL: "https://example.invalid/simple",
+    UV_EXTRA_INDEX_URL: "https://example.invalid/extra",
+    UV_INDEX_COMPANY_USERNAME: "someone",
+    UV_INDEX_COMPANY_PASSWORD: "secret",
+    UV_KEYRING_PROVIDER: "subprocess",
+  };
+
+  it("pass the user's download settings through to uv unchanged, and none of them to the hub", () => {
+    for (const platform of PLATFORMS) {
+      const uv = uvEnv(paths(platform), { ...user, ...DOWNLOADS }, platform);
+      for (const [name, value] of Object.entries(DOWNLOADS)) expect(uv[name], name).toBe(value);
+      const hub = hubEnv(paths(platform), { ...user, ...DOWNLOADS }, platform);
+      expect(names(hub).filter((k) => k.startsWith("UV_"))).toEqual([]);
+    }
+  });
+
+  it("still drop every other uv setting of the user's, and override the user's UV_CACHE_DIR", () => {
+    for (const platform of PLATFORMS) {
+      const p = paths(platform);
+      const uv = uvEnv(p, { ...user, ...DOWNLOADS, UV_INDEX_STRATEGY: "unsafe-best-match" }, platform);
+      expect(names(uv)).not.toContain("UV_INDEX_STRATEGY");
+      expect(names(uv)).not.toContain("UV_OFFLINE");
+      expect(uv.UV_CACHE_DIR).toBe(p.uvCache);
+      expect(Object.values(uv)).not.toContain(user.UV_CACHE_DIR);
+    }
+  });
+
+  // Names are compared without regard to case, as for every other name here: a kept name in another spelling is
+  // kept, under its own spelling.
+  it("keep a download setting written in lowercase, as it is", () => {
+    for (const platform of PLATFORMS) {
+      const uv = uvEnv(paths(platform), user, platform);
+      expect(uv.uv_index_url).toBe(user.uv_index_url);
+      expect(names(uv).filter((k) => k === "UV_INDEX_URL")).toHaveLength(1);
     }
   });
 
@@ -124,8 +175,10 @@ describe("the memory environments", () => {
       expect(hub.HF_HOME).toBe(path.join(p.home, ".cache", "huggingface"));
       expect(hub.HF_HUB_OFFLINE).toBe("1");
       expect(names(hub).filter((k) => k === "HF_HOME" || k === "HF_HUB_OFFLINE")).toHaveLength(2);
+      // Hugging Face's library reads HF_HUB_CACHE, then HUGGINGFACE_HUB_CACHE, before HF_HOME
+      // (huggingface_hub/constants.py:173-181).
       for (const gone of ["TRANSFORMERS_OFFLINE", "ANONYMIZED_TELEMETRY", "CHROMA_OTEL_COLLECTION_ENDPOINT",
-        "CHROMA_OTEL_GRANULARITY"]) {
+        "CHROMA_OTEL_GRANULARITY", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"]) {
         expect(names(hub)).not.toContain(gone);
       }
     }
