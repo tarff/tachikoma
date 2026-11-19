@@ -598,7 +598,7 @@ In short: uv installed MemPalace 3.12.0 and the 84 other packages Windows needs 
 folder, with a Python 3.13 of its own that it downloaded there. The installed `mempalace --version` prints
 `MemPalace 3.12.0`. A copy of the lock with only the MemPalace wheel's hash altered was refused: uv stopped on a hash
 mismatch for that wheel and installed nothing. The snapshot of the user's folders showed no change apart from one
-set-apart item: the user's own MemPalace's daemon folder `daemon/<palace key>8ab5b11d`, whose time moved (from
+set-apart item: the user's own MemPalace's daemon folder `daemon/<palace key>`, whose time moved (from
 about 07:50:49 to 07:55:49 local) during the step. The build never ran the user's programs; the user has another
 Claude Code terminal running their MemPalace plugin.
 
@@ -833,7 +833,7 @@ function (`mempalace/backends/embedding_wrapper.py:30-32`, `:83-87`; `mempalace/
 
 The snapshots of the user's folders:
 - Around the first run (`step5-before` to `step5-after`): "no change", apart from the set-apart line of the user's own
-  MemPalace daemon folder `daemon/<palace key>8ab5b11d`.
+  MemPalace daemon folder `daemon/<palace key>`.
 - Around the run after the fixes (`step5-fix-before` to `step5-fix-after`): the same.
 - Between the two (`step5-after` to `step5-fix-before`, about 11 minutes): not clean. The user's own `~/.mempalace`
   changed in these places outside the set-apart ones:
@@ -849,8 +849,8 @@ The snapshots of the user's folders:
 
   These set-apart items changed too (they do not fail):
   - `hook_state/hook.log` at 21:28:37 UTC;
-  - `daemon/<palace key>8ab5b11d/queue.sqlite3` at 21:29:10 UTC;
-  - the folder `daemon/<palace key>8ab5b11d` itself, at 21:30:58 UTC. Its time moves in every pair of listings in
+  - `daemon/<palace key>/queue.sqlite3` at 21:29:10 UTC;
+  - the folder `daemon/<palace key>` itself, at 21:30:58 UTC. Its time moves in every pair of listings in
     this build.
 
   The times come from `snapshots\step5-after.json` and `step5-fix-before.json`, converted with Node.
@@ -1145,7 +1145,7 @@ for that child (`install\python\...\Lib\site.py:636-639`). Known limits as in st
 
 **The user's folders** (step 5's rule: only the listings just before and just after each run are compared):
 - Around runs 1, 2, 3 and 5 (`step6-before` to `step6-after`, and `step6-runN-before` to `step6-runN-after`): "no
-  change", apart from the set-apart daemon folder `daemon/<palace key>8ab5b11d` of the user's own MemPalace.
+  change", apart from the set-apart daemon folder `daemon/<palace key>` of the user's own MemPalace.
 - **Around run 4 (`step6-run4-before` to `step6-run4-after`): not clean.** The user's own `~/.mempalace` changed in
   these places outside the set-apart ones, between 22:16:59 and 22:17:35 UTC, while run 4 ran (from 22:16:21 until
   its `results.json` was written at 22:17:47.8 UTC, the file's change time):
@@ -1778,7 +1778,7 @@ without the wrapper, so only the proxy watched them; it sees only HTTP sent thro
 Each run had its own pair of listings, taken in the same command as the run, just before and just after it:
 `step8-proof-before/after`, `step8-proof2-before/after`, `step8-proof3-before/after`, `step8-first-before/after`,
 `step8-first2-before/after` and `step8-timings-before/after`. Every pair printed "no change", with only the set-apart
-line for the user's own MemPalace daemon folder (`daemon/<palace key>8ab5b11d`). No pair failed.
+line for the user's own MemPalace daemon folder (`daemon/<palace key>`). No pair failed.
 
 #### The decisions for the user
 
@@ -2014,7 +2014,7 @@ program to start. None of these is a figure for Tachikoma.
 
 One pair of snapshots, taken in the same command as the run, just before and just after it: `step9-before` and
 `step9-after`. It printed "no change", with only the set-apart line for the user's own MemPalace daemon folder
-(`daemon/<palace key>8ab5b11d`). No pair failed.
+(`daemon/<palace key>`). No pair failed.
 
 The same command also listed the top level of the user's Temp folder before and after, with step 8's scratch
 `templist2.cjs`: names, kinds and last-written times only, read only, no file opened. That listing goes beyond the
@@ -2121,7 +2121,7 @@ Almost all of it is MemPalace's add; the lock and the look-up take a few millise
 11 turns of the user's longest session) takes about 5 s in the large palace, and a window behind another window
 saving it waits up to 5.4 s for the lock. A made-up turn in 3 parts of 100,000 characters takes about 6.3 s.
 **The exit save's time limit waits on the user (at the end of this part). Both pairs of snapshots failed: the
-user explained the first; the second is not yet traced ("The user's folders").**
+user explained the first; the second is traced under the user's rule ("The user's folders").**
 
 Scripts: `scripts/8d/turns.mjs` (the rule for cutting a transcript into turns, for steps 10, 12 and 14) with its test
 `tests/memory/turns.test.ts`, and `scripts/8d/measure-save.mjs`, three commands: `scan` (the transcripts only, starts
@@ -2330,10 +2330,12 @@ What the figures mean:
   first add; that is an inference, as the load was not timed on its own. The first run's "today" figures (625.0 ms
   for a first add at 383 to 392 entries, against 281.5 ms warm at about 83 entries) compare palaces of different
   sizes, so they do not show the cold cost alone.
-- The two runs differ: run 2's adds were slower all through (filling the same shape of palace, middle 623.0 ms
-  against 414.9 ms in run 1; a warm save of 3,828 characters, 708.2 ms against 503.4 ms). Other work on this PC at the
-  time was not measured (the user had started Claude Code in another project during run 1, and its load at run 2 is
-  not known). The options below take the slowest figure of either run.
+- The two runs differ: run 2's adds and saves were slower (filling the same shape of palace, middle 623.0 ms
+  against 414.9 ms in run 1; a warm save of 3,828 characters, 708.2 ms against 503.4 ms, both in the large palace);
+  its starts, connections and look-ups were not (start slowest 1,165.3 against 1,321.4 ms). Other work on this PC at
+  the time was not measured (the user had started Claude Code in another project during run 1, and its load at run 2
+  is not known). In the options below, only S, X and K take the slowest of either run (X and K come from run 2, S's
+  start from run 1). W, Bk and P3 were timed in run 1 only, so they leave out run 2's slower adds and saves.
 - A `-p` run's turn is usually the first save after its hub started, if this window started it, so its exit save is
   the first-save figure. A hub still starting when the window exits adds the rest of its start: taken below from this
   step's starts (1,321.4 ms at the slowest, to the first health answer).
@@ -2369,9 +2371,10 @@ Run 2 had its own pair, `step10-fix-before` (02:16:23 UTC) and `step10-fix-after
 `hook_state/<session>_last_save` (02:19:11.794), `locks/mine_palace_<key>.lock` (02:19:11.815), then 29 s later
 `palace/sqlite_exact.sqlite3-wal` (02:19:40.692), `palace/sqlite_exact.sqlite3` (6,821,593,088 to 6,822,883,328
 bytes, 02:19:40.720) and the folder `locks` (02:19:40.994). Set apart as usual: the daemon folder, `queue.sqlite3`
-(02:19:41.013) and `hook.log` (02:19:11.790). This has the shape of the user's rule (the plugin's files, then the
-palace about 30 s later); it is traced when a reply of the main session is seen to end about 2 s before 02:19:11.5
-UTC, a time from the main session's log that this step did not have. **Not yet traced.** The run's Temp listing:
+(02:19:41.013) and `hook.log` (02:19:11.790). **Traced under the user's rule, so explained:** the orchestrator found
+in the main session's log that a reply ended at 02:19:09.431 UTC (`end_turn`); the plugin's files changed 2.1 s later
+(02:19:11.49) and the palace about 29 s after them (02:19:40.69), the full chain the rule names. The pair failed, and
+counts as explained. The run's Temp listing:
 no `uv-*.lock`; added by another program `mat-debug-291060.log` (02:17:16); a GUID-named `.tmp` rewritten (02:38:16);
 neither opened.
 
@@ -2394,8 +2397,21 @@ window is saving, and a hub still starting at exit. The inputs, each this PC's s
   first health answer, 1,321.4 (this step's run 1, the "today" palace's first saves; run 2's slowest was 1,165.3;
   M3's installed starts 1,169.6); plus serverinfo.json naming the port after that answer, at most 121.0 (M3); plus one
   health check, 3.5 (M3's slowest on an idle hub, a new connection). The 100 ms is the window's check interval while a
-  hub starts (M3 decision 2), a setting, so the margin does not multiply it (as M4's 1 s cap). Not covered: the first
-  start after an install (7.8 s, M3), which a launch with memory already set up never meets.
+  hub starts (M3 decision 2), a setting, so the margin does not multiply it (as M4's 1 s cap).
+- **Si, the rest of the first hub start after an install**: 7,931.0 measured, plus the same 100 fixed: the slowest
+  first start after an install, 7,806.5 (M3, 3 runs), plus 121.0 and 3.5 as in S. When it can meet an exit, from the
+  plan: the window that installs is the one that starts the first hub. The memory service runs the installer in the
+  background and joins the hub as soon as the install is ready (step 21; step 19 writes the ready file only after the
+  environment's own Python has answered), and an install that finishes during a session switches saving on at once,
+  in the conversation already open (Q1; step 27). If the user then exits within those seconds, closing does not stop
+  the start: step 20's closing lets a join already inside the join lock finish its one step, and step 21's first stage
+  gives the saver its last chance after that while the palace is still connected (step 27 has the same order). So the
+  exit save of the installing window can wait on the first start after its install. A `-p` run never installs
+  (design, section 6; step 27: "`-p` never asks"), and a later launch starts its hub from an environment that has
+  already started one (the first start's extra time, M3, is once per install), unless none ever did: the plan does
+  not show that case, except where the installing window was killed between its ready file and its hub start (step
+  27: on a kill signal only the window's "in use" file is removed). No run of this step measured a save on a hub
+  started first after an install.
 - **W, the lock wait behind another window**: 5,411.6, the waiting saver's wait for its first lock while the other
   saved the user's largest real backlog, large palace (two-saver runs, above). It counts this run's 500 ms waits
   between tries (M3 decision 5) as measured.
@@ -2415,17 +2431,24 @@ the user's margin from M3 and M4.
 |---|---|---|---|---|---|
 | A0 | the last real turn, cold, hub up, no other window | X = 1,146.9 | 4 s | 6 s | 12 s |
 | A1 | the same, the hub still starting | S + X = 2,592.8 + 100 | 8 s | 14 s | 27 s |
-| A | the same, also behind another window | S + W + X = 8,004.4 + 100 | 25 s | 41 s | 81 s |
-| B | the largest real backlog, cold, as in A | S + W + K + Bk = 12,422.3 + 100 | 38 s | 63 s | 125 s |
-| C | a turn in 3 full parts, cold, as in A | S + W + K + P3 = 13,657.6 + 100 | 42 s | 69 s | 137 s |
+| A1i | the same, the first hub start after an install | Si + X = 9,077.9 + 100 | 28 s | 46 s | 91 s |
+| A | A1, also behind another window | S + W + X = 8,004.4 + 100 | 25 s | 41 s | 81 s |
+| B | the largest real backlog, cold, as in A (run 1 only) | S + W + K + Bk = 12,422.3 + 100 | 38 s | 63 s | 125 s |
+| C | a turn in 3 full parts, cold, as in A (run 1 only) | S + W + K + P3 = 13,657.6 + 100 | 42 s | 69 s | 137 s |
 
-For example A1 at 5 times: 5 x 2,592.8 + 100 = 13,064 ms, so 14 s. Whatever a limit leaves stays unsaved and is
-saved at the session's next resume; a hung hub holds an exit for up to the limit.
+For example A1 at 5 times: 5 x 2,592.8 + 100 = 13,064 ms, so 14 s; A1i at 5 times: 5 x 9,077.9 + 100 = 45,489.5 ms,
+so 46 s. Whatever a limit leaves stays unsaved and is saved at the session's next resume; a hung hub holds an exit for
+up to the limit. Not in any row: writing the transcript's "saved" record after a turn's last entry (step 22), which
+was not timed.
+
+B and C rest on run 1's backlog and parts timings (Bk, P3) and run 1's lock wait (W), and do not include run 2's
+slowdown of adds and saves; if the user picks B or C, they can be timed again in a second run before they are final.
 
 Recommended (not chosen): A1, 14 s. It covers a `-p` run's only turn, the turn most at risk, at every real size,
-cold, in a palace of 10,000 pieces, even while the hub is still starting, with the user's margin. It leaves to the
-next resume the rarer cases: a backlog, a turn in parts, and an exit at the very moment another window is saving a
-backlog. Its weak point: the run-to-run spread above (run 2 was slower all through than run 1).
+cold, in a palace of 10,000 pieces, even while the hub is still starting, with the user's margin. It does not cover a
+window whose exit waits behind another window saving a backlog (A), nor the first hub start after an install (A1i),
+and it leaves to the next resume a backlog and a turn in parts. Its weak point: the run-to-run spread above (run 2's
+adds and saves were slower than run 1's).
 
 #### Fixes after the review (step 10), 2026-11-19
 
@@ -2453,5 +2476,13 @@ The user asked for all nine of the review's points to be fixed, with one new tim
 9. The 1,000-character margin and the size bands: their sources stated, in the script and above; both only group
    this report.
 
-**The user's OK on these figures and the exit save's time limit: not yet given. The second pair of snapshots: not
-yet traced (it needs the main session's reply-end time about 2 s before 02:19:11.5 UTC).**
+After the re-check of those fixes (2026-11-19), all fixed, with no new run:
+- A new option row, A1i, for the first hub start after an install, with when the plan lets it meet an exit (above).
+- "The slowest of either run" now said only of S, X and K; B and C are marked as resting on run 1 alone.
+- "Run 2 was slower all through" corrected to its adds and saves.
+- The recommendation says what A1 does not cover; the table says the "saved" record's write is not timed.
+- Run 2's pair, traced under the user's rule (above).
+- Private details masked through this file, by the user's decision: Claude Code's session id as `<session>`, its
+  temp folder id as `<id>`, the user's own palace key as `<palace key>`, the Windows user name in paths as `<user>`.
+
+**The user's OK on these figures and the exit save's time limit: not yet given.**
