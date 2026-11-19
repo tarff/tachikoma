@@ -1503,3 +1503,282 @@ total with Python, Linux x86-64, 229,601,900 bytes (229.6 MB), rounded up to a w
 
 The user approved N = 230 on 2026-11-19. The first-use ask reads "about 230 MB": "MemPalace 3.12.0 and its packages
 (about 230 MB)", the approved line word for word with N filled in.
+
+### M3 The hub's start limit and how often it is checked; the proof of its start and stop (step 8, 2026-11-19)
+
+In short: the hub started the way the user decided (Q24) works. It serves, it is found, and stopping its serving
+process by its id, after reading its start time, ends every process of it in about 20 ms with nothing left behind. A
+second hub for the same palace exits with code 2 in about 1.4 s without answering. On this PC a hub answers its first
+health check about 1.1 s after it is started, whatever the palace holds, but the very first start after an install
+takes about 7.5 s (Python compiles MemPalace on first use). **The figures below wait on the user's OK; the six
+decisions at the end are the user's.**
+
+Script: `scripts/8d/measure-hub.mjs`, three commands, each run between a pair of snapshots of the user's folders:
+`node scripts/8d/measure-hub.mjs proof`, `... first-starts` and `... timings`. Each run's results are in
+`tachi-8d-build\install\measure-hub-<command>-<time>\results.json`, with the hubs' logs beside it. The proof's run 3
+ran before the Python unpacking was added to `first-starts`; that change touches nothing else. Run 2 of
+`first-starts` and the timings run used the script as committed.
+
+This PC: Intel Core i9-12900K (16 cores, 24 threads), 68.4 GB of memory, solid-state disks (the build folder is on
+C:), Windows 11 Pro 10.0.26200, Node v24.22.1. Microsoft Defender's real-time scanning is off on this PC
+(`Get-MpComputerStatus`, `RealTimeProtectionEnabled: False`), so no figure here includes scanning of new files.
+
+How it was run:
+- Every hub the decided way (Part B's opening; Q24, Q8, Q25), never `mempalace serve`: the environment's own Python by
+  its full path, `<env>\Scripts\python.exe -I -m mempalace.mcp_server --transport http --port <p> --palace <palace>
+  --backend sqlite_exact`, with `MEMPALACE_EMBEDDING_MODEL=minilm`, `MEMPALACE_MCP_WRITER_WAIT_SECONDS=0` and
+  `MEMPALACE_MCP_IDLE_HOURS=0`, started detached and hidden. The host is MemPalace's default, 127.0.0.1
+  (`mempalace/mcp_server/_guards.py:39-42`); every serverinfo.json read back says 127.0.0.1. Every port was one the
+  script took from the system on 127.0.0.1 just before the start, never 8765. Every palace was new, under
+  `install\home\palaces`, always passed with `--palace`.
+- Step 1's `install` environment (the home with step 5's model, no `MEMPALACE_*` of the user's), with step 5's
+  settings: `HF_HUB_OFFLINE=1` and a dead-end proxy of the script's on 127.0.0.1 in `HTTP_PROXY`, `HTTPS_PROXY` and
+  `ALL_PROXY` (`NO_PROXY` for the loopback names).
+- The backend and model read back for every hub: `sqlite_exact` from `/statusz` after every start (all 38 starts made
+  the decided way, and the 2 filler hubs), and from `mempalace_status` where tool calls were made; `minilm`
+  (all-MiniLM-L6-v2) from the `meta` table of every palace that had an entry. A new empty palace records no model
+  until its first write (step 6 item 12).
+- Every search query was under 250 characters. Nothing was fetched (see "The connection watch").
+
+#### The proof (Q24), first
+
+Run 3 of `proof`, exit 0, "measure-hub: passed"
+(`install\measure-hub-proof-2026-11-18T23-45-37-337Z\results.json`). All 21 of its checks passed:
+- **It serves.** Started by a short-lived Node starter (step 6's), which started it detached and hidden, printed its
+  id and exited 0, as a window will. `/healthz` answered 200 after 1,275.6 ms, after the starter had exited. Through
+  `@modelcontextprotocol/client` 2.4.0: one `mempalace_add_drawer` (`"success": true`, 1 piece) and one
+  `mempalace_search` that found it; the library reported "Failed to open SSE stream: Not Found" twice, harmlessly, as in
+  step 6. Read back: `sqlite_exact` (`mempalace_status` and `/statusz`, version 3.12.0) and `minilm` (the palace's
+  `meta` table).
+- **It is found.** Listing `install\home\.mempalace\server\*\serverinfo.json` and matching `palace_path` without
+  regard to letter case (Q7) gave exactly one file, `server\052464f8f0451a209e100c55\serverinfo.json`, naming port
+  61687, host 127.0.0.1 and pid 280160. The script never works out the folder's name. Pid 280160's parent is 230156,
+  the process the starter started, whose parent is the starter, 286108.
+- **Its start time can be read.** The environment's own Python with `-I` (step 6's `START_TIME_PY`) read 23:45:40.316699
+  UTC in 135.8 ms, the same as the script's helper read.
+- **It outlives a starter that exits.** The starter had exited 0 before the hub's first answer, and the hub served on.
+- **A second hub for the same palace** while the first ran (the same start, its own port) exited with code 2 after
+  1,393.8 ms, never answering: "Writable MCP HTTP startup refused: another mempalace writer already holds the palace
+  lock for '<palace>': palace <palace> is held by PID 280160 (...); wait for it to finish or stop the holder before
+  retrying". Its three processes were seen and ended by themselves.
+- **Stopped by that id.** Its start time was read again by the environment's Python: 23:45:40.316699, still the same.
+  Then the script's helper opened pid 280160, read its start time from that same handle (it matched) and ended it
+  through that handle. Every process of the hub was gone within 21.0 ms, and the port then refused:
+
+  | Process | Id | Parent | Started (UTC) | Before the stop | After |
+  |---|---|---|---|---|---|
+  | node.exe, the starter | 286108 | the script | ended before the first look | ended | ended |
+  | python.exe, the launcher the starter started | 230156 | 286108 | 23:45:40.294130 | running | gone, 21.0 ms |
+  | python.exe, serving (serverinfo's pid) | 280160 | 230156 | 23:45:40.316699 | running | gone, 18.0 ms |
+  | conhost.exe, the console host Windows made for it | 274384 | 280160 | 23:45:40.340574 | running | gone, 13.4 ms |
+
+- **The palace opens again.** A new hub on it (its own port) answered after 1,318.6 ms; its search found the first
+  hub's entry. It was stopped the same way, by serverinfo's pid 284092 with its start time matching: its three
+  processes (286984, 284092, conhost 284812) were all running before and all gone within 20.8 ms after.
+- At the end of the run, all 15 of its processes were looked up again: none running, none that the start times could
+  not settle, none of another program's.
+
+Runs 1 and 2 of `proof` passed all 21 checks too, but each failed on a fault in the script's own process handling,
+fixed before run 3:
+- Run 1: the script's helper (then `python.exe`) had a console host of its own, and the helper's last look found it
+  still running just before the helper itself ended. It was gone a few seconds later (`tasklist` by its id found
+  nothing). The helper is now `pythonw.exe`, which gets no console host, and the script sees the helper's own end.
+- Run 2: a console host appeared in the same process snapshot as its hub's serving process, a few microseconds after
+  the time the script counted as "last seen", so one look marked it unsettled; the next look recorded it as the
+  script's, but the mark stayed and failed the run. Now a process seen running counts as holding its id at least up to
+  the start of every process in the same snapshot (the snapshot is one instant, after all of them started), and a
+  process marked unsettled is judged again at the end. Both runs' pairs of listings were clean.
+
+#### How processes are handled (and the two known limits of step 6's script, fixed)
+
+- The helper is the build Python's own `pythonw.exe` with `-I` and only its standard library. It lists processes by
+  id and parent id with their start times (Toolhelp32 and `GetProcessTimes`), and it stops a process only after
+  opening it and reading its start time from that same handle; if that is the recorded one, it ends the process
+  through that handle. A reused id can therefore never be hit between the check and the stop. It then times, to the
+  millisecond, when each process of the hub has ended. It checks itself before any hub starts: it lists itself and a
+  Node child of the script's, and stops that child.
+- A process counts as the script's when the script started it, or when its parent is one of the script's and it
+  started while that parent was known to hold its id: seen running, or held by a handle of the script's (its own
+  children) or of the helper's (during a stop). A process under a recorded id that started after that parent was known
+  to be gone is another program's, listed apart and left alone. Any other process under a recorded id cannot be
+  settled by start times, and the run fails.
+- Records are kept by id and start time together, so an id given to a new process of the script's gets its own
+  record (step 6's first known limit, fixed). An unsettled process fails the run (the second, fixed).
+- At the end of each run, every recorded process and every process under one is looked up again. Runs used: proof 15
+  processes, first-starts 27, timings 150; still running at the end: none in each; unsettled: none.
+- Listed apart and left alone, once (timings run): a `sleep.exe` started at 23:58:22.95 UTC under id 287424, which had
+  been a second hub's serving process that ended by about 23:57:35. It was the wait loop the builder ran in Git Bash,
+  not the script's.
+
+#### The first start after an install
+
+Run 2 of `first-starts`, exit 0, "measure-hub: passed"
+(`install\measure-hub-first-starts-2026-11-18T23-48-18-515Z\results.json`). The environment step 4 installed had been
+started many times since (steps 5 and 6), so its first start could no longer be measured there. Each of three new
+installs was made offline in `tachi-8d-build\hub-fresh-2026-11-18T23-48-18-515Z\fresh-<n>`, as a first set-up makes
+one, without the download:
+- Python: step 4's kept archive (`install\python-cache\...-install_only_stripped.tar.gz`, the file uv unpacks)
+  unpacked with Windows' `tar.exe` into `fresh-<n>\python\cpython-3.13.17-windows-x86_64-none`, the name step 4's uv
+  gave it. uv would not do this itself offline: run 1 of `first-starts` stopped there ("A managed Python download is
+  available for Python 3.13, but uv is set to offline mode"), having started no hub. The archive carries 78 compiled
+  files in `Lib\__pycache__`; after the first start there were 83.
+- The environment: `uv sync --locked --python 3.13 -vv` (uv 0.13.5) with `UV_OFFLINE=1`, `UV_LINK_MODE=copy` (new
+  files, as a first install has), step 4's wheel cache, `UV_PYTHON_PREFERENCE=only-managed`, and every uv folder
+  inside the build folder (checked with `uv cache dir`, `uv python dir` and `uv python dir --bin` first). uv logged
+  "Found managed installation `cpython-3.13.17-windows-x86_64-none`" in the new folder. Its logs name no request
+  ("Sending ... GET request" or "Downloading": 0 lines each), and the dead-end proxy got nothing. uv compiles no
+  bytecode by default: the new `mempalace` package had 0 `__pycache__` folders before the first start and 6 after.
+- Then the first start of that install, and a second start of it, each on a new palace, each stopped by its serving
+  process's id.
+
+#### The timings
+
+Run 1 of `timings`, exit 0, "measure-hub: passed" (`install\measure-hub-timings-2026-11-18T23-50-17-464Z\results.json`),
+plus the first-starts run above and the proof run. ms = milliseconds. "Middle" is the median (for an even count, the
+mean of the two middle values).
+
+| Timing | Fastest | Middle | Slowest | Runs |
+|---|---|---|---|---|
+| Start to first good health answer: the first start after an install | 7,435.2 | 7,511.5 | 7,806.5 | 3 |
+| The same install's second start | 1,200.1 | 1,219.3 | 1,257.0 | 3 |
+| Start of the installed environment, new empty palace | 1,092.7 | 1,115.5 | 1,143.5 | 10 |
+| The same, palace of 200 entries (1,000 pieces, 5.8 MB) | 1,100.3 | 1,130.9 | 1,146.5 | 10 |
+| The same, palace of 2,001 entries (10,125 pieces, 58 MB) | 1,105.0 | 1,121.5 | 1,169.6 | 10 |
+| Every installed start together | 1,092.7 | 1,122.5 | 1,169.6 | 30 |
+| serverinfo.json naming the port, after the first health answer | 37.5 | 100.2 | 121.0 | 30 |
+| Health check, live idle hub, connection reused (Node `fetch`) | 0.9 | 1.2 | 2.2 | 50 |
+| Health check, live idle hub, new connection each time | 0.7 | 1.1 | 3.5 | 50 |
+| Health check during a search of the 10,125-piece palace | 2.3 | 2.8 | 45.8 | 20 |
+| Health check during an add of 100,000 characters (125 pieces) | 2.0 | 2.9 | 10.6 | 163 |
+| Health check, dead port (refused) | 0.3 | 0.3 | 0.5 | 50 |
+| Stopped hub wholly gone (all its processes), installed starts | 11.9 | 13.1 | 14.7 | 30 |
+| The same, the first-start installs' hubs | 14.7 | 15.3 | 17.3 | 6 |
+| The same, the proof's two hubs | 20.8 | 20.9 | 21.0 | 2 |
+| Second hub for a held palace, start to exit with code 2 | 1,337.0 | 1,362.1 | 1,403.6 | 10 |
+| Reading a process's start time (environment's Python, `-I`, spawned) | 116.2 | 124.5 | 138.2 | 20 |
+| A failed try to take a held lock: open, try, close | 17.9 | 30.9 | 32.7 | 200 |
+| A failed try to take a held lock, connection kept open | 20.0 | 31.0 | 32.3 | 200 |
+| The install, offline: Python unpacked plus `uv sync` (no download) | 11,228.8 | 20,341.7 | 20,723.2 | 3 |
+| of which unpacking Python | 4,377.6 | 13,989.4 | 14,112.2 | 3 |
+| of which `uv sync` | 6,352.3 | 6,611.0 | 6,851.2 | 3 |
+
+Also measured, as the filler went in: one add of a 4,000-character entry took 82.7 / 105.6 / 585.9 ms (200 runs, the
+200-entry palace) and 96.7 / 189.6 / 502.9 ms (2,000 runs, the 2,000-entry palace). In the 10 second-hub runs of the
+timings run, every one exited with code 2, never answered, and showed its three processes. Every one of the 33 stops
+of that run (30 hubs, the 2 filler hubs and the helper's self-test child) found the start time matching. All 200 +
+200 lock tries were refused with "ERR_SQLITE_ERROR 5 database is locked"; none took the held lock.
+
+What the figures mean:
+- A hub's start does not depend on what the palace holds: 1.1 s for an empty palace and for one of 10,125 pieces.
+  This agrees with the source (`mempalace/mcp_server/runtime.py:300-303`: only "the cheap filesystem-only probe before
+  binding", no warm-up of the model or the index).
+- The first start after an install is about 6.3 s slower: Python compiles MemPalace's files on first use (uv installs
+  none compiled). It happens once per install: the same install's second start took 1.2 s.
+- MemPalace writes serverinfo.json after it binds (`mempalace/mcp_server/http.py:1594-1617`), so the first health
+  answer comes up to 121 ms before the file names the new port. A window that finds the hub by that file must keep
+  looking for it after the first health answer, within the start limit (a note for step 20).
+- A failed lock try takes about 31 ms on Windows, even with `timeout: 0` and with the connection kept open, and it is
+  synchronous, so the Node thread is held for that time on each try. About 31 ms is two of Windows' default 15.6 ms
+  timer steps; that SQLite sleeps inside its Windows lock call is my reading, not traced to SQLite's source (Node's
+  own SQLite, 3.53.4). A note for step 17.
+- Not measured: other systems (Linux, macOS); a slower PC; a disk whose cache is cold (just after the PC starts); and
+  real-time scanning of new files, which is off here. Each would make the first start slower.
+
+Choices the script made, each with its reason (in the script's own comments too):
+- Ten installed starts of each palace kind, in turn (30): each takes about 1.1 s, and ten give a middle and show the
+  spread.
+- Three first starts after an install: each needs a whole new install (a Python and an environment of about 320 MB,
+  copied).
+- Ten second hubs: as many as the starts. Fifty health checks of each kind, twenty start-time reads and 200 lock tries
+  of each kind: each takes milliseconds.
+- Filler entries of 4,000 characters (five of MemPalace's 800-character pieces, `mempalace/config.py:415`) in palaces
+  of 200 and 2,000 entries, a factor of ten apart, to show whether the start depends on the palace's size. The
+  2,000-entry palace then got one entry of 100,000 characters, the longest MemPalace accepts (`config.py:283-291`),
+  added while health checks ran. Real turn lengths are step 10's.
+- The script's own polling step: 10 ms between checks while it waits for a hub, so each measured start is at most
+  about 11 ms later than the hub's first good answer. Its own cut-off: 180 s, so a run always ends. Neither is a figure
+  for Tachikoma.
+
+#### The connection watch
+
+The dead-end proxy received no connection in any of the three runs. The two hubs that filled the filler palaces
+(every add and search of the filler phase, and the busy health checks) ran the same server module through step 5's
+audit-hook wrapper: each logged its own loopback check and the dead-end proxy in urllib's and httpx's settings, and
+nothing to any address other than this computer, and started no process. The hubs started the decided way ran
+without the wrapper, so only the proxy watched them; it sees only HTTP sent through the proxy variables. uv ran with
+`UV_OFFLINE=1` and the proxy, and its logs name no request. Known limits as in step 5: native code is not seen.
+
+#### The user's folders
+
+Each run had its own pair of listings, taken in the same command as the run, just before and just after it:
+`step8-proof-before/after`, `step8-proof2-before/after`, `step8-proof3-before/after`, `step8-first-before/after`,
+`step8-first2-before/after` and `step8-timings-before/after`. Every pair printed "no change", with only the set-apart
+line for the user's own MemPalace daemon folder (`daemon/<palace key>8ab5b11d`). No pair failed.
+
+#### The decisions for the user
+
+None of these is picked. Each recommendation is built from this PC's slowest figure with a margin for slower
+machines. **The margin is not measured**: no slower PC was run. It is a judgment for the user. A margin of 5 times is
+used below because this PC is a fast desktop with solid-state disks and no real-time scanning, and the margin has to
+cover all of those at once.
+
+**1. The start limit**: how long a window waits, from starting the hub, for it to answer and for serverinfo.json to
+name its port, before reporting a failed start. (A start that exits by itself is seen at once; a start that exits
+with code 2 goes on to the other window's hub, Q8, which already answers.)
+- Slowest here: the first start after an install, 7,806.5 ms, plus up to 121.0 ms for serverinfo.json: 7,927.5 ms.
+  Any later start: 1,169.6 + 121.0 = 1,290.6 ms. The exit-2 path: 1,403.6 ms, then a hub that already answers.
+- Options:
+  - A. One limit for every start, from the first start: 7,927.5 ms times 3 = 23.8 s (24 s); times 5 = 39.6 s
+    (**40 s**); times 10 = 79.3 s (80 s).
+  - B. Two limits: the first start after an install, as in A, and every other start from 1,290.6 ms: times 5 = 6.5 s
+    (7 s); times 10 = 12.9 s (13 s).
+- Recommended: A, with the margin of 5 times: 40 s. One figure is simpler, and a first start can also come later than
+  straight after the install (a slow disk, a PC just started). The long limit only matters when a start hangs without
+  exiting; a start that fails exits and is seen at once.
+
+**2. The check interval**: how often the window checks, while it waits for a started hub to answer (and then for
+serverinfo.json). The running hub's own timer is measurement 4's (step 9).
+- A check costs at most 0.5 ms while the hub is not yet listening (refused), 3.5 ms once it answers. The interval adds
+  at most one interval to every start.
+- Options, with the most each adds to an installed start of 1.1 s, and the share of one core spent checking
+  (0.5 ms per check): 50 ms (adds at most 4.5%; 1.0%); **100 ms** (9%; 0.5%); 250 ms (22%; 0.2%).
+- Recommended: 100 ms. With the margin of 5 times a check costs 2.5 ms, 2.5% of one core; it adds at most 0.1 s to a
+  1.1 s start.
+
+**3. The health check's own time limit**: how long one health check may take before the hub counts as not answering.
+- MemPalace's own client uses 0.75 s for the same check: `HUB_HEALTH_TIMEOUT_S = 0.75`
+  (`mempalace/hub_client.py:21`), the default of `HubClient.healthy` (`mempalace/hub_client.py:225`), in the build's
+  installed MemPalace 3.12.0 (`tachi-8d-build\env\Lib\site-packages`).
+- Slowest here: 45.8 ms, during a search of a 10,125-piece palace; 10.6 ms during the longest add; 3.5 ms idle.
+- Options: A. **MemPalace's 0.75 s**, 16 times this PC's slowest (750 / 45.8 = 16.4); B. from the figure with the
+  margin: 45.8 x 5 = 229 ms (0.25 s); C. 2 s (44 times the slowest).
+- Recommended: A, 0.75 s. It is MemPalace's own figure for this check, and it leaves more room than the margin of 5
+  times over the slowest busy check. Larger palaces than 10,125 pieces were not tried.
+
+**4. The wait for a stopped hub to end**: how long the last window waits, after stopping the hub, for every process of
+it to be gone.
+- Slowest here: 21.0 ms (38 stops, the slowest the proof's). Tachikoma will see "gone" with its own check, a start-time
+  read by the environment's Python, which costs up to 138.2 ms; one read is longer than the whole end.
+- Options: 0.5 s; **1 s**; 2 s. Arithmetic for 1 s, with the margin of 5 times: the end, 21.0 x 5 = 105 ms, plus one
+  confirming read, 138.2 x 5 = 691 ms: 796 ms, rounded up to 1 s.
+- Recommended: 1 s.
+
+**5. The wait between tries for a held lock** (the join lock, the install lock and step 22's save lock).
+- A failed try costs up to 32.7 ms here, and holds the Node thread for that time. After the holder lets go, a waiter
+  takes the lock at most one interval later. The join lock is held for about one hub start (1.3 s; 7.9 s the first
+  time).
+- Options, with the share of the waiting window's thread held by the tries (32.7 ms per try): 100 ms (33%); 250 ms
+  (13%); **500 ms** (6.5%); 1 s (3.3%).
+- Recommended: 500 ms. It adds at most 0.5 s after a release, against a join holder of at least 1.3 s, and holds the
+  thread 6.5% of the time while waiting. The margin does not enter here: the try's cost looks like Windows' timer
+  steps, not work, so a slower PC was not assumed to make it longer; that is not measured.
+
+**6. Windows waiting on another window's install**: do they check again at the same interval as decision 5?
+- An install here took 11.2 to 20.7 s without the download; the download (about 230 MB, M1) comes on top and was not
+  timed.
+- Options: A. **the same interval as decision 5** (500 ms if recommended: one figure; about 2 tries a second at 33 ms
+  each, 6.5% of the thread); B. a longer one, 2 s (1.6% of the thread; at most 2 s added after an install of at least
+  11.2 s, 18%).
+- Recommended: A, the same interval. Each try costs the same 33 ms either way, and one figure is simpler.
+
+The user's OK on these figures, and the six decisions: not yet given.
