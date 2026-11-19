@@ -17,7 +17,15 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hubEnv } from "../../src/memory/env.js";
-import { FIGURES, type Figures, Hub, type HubEvent, hubRecord, type HubRecord } from "../../src/memory/hub.js";
+import {
+  FIGURES,
+  type Figures,
+  Hub,
+  type HubEvent,
+  hubRecord,
+  type HubRecord,
+  stoppingFile,
+} from "../../src/memory/hub.js";
 import type { Program } from "../../src/memory/install.js";
 import { load, tryLock } from "../../src/memory/oslock.js";
 import { makeMemoryFolder, type MemoryPaths, memoryPaths } from "../../src/memory/paths.js";
@@ -404,26 +412,53 @@ describe("the hub's supervisor", () => {
     expect(s.record()).toBeUndefined();
   });
 
-  it("keeps the stopping mark when the last window's leave cannot take the lock, so the next window handles it",
+  // The marker, never a rewrite of the record without the lock (the user's choice at step 20's re-check).
+  it("writes the stopping marker when the last window's leave cannot take the lock, so the next window handles it",
     async () => {
       const s = await setup();
       const a = s.hub();
       expect((await a.join()).is).toBe("on");
       const { pid } = s.launched()[0]!;
+      const record = readFileSync(hubRecord(s.paths), "utf8");
       const lock = path.join(s.paths.home, "join.lock");
       rmSync(lock, { force: true });
       mkdirSync(lock); // a folder where the lock file goes: the take fails with an error, not as busy
       expect(await a.close()).toEqual({ is: "gave up" });
       expect(s.inUse()).toEqual([]);
-      expect(s.record()).toMatchObject({ pid, stopping: true });
+      expect(readFileSync(hubRecord(s.paths), "utf8")).toBe(record);
+      expect(JSON.parse(readFileSync(stoppingFile(s.paths), "utf8"))).toEqual({ pid, start: s.record()!.start });
       expect(alive(pid)).toBe(true);
       rmSync(lock, { recursive: true });
       const b = s.hub();
       expect((await b.join()).is).toBe("on");
+      expect(s.launched()).toHaveLength(2); // it treated the hub as stopping: its own start exited 2, and it found it
       expect(s.record()).toMatchObject({ pid, stopping: false });
+      expect(existsSync(stoppingFile(s.paths))).toBe(false);
       expect(await b.close()).toEqual({ is: "stopped" });
       expect(alive(pid)).toBe(false);
     });
+
+  it("keeps a record another window wrote after the marker, and does not treat its hub as stopping", async () => {
+    const s = await setup();
+    const a = s.hub();
+    expect((await a.join()).is).toBe("on");
+    // A marker for an earlier hub, left before this record was written under the lock.
+    writeFileSync(stoppingFile(s.paths), JSON.stringify({ pid: 2_147_000_000, start: "an earlier hub's start" }));
+    const record = readFileSync(hubRecord(s.paths), "utf8");
+    const b = s.hub();
+    expect(await b.join()).toEqual(await a.join());
+    expect(s.launched()).toHaveLength(1);
+    expect(readFileSync(hubRecord(s.paths), "utf8")).toBe(record);
+    expect(existsSync(stoppingFile(s.paths))).toBe(false);
+  });
+
+  it("removes a stale stopping marker when there is no record", async () => {
+    const s = await setup();
+    mkdirSync(s.paths.home, { recursive: true });
+    writeFileSync(stoppingFile(s.paths), JSON.stringify({ pid: 2_147_000_000, start: "a hub long gone" }));
+    expect((await s.hub().join()).is).toBe("on");
+    expect(existsSync(stoppingFile(s.paths))).toBe(false);
+  });
 
   it("joins another window's hub when its own start exits with code 2, writing the record from it", async () => {
     const s = await setup();
@@ -635,41 +670,73 @@ describe("the hub's supervisor", () => {
       }
     });
 
-    it("ends the leave's wait at once when the caller's signal fires while a join is starting a hub", async () => {
+    // The caller's signal cuts only the wait for the join lock (the plan's "Closing", the user's choice at step 20's
+    // re-check): a join starting a hub finishes its step, and the leave then stops that hub as the last window.
+    it("lets a join that is starting a hub finish when the caller's signal fires, then stops its hub", async () => {
       const s = await setup();
       const gate = path.join(s.top, "gate");
       s.control({ hold: gate });
       const h = s.hub();
       const joining = h.join();
+      let joined = false;
+      void joining.then(() => (joined = true));
       await until(() => s.launched().length === 1, "the start");
+      const { pid } = s.launched()[0]!;
       const stop = new AbortController();
-      const closing = h.close(stop.signal);
-      await sleep(100);
-      const began = Date.now();
       stop.abort();
-      expect(await closing).toEqual({ is: "gave up" });
-      expect(Date.now() - began).toBeLessThan(FIGURES.lockRetry);
-      expect(s.inUse()).toEqual([]);
+      let leftAfterJoin: boolean | undefined;
+      const closing = h.close(stop.signal).then((r) => {
+        leftAfterJoin = joined;
+        return r;
+      });
+      await sleep(FIGURES.lockRetry);
+      expect(leftAfterJoin).toBeUndefined();
       writeFileSync(gate, "");
       expect(await joining).toEqual({ is: "closed" });
+      expect(await closing).toEqual({ is: "stopped" });
+      expect(leftAfterJoin).toBe(true);
+      expect(alive(pid)).toBe(false);
+      expect(s.record()).toBeUndefined();
+      expect(s.inUse()).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
     });
 
-    // A process of Node's own that joins and leaves must then end by itself, within the tests' limit.
-    it("holds nothing of the process open once it has left", async () => {
+    // A process of Node's own that joins and leaves must then end by itself, within the tests' limit: as it is, and
+    // with the caller's signal fired while its join is starting a hub.
+    it.each([
+      { name: "once it has left", during: false, expected: ["on", "stopped"] },
+      { name: "once it has left with its signal fired during a start", during: true, expected: ["closed", "stopped"] },
+    ])("holds nothing of the process open $name", async ({ during, expected }) => {
       const s = await setup();
       const tmp = path.join(s.top, "tmp");
       mkdirSync(tmp);
+      const gate = path.join(s.top, "gate");
+      if (during) s.control({ hold: gate });
       const code = [
         `const { Hub } = await import(${JSON.stringify(pathToFileURL(path.resolve("src/memory/hub.ts")).href)});`,
+        "const fs = await import('node:fs');",
         "const o = JSON.parse(process.env.TACHI_TEST_HUB);",
         "const h = new Hub({ paths: o.paths, env: process.env, figures: o.figures,",
         "  launch: (file) => ({ command: process.execPath, args: [file] }) });",
-        "const joined = await h.join();",
-        "const left = await h.close();",
+        "const joining = h.join();",
+        "let left;",
+        "if (o.during) {",
+        "  while (!(fs.existsSync(o.record) && fs.readFileSync(o.record, 'utf8').includes('\"hub\"'))) {",
+        "    await new Promise((r) => setTimeout(r, 20));",
+        "  }",
+        "  const stop = new AbortController();",
+        "  stop.abort();",
+        "  left = h.close(stop.signal);",
+        "  fs.writeFileSync(o.gate, '');",
+        "}",
+        "const joined = await joining;",
+        "left = await (left ?? h.close());",
         "process.stdout.write(JSON.stringify([joined.is, left.is]));",
       ].join("\n");
+      const hub = JSON.stringify({ paths: s.paths, figures: TEST, during, gate,
+        record: path.join(s.top, "record-test.jsonl") });
       const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], {
-        env: { ...s.env, TEMP: tmp, TMP: tmp, TACHI_TEST_HUB: JSON.stringify({ paths: s.paths, figures: TEST }) },
+        env: { ...s.env, TEMP: tmp, TMP: tmp, TACHI_TEST_HUB: hub },
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       });
@@ -681,7 +748,8 @@ describe("the hub's supervisor", () => {
       ]);
       if (ended === "still running") child.kill();
       expect(ended).toBe(0);
-      expect(JSON.parse(out)).toEqual(["on", "stopped"]);
+      expect(JSON.parse(out)).toEqual(expected);
+      expect(s.record()).toBeUndefined();
     });
 
     it("is the same when closed twice", async () => {

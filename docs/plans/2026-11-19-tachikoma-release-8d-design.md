@@ -4336,3 +4336,15 @@ Known limits, for step 30's README:
   clean-up.** The user chose "Accept, README note".
 - **On Windows the record's rename can fail while another window holds the file open to read it.** Then that join,
   or that leave's stopping mark, fails once. The rename is Node's `renameSync` over the old file.
+
+**After the re-check of the review fixes (2026-11-20).** The user said "Fix both".
+- **Closing is back to the plan's rule.** The leave's signal cuts only the wait for the join lock. A free lock is
+  still taken: the leave tries once before its signal counts. A join already under way finishes its one step, and
+  the leave then treats whatever hub that step started like any other: it stops it if this was the last window.
+- **The stopping marker.** A last window whose leave cannot take the join lock now writes
+  `memory/home/hub-stopping.json`, holding `{"pid": <the hub's id>, "start": "<its start time>"}`. It is written
+  whole, by a rename. The hub record is never rewritten without the lock.
+  - A join under the lock treats a record that matches the marker (the same id and start time) as stopping.
+  - A join removes the marker when it writes a new record, and a leave removes it when it clears the record.
+  - Under the lock, a marker that matches no record is stale and is removed.
+  - The timer's check, which takes no lock, reads the marker and joins again on a match.

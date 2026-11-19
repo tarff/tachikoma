@@ -61,6 +61,9 @@ export interface HubRecord {
   stopping: boolean;
 }
 export const hubRecord = (paths: MemoryPaths) => path.join(paths.home, "hub.json");
+// The stopping marker (the user's choice at step 20's re-check): written by a last window whose leave could not take
+// the join lock, naming the record's hub by its id and start time; settled only under the lock.
+export const stoppingFile = (paths: MemoryPaths) => path.join(paths.home, "hub-stopping.json");
 // The palace's version record (the design's "Versions side by side"; the name the user approved after step 20's proof).
 const versionFile = (paths: MemoryPaths) => path.join(paths.palace, "tachikoma-version.json");
 const IN_USE = "in-use-";
@@ -86,7 +89,7 @@ export type Left =
   | { is: "not stopped"; why: "the id is another program's" | "the process could not be opened" |
     "the helper gave no answer" }
   // The join lock was not taken: the caller's signal ended the wait, or the take failed (then, as the last window,
-  // the record is marked stopping for the next window).
+  // the stopping marker names the hub for the next window).
   | { is: "gave up" };
 
 export interface HubOptions {
@@ -272,14 +275,6 @@ const wait = (ms: number, signal?: AbortSignal) =>
     signal?.addEventListener("abort", done, { once: true });
   });
 
-// Settles when the signal fires; never, without one.
-const fired = (signal?: AbortSignal) =>
-  new Promise<void>((resolve) => {
-    if (!signal) return;
-    if (signal.aborted) return resolve();
-    signal.addEventListener("abort", () => resolve(), { once: true });
-  });
-
 // A port the system gives on loopback, never MemPalace's default 8765, so a hub of the user's own is never met.
 async function freePort(): Promise<number> {
   const s = createServer();
@@ -395,7 +390,9 @@ export class Hub {
 
   private async check(): Promise<void> {
     const rec = this.record();
-    if (rec && !rec.stopping && rec.port === this.port && (await healthy(rec.port, this.f.health))) return;
+    const m = this.marker(); // read only here: the join below settles it under the lock
+    const marked = rec && m?.pid === rec.pid && m.start === rec.start;
+    if (rec && !rec.stopping && !marked && rec.port === this.port && (await healthy(rec.port, this.f.health))) return;
     if (this.closing.signal.aborted) return;
     this.onEvent({ is: "failing" });
     const r = await this.join();
@@ -422,7 +419,8 @@ export class Hub {
     try {
       this.touch();
       const rec = this.record();
-      let hub = rec && !rec.stopping && (await healthy(rec.port, this.f.health)) ? rec : undefined;
+      const stopping = rec?.stopping || this.marked(rec);
+      let hub = rec && !stopping && (await healthy(rec.port, this.f.health)) ? rec : undefined;
       if (!hub) {
         const version = this.palaceVersion();
         if (version && newer(version, MEMPALACE)) return { is: "off", why: { is: "newer palace", version } };
@@ -430,6 +428,7 @@ export class Hub {
         if ("why" in started) return { is: "off", why: started.why };
         hub = started.record;
         this.write(hubRecord(this.paths), hub);
+        rmSync(stoppingFile(this.paths), { force: true });
         if (hub.env !== null && (!version || newer(MEMPALACE, version))) {
           mkdirSync(this.paths.palace, { recursive: true });
           this.write(versionFile(this.paths), { mempalace: MEMPALACE });
@@ -616,16 +615,17 @@ export class Hub {
   // limit, which the user's late-stop rule counts as stopped (step 20's run 3), or "gone", no such process any more.
   // Anything else (another program's id, a process that could not be opened, no answer within the stop's limit)
   // keeps the record, marked stopping, so the next window starts or finds the hub again and stops it when it leaves.
-  // The caller's signal ends the wait for a join under way, as it ends the wait for the lock. MemPalace's own files
-  // are left as MemPalace leaves them.
+  // The caller's signal cuts only the wait for the join lock (the plan's "Closing", the user's choice at step 20's
+  // re-check): a join already under way finishes its one step first, and its hub is then treated like any other.
+  // MemPalace's own files are left as MemPalace leaves them.
   private async leave(signal?: AbortSignal): Promise<Left> {
     this.closing.abort();
     this.stopTimer();
-    await Promise.race([this.busy, fired(signal)]);
+    await this.busy;
     let lock: OsLock | null;
     let failed = false;
     try {
-      lock = await this.take(signal);
+      lock = await this.take(signal, true);
     } catch {
       lock = null;
       failed = true;
@@ -636,8 +636,9 @@ export class Hub {
         if (failed) this.markStopping();
         return { is: "gave up" };
       }
-      if (this.others()) return { is: "left" };
       const rec = this.record();
+      this.marked(rec);
+      if (this.others()) return { is: "left" };
       if (!rec) return { is: "left" };
       this.write(hubRecord(this.paths), { ...rec, stopping: true });
       const said = await this.helper(["stop", String(rec.pid), rec.start, String(this.f.stop),
@@ -645,6 +646,7 @@ export class Hub {
       const word = said?.split(" ")[0];
       if (word === "stopped" || word === "running" || word === "gone") {
         rmSync(hubRecord(this.paths), { force: true });
+        rmSync(stoppingFile(this.paths), { force: true });
         return word === "gone" ? { is: "left" } : { is: "stopped" };
       }
       if (word === "differs") return { is: "not stopped", why: "the id is another program's" };
@@ -657,26 +659,50 @@ export class Hub {
     }
   }
 
-  // A leave whose take of the lock failed: as the last window, the record is marked stopping, so the next window
-  // treats the hub as one to start or find again, and stops it when it leaves (the user's choice at step 20's
-  // review). Done without the lock, as it could not be taken; a window still using the hub would only join it again.
+  // A leave whose take of the lock failed, as the last window: the stopping marker names the record's hub by its id
+  // and start time, so the next window treats that hub as stopping, starts or finds it again, and stops it when it
+  // leaves (the user's choices at step 20's review and re-check). The record itself is never rewritten without the
+  // lock; the marker is written whole, by a rename.
   private markStopping(): void {
     try {
       if (this.others()) return;
       const rec = this.record();
-      if (rec && !rec.stopping) this.write(hubRecord(this.paths), { ...rec, stopping: true });
+      if (rec && !rec.stopping) this.write(stoppingFile(this.paths), { pid: rec.pid, start: rec.start });
     } catch {
       // the folder is gone or cannot be written: there is no record left to mark
     }
   }
 
+  // Under the join lock: whether the stopping marker names this record's hub (the same id and start time). A marker
+  // that names any other, or no record at all, is stale and is removed.
+  private marked(rec: HubRecord | undefined): boolean {
+    const m = this.marker();
+    if (!m) return false;
+    if (rec && m.pid === rec.pid && m.start === rec.start) return true;
+    rmSync(stoppingFile(this.paths), { force: true });
+    return false;
+  }
+
+  private marker(): { pid: number; start: string } | undefined {
+    try {
+      const m = JSON.parse(readFileSync(stoppingFile(this.paths), "utf8"));
+      return typeof m.pid === "number" && typeof m.start === "string" ? m : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   // The join lock, in memory/home (the design: one lock covers joining and stopping), tried every lockRetry; null once
   // the signal fires. Never taken while this window holds it: joins run one at a time, and the leave waits for them.
-  private async take(signal?: AbortSignal): Promise<OsLock | null> {
+  // The leave tries once before its signal counts (`first`): its signal cuts the wait for the lock, not the take of a
+  // lock that is free.
+  private async take(signal?: AbortSignal, first = false): Promise<OsLock | null> {
     for (;;) {
-      if (signal?.aborted) return null;
+      if (signal?.aborted && !first) return null;
+      first = false;
       const lock = tryLock(this.paths.home, "join");
       if (lock) return lock;
+      if (signal?.aborted) return null;
       await wait(this.f.lockRetry, signal);
     }
   }
