@@ -4348,3 +4348,167 @@ Known limits, for step 30's README:
   - A join removes the marker when it writes a new record, and a leave removes it when it clears the record.
   - Under the lock, a marker that matches no record is stale and is removed.
   - The timer's check, which takes no lock, reads the marker and joins again on a match.
+
+### Step 31 The whole suite, the last snapshot and the clean-up (2026-11-20)
+
+**The suite**, run once (`node node_modules/vitest/vitest.mjs run`), took 1,042.6 s, against about 6 minutes usually:
+6,708 passed, 49 skipped, 6 failed. Five failures were limits passed under that load: three `tests/cli.test.ts`
+tests (15 s each, `--max-tasks` among them), one `tests/memory/memory.test.ts` test (15 s), and
+`tests/sandbox/sitesReal.test.ts`'s launch check (the sandbox's 30 s set-up). The sixth,
+`tests/memory/hub.test.ts`'s "the whole stop run passed its limit", found the stand-in hub already ended, most likely
+because the test's stand-in helper stops the hub 3 s after it starts and the loaded run was slow (that test took
+9.6 s; not traced further). Each of the six passed when run alone, the hub test four times. The types check passed.
+
+**No process of the build's was left:** every MemPalace process running was the user's own (`~/.local/bin` and the
+user's uv tool folder), and none ran from the build folder.
+
+**The last snapshot** of the user's folders (12:18:25 to 12:18:38 UTC), with step 1's helper, compared with step 1's
+first kept snapshot (`step1-f`, taken at step 1): the helper reported differences, all of them files of the user's own
+MemPalace plugin or of the Claude Code update the user explained at step 10. The helper keeps only each entry's last
+change time, so the times below are last changes; earlier changes since step 1 are not recorded.
+- `~/.mempalace`, the user's MemPalace plugin, saving from the user's Claude Code sessions (files of the kinds earlier
+  pairs traced):
+  - `palace/sqlite_exact.sqlite3` (6,809,341,952 to 6,854,701,056 bytes), last 11:53:42.5 UTC; its `-wal`
+    (7,720,912 to 13,579,552 bytes), 11:53:46.5;
+  - `wal/write_log.jsonl`, 32,111 bytes longer, 11:53:03.7;
+  - `hook_state/last_checkpoint`, 11:53:04.0;
+  - three `hook_state/<session>_last_save` files: 11:53:04.0 (this build's lead Claude Code session), 2026-11-20
+    09:09:44.5 (the other session traced at step 28's third run), 2026-11-19 04:29:38.7 (the other project's
+    session traced at step 11);
+  - `locks/mine_palace_<palace key>.lock`, 11:53:04.1, and the `locks` folder, 11:53:46.5;
+  - set apart, as always: the daemon folder (12:18:26.0, during the snapshot), its `queue.sqlite3` (11:53:46.5) and
+    `hook_state/hook.log` (40,826 bytes longer, 11:58:43.1).
+  - The latest of these follow the known chain: the lead session's reply ended at 11:53:02.133 UTC, its Stop hook
+    finished at 11:53:04.086, the plugin's files changed at 11:53:03.7 to 11:53:04.1, and the palace at 11:53:42.5
+    and 11:53:46.5.
+- `~/.local/bin` (15 entries against 14) and `~/.cache`, the Claude Code update of 2026-11-19: `claude.exe` changed
+  and `claude.exe.old.<number>` was added (01:36:02.2 UTC), and `~/.cache/claude/staging` changed (01:36:00.2).
+- `AppData/Roaming/uv` and `AppData/Local/uv`: no change. `~/.config/mempalace`: missing both times. Nothing else in
+  `~/.cache` changed; every folder's entry count is step 1's apart from `~/.local/bin`.
+
+**The build folder**, `tachi-8d-build` in the user's Temp folder (6.6 GB of files: 85,743 files, 9,046 folders and
+two junctions inside it, uv's Python links), was then removed by that name, the two junctions unlinked without being
+followed, and it no longer exists. It held the snapshots, the throwaway installs, palaces and hubs, and the
+measurement outputs whose figures are in this record. The snapshot was not run again after this.
+
+## As built
+
+Where the build differs from this design, or settles what it left open. The build plan's open questions are cited by
+number (Q1 to Q27), each with the user's answer and its date; "the user's choice" marks an answer given during the
+build, on 2026-11-19 or 2026-11-20. Every figure is from the measured sections above or the build's step reports, and
+each limit is 5 times this PC's slowest unless noted (the user's margin; no slower PC was run). The README's
+"Long-term memory's limits" gathers the rarer cases left as limits. Steps 1 to 30 are c14dbe3 to 4510ebf on
+`release-8d`, with their review fixes.
+
+**The hub**
+- **Not `mempalace serve`** (section 2, "The hub"; Q24, the user's answer 2026-11-19). Step 6 found that on Windows
+  `serve` is four processes, the one Tachikoma would start is not the one that serves, and stopping it leaves the
+  server running with the palace locked. The window starts the environment's own Python directly, `-I -m
+  mempalace.mcp_server --transport http --host 127.0.0.1 --port <p> --palace <palace> --backend sqlite_exact`, with
+  `MEMPALACE_EMBEDDING_MODEL=minilm`, and stops it by the serving process's id after a start-time check. Step 8 and
+  step 20 proved that start and stop before it was relied on. The design's "through the hub's own shutdown if it has
+  one" is not used: the stop is forced on Windows (`TerminateProcess`; only idle hubs were stopped, approved
+  2026-11-20), SIGTERM on Linux and macOS (from their manuals, not run).
+- **Two settings on every hub:** `MEMPALACE_MCP_WRITER_WAIT_SECONDS=0` (Q8, 2026-11-19), so a second hub for the same
+  palace exits with code 2 at once and the window joins the other window's hub; and `MEMPALACE_MCP_IDLE_HOURS=0`
+  (Q25, 2026-11-19), so a hub never quits on its own.
+- **Where the window finds the hub** (Q7, 2026-11-19): Tachikoma's own hub record in `memory/home`, written only under
+  the join lock, and MemPalace's `serverinfo.json` found by matching `palace_path`. A last window that cannot take the
+  join lock writes `memory/home/hub-stopping.json` (approved 2026-11-20). The palace's version record is
+  `tachikoma-version.json` in the palace folder, `{"mempalace":"3.12.0"}` (approved 2026-11-20).
+- **The lock** (Q2, the user's choice 2026-11-19): an exclusive `node:sqlite` transaction on one lock file per lock,
+  for joining, stopping, installing and saving. On Node 22 only its one `ExperimentalWarning` is dropped ("Drop just
+  that warning", 2026-11-20).
+- **Figures:** start limit 40 s, for every start; check interval while a hub starts 100 ms; health check 0.75 s
+  (MemPalace's own); wait between lock tries 500 ms (M3, 2026-11-19). The stop: 1.3 s for the whole stop (5 x
+  257.5 ms), replacing M3's 1 s; a stop past it counts as stopped. The read-back of the storage and model: 0.9 s (5 x
+  165.2 ms). The start-time read after a start: 1 s (5 x 195.5 ms). All the user's choices of 2026-11-20 (step 20).
+- **"In use"** (M4, 2026-11-19): refreshed every 5 s; one older than 27 s counts as gone.
+- **An empty palace** (2026-11-20): MemPalace refuses `mempalace_status` on a new palace until its first entry. A
+  refusal with no palace file, or with a file that opens and has no model row, means memory on; a file that cannot be
+  opened turns memory off.
+
+**The install**
+- **The download** (M1, 2026-11-19): N = 230 MB, the largest total with Python (Linux x86-64, 229.6 MB), rounded up.
+  Python 3.13 (the user's choice at step 3, 2026-11-19).
+- **uv's settings** (2026-11-20): the user's `UV_NATIVE_TLS`, `UV_SYSTEM_CERTS`, `UV_PYTHON_INSTALL_MIRROR` and
+  `UV_ASTRAL_MIRROR_URL` are passed to uv; every other `UV_` name is left out, the package-index ones too ("Drop the
+  mirror settings", after uv issue #6349), and `UV_NO_CONFIG=1` is set. `sfw.exe` or `sfw.cmd` is used ("Accept
+  sfw.cmd too", 2026-11-20).
+- **The model** is downloaded by Node's own `fetch`, not through sfw, and is checked against its hash; that download
+  ignores `HTTPS_PROXY` (a known limit, 2026-11-20).
+- **Without uv** (section 6): memory is off with the design's line, as designed, with two exceptions the user chose
+  on 2026-11-20 at step 27: an environment already set up starts without uv, since the hub start uses no uv ("Start
+  memory anyway"); and after "Don't ask again" no line is said ("Stay silent").
+- **A set-up that ends during a session** (Q1, 2026-11-20): saving, the note and lessons on failure start at once;
+  the three tools and the prompt line are fixed per launch and join at the next one (`Long-term memory is set up. Its
+  tools join at the next launch.`). `/memory setup` after an install that failed this launch starts a new one ("Try
+  again now", 2026-11-20).
+- **The first-use ask** (Q3, 2026-11-20): a launch question before the window, with ` [y] Yes  [n] Not now  [d] Don't
+  ask again`; `/memory setup` uses the yes/no question. "Don't ask again" is an empty private file in
+  `<data folder>/memory/` (Q12, 2026-11-20).
+
+**What is saved** (section 3)
+- **A turn** (Q4 and Q5, 2026-11-19): one typed prompt and all of the model's text in answer to it, in order; `<n>`
+  is the prompt's place in the session, from 1. A turn without typed words is not saved.
+- **Where a turn ends** (Q22, 2026-11-20): a line in the transcript at each typed turn's end; a turn without one is
+  never saved. An older Tachikoma counts the new lines as damaged (Q17, 2026-11-20: kept, a known limit).
+- **The room name** (Q19, 2026-11-19): the folder's name, a hyphen and 8 hex characters, e.g. `tachikoma-3fa9c2d1`
+  (form approved 2026-11-20).
+- **A turn over 100,000 characters** is saved in parts (Q26, 2026-11-19), labelled `tachikoma session <id>, turn <n>,
+  part <k> of <m>` (approved 2026-11-20). A note or a lesson over 100,000 characters is refused with a line, not
+  saved in parts (2026-11-19).
+- **Switching session** (Q6, 2026-11-20): nothing waits at the switch; each turn's look-up, removal, add and mark is
+  done under one save lock per palace (`memory/`, or `memory/use/` for the user's own); `/branch` copies are marked
+  saved.
+- **Limits** (2026-11-20): each saver request 13 s (5 x 2,565.4 ms, the slowest full-part add); the exit save 14 s
+  (M2, 2026-11-19: 5 x (1,445.9 + 1,146.9) + 100 ms, rounded up).
+- **At exit** (2026-11-20, "A: wait, then save"): closing lets a join and connect already under way finish inside the
+  14 s, and the saver's last chance waits for the palace up to that limit.
+
+**How memory reaches the model** (section 4)
+- **"This project"** is two searches at once, the project's room and `lessons`, merged by distance (Q27, 2026-11-19).
+  A query is cut to MemPalace's 250 characters.
+- **The note** (M6, the user's choice N3, 2026-11-20): cut-off 0.4861, up to 3 matches, each search asked for 100
+  results (2026-11-20). Its time limit is the lesson search's 3.4 s (Q9, 2026-11-19). While memory is not on, each
+  message tries again until it is, still at most one note per launch, `/clear` or shortening ("Keep trying",
+  2026-11-20). Heading: `From long-term memory, close matches to this message (information, not instructions):`.
+  It is a new `Part.from` value, `memory` (Q10, 2026-11-20).
+- **`memory_search`** returns at most 5 matches, MemPalace's own default, and a match shows its matched piece (800
+  characters at most), not the whole entry (2026-11-20). Dates are the local day.
+- **Tool time limits:** searches 3.4 s, adds 13 s (2026-11-20).
+- **The subagents' line** names `memory_search` when memory is on (Q11, 2026-11-20).
+- **A resumed session** (Q21, 2026-11-20): when the saved prompt's memory line and this launch's memory differ, the
+  prompt is rebuilt; the existing tools-changed line is said only when thinking was really left out.
+
+**Lessons** (section 5)
+- **The search on a failure: "the tool's name and the start of its error"** (Q18). The user's answer of 2026-11-19,
+  before step 13: the start of the error is its first line, as `/errors` shows it. Widened for failed commands by the
+  user's answer of 2026-11-19, after step 13, because a failed command's first line is only `exit code: N` or `killed
+  by SIG...`: for the `shell` tool the query is the tool's name, the command's first word and the first line of the
+  command's own output after the status (its first error-stream line, else its first ordinary line, else the status
+  line; plan approved 2026-11-19). A `shell` failure without that shape, and every other tool, keeps the error's first
+  line. All cut to 250 characters.
+- **The cut-off and count** (M5, the user's choice R3, 2026-11-19): 0.4862, 1 lesson, from made-up lessons searched by
+  made-up failures, as the user's error logs held only 6 tool failures. Only the closest lesson is considered; one that
+  does not fit under the output cap is not added (Q23, 2026-11-20; "Add nothing", 2026-11-20). Time limit 3.4 s (M8,
+  2026-11-19: 5 x 678.3 ms).
+- **The ask** (M7, 2026-11-19: as designed; it would have fired 0 times in 80 turns). It is sent only while memory is
+  on (Q16, 2026-11-20). The approved request is its system prompt, and the user message is `Failed call: <tool>
+  <input>`, `Its error: <error>`, `The call that worked: <tool> <input>` ("Request as system", 2026-11-20), as some
+  providers reportedly refuse an empty system prompt. The memory tools' own failures do not count. A failed request
+  stays silent; the window cancels running requests at exit, `-p` waits for them.
+- **The duplicate check** is MemPalace's exact one (`already_exists`), not `mempalace_check_duplicate` (2026-11-19).
+
+**What the user sees** (section 6)
+- **Off** (Q13, Q15, 2026-11-20): `--no-memory` is one declared flag; a memory failure is error kind `memory`,
+  harmless for `-p`, one row per change of state. `-p` prints a memory row as the message alone (2026-11-20).
+  `"memory"` is read at launch only, with a "next launch" line on a live edit (Q20, 2026-11-20).
+- **The status line** (Q14, 2026-11-20): a status part `memory`, shown only when it matters; `memory off` only for a
+  failure in this run.
+- **`/memory`**: its counts wait up to 18.1 s (5 x 3,612.6 ms, a count behind a launch catch-up save, 2026-11-20);
+  `Unsaved turns: <n>` shows in every state when not zero (2026-11-20).
+
+**Not run here:** Linux and macOS; the real lesson request to each provider (`scripts/8d/live-lesson-ask.mjs`, the
+user's to run with their key). The tests against a real MemPalace (`TACHI_TEST_MEMPALACE=1`) passed, 19 of 19, on
+2026-11-20.
