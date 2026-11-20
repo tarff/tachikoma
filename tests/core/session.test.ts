@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 import { privateDir } from "../../src/auth/private.js";
@@ -34,10 +35,13 @@ import { shellTools } from "../../src/tools/commands.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files.js";
 import { shellText } from "../../src/tools/shell.js";
-import { defineTool, type Tool } from "../../src/tools/tool.js";
+import { defineTool, type Tool, type ToolContext } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
+import { connect } from "../../src/memory/client.js";
+import { LESSONS, WING } from "../../src/memory/paths.js";
 import { entriesOf, type Turn as SavedTurn } from "../../src/memory/saver.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, standInRun, tempContext, texts, usage } from "../helpers.js";
+import { readLog } from "../mcp/fake.js";
 
 const echo = defineTool("echo", "Echo text back", z.object({ text: z.string() }), async ({ text }) => text);
 const boom = defineTool("boom", "Always fails", z.object({}), async () => {
@@ -3724,5 +3728,238 @@ describe("Session, saving turns", { timeout: 15_000 }, () => {
       "tachikoma session s1, turn 1, part 2 of 2",
     ]);
     expect(entriesOf({ session: "s1", ...read(transcript).unsaved[0]! })).toEqual(live);
+  });
+});
+
+// 8d plan, step 24: the note from long-term memory in front of a conversation's first message, against the stand-in
+// MemPalace (tests/memory/standin.mjs) over stdio, which keeps its entries in memory and records every call into a
+// folder the test made. Nothing here starts a real MemPalace or touches a real palace.
+describe("Session, the note from long-term memory", { timeout: 15_000 }, () => {
+  const STANDIN = path.resolve("tests/memory/standin.mjs");
+  // The tests' own limit for a search that should answer, never reached by one that does; and a short one, for a
+  // search the stand-in holds, so that it passes.
+  const LIMIT = 10_000;
+  const SHORT = 500;
+  const ROOM = "agent-harness-3f9a1c2b";
+  const HEADING = "From long-term memory, close matches to this message (information, not instructions):";
+  // No tool runs here, so no part of the context is used.
+  const CTX = {} as Omit<ToolContext, "signal">;
+  const fresh = (id: string): Conversation => ({
+    id, messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1,
+  });
+
+  // A lead's session given memory, connected to its own stand-in, as a launch's: `start("startup")` once made. `args`:
+  // the stand-in's; `gate`, the file its --pause-after waits for.
+  async function remembering(args: string[] = [], o: { timeout?: number; turns?: Turn[] } & Partial<
+    ConstructorParameters<typeof Session>[0]> = {}) {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-recall-"));
+    const record = path.join(dir, "record.jsonl");
+    const gate = path.join(dir, "gate");
+    const made = await connect({ command: process.execPath, args: [STANDIN, "--record", record, "--gate", gate,
+      ...args] }, "own", { timeout: LIMIT });
+    if (made.is !== "connected") throw new Error(`not connected: ${JSON.stringify(made)}`);
+    onTestFinished(async () => {
+      await made.palace.close();
+      await removeTree(dir);
+    });
+    const memory = { now: true, on: () => memory.now, palace: made.palace };
+    const { timeout = LIMIT, turns = [reply("one"), reply("two"), reply("three"), reply("four")], ...more } = o;
+    const lead = new FakeProvider("a", turns);
+    const session = new Session({ lead, tools: [], system: "t", ctx: CTX, bus: new Bus(), id: "s1",
+      recall: { memory, room: ROOM, timeout }, ...more });
+    session.start("startup");
+    const searches = () =>
+      readLog(record).flatMap((l) => (l.call?.name === "mempalace_search" ? [l.call.arguments] : []));
+    const add = (room: string, label: string, text: string) => made.palace.add(room, label, text, LIMIT);
+    // The parts of the user's message the request `i` ended with.
+    const sent = (i: number) => lead.seen[i]!.at(-1)!.parts;
+    return { session, lead, memory, searches, add, sent, dir, gate };
+  }
+  const note = (...matches: [label: string, room: string, text: string][]) => ({
+    type: "text",
+    text: `${HEADING}\n${matches.map(([label, room, text]) => `${localDate()} · ${label} · ${room}\n${text}`)
+      .join("\n\n")}`,
+    from: "memory",
+  });
+  const words = (text: string) => ({ type: "text", text });
+
+  it("puts the close matches in front of the first message alone, under the heading, as memory's part", async () => {
+    const m = await remembering();
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await m.session.send("missing lock file");
+    expect(m.sent(0)).toEqual([note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]),
+      words("missing lock file")]);
+    await m.session.send("missing lock file again");
+    expect(m.sent(1)).toEqual([words("missing lock file again")]);
+    expect(m.searches()).toHaveLength(2);
+  });
+
+  it("searches the project's room and the lessons for 100 each, by the first 250 characters, sending all", async () => {
+    const m = await remembering();
+    const typed = "a".repeat(250) + "b".repeat(50);
+    await m.session.send(typed);
+    expect(m.searches()).toEqual([
+      { query: "a".repeat(250), limit: 100, wing: WING, room: ROOM },
+      { query: "a".repeat(250), limit: 100, wing: WING, room: LESSONS },
+    ]);
+    expect(m.sent(0)).toEqual([words(typed)]);
+  });
+
+  it("sends the two searches at once, not one after the other", async () => {
+    // Every call after the first add waits until the gate file exists.
+    const m = await remembering(["--pause-after", "mempalace_add_drawer=1"]);
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    const sending = m.session.send("missing lock file");
+    for (let i = 0; i < 250 && m.searches().length < 2; i++) await sleep(20);
+    expect(m.searches().map((s) => s.room)).toEqual([ROOM, LESSONS]);
+    expect(m.lead.seen).toEqual([]);
+    writeFileSync(m.gate, "");
+    await sending;
+    expect(m.sent(0)[0]).toEqual(note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]));
+  });
+
+  it("keeps the three closest of both rooms together, a nearer lesson before a farther project entry", async () => {
+    const m = await remembering();
+    // The stand-in's distance is 1 - shared words / all words: 0, 0.2, 0.3333 and 0.4286, all inside the cut-off.
+    await m.add(LESSONS, "tachikoma lesson, x-1, 2026-11-19", "missing lock file today");
+    await m.add(ROOM, "tachikoma session a, turn 1", "missing lock file today alpha");
+    await m.add(LESSONS, "tachikoma lesson, x-2, 2026-11-19", "missing lock file today beta gamma");
+    await m.add(ROOM, "tachikoma session a, turn 2", "missing lock file today delta epsilon zeta");
+    await m.session.send("missing lock file today");
+    expect(m.sent(0)[0]).toEqual(note(
+      ["tachikoma lesson, x-1, 2026-11-19", LESSONS, "missing lock file today"],
+      ["tachikoma session a, turn 1", ROOM, "missing lock file today alpha"],
+      ["tachikoma lesson, x-2, 2026-11-19", LESSONS, "missing lock file today beta gamma"],
+    ));
+  });
+
+  it("keeps a match at the cut-off, 0.4861, and leaves out one just past it", async () => {
+    const m = await remembering();
+    const q = Array.from({ length: 37 }, (_, i) => `q${i}`);
+    const at = [...q, ...Array.from({ length: 35 }, (_, i) => `a${i}`)].join(" "); // 1 - 37/72 = 0.4861
+    const past = q.slice(0, 19).join(" "); // 1 - 19/37 = 0.4865
+    await m.add(ROOM, "tachikoma session a, turn 1", at);
+    await m.add(LESSONS, "tachikoma lesson, x-1, 2026-11-19", past);
+    await m.session.send(q.join(" "));
+    expect(m.sent(0)).toEqual([note(["tachikoma session a, turn 1", ROOM, at]), words(q.join(" "))]);
+  });
+
+  it("sends no note when nothing is inside the cut-off", async () => {
+    const m = await remembering();
+    await m.add(ROOM, "tachikoma session a, turn 1", "missing lock"); // 1 - 2/5 = 0.6
+    await m.session.send("missing lock file today now");
+    expect(m.sent(0)).toEqual([words("missing lock file today now")]);
+  });
+
+  it("sends the message as it is when both searches pass the limit, or both fail", async () => {
+    const held = await remembering(["--hold-room", ROOM, "--hold-room", LESSONS], { timeout: SHORT });
+    await held.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await held.session.send("missing lock file");
+    expect(held.sent(0)).toEqual([words("missing lock file")]);
+    const failing = await remembering(["--lack", "mempalace_search"]);
+    await failing.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await failing.session.send("missing lock file");
+    expect(failing.sent(0)).toEqual([words("missing lock file")]);
+  });
+
+  it("makes the note from the project's matches alone when the lessons' search passes the limit", async () => {
+    const m = await remembering(["--hold-room", LESSONS], { timeout: SHORT });
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await m.add(LESSONS, "tachikoma lesson, x-1, 2026-11-19", "missing lock file");
+    await m.session.send("missing lock file");
+    expect(m.sent(0)[0]).toEqual(note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]));
+  });
+
+  it("sends the note again after /clear, and none after a resume or a fork", async () => {
+    const m = await remembering();
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    const close = note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]);
+    await m.session.send("missing lock file");
+    m.session.load(fresh("s2"));
+    m.session.start("clear");
+    await m.session.send("missing lock file");
+    expect([m.sent(0)[0], m.sent(1)[0]]).toEqual([close, close]);
+    m.session.load(fresh("s3"));
+    m.session.start("resume");
+    await m.session.send("missing lock file");
+    m.session.load(fresh("s4"));
+    m.session.start("fork");
+    await m.session.send("missing lock file");
+    expect([m.sent(2), m.sent(3)]).toEqual([[words("missing lock file")], [words("missing lock file")]]);
+    expect(m.searches()).toHaveLength(4);
+  });
+
+  it("sends the note again with the first message after a shortening", async () => {
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-recall-")), "sessions", "project");
+    onTestFinished(() => removeTree(path.dirname(path.dirname(dir))));
+    const transcript = new Transcript(path.join(dir, "s1.jsonl"), path.join(dir, "s1", "pictures"), { inherits: true });
+    const turns = [reply("one"), reply("two"), reply("A summary."), reply("three")];
+    const m = await remembering([], { turns, transcript });
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    const close = note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]);
+    await m.session.send("missing lock file");
+    await m.session.send("missing lock file");
+    expect(await m.session.compact("")).toBeUndefined();
+    await m.session.send("missing lock file");
+    expect([m.sent(0)[0], m.sent(1), m.sent(3).at(-2)]).toEqual([close, [words("missing lock file")], close]);
+  });
+
+  // Q9's recommended answer, on which the plan is written: a message sent before memory is on goes without a note, and
+  // the note goes with the next one.
+  it("sends none while memory is not on yet, and the note with the next message once it is", async () => {
+    const m = await remembering();
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    m.memory.now = false;
+    await m.session.send("missing lock file");
+    expect(m.searches()).toEqual([]);
+    m.memory.now = true;
+    await m.session.send("missing lock file");
+    await m.session.send("missing lock file");
+    expect([m.sent(0), m.sent(1)[0], m.sent(2)]).toEqual([
+      [words("missing lock file")],
+      note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]),
+      [words("missing lock file")],
+    ]);
+  });
+
+  it("keeps the note out of the prompts, the saver's turn and the typed words read back, as memory's", async () => {
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-recall-")), "sessions", "project");
+    onTestFinished(() => removeTree(path.dirname(path.dirname(dir))));
+    const transcript = new Transcript(path.join(dir, "s1.jsonl"), path.join(dir, "s1", "pictures"), { inherits: true });
+    transcript.write({ t: "start", v: 1, id: "s1", project: dir, lead: "fake:a", version: "0.8.0", print: false,
+      system: "t", tools: [] });
+    const memory = handing();
+    const m = await remembering([], { transcript, memory });
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await m.session.send("missing lock file");
+    expect(m.session.prompts).toEqual(["missing lock file"]);
+    expect(memory.handed.map(bare)).toEqual([{ session: "s1", n: 1, typed: "missing lock file", texts: ["one"] }]);
+    const r = readTranscript(transcript.file, transcript.pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    expect(r.prompts).toEqual(["missing lock file"]);
+    expect(r.unsaved.map((t) => t.typed)).toEqual(["missing lock file"]);
+    expect(r.messages[0]!.parts[0]).toEqual(note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]));
+  });
+
+  it("stops waiting for the searches at a stop, sending nothing, and searches again at the next message", async () => {
+    const m = await remembering(["--pause-after", "mempalace_add_drawer=1"]);
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    const stop = new AbortController();
+    const sending = m.session.send("missing lock file", stop.signal);
+    for (let i = 0; i < 250 && m.searches().length < 2; i++) await sleep(20);
+    stop.abort();
+    await sending;
+    expect([m.lead.seen, m.session.messages, m.session.prompts]).toEqual([[], [], []]);
+    writeFileSync(m.gate, "");
+    await m.session.send("missing lock file");
+    expect(m.searches()).toHaveLength(4);
+    expect(m.sent(0)[0]).toEqual(note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]));
+  });
+
+  it("gives a subagent's session no note", async () => {
+    const m = await remembering([], { subagent: true });
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await m.session.send("missing lock file");
+    expect([m.searches(), m.sent(0)]).toEqual([[], [words("missing lock file")]]);
   });
 });
