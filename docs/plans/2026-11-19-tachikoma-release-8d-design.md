@@ -4277,7 +4277,8 @@ backend collection.", the same hint. So the refusal cannot tell them apart. The 
 
 **The user's choices (2026-11-20).**
 - The stop's limit: 1.3 s for the whole stop run (5 x 257.5 ms). It replaces M3's 1 s for the stop. A stop that passes
-  it counts as stopped, and the record is cleared.
+  it counts as stopped, and the record is cleared. Step 20's code review changed this: see "What counts as a stop" in
+  As built.
 - The read-back's limit: 0.9 s (5 x 165.2 ms). On a timeout memory is off for this launch; the next launch tries
   again.
 - The start-time read after a start: its own limit, 1 s (5 x 195.5 ms). The 40 s start limit stays as M3 measured
@@ -4392,7 +4393,7 @@ followed, and it no longer exists. It held the snapshots, the throwaway installs
 measurement outputs whose figures are in this record. The snapshot was not run again after this.
 
 **Other tests' leftovers in the user's Temp folder** are not this step's: 223,256 top-level `tachi-*` entries since
-2026-10-22, 6,533 of them from 2026-11-20 (mostly `tachi-`, 4,834, and `tachi-app-data-`, 1,399). They are left for
+2026-10-22, 6,533 of them from 2026-11-20 (`tachi-`, 4,717, `tachi-app-data-`, 1,399, and 417 others). They are left for
 the cleanup release, where the tests that leave them will be fixed (the user's choice, "Leave for cleanup",
 2026-11-21). Nothing of them was deleted.
 

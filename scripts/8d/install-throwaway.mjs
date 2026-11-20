@@ -122,7 +122,9 @@ function sync(run) {
   const took = ((Date.now() - start) / 1000).toFixed(1);
   console.log(`exit ${r.status} in ${took} s${r.error ? `, ${r.error.message}` : ""}`);
   const lines = readFileSync(log, "utf8").split(/\r?\n/);
-  const plainLines = lines.filter((l) => l.trim() && !/^\s*(\S+\s+)?(TRACE|DEBUG)\s/.test(l) && !/^\s*[│├└]/.test(l));
+  const plainLines = lines.filter(
+    (l) => l.trim() && !/^\s*(\S+\s+)?(TRACE|DEBUG)\s/.test(l) && !/^\s*[│├└]/.test(l),
+  );
   console.log(`log: ${lines.length} lines; lines other than DEBUG and TRACE:\n${plainLines.slice(-60).join("\n")}`);
   if (run === "tamper") {
     const text = lines.join("\n");

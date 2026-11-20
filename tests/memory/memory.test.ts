@@ -609,6 +609,8 @@ describe("the user's own MemPalace", () => {
       // Its home is the one it was given, never memory's.
       expect(started.env.USERPROFILE).toBe(s.env.USERPROFILE);
       expect(started.env.HOME).toBe(s.env.HOME);
+      expect(started.env.APPDATA).toBe(s.env.APPDATA);
+      expect(started.env.LOCALAPPDATA).toBe(s.env.LOCALAPPDATA);
       // No read-back: its backend and model are never asked.
       expect(s.calls().map((c) => c.name)).not.toContain("mempalace_status");
       expect(s.errors).toEqual([]);

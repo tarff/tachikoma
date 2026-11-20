@@ -36,6 +36,10 @@ export interface MemoryPaths {
   env: string;
   envPython: string;
   home: string;
+  // APPDATA and LOCALAPPDATA on Windows, inside the home as Windows lays them out (the user's choice after the final
+  // review, "Redirect AppData too", as tests/memory/real.test.ts's real run had them).
+  appData: string;
+  localAppData: string;
   palace: string;
 }
 
@@ -46,6 +50,7 @@ export function memoryPaths(
 ): MemoryPaths {
   const root = path.join(data, "memory");
   const env = path.join(root, "env", hash);
+  const home = path.join(root, "home");
   return {
     root,
     python: path.join(root, "python"),
@@ -55,7 +60,9 @@ export function memoryPaths(
     tmp: path.join(root, "tmp"),
     env,
     envPython: platform === "win32" ? path.join(env, "Scripts", "python.exe") : path.join(env, "bin", "python"),
-    home: path.join(root, "home"),
+    home,
+    appData: path.join(home, "AppData", "Roaming"),
+    localAppData: path.join(home, "AppData", "Local"),
     palace: path.join(root, "palace"),
   };
 }

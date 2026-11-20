@@ -29,8 +29,9 @@ const DOWNLOADS = (name: string) =>
 
 // The given environment without the user's settings above (but those `keep` names) or any spelling of a name set
 // here, then those names. The home folder is the platform's own variable: Python's home is USERPROFILE on Windows and
-// HOME elsewhere (step 5, ntpath.py:362 and posixpath.py:244). TEMP and TMP inside memory/ (the user's choice after
-// step 8), and TMPDIR, which Python's tempfile looks at before them on every system.
+// HOME elsewhere (step 5, ntpath.py:362 and posixpath.py:244), and on Windows APPDATA and LOCALAPPDATA inside it too
+// (the user's choice after the final review, "Redirect AppData too"). TEMP and TMP inside memory/ (the user's choice
+// after step 8), and TMPDIR, which Python's tempfile looks at before them on every system.
 function own(
   paths: MemoryPaths,
   env: NodeJS.ProcessEnv,
@@ -39,7 +40,9 @@ function own(
   keep: (name: string) => boolean = () => false,
 ) {
   const all: Record<string, string> = {
-    [platform === "win32" ? "USERPROFILE" : "HOME"]: paths.home,
+    ...(platform === "win32"
+      ? { USERPROFILE: paths.home, APPDATA: paths.appData, LOCALAPPDATA: paths.localAppData }
+      : { HOME: paths.home }),
     TEMP: paths.tmp,
     TMP: paths.tmp,
     TMPDIR: paths.tmp,

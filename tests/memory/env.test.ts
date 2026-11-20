@@ -35,6 +35,8 @@ const user: NodeJS.ProcessEnv = {
   TEMP: "C:\\Users\\someone\\AppData\\Local\\Temp",
   tmp: "C:\\Users\\someone\\AppData\\Local\\Temp",
   TMPDIR: "/tmp",
+  APPDATA: "C:\\Users\\someone\\AppData\\Roaming",
+  localappdata: "C:\\Users\\someone\\AppData\\Local",
   HF_HOME: "C:\\Users\\someone\\.cache\\huggingface",
   HF_HUB_OFFLINE: "0",
   HF_HUB_CACHE: "C:\\Users\\someone\\.cache\\huggingface\\hub",
@@ -85,6 +87,25 @@ describe("the memory environments", () => {
       }
     }
   });
+
+  // The user's choice after the final review, "Redirect AppData too": on Windows, AppData in memory/'s home, laid out
+  // as tests/memory/real.test.ts's real run had it (appData there). The user's own program keeps the user's.
+  it(
+    "give Windows APPDATA and LOCALAPPDATA inside memory/'s home, in one spelling each; the \"use\" program the user's",
+    () => {
+      const p = paths("win32");
+      for (const make of [uvEnv, hubEnv]) {
+        const env = make(p, user, "win32");
+        expect(env.APPDATA).toBe(path.join(p.home, "AppData", "Roaming"));
+        expect(env.LOCALAPPDATA).toBe(path.join(p.home, "AppData", "Local"));
+        for (const name of ["APPDATA", "LOCALAPPDATA"]) {
+          expect(names(env).filter((k) => k === name), name).toHaveLength(1);
+        }
+      }
+      const use = commandEnv(user, "win32");
+      expect(use.APPDATA).toBe(user.APPDATA);
+      expect(use.localappdata).toBe(user.localappdata);
+    });
 
   it("let none of the user's own MemPalace or uv settings through", () => {
     for (const platform of PLATFORMS) {
