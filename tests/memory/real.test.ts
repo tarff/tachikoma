@@ -492,7 +492,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
   it("the stop's helper answers gone for a process that has ended, and unopened for one it may not open", async () => {
     const p3 = { ...memoryPaths(path.join(root, "d3"), "x"), env: p1.env, envPython: p1.envPython };
     mkdirSync(p3.home, { recursive: true });
-    const ended = spawnSync(process.execPath, ["-e", ""]);
+    const ended = spawnSync(process.execPath, ["-e", ""], { env: hubBase, windowsHide: true });
     writeRecord(p3, { env: p1.env, port: 0, pid: ended.pid!, start: "1", stopping: false });
     const gone = new Hub({ paths: p3, env: hubBase });
     expect(await gone.close()).toEqual({ is: "left" });
@@ -565,10 +565,11 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
       room: ROOM }));
     const childDir = path.join(root, "child-env");
     const env = envOf(childDir, { ...appData(childDir), TSX_DISABLE_CACHE: "1" });
-    // Each child within: the limit vitest.config.ts gives a test that starts processes (15 s, measured on CI), for its
-    // start; its own requests, each within the 13 s it is given (ADD), the connect, the look-up, a removal and the add;
-    // and, while the other child holds the save lock, the other's look-up, removal and add.
-    const CHILD = 15_000 + 7 * ADD;
+    // Each child within: its start, 5 times the slowest of 50 starts of this child as here, each to its exit when
+    // refused at once (514.9 ms, so 2.6 s; scripts/8d/measure-close.mjs, step 29, 2026-11-20); its own requests, each
+    // within the 13 s it is given (ADD), the connect, the look-up, a removal and the add; and, while the other child
+    // holds the save lock, the other's look-up, removal and add.
+    const CHILD = 2_600 + 7 * ADD;
     const run = () => {
       let child: ChildProcess | undefined;
       const ran = new Promise<{ code: number | null; out: string }>((resolve) => {
@@ -748,17 +749,19 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     expect(files.filter((f) => f.endsWith("/chroma.sqlite3"))).toHaveLength(1);
     expect(files.filter((f) => f.endsWith("sqlite_exact.sqlite3"))).toEqual([]);
 
-    // The program and the Python it starts, then closed: the MCP library ends its input, and ends it by force if it
-    // is still running after its own waits (@modelcontextprotocol/client's stdio close, 2 s and 2 s), so it has ended,
-    // or been ended, by then; the exit is waited for within the stop's limit (step 20's run 3), as for a process ended
-    // by force.
+    // The program and the Python it starts, then closed: the MCP library ends its input and waits for it to exit.
+    // Each wait within 5 times the slowest of 50 clean closes of the same program, run as here
+    // (scripts/8d/measure-close.mjs, step 29, 2026-11-20; the record is build-step-29.md, section 9): the close
+    // 167.5 ms at most, so 0.9 s; the program had always exited when the close returned (code 0, 50 of 50), so the
+    // wait after it gets 0.1 s, the rounding's least.
     const child = started[0]!.child!;
     const tree = list([child.pid!]);
     expect(tree.find((p) => p.pid === child.pid)?.name.toLowerCase()).toBe("mempalace-mcp.exe");
-    await m2.close({ lessons: "cancel" });
+    await within(m2.close({ lessons: "cancel" }), 900, "the close of the user's program");
     if (child.exitCode === null && child.signalCode === null) {
-      await within(new Promise((resolve) => child.once("exit", resolve)), FIGURES.stop, "the program's exit");
+      await within(new Promise((resolve) => child.once("exit", resolve)), 100, "the program's exit");
     }
+    expect(child.exitCode).toBe(0);
     expect(stillRunning(tree)).toEqual([]);
   }
 
