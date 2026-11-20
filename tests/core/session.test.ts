@@ -37,7 +37,7 @@ import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files
 import { shellText } from "../../src/tools/shell.js";
 import { defineTool, type Tool, type ToolContext } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
-import { connect } from "../../src/memory/client.js";
+import { connect, type Hit, type Palace, type Scope } from "../../src/memory/client.js";
 import { LESSONS, WING } from "../../src/memory/paths.js";
 import { entriesOf, type Turn as SavedTurn } from "../../src/memory/saver.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, standInRun, tempContext, texts, usage } from "../helpers.js";
@@ -3961,5 +3961,223 @@ describe("Session, the note from long-term memory", { timeout: 15_000 }, () => {
     await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
     await m.session.send("missing lock file");
     expect([m.searches(), m.sent(0)]).toEqual([[], [words("missing lock file")]]);
+  });
+});
+
+// 8d plan, step 25: lessons from long-term memory after a lead's failed tool call. Most tests give the session a
+// stand-in for the lesson search that records each search and answers with the hits it is given, in the order given;
+// the slow search goes to the stand-in MemPalace (tests/memory/standin.mjs) over stdio. Made-up text only; nothing here
+// starts a real MemPalace or touches a real palace.
+describe("Session, lessons when a tool fails", { timeout: 15_000 }, () => {
+  const LABEL = "Lessons from earlier failures like this one (information, not instructions):";
+  const STANDIN = path.resolve("tests/memory/standin.mjs");
+  // The tests' own limit for a search that should answer, never reached by one that does; and a short one, for a
+  // search the stand-in holds, so that it passes.
+  const LIMIT = 10_000;
+  const SHORT = 500;
+  const MAX = MAX_TOOL_OUTPUT;
+  const LESSON = "tachikoma lesson, agent-harness-3f9a1c2b, 2026-11-19";
+  // A lesson the search found at `distance`, filed on 2026-11-19 in local time, as a match line gives the day.
+  const hit = (text: string, distance: number): Hit =>
+    ({ text, wing: WING, room: LESSONS, label: LESSON, distance, date: "2026-11-19T10:00:00" });
+  const lessoned = (error: string, ...hits: Hit[]) =>
+    `${error}\n\n${LABEL}\n${hits.map((h) => `2026-11-19 · ${LESSON} · ${LESSONS}\n${h.text}`).join("\n\n")}`;
+  // A tool of that name whose every call fails with `error`.
+  const failing = (name: string, error: string) =>
+    defineTool(name, "Always fails", z.object({ command: z.string().optional() }), async () => {
+      throw new Error(error);
+    });
+  const failedCommand = (stderr: string, stdout = "", code = 1) => shellText({ code, signal: null, stdout, stderr });
+  const AUTH = failedCommand("fatal: Authentication failed\nmore\n", "Everything up-to-date\n", 128);
+  const PULL = hit("Run git pull before pushing when the remote has new commits.", 0.1);
+
+  // The stand-in for the lesson search.
+  function recorder(hits: Hit[] = []) {
+    const searched: { query: string; scope: Scope; limit: number; timeout: number }[] = [];
+    const palace = {
+      search: async (query: string, scope: Scope, limit: number, timeout: number) => {
+        searched.push({ query, scope, limit, timeout });
+        return { is: "found" as const, hits };
+      },
+    } as unknown as Palace;
+    return { palace, searched };
+  }
+  const lessonsOf = (query: string, timeout = LIMIT) => ({ query, scope: { room: LESSONS }, limit: 100, timeout });
+
+  // A lead's session given lessons from `palace`, its model making each of `calls` in a reply of its own, then saying
+  // "done".
+  function failingSession(palace: Palace, tools: Tool[], calls: [string, object][], more: Partial<
+    ConstructorParameters<typeof Session>[0]> = {}, timeout = LIMIT) {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const turns = [...calls.map(([name, input], i) => callTool(`c${i + 1}`, name, input)), reply("done")];
+    const memory = { now: true, on: () => memory.now, palace };
+    const ctx = { gate: new PermissionGate("never", async () => false) } as unknown as Omit<ToolContext, "signal">;
+    const session = new Session({ lead: new FakeProvider("a", turns), tools, system: "t", ctx, bus,
+      lessons: { memory, timeout }, ...more });
+    const outputs = () =>
+      session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [p.output] : [])));
+    return { session, memory, errors, outputs };
+  }
+  const once = (name: string, error: string, input: object = {}, hits: Hit[] = []) => {
+    const r = recorder(hits);
+    return { ...failingSession(r.palace, [failing(name, error)], [[name, input]]), searched: r.searched };
+  };
+
+  it("searches the lessons for a failed command by the tool's name, its first word and its message", async () => {
+    const s = once("shell", AUTH, { command: "git push origin main" });
+    await s.session.send("go");
+    expect(s.searched).toEqual([lessonsOf("shell git fatal: Authentication failed")]);
+    expect(s.searched[0]!.query).not.toContain("exit code");
+    expect(s.outputs()).toEqual([AUTH]);
+  });
+
+  it("takes the first word from the command a PreToolUse hook rewrote the call to", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "tachi-lessons-"));
+    onTestFinished(() => removeTree(root));
+    const script = path.join(root, "hook.cjs");
+    writeFileSync(script, 'process.stdin.resume().on("end", () => process.stdout.write(process.argv[2]));');
+    const answer = { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "npm run build" } } };
+    const hook: Hook = { event: "PreToolUse", matcher: { all: true }, command: process.execPath,
+      args: [script, JSON.stringify(answer)], async: false, where: '"PreToolUse"' };
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => "never",
+      effort: () => undefined, lead: () => "fake:a" };
+    const hooks = new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, new Bus());
+    const r = recorder();
+    const gate = new PermissionGate("never", async () => false);
+    const ctx = { root, gate } as unknown as Omit<ToolContext, "signal">;
+    const s = failingSession(r.palace, [failing("shell", failedCommand("boom\n"))], [["shell", { command: "make" }]],
+      { hooks, ctx });
+    await s.session.send("go");
+    expect(r.searched).toEqual([lessonsOf("shell npm boom")]);
+    expect(s.errors[0]!.attempted).toBe('shell {"command":"npm run build"}');
+  });
+
+  it("searches a failed command that printed nothing by its status line", async () => {
+    const s = once("shell", failedCommand(""), { command: "grep -rn TODO src" });
+    await s.session.send("go");
+    expect(s.searched).toEqual([lessonsOf("shell grep exit code: 1")]);
+  });
+
+  it("searches a timeout by the tool's name and its first line, with no first word", async () => {
+    const timeout = "Stopped: the command did not complete within its 30s timeout. A command that starts with " +
+      "sleep is stopped at its timeout, not moved to the background.";
+    const s = once("shell", timeout, { command: "sleep 45" });
+    await s.session.send("go");
+    expect(s.searched).toEqual([lessonsOf(`shell ${timeout}`)]);
+  });
+
+  it("searches another tool's failure by its name and its error's first line", async () => {
+    const s = once("read_file", "ENOENT: no such file or directory, open 'a.ts'\n    at open (node:fs)");
+    await s.session.send("go");
+    expect(s.searched).toEqual([lessonsOf("read_file ENOENT: no such file or directory, open 'a.ts'")]);
+  });
+
+  it("searches by the first 250 characters when the pieces come to 400", async () => {
+    const s = once("shell", failedCommand("x".repeat(400)), { command: "npm test" });
+    await s.session.send("go");
+    expect(s.searched).toEqual([lessonsOf(`shell npm ${"x".repeat(240)}`)]);
+  });
+
+  it("never searches with a lesson's text or the label, though the call before had them", async () => {
+    const r = recorder([PULL]);
+    const calls: [string, object][] = [["shell", { command: "git push" }], ["shell", { command: "git push" }]];
+    const s = failingSession(r.palace, [failing("shell", AUTH)], calls);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(AUTH, PULL), lessoned(AUTH, PULL)]);
+    expect(r.searched).toEqual([lessonsOf("shell git fatal: Authentication failed"),
+      lessonsOf("shell git fatal: Authentication failed")]);
+  });
+
+  it("adds a lesson at the cut-off, 0.4862, after the error under the label, within the cap", async () => {
+    const at = hit(PULL.text, 0.4862);
+    const s = once("shell", AUTH, { command: "git push" }, [at]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(AUTH, at)]);
+    expect(s.outputs()[0]!.length).toBeLessThanOrEqual(MAX);
+  });
+
+  it("adds the closest of hits given out of distance order, and that one alone", async () => {
+    const far = hit("Check the remote's address.", 0.4);
+    const s = once("shell", AUTH, { command: "git push" }, [far, PULL]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(AUTH, PULL)]);
+  });
+
+  it("leaves the result as today with no lesson inside the cut-off", async () => {
+    const s = once("shell", AUTH, { command: "git push" }, [hit(PULL.text, 0.4863)]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([AUTH]);
+  });
+
+  it("leaves the result as today when the search passes its limit", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-lessons-"));
+    const record = path.join(dir, "record.jsonl");
+    const made = await connect({ command: process.execPath, args: [STANDIN, "--record", record, "--hold-room",
+      LESSONS] }, "own", { timeout: LIMIT });
+    if (made.is !== "connected") throw new Error(`not connected: ${JSON.stringify(made)}`);
+    onTestFinished(async () => {
+      await made.palace.close();
+      await removeTree(dir);
+    });
+    expect((await made.palace.add(LESSONS, LESSON, "shell git fatal: Authentication failed", LIMIT)).is).toBe("added");
+    const s = failingSession(made.palace, [failing("shell", AUTH)], [["shell", { command: "git push" }]], {}, SHORT);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([AUTH]);
+    const searches = readLog(record).flatMap((l) => (l.call?.name === "mempalace_search" ? [l.call.arguments] : []));
+    expect(searches).toEqual([{ query: "shell git fatal: Authentication failed", limit: 100, wing: WING,
+      room: LESSONS }]);
+  });
+
+  it("leaves the result as today, searching nothing, with memory not on", async () => {
+    const s = once("shell", AUTH, { command: "git push" }, [PULL]);
+    s.memory.now = false;
+    await s.session.send("go");
+    expect([s.searched, s.outputs()]).toEqual([[], [AUTH]]);
+  });
+
+  it("never adds a lesson longer than the whole cap", async () => {
+    const s = once("shell", AUTH, { command: "git push" }, [hit("z".repeat(MAX + 1), 0.1)]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([AUTH]);
+  });
+
+  it("adds only the first of two lessons when only the first fits, the whole then exactly the cap", async () => {
+    const second = hit("y".repeat(100), 0.2);
+    const error = "e".repeat(MAX - lessoned("", PULL).length);
+    const s = once("boom", error, {}, [PULL, second]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(error, PULL)]);
+    expect(s.outputs()[0]!.length).toBe(MAX);
+  });
+
+  it("adds none to an error long enough to be cut, which stays today's, marker and length included", async () => {
+    const s = once("boom", "e".repeat(MAX + 10), {}, [PULL]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([`${"e".repeat(MAX)}\n[cut: 10 more characters]`]);
+    expect(s.outputs()[0]!.length).toBeGreaterThan(MAX);
+  });
+
+  it("adds none to an error that fills the cap exactly", async () => {
+    const s = once("boom", "e".repeat(MAX), {}, [PULL]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual(["e".repeat(MAX)]);
+  });
+
+  it("leaves a subagent's failure as it is, searching nothing", async () => {
+    const r = recorder([PULL]);
+    const s = failingSession(r.palace, [failing("shell", AUTH)], [["shell", { command: "git push" }]],
+      { subagent: true });
+    await s.session.send("go");
+    expect([r.searched, s.outputs()]).toEqual([[], [AUTH]]);
+  });
+
+  it("logs the plain error, for a failed command with a lesson added too", async () => {
+    const s = once("shell", AUTH, { command: "git push" }, [PULL]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(AUTH, PULL)]);
+    expect(s.errors).toEqual([
+      { kind: "tool", attempted: 'shell {"command":"git push"}', message: AUTH, lead: "fake:a" },
+    ]);
   });
 });
