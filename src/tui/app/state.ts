@@ -65,6 +65,7 @@ export function useAppState({
   copy,
   saved,
   leftLines,
+  closeMemory,
   hooks,
   mcp,
   shell,
@@ -331,7 +332,8 @@ export function useAppState({
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, typed, history, running, phaseRefs,
     happening, late, toolLine, answered, run, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
-    editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm, palette, lastSaid, command,
+    editingBack, leftLines, closeMemory,
+    hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm, palette, lastSaid, command,
   } as const;
 }
 

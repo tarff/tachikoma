@@ -629,7 +629,9 @@ export const queue = (ui: UI, fns: Fns) => {
   // handed back, to print once Ink has ended (release 7 plan, Task 21). From the first step the App's own keys, pastes
   // and mouse are off (phase.ts, review), and nothing more starts. A view printed out comes back first, so the review
   // can draw. A copy with nothing to review is removed instead, its line printed (choice 121; copies.ts, dropIfNothing).
-  // Then, in every mode, SessionEnd fires (endSession, below) before Ink ends (release 8b plan, Task 10).
+  // Then, in every mode, SessionEnd fires (endSession, below) before Ink ends (release 8b plan, Task 10), and then
+  // long-term memory closes, its lesson requests cancelled, the saver's last chance given and the hub left (8d plan,
+  // step 27; Q16); a failure there ends nothing more.
   const leave = () => {
     if (ui.leaving.current) return;
     ui.leaving.current = true;
@@ -638,6 +640,7 @@ export const queue = (ui: UI, fns: Fns) => {
     const c = ui.copy;
     void (c ? review(c) : Promise.resolve())
       .then(endSession)
+      .then(() => ui.closeMemory?.().catch(() => {}))
       .finally(() => ui.exit());
   };
   // SessionEnd as the user leaves, once copy mode's review is done: the screen stays as it is meanwhile, its keys off

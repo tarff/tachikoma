@@ -133,6 +133,9 @@ export interface AppProps {
   // Takes the lines SessionEnd's hooks said as the user left where the window could not show them, in full screen or copy
   // mode, escaped, to print once Ink has ended (queue.ts, leave; release 8b plan, Task 10).
   leftLines?: (lines: string[]) => void;
+  // Long-term memory's closing as the window is left, once SessionEnd is done (queue.ts, leave; 8d plan, step 27);
+  // without it, as in most tests and with memory switched off, leaving only exits.
+  closeMemory?: () => Promise<void>;
   // The user's hooks, the session's and its subagents' (cli.tsx), for Ctrl+O's runs, /hooks and live edits (release 8b plan,
   // Task 12); without them, as in most tests, /hooks has none in force.
   hooks?: Hooks;

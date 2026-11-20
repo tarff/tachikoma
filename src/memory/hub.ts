@@ -359,6 +359,13 @@ export class Hub {
     return this.closed;
   }
 
+  // On a kill signal (8d plan, step 27), as the process is about to exit: only this window's "in use" file is
+  // removed, at once, and the timer stopped so it is not written again.
+  dropInUse(): void {
+    this.stopTimer();
+    rmSync(this.inUse, { force: true });
+  }
+
   // A join's end: a start that completes after closing never makes this window on (the leave handles its hub).
   private after(r: Joined): Joined {
     if (this.closing.signal.aborted) return { is: "closed" };

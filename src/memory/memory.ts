@@ -56,8 +56,8 @@ export interface CloseOptions {
 // The lines, as the user approved them (the design's two; the plan's step 21, 2026-11-20; the hub's details and the
 // read-back line, 2026-11-20). The installer's reasons (the user's choices at step 19) go inside "setting it up
 // failed".
-const NO_UV = "Memory is off: it needs uv, which was not found on PATH. Install uv (https://docs.astral.sh/uv/) and " +
-  "start Tachikoma again.";
+export const NO_UV = "Memory is off: it needs uv, which was not found on PATH. Install uv " +
+  "(https://docs.astral.sh/uv/) and start Tachikoma again.";
 const newerPalace = (version: string) =>
   `Memory is off: a newer Tachikoma has moved the palace to MemPalace ${version}. Update Tachikoma to use memory ` +
   "again.";
@@ -250,6 +250,11 @@ export class Memory {
     for (const r of this.#requests) r.stop.abort();
   }
 
+  // A kill signal (8d plan, step 27): only this window's "in use" file is removed, as the process exits at once.
+  killed(): void {
+    this.#hub?.dropInUse();
+  }
+
   // Closing, one operation for the whole service, safe to call twice: the first call's options hold.
   close(o: CloseOptions): Promise<void> {
     this.#closing ??= this.#close(o);
@@ -257,7 +262,10 @@ export class Memory {
   }
 
   // Stage one, winding down: nothing new starts; a running install is stopped and a wait on another window's install
-  // ended; the lesson requests are waited for or cancelled; then the saver's last chance, up to its limit. Stage two,
+  // ended; the lesson requests are waited for or cancelled; then the saver's last chance, up to its limit, which a join
+  // and connect already under way are first let finish inside (the user's choice after step 27's review, "A: wait,
+  // then save": M2's limit covers a hub still starting), a start that fails meanwhile saying so as at any other time.
+  // Stage two,
   // closed: the palace connection is closed, which ends a request still out, the user's own program with it; the
   // supervisor is closed and the hub left (a leave behind a join that is starting a hub can take up to the start limit
   // and the stop, which the caller's signal does not cut, step 20); a connect still under way is waited for, up to its
@@ -276,8 +284,9 @@ export class Memory {
       cut?.addEventListener("abort", end, { once: true });
       const run = o.save.run;
       try {
+        await until(Promise.all([...this.#tasks]), limit.signal);
         // Run inside an async function, so a saver that throws at once is caught as one that rejects.
-        await until((async () => run(limit.signal))().catch(() => {}), limit.signal);
+        if (!limit.signal.aborted) await until((async () => run(limit.signal))().catch(() => {}), limit.signal);
       } finally {
         clearTimeout(timer);
         cut?.removeEventListener("abort", end);
@@ -321,27 +330,30 @@ export class Memory {
     await this.#joined(await this.#hub.join(), false);
   }
 
-  // A join's end. A start that exits with code 2 and ends in another window's hub is a plain join: on (Q8).
+  // A join's end. A start that exits with code 2 and ends in another window's hub is a plain join: on (Q8). One that
+  // ends during closing's first stage is still taken, for the saver's last chance.
   async #joined(r: Joined, restart: boolean): Promise<void> {
-    if (this.#winding || r.is === "closed") return;
+    if (this.#closed || r.is === "closed") return;
     if (r.is === "off") return this.#fail({ is: "off", reason: hubLine(r.why, restart, this.#f.startLimit) });
     await this.#open({ url: r.url }, "own", restart);
   }
 
   // Connects this window's own palace client. To the hub within the read-back's limit, which was measured over a
   // connect and more (step 20's run 3); to the user's own program within the start limit, M3's one limit for every
-  // start. A connect that completes once closing has begun closes what it opened.
+  // start. A connect that completes during closing's first stage gives the saver the palace, memory's state staying
+  // as it is, and starts no restart; one that completes once closed closes what it opened.
   async #open(target: Target, kind: Kind, restart: boolean): Promise<void> {
     const timeout = kind === "use" ? this.#f.startLimit : this.#f.readBack;
     const link = ++this.#link;
     const c = await connect(target, kind, { timeout, onLost: () => this.#track(this.#lost(link)) });
-    if (this.#winding) {
+    if (this.#closed) {
       if (c.is === "connected") await c.palace.close();
       return;
     }
     if (c.is !== "connected") {
       const detail = c.is === "timed out" ? `it did not answer within ${seconds(timeout)}` : c.reason;
       if (kind === "use") return this.#fail({ is: "off", reason: programNotStarted(this.#use!, detail) });
+      if (this.#winding) return;
       if (restart) return this.#fail({ is: "off", reason: notRestarted(detail) });
       return this.#restart();
     }
@@ -382,9 +394,10 @@ export class Memory {
     this.#emit(state);
   }
 
-  // A failure: its change of state, and one error row.
+  // A failure: its change of state, and one error row; also during closing's first stage, as a join or connect under
+  // way then still ends (none once closed).
   #fail(state: { is: "off" | "failing"; reason: string }): void {
-    if (this.#winding) return;
+    if (this.#closed) return;
     this.#emit(state);
     this.#bus.emit("error", { kind: "memory", attempted: ATTEMPTED, message: state.reason, lead: this.#lead() });
   }

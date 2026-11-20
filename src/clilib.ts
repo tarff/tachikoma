@@ -8,7 +8,7 @@ import { privateDir } from "./auth/private.js";
 import type { Bus } from "./core/bus.js";
 import { type Instructions, type Reached, readInstructions, type Where } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
-import { subagentPrompt } from "./core/prompt.js";
+import { MEMORY_LINE, subagentPrompt } from "./core/prompt.js";
 import { type Conversation, type Ended, Session, type SessionOptions } from "./core/session.js";
 import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
 import { sameSetup } from "./core/setup.js";
@@ -573,6 +573,8 @@ export async function sandboxStart(
     session: string;
     labels?: Record<string, string>;
     waits?: { setup: number; check: number };
+    // Whether memory is on at the launch, which names memory_search in the subagents' line (8d plan, steps 23, 27).
+    memory?: boolean;
   },
   io: Pick<SandboxIo, "err" | "run">,
 ): Promise<Started | { exit: number }> {
@@ -679,7 +681,7 @@ export async function sandboxStart(
     root: BOX_ROOT,
     executor: opts.network === "off" ? networkNoted(box) : net ? networkNoted(box, SITES_NOTE) : box,
     workspace: new BoxWorkspace(box.id, run, BOX_ROOT, box.state),
-    subagentSystem: subagentPrompt(BOX_ROOT),
+    subagentSystem: subagentPrompt(BOX_ROOT, opts.memory),
     gate: { root: BOX_ROOT, home: BOX_HOME, shell: shellOf("box") },
     protection: boxProtection(root, protectionOf(ready.git)),
     lines: [
@@ -1016,12 +1018,16 @@ export function resumed(
   if (o.name) transcript.write({ t: "name", name: o.name });
   if (o.lead !== read.lead) transcript.write({ t: "lead", lead: o.lead });
   const rebuilt = !sameSetup(read.setup, o.prompt.setup);
-  if (rebuilt) {
+  // The second cause, kept apart from the setup (8d plan, step 27; Q21): memory is on at this launch, its prompt
+  // holding the memory line, and the saved prompt does not hold it, or the other way round. The saved setup's format is
+  // unchanged, so a session saved before 8d counts as one without the line.
+  const remembered = read.system.includes(MEMORY_LINE) !== o.prompt.full.includes(MEMORY_LINE);
+  if (rebuilt || remembered) {
     const box = o.prompt.setup.sandbox !== "off";
     transcript.write({ t: "system", system: o.prompt.full, box, setup: o.prompt.setup });
   }
   if (o.interactive && read.print) transcript.write({ t: "interactive" });
-  const system = rebuilt ? o.prompt.full : read.system;
+  const system = rebuilt || remembered ? o.prompt.full : read.system;
   // Each in the subagents folder, as tasks.ts names a subagent's file, made inside the private sessions folder; an id
   // from the file is used only when it is one Tasks gives, so no line can lead the write elsewhere.
   // A command's ending goes into the session's own transcript, a fork's or a branch's copy included, as its command line
@@ -1061,9 +1067,11 @@ export function resumed(
     // Said at the resume that changed the setting, its thinking part only when a reply had the provider's own content to
     // leave out; a later resume leaves out the same replies' thinking without a word (user, 2026-11-07: "Only at the
     // change").
+    // Memory alone: the tools line, when the rebuild left thinking out (`dropped`), as the history has already lost the
+    // content the tools' check looks for (Q21).
     ...(rebuilt
       ? [{ text: why + (dropped ? ", and its earlier replies are sent without their thinking." : ".") }]
-      : otherTools
+      : (remembered ? dropped : otherTools)
         ? [{ text: "The tools have changed since this session was saved, so its earlier replies are sent without their thinking." }]
         : []),
   ];

@@ -30,6 +30,7 @@ import { projectFile } from "../../src/core/datadir.js";
 import { attachErrorLog } from "../../src/core/errorlog.js";
 import { exportText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
+import { MEMORY_LINE } from "../../src/core/prompt.js";
 import { listSessions, openSession } from "../../src/core/sessions.js";
 import { INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
@@ -183,6 +184,7 @@ async function mount(
     copy?: AppProps["copy"]; // copy mode's copy, and what leave() does with it (release 7 plan, Task 21)
     sessions?: string; // the sessions folder, as sessionsDir gives it; a fresh one for this mount when not given
     save?: boolean; // the session saves there from the start, as cli.tsx starts one (App's sessions); unsaved otherwise
+    prompt?: string; // the launch's prompt, which /resume compares a saved one's with (8d plan, step 27); "t" if none
     // The user's hooks, as cli.tsx hands them to the session, the subagents and the App, or the whole of what the launch
     // read, with left-out rows and `off` for /hooks; none when not given (release 8b plan, Tasks 8 and 12).
     hooks?: Hook[] | HooksConfig;
@@ -240,7 +242,7 @@ async function mount(
   const start = { project: ctx.root, version: "test", tools: tools.map((t) => t.spec) };
   const begin = { ...start, lead: lead.id, print: false, system: "t", date: "2026-11-17", setup: OFF };
   const opened = opts.save ? newSaved(sessions, { id: randomUUID(), ...begin }) : undefined;
-  const windowSessions = new WindowSessions(sessions, start, { setup: OFF, full: "t" }, opened);
+  const windowSessions = new WindowSessions(sessions, start, { setup: OFF, full: opts.prompt ?? "t" }, opened);
   const mcp = opts.mcp && { project: [], ...opts.mcp(bus) };
   if (mcp) onTestFinished(() => mcp.servers.stopAll());
   if (mcp && hooks) mcp.servers.forms.useHooks(hooks); // as cli.tsx gives the servers' forms the hooks (release 8c plan, Task 12)
@@ -10954,6 +10956,37 @@ describe("App's sessions", () => {
     await until(app, "an apple");
     expect(lead.seen[0]).toEqual([typed("remember apple"), { role: "assistant", parts: [{ type: "text", text: "noted" }] }, typed("which fruit?")]);
   });
+
+  // 8d plan, step 27 (Q21): /resume with memory on, the launch's prompt holding the memory line, of a session saved
+  // without it: the prompt is rebuilt; the tools line is said when an Anthropic reply's thinking was left out, and
+  // nothing otherwise.
+  const MEMORY_ON = `t\n\n${MEMORY_LINE}`;
+  const CHANGED =
+    "The tools have changed since this session was saved, so its earlier replies are sent without their thinking.";
+  const thinking = { provider: "anthropic", content: [{ type: "thinking", thinking: "hm", signature: "x" }] };
+  for (const [what, native, line] of [
+    ["an Anthropic reply's thinking, says the tools line", thinking, `Resumed: remember pear.\n${CHANGED}`],
+    ["no Anthropic reply, says nothing more", undefined, "Resumed: remember pear."],
+  ] as const) {
+    it(`rebuilds the prompt on /resume with memory on of a session saved without its line; with ${what}`, async () => {
+      const first = await saved([{ ...reply("noted"), ...(native ? { native } : {}) }]);
+      await type(first.app, "remember pear");
+      await until(first.app, "noted");
+      first.app.unmount();
+      const lead = new FakeProvider("a", [reply("a pear")]);
+      const { app, session } = await saved([], { lead, prompt: MEMORY_ON });
+      await type(app, "/resume");
+      await until(app, "Saved sessions in this folder, newest first:");
+      await press(app, "\r");
+      await until(app, "Resumed: remember pear.");
+      expect(bare(stripVTControlCharacters(app.lastFrame()!))).toContain(bare(`${line}\n`));
+      if (!native) expect(app.lastFrame()).not.toContain("The tools have changed");
+      expect(session.id).toBe(first.session.id);
+      expect(session.system).toBe(MEMORY_ON);
+      await type(app, "which fruit?");
+      await until(app, "a pear");
+    });
+  }
 
   // TUI design pass, Task 16: a resumed session's replies are drawn as markdown, as they were live.
   it("draws a session's replies as markdown on /resume, as live", async () => {

@@ -93,8 +93,8 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
       if (!fs.existsSync(controlFile)) process.exit(0);
     }, 100);
     (async () => {
-      if (c.exit !== undefined) process.exit(c.exit);
       while (c.hold && !fs.existsSync(c.hold)) await new Promise((r) => setTimeout(r, 20));
+      if (c.exit !== undefined) process.exit(c.exit);
       if (c.backend) process.argv[process.argv.indexOf("--backend") + 1] = c.backend;
       await import(pathToFileURL(c.standin).href);
     })();
@@ -822,6 +822,70 @@ describe("closing", () => {
       expect(vi.getTimerCount()).toBe(0);
       expect(s.errors).toEqual([]);
     });
+
+  // The user's choice after step 27's review ("A: wait, then save"): a join and connect already under way finish inside
+  // the last save's limit, and the saver is then given the palace; a start that fails meanwhile says so; the limit and
+  // the caller's signal end the wait.
+  it("lets a join under way finish within the last save's limit, then gives the saver the palace", async () => {
+    const s = await own({ ready: true });
+    const gate = path.join(s.top, "gate");
+    s.control({ hold: gate });
+    const m = s.memory();
+    m.start();
+    await until(() => s.launched().length === 1, "the start");
+    let palace: Palace | undefined;
+    const closing = m.close({ lessons: "wait", save: { limit: LIMIT, run: async () => void (palace = m.palace) } });
+    await sleep(300);
+    writeFileSync(gate, "");
+    await closing;
+    expect(palace).toBeDefined();
+    expect(s.states).toEqual([{ is: "winding down" }, { is: "closed" }]);
+    expect(s.errors).toEqual([]);
+    expect(alive(s.launched()[0]!.pid)).toBe(false);
+  });
+
+  it("says a hub start that fails during the last save's wait, in one error row", async () => {
+    const s = await own({ ready: true });
+    const gate = path.join(s.top, "gate");
+    s.control({ hold: gate, exit: 1 });
+    const m = s.memory();
+    m.start();
+    await until(() => s.launched().length === 1, "the start");
+    let ran = false;
+    const closing = m.close({ lessons: "wait", save: { limit: LIMIT, run: async () => void (ran = true) } });
+    await sleep(300);
+    writeFileSync(gate, "");
+    await closing;
+    const reason = "Memory is off: the hub did not start (exit code: 1).";
+    expect(s.errors.map((e) => e.message)).toEqual([reason]);
+    expect(s.states).toEqual([{ is: "winding down" }, { is: "off", reason }, { is: "closed" }]);
+    expect(ran).toBe(true);
+  });
+
+  it.each(["the limit", "the caller's signal"])("ends the wait for a join under way at %s", async (how) => {
+    const s = await own({ ready: true });
+    const gate = path.join(s.top, "gate");
+    s.control({ hold: gate });
+    const m = s.memory();
+    m.start();
+    await until(() => s.launched().length === 1, "the start");
+    const stop = new AbortController();
+    let ran = false;
+    const began = Date.now();
+    const limit = how === "the limit" ? 300 : LIMIT;
+    const save = { limit, run: async () => void (ran = true) };
+    const closing = m.close({ lessons: "wait", save, signal: stop.signal });
+    if (how !== "the limit") {
+      await sleep(300);
+      stop.abort();
+    }
+    await until(() => s.states.some((x) => x.is === "closed"), "the second stage");
+    expect(Date.now() - began).toBeLessThan(LIMIT / 2);
+    expect(ran).toBe(false);
+    writeFileSync(gate, "");
+    await closing;
+    expect(s.errors).toEqual([]);
+  });
 
   it("leaves a hub another window still uses, and stops it as the last window", async () => {
     const s = await own({ ready: true });
