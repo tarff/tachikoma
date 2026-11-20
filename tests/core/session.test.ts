@@ -4180,4 +4180,45 @@ describe("Session, lessons when a tool fails", { timeout: 15_000 }, () => {
       { kind: "tool", attempted: 'shell {"command":"git push"}', message: AUTH, lead: "fake:a" },
     ]);
   });
+
+  it("sends a PostToolUseFailure hook the plain error, for a failed command with a lesson added", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "tachi-lessons-"));
+    onTestFinished(() => removeTree(root));
+    const script = path.join(root, "hook.cjs");
+    const out = path.join(root, "inputs.jsonl");
+    writeFileSync(script, 'const fs = require("fs"); let t = ""; process.stdin.setEncoding("utf8")' +
+      '.on("data", (d) => (t += d)).on("end", () => fs.appendFileSync(process.argv[2], t + "\\n"));');
+    const hook: Hook = { event: "PostToolUseFailure", matcher: { all: true }, command: process.execPath,
+      args: [script, out], async: false, where: '"PostToolUseFailure"' };
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => "never",
+      effort: () => undefined, lead: () => "fake:a" };
+    const hooks = new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, new Bus());
+    const r = recorder([PULL]);
+    const gate = new PermissionGate("never", async () => false);
+    const ctx = { root, gate } as unknown as Omit<ToolContext, "signal">;
+    const s = failingSession(r.palace, [failing("shell", AUTH)], [["shell", { command: "git push" }]], { hooks, ctx });
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(AUTH, PULL)]);
+    const inputs = readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { error: string });
+    expect(inputs.map((i) => i.error)).toEqual([AUTH]);
+    expect(inputs[0]!.error).not.toContain(LABEL);
+    expect(inputs[0]!.error).not.toContain(PULL.text);
+  });
+
+  it("adds no lesson to a memory tool's own failure, searching nothing", async () => {
+    const r = recorder([PULL]);
+    const NOT_READY = "Memory is not ready yet; try again shortly.";
+    const names = ["memory_search", "memory_save", "record_lesson"];
+    const s = failingSession(r.palace, names.map((n) => failing(n, NOT_READY)), names.map((n) => [n, {}]));
+    await s.session.send("go");
+    expect([r.searched, s.outputs()]).toEqual([[], [NOT_READY, NOT_READY, NOT_READY]]);
+  });
+
+  it("adds a lesson to an unknown tool's error, searched by the tool's name and that error", async () => {
+    const r = recorder([PULL]);
+    const s = failingSession(r.palace, [], [["nope", {}]]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned("Unknown tool: nope", PULL)]);
+    expect(r.searched).toEqual([lessonsOf("nope Unknown tool: nope")]);
+  });
 });
