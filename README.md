@@ -124,8 +124,10 @@ So far it has been tested on Windows 11 only; release 14 adds testing on Linux a
   provider takes, and there is a vim mode. See [The external editor](#the-external-editor),
   [Stash](#stash), [Pictures](#pictures) and [Vim mode](#vim-mode).
 - **A status line** showing the lead, how much of the context window is left (with a bar), tokens,
-  cost (or "ChatGPT plan"), mode, error count, the project folder and git branch, how long the
-  session has run, and how many subagents and background commands run, its context bar coloured as
+  cost (or "ChatGPT plan"), mode, error count, long-term memory's state while it sets up or starts,
+  or when it went wrong in this run (`memory: setting up`, `memory off` or `memory failing`), the
+  project folder and git branch, how long the session has run, and how many subagents and
+  background commands run, its context bar coloured as
   [claude-hud](https://github.com/jarrodwatts/claude-hud)'s is; a line under it counts the turn's
   tool calls. `--status` picks which parts to show. Subagents' tokens and cost count in the totals.
   A part with nothing to say yet, such as no errors, is left out, and when the line is too long for
@@ -135,6 +137,10 @@ So far it has been tested on Windows 11 only; release 14 adds testing on Linux a
 - **An error log:** every failure, and every refusal another model answered, is written to a
   private file of the project's own in Tachikoma's data folder, `errors/<hash>.jsonl`, so nothing
   in a project can lead it elsewhere. `/errors` summarises it.
+- **Long-term memory,** once memory is on: your conversations saved with
+  [MemPalace](https://github.com/MemPalace/mempalace), close matches handed back to the model, and
+  lessons from failed tool calls that a later call doing the same job got past, shown again when a
+  like failure comes back. See [Long-term memory](#long-term-memory).
 - **Refusals:** for the Anthropic models that support it, Anthropic's own fallback re-runs a refused
   request on another model. `--fallback <provider:model>` adds a retry on a model of your choice,
   which can be from another provider. Off unless set. Every rescue is shown and logged.
@@ -192,10 +198,12 @@ tachi review [<name> [--discard]]                  list the copies kept for revi
 --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
 --worker <spec>   the model subagents run on (or set TACHI_WORKER); the lead's model unless set
 --max-tasks <n>   how many subagents run at once (default: 8)
---status <list>   status line parts, comma-separated: lead,context,tokens,cost,mode,errors,project,time,tasks,tools
+--status <list>   status line parts, comma-separated:
+                  lead,context,tokens,cost,mode,errors,memory,project,time,tasks,tools
 --classic         use the terminal's own scrollback, not the full screen (or set TACHI_CLASSIC=1)
 --scroll-speed <n>  lines a wheel notch scrolls in full screen, above 0 and up to 20
                     (default: 3; or set TACHI_SCROLL_SPEED)
+--no-memory       run this launch without long-term memory (to keep it off, set "memory": false)
 -p, --print <prompt>  run without the interface
 --json            with -p, print every event as one JSON line
 --raw             with -p, print the answer exactly as written, control codes and all
@@ -217,7 +225,8 @@ models to pick from, `/login chatgpt` and `/logout chatgpt` sign in and out, `/c
 writes the conversation out, `/compact` and `/autocompact`
 [shorten it](#shortening-long-conversations), `/tasks` lists the subagents and background
 commands, `/hooks` lists the [hooks](#hooks) in force, `/mcp` lists the
-[MCP servers](#mcp-servers), `/errors` summarises the
+[MCP servers](#mcp-servers), `/memory` shows [long-term memory](#long-term-memory)'s state
+(`/memory setup` sets it up), `/lesson <text>` records a lesson, `/errors` summarises the
 error log, `/screen` switches between full screen and classic, `/settings` and `/keybindings`
 open the settings and keys files in your editor, `/vim` switches vim mode, and `/exit` quits;
 commands ignore case. `/lead`, `/model`, `/screen`, `/vim` and `/autocompact` change only the
@@ -871,6 +880,60 @@ tool calls.
   shortening for that size fails while the request still fits the window, the red line shows and
   the request is sent as it is; the size is tried again at the next prompt.
 
+## Long-term memory
+
+Tachikoma can remember your conversations and what it learned from its mistakes, using
+[MemPalace](https://github.com/MemPalace/mempalace). Memory is on by default once it is set up.
+
+**Setting it up.** The first time you start Tachikoma in its window, it asks whether to set memory
+up: `[y] Yes  [n] Not now  [d] Don't ask again`. Not now asks again at the next launch; Don't ask
+again waits for `/memory setup`. A yes downloads MemPalace 3.12.0, the packages it needs, a Python
+of its own and a small language model, up to about 230 MB in all, depending on the computer, into
+Tachikoma's own data folder, in the background while you work. Saving, the note and lessons start
+as soon as it is done; the model's three tools join at the next launch. Setting it up needs
+[uv](https://docs.astral.sh/uv/) on PATH; without uv, memory stays off and a line says so. Once
+memory is set up, it runs without uv. The packages are checked against the hashes in the lock file
+Tachikoma ships, and the model against a hash it ships too. uv, which fetches the packages and the
+Python, goes through sfw when sfw is on PATH; the model's download does not. `-p` runs never ask:
+until memory is set up they run without it.
+
+**Two palaces.** By default Tachikoma keeps a palace of its own in a `memory` folder in its data
+folder (see [Saved sessions](#saved-sessions)), and never reads or changes a MemPalace you already
+have: not `~/.mempalace`, not your uv tools, Pythons or cache. If you would rather use your own
+MemPalace, name its server program in the settings file:
+`"memory": { "use": "<full path to mempalace-mcp>" }`. Tachikoma then builds nothing, runs your
+program as it is, and files what it saves under a wing called `tachikoma`.
+
+**What is saved.** After each turn, your message and the model's reply, word for word, filed under
+the project. A very long turn, over 100,000 characters, is saved in parts. Not saved: tool calls
+and their output, subagents' messages, and shortening's summaries. Turns are also sent before a
+conversation is shortened and when you exit.
+
+**What the model gets.** On the first message sent while memory is on, after a launch, `/clear` or
+a shortening, a note of up to 3 close matches from this project and the lessons; a resumed or
+copied conversation gets none. Three tools: `memory_search`, `memory_save` and `record_lesson`;
+none asks for approval, as they only read or add. Subagents get `memory_search` only. And lessons:
+when a tool call fails and a later call in the same turn doing the same job works (the same file
+for an edit, the same first word for a command, otherwise the same tool), Tachikoma asks the model
+for a one-line lesson, keeps it for every project, and shows it again when a tool fails in a like
+way. If the answer is `none`, nothing is kept. That question is one small request to your lead
+model, or up to 3 when the provider's library tries a failed one again, counted in the session's
+cost but not in the context gauge, and it is sent only while memory is on. You can add a lesson
+yourself with `/lesson <text>`.
+
+**Controls.** `"memory": false` in the settings file turns memory off; `--no-memory` turns it off
+for one launch. `/memory` shows whether memory is on, which palace it uses, how much it holds and
+any turns not yet saved; `/memory setup` asks the set-up question again. The status line shows
+`memory: setting up` while memory sets up or starts, and `memory off` or `memory failing` only when
+something went wrong with it in this run. It shows nothing when memory is on, and nothing when you
+turned memory off, have not set it up, or have no uv. Work never stops for memory: if it fails,
+the reason goes to the error log and `/memory`, and the session carries on without it.
+
+**Privacy.** The palace holds what you typed and what the model answered, which can include
+anything you pasted, and the notes and lessons the model or you saved. It stays on this computer,
+in a folder only you can read. Several Tachikoma windows share it through one MemPalace server on
+this computer, which stops when the last window exits.
+
 ## How the screen looks
 
 The look is the same in full screen and classic.
@@ -1079,6 +1142,7 @@ Every entry is optional; one left out keeps its default.
 | `hooks` | your own commands, run at moments of a session: see [Hooks](#hooks) | none | from the next event, with `Hooks changed: <n> hooks at <m> events.` |
 | `disableAllHooks` | `true` turns every hook off; they are still read, so `/hooks` can say so | `false` | as `hooks` |
 | `mcpServers` | your MCP servers: see [MCP servers](#mcp-servers) | none | at once, only the servers whose entries changed restarting, with `MCP servers changed: <name> restarted.` |
+| `memory` | long-term memory: `false` turns it off; `{"use": "<full path to mempalace-mcp>"}` uses your own MemPalace: see [Long-term memory](#long-term-memory) | on, with Tachikoma's own palace | at the next launch only, with the same kind of line as `"mode"` (below) |
 
 - **Which wins:** a flag, then its variable where it has one (`TACHI_LEAD`, `TACHI_WORKER`,
   `TACHI_CLASSIC`, `TACHI_SCROLL_SPEED`; an empty one counts as unset), then the file, then the
@@ -2985,6 +3049,112 @@ it says so.
   its line, as MCP itself has no WebSocket transport, nor has its library. Claude in Chrome cannot
   be used: it is part of Claude Code, not a server Tachikoma can start.
 
+### Long-term memory's limits
+
+- **If the last window crashes, the memory server keeps running** until a later Tachikoma uses it
+  and exits.
+- **A window that crashes leaves its "in use" file** in `memory/home`; it is ignored after 27 s but
+  never removed.
+- **Lessons come only from a failure followed, in the same turn, by a call doing the same job that
+  works.**
+- **The language model is English-focused.**
+- **With an older MemPalace of your own there is no shared server,** so several windows' writes
+  take turns.
+- **With an older MemPalace of your own that cannot look entries up by label,** a turn cut off by a
+  crash may be saved twice.
+- **If your own MemPalace program starts and then exits before it answers,** the reason shown is the
+  MCP library's `Connection closed`, not why it exited.
+- **After a newer Tachikoma has used the palace,** an older one has memory only while the newer
+  one's server is running.
+- **A session with replies from an Anthropic model that was saved before memory was on, or is
+  resumed with memory switched the other way,** says once that its tools have changed, and its
+  earlier replies are sent without their thinking.
+- **A Tachikoma from before this release that resumes a session saved by this one** says some lines
+  were damaged and skipped: they are this release's marks of where each turn ends and which turns
+  are saved.
+- **A turn with no typed message,** such as the model answering a finished background command, is
+  not saved.
+- **A turn cut off by a crash is not saved,** and neither are the turns of sessions from before
+  this release.
+- **A turn not yet saved when its session is copied** (by `/branch`, `--fork-session`, or opening a
+  session another window holds) is saved only when the first session is resumed, and never if it
+  is not.
+- **A turn MemPalace refuses,** as it refuses text with a null character or only spaces, stays
+  unsaved: `/memory` counts it, and each resume tries it again.
+- **At exit, the turns not yet saved get up to 14 s.** What is left is saved when that session is
+  next resumed, and never if it is not, as with most `-p` runs. The 14 s covers your last turn
+  while the memory server is still starting: on one computer, the rest of a start and the first
+  save of a long real turn, each at its slowest, add up to 2.6 s, and 14 s is 5 times that, with
+  0.1 s added, rounded up. It does not cover another window saving many turns at the same moment,
+  many turns of your own waiting or one saved in parts, or, in the window that has just set memory
+  up, the memory server's first start, which took up to 7.8 s there.
+- **If memory's first connection fails while Tachikoma is closing,** after its server started,
+  nothing says so and nothing goes to the error log; the turn is saved at the next resume.
+- **A lesson is shown only if it fits whole after the error:** a very long error gets no lessons,
+  and a very long lesson is never shown.
+- **A lesson still being asked for when you close the window is dropped;** a `-p` run waits for it,
+  with no time limit: only Ctrl-C ends the wait.
+- **A lesson request that fails says nothing,** and nothing goes to the error log.
+- **A failure fixed while memory is not on** (off, not set up, still setting up or failing) is not
+  asked about, then or later.
+- **If you exit while memory is being set up,** the set-up stops, and the next launch asks again.
+- **If "Don't ask again" cannot be saved,** nothing says so, and the next launch asks again.
+- **While the window is closing,** `/lesson` says `Not recorded: Memory is not ready yet; try again
+  shortly.`, and `/memory` shows no state.
+- **`/memory`'s counts wait for a save already under way,** for up to 18.1 s; past that, the counts
+  line is left out. The limit is 5 times the slowest wait measured, 3.6 s, behind a part of 100,000
+  characters, on one computer. Not measured: two windows sharing one memory server; a save that
+  hangs, whose requests can each take up to 13 s; the removal of a cut-off save's parts; the
+  model's searches at the same time; a note of 100,000 characters; a lesson being written. One
+  save took 5.3 s once.
+- **uv is found only as `uv.exe` on Windows.**
+- **On Intel Macs and on Windows on ARM, setting memory up should fail** (not tried): some packages
+  have no ready-built file there for the Python it uses (3.13), so the set-up would stop with its
+  reason, and memory stay off.
+- **Setting memory up needs PyPI itself, not a mirror of it.** uv's package-index settings
+  (`UV_INDEX`, `UV_DEFAULT_INDEX`, `UV_INDEX_URL`, `UV_EXTRA_INDEX_URL`, their log-ins and
+  `UV_KEYRING_PROVIDER`) and uv's own settings file are not passed on, as uv is reported to refuse
+  the exact install with them (uv issue #6349; not tried here). uv gets your certificate and
+  Python-download settings: `UV_NATIVE_TLS`, `UV_SYSTEM_CERTS`, `UV_PYTHON_INSTALL_MIRROR`,
+  `UV_ASTRAL_MIRROR_URL`, `SSL_CERT_DIR`, `SSL_CLIENT_CERT` and `NETRC`. Every other `UV_` setting,
+  `UV_INSECURE_HOST` among them, is left out.
+- **The model's download does not use your proxy settings** (`HTTPS_PROXY`), so behind a proxy,
+  setting memory up can fail at the model.
+- **With an npm-installed `sfw.cmd` on Windows,** a path to uv holding a set variable's name
+  between `%` signs (`%name%`) does not reach sfw whole.
+- **A search uses only the first 250 characters of what it is given.**
+- **MemPalace rewrites a search of over 200 characters,** so a long first message, or a long
+  failure's lesson search, is searched by the part MemPalace picks.
+- **When one of the two rooms of a "this project" search fails** (the project's own and the
+  lessons), the search, and the note, give the other room's matches, with no sign that some are
+  missing.
+- **A note or a lesson can be at most 100,000 characters;** a longer one is refused.
+- **A turn that repeats an earlier turn of the same project word for word** is not stored a second
+  time.
+- **Some broken palaces look like new, empty ones:** a palace folder that is missing or cannot be
+  written, a deleted palace file, or a palace file with no language model recorded. Memory then
+  shows as on until the first save fails.
+- **A palace folder holding MemPalace's other kind of storage** (`chroma`) stops the memory server
+  from starting: memory waits the 40 s start limit, then says `Memory is off: the hub did not start
+  (exit code: 2).`
+- **On Windows, the memory server's record can fail to be replaced while another window is reading
+  it.** That window's join, or its mark that the server is stopping, then fails once.
+- **Old copies of memory's set-up can stay on disk after an update:** when a window's own start of
+  the memory server stops because another window's server already holds the palace, the window
+  uses that server but does not know which copy it runs, so it leaves the old copies for a later
+  launch to remove.
+- **On Windows the memory server is stopped by force,** not asked to finish; this was tried only on
+  servers that were idle.
+- **Memory has been run only on Windows.** On Linux and macOS, the check made before the memory
+  server is stopped (that the process is still the one Tachikoma started), and the wait for it to
+  end, follow those systems' manuals and were not run; on macOS the check goes to the second.
+- **A failed command's lessons are looked up by the command's first word and the first line it
+  printed;** a command that prints its real message further down may be shown the wrong lesson or
+  none.
+- **How close a lesson must be to be shown was set on made-up failures and made-up lessons,** as
+  there were no real lessons to measure.
+- **With the sandbox on, the subagents' line naming `memory_search` was not tested.**
+
 ## What comes next
 
 1. Core (done): the agent loop, local file and shell tools, Anthropic and OpenAI-format providers
@@ -3011,9 +3181,9 @@ it says so.
    - 8b: hooks, in Claude Code's format, from your settings file only (done);
    - 8c: MCP servers, in Claude Code's format, from your settings file and, after asking, a
      project's `.mcp.json` (done); then 8c-2, in two parts: servers inside the sandbox and
-     `headersHelper` (done), then the sandbox's list of allowed sites (this release);
-   - 8d: long-term memory (MemPalace), with a save before each shortening; lessons learned from the
-     error log, recalled when the same error comes back;
+     `headersHelper` (done), then the sandbox's list of allowed sites (done);
+   - 8d: long-term memory (MemPalace), with a save before each shortening; lessons learned from
+     failures as they are fixed, recalled when a like failure comes back (this release);
    - 8e: more of Claude Code's hook events, the ones that have a place in Tachikoma already, such as
      PermissionRequest, Notification and StopFailure (see [Hooks](#hooks)).
 9. Rewinding: going back to an earlier message, with the files put back as they were then.
