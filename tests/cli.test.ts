@@ -2869,9 +2869,10 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
     expect(dropped).toHaveLength(1);
     // Ended by the test's own last-save limit (`lastSave`, 1 s), the hub's stop after it not timed. From the answer's
     // line to the look-up dropped, this PC took 1,003, 1,009, 1,001, 1,015, 1,005 and 1,009 ms over 6 runs of this case
-    // alone (2026-11-20, step 27's fixes round 3), so the bound is 1 s and 5 times the slowest 15 ms above it, the
-    // user's usual margin. With the limit removed, the look-up's own 13 s limit ends it instead (fixes round 1).
-    expect(dropped[0]!.at - done).toBeLessThan(1_000 + 5 * 15);
+    // alone (2026-11-20, step 27's fixes round 3), so the bound is 5 times the slowest whole span, 1,015 ms (the user's
+    // choice after round 3, "5x the slowest run"). With the limit removed, the look-up's own 13 s limit ends it instead
+    // (13,014 ms, fixes round 3).
+    expect(dropped[0]!.at - done).toBeLessThan(5 * 1_015);
     expect(c.added()).toEqual([]);
     const [file] = readdirSync(c.sessions()).filter((f) => f.endsWith(".jsonl"));
     const id = file!.replace(/.jsonl$/, "");
