@@ -13,6 +13,8 @@ import type { Hooks } from "../hooks/hooks.js";
 import { KEYBINDINGS } from "../keybindings.js";
 import type { ServerConfig } from "../mcp/config.js";
 import type { Servers } from "../mcp/servers.js";
+import type { Palace } from "../memory/client.js";
+import type { MemoryState } from "../memory/memory.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { UserRules } from "../safety/rules.js";
 import type { Shell } from "../safety/split.js";
@@ -50,13 +52,39 @@ import type { Pictures, Read } from "./pictures.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { Review, type ReviewCopy } from "./Review.js";
 import { SessionList } from "./SessionList.js";
-import { type Segment, StatusLine } from "./StatusLine.js";
+import { type Segment, type StatusInfo, StatusLine } from "./StatusLine.js";
 import { TaskPanel, taskRows } from "./TaskPanel.js";
 import type { Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { ToolLine } from "./ToolLine.js";
 import { edgeBroken, first as firstRow, FOLLOWING, textWidth, unseenBelow } from "./view.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
+
+// Long-term memory as the window reads it (8d plan, step 28), from cli.tsx. `service`: memory's state and its palace
+// while connected (step 21). `saver`: the turns not yet saved (step 22), none with memory switched off. `choice`:
+// resolve(...).memory (step 15), and `off`, which of the user's choices switched it off, --no-memory (`flag`, which
+// wins) or "memory": false in the settings file, as resolve() gives "off" for both (step 15's duty). `palace`:
+// Tachikoma's own palace's folder; `room`: the project's (step 16). `limits`: a count's and an add's time limits. For
+// /memory setup: whether the environment is ready (step 19's ready file), whether uv is on PATH, a set-up in the
+// background with its line once on (step 27's), and the clearing of "Don't ask again" (step 27's file).
+export interface WindowMemory {
+  service: { readonly state: MemoryState; readonly palace: Palace | undefined; on(): boolean };
+  saver?: { readonly unsaved: number };
+  choice: "off" | "own" | { use: string };
+  off?: "flag" | "settings";
+  palace: string;
+  room: string;
+  limits: { count: number; add: number };
+  ready: () => boolean;
+  uv: () => boolean;
+  setUp: () => void;
+  clearDontAsk: () => void;
+}
+
+// The status line's marker (Q14): setting up, or off or failing, each of which only a failure in this run gives (step
+// 21); none otherwise, so none for the user's own choices ("switched off", "not set up") or a missing uv.
+const memoryMarker = (state: MemoryState | undefined): Pick<StatusInfo, "memory"> =>
+  state?.is === "setting up" || state?.is === "off" || state?.is === "failing" ? { memory: state.is } : {};
 
 export interface AppProps {
   session: Session;
@@ -136,6 +164,9 @@ export interface AppProps {
   // Long-term memory's closing as the window is left, once SessionEnd is done (queue.ts, leave; 8d plan, step 27);
   // without it, as in most tests and with memory switched off, leaving only exits.
   closeMemory?: () => Promise<void>;
+  // Long-term memory in the window, for /memory, /memory setup, /lesson and the status line's marker (8d plan, step
+  // 28); without it, as in most tests, memory is as with --no-memory.
+  memory?: WindowMemory;
   // The user's hooks, the session's and its subagents' (cli.tsx), for Ctrl+O's runs, /hooks and live edits (release 8b plan,
   // Task 12); without them, as in most tests, /hooks has none in force.
   hooks?: Hooks;
@@ -351,8 +382,10 @@ export function App(props: AppProps) {
       // shortening's does (Task 12), and a hook's (release 8b plan, choice 22), whose line is escaped whole, as its grey
       // lines are (onHookNote).
       // An MCP failure's line names its server too (release 8c plan, choice 26), and is escaped whole, as it carries what
-      // the server or the system said.
-      else if (e.kind === "hook" || e.kind === "mcp") say({ text: `✗ ${visible(e.message, { tabs: true })}`, color: "error" });
+      // the server or the system said. So does long-term memory's, which names memory, as -p prints it (8d plan, step
+      // 28; the user's choice at step 27), and can carry a path and what MemPalace, Node or uv said.
+      else if (e.kind === "hook" || e.kind === "mcp" || e.kind === "memory")
+        say({ text: `✗ ${visible(e.message, { tabs: true })}`, color: "error" });
       else if (e.kind === "saving" || e.kind === "shortening") say({ text: `✗ ${e.message}`, color: "error" });
       else say({ text: `✗ ${e.kind}: ${e.message}`, color: "error" });
     };
@@ -439,6 +472,9 @@ export function App(props: AppProps) {
     ui.bus.on("hook-note", onHookNote);
     ui.bus.on("hook-status", onHookStatus);
     ui.bus.on("mcp-note", onMcpNote);
+    // Long-term memory's changes redraw the status line's marker (8d plan, step 28).
+    const onMemory = () => ui.rerender((n) => n + 1);
+    ui.bus.on("memory", onMemory);
     // A server's forms (release 8c plan, Task 12; choice 29): each field asked in the prompt's place, as the detail view
     // closes and a printed-out view comes back for a question; a stop of the form's signal takes it away. A visit request
     // is the window's own yes or no.
@@ -527,6 +563,7 @@ export function App(props: AppProps) {
       ui.bus.off("hook-note", onHookNote);
       ui.bus.off("hook-status", onHookStatus);
       ui.bus.off("mcp-note", onMcpNote);
+      ui.bus.off("memory", onMemory);
       unbindForms?.();
       // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
       // Ink ending on a drawing error would leave with nothing on screen. Commands stop unrecorded, so a resume reports
@@ -1029,6 +1066,7 @@ export function App(props: AppProps) {
           branch: ui.branch,
           elapsed: ui.now - ui.started.current,
           running: ui.tasks.running,
+          ...memoryMarker(ui.memory?.service.state),
         }}
       />
       {tooled && <ToolLine calls={ui.calls.current} names={ui.run.options.names} />}

@@ -777,7 +777,10 @@ describe("statusSegments", () => {
   });
 
   it("names --status when a segment is unknown", () => {
-    expect(() => statusSegments("lead,nope")).toThrow('--status must be one of: lead, context, tokens, cost, mode, errors, project, time, tasks, tools (got "nope")');
+    expect(() => statusSegments("lead,nope")).toThrow(
+      "--status must be one of: lead, context, tokens, cost, mode, errors, memory, project, time, tasks, tools " +
+        '(got "nope")',
+    );
   });
 });
 
@@ -1144,7 +1147,8 @@ describe("resolve", () => {
     expect(() => resolve({ effort: "x" }, {}, {})).toThrow('--effort must be one of: low, medium, high, xhigh, max (got "x")');
     expect(() => resolve({ "max-tasks": "1e1" }, {}, { maxTasks: 2 })).toThrow('--max-tasks must be a whole number from 1 (got "1e1")');
     expect(() => resolve({ status: "nope" }, {}, { status: ["lead"] })).toThrow(
-      '--status must be one of: lead, context, tokens, cost, mode, errors, project, time, tasks, tools (got "nope")',
+      "--status must be one of: lead, context, tokens, cost, mode, errors, memory, project, time, tasks, tools " +
+        '(got "nope")',
     );
     expect(() => resolve({ "scroll-speed": "21" }, {}, { scrollSpeed: 2 })).toThrow('--scroll-speed must be a number above 0, up to 20 (got "21")');
   });

@@ -521,6 +521,35 @@ describe("memory's state", () => {
     expect(existsSync(readyFile(s.paths))).toBe(true);
   });
 
+  // 8d plan, step 28: /memory setup after an install that failed in this launch tries again (the user's choice,
+  // 2026-11-20, "Try again now"). The failed try's lock is free and its folder without a ready file is made again.
+  it("sets up again in the same launch after a failed install: setting up, then on", async () => {
+    const model = await modelServer();
+    const s = await own({ env: { TACHI_TEST_UV_FAIL: "a made-up uv failure" } });
+    const m = s.memory({ model });
+    m.setUp();
+    await until(() => lastState(s)?.is === "off", "memory off");
+    s.env.TACHI_TEST_UV_FAIL = ""; // the environment memory was given, read at each install
+    m.setUp();
+    await until(() => lastState(s)?.is === "on", "memory on");
+    const reason = "Memory is off: setting it up failed (a made-up uv failure). The next launch tries again.";
+    expect(s.states).toEqual([{ is: "setting up" }, { is: "off", reason }, { is: "setting up" }, { is: "on" }]);
+    expect(s.errors.map((e) => e.message)).toEqual([reason]);
+    expect(s.uvStarts()).toHaveLength(2);
+    expect(existsSync(readyFile(s.paths))).toBe(true);
+  });
+
+  it("does not set up again when its environment is ready and its hub failed", async () => {
+    const s = await own({ ready: true, control: { exit: 1 } });
+    const m = s.memory();
+    m.start();
+    await until(() => lastState(s)?.is === "off", "memory off");
+    const states = s.states.length;
+    m.setUp();
+    expect(s.states).toHaveLength(states);
+    expect(s.uvStarts()).toEqual([]);
+  });
+
   it("says the model's own line when the download does not match its hash", async () => {
     const model = await modelServer();
     const s = await own();

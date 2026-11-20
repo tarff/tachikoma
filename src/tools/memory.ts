@@ -33,17 +33,17 @@ const LESSON = "The lesson, in one or two sentences.";
 const NO_MATCHES = "No matches.";
 const SAVED = "Saved.";
 const RECORDED = "Recorded.";
-const HELD = "Not recorded: memory already holds this lesson.";
+export const HELD = "Not recorded: memory already holds this lesson.";
 const NOTE_TOO_LONG = "Not saved: a note can be at most 100,000 characters.";
-const LESSON_TOO_LONG = "Not recorded: a lesson can be at most 100,000 characters.";
-const NOT_READY = "Memory is not ready yet; try again shortly.";
+export const LESSON_TOO_LONG = "Not recorded: a lesson can be at most 100,000 characters.";
+export const NOT_READY = "Memory is not ready yet; try again shortly.";
 
 // Approved with step 23's questions (the user, 2026-11-20): a request the palace did not answer, refused or failed
 // while memory stays on; and memory with no reason and no palace (closed).
-const late = (ms: number) => `Memory did not answer within ${ms / 1000} s; try again shortly.`;
-const refused = (said: string) => `Memory refused it: ${said}.`;
-const failed = (said: string) => `Memory failed: ${said}.`;
-const OFF = "Memory is off.";
+export const late = (ms: number) => `Memory did not answer within ${ms / 1000} s; try again shortly.`;
+export const refused = (said: string) => `Memory refused it: ${said}.`;
+export const failed = (said: string) => `Memory failed: ${said}.`;
+export const OFF = "Memory is off.";
 
 // A label the model sees in results: a note, by its number among this session's notes in this run; a lesson, by the
 // project's room and the day it was recorded, which go in its label only, so that MemPalace's check for the very same

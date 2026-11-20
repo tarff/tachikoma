@@ -85,7 +85,8 @@ describe("readSettings", () => {
       expect(problem({ scrollSpeed: bad })).toBe(`settings.json: "scrollSpeed" must be a number above 0, up to 20 (got "${bad}")`);
     }
     expect(problem({ status: ["lead", "nope"] })).toBe(
-      'settings.json: "status" must be one of: lead, context, tokens, cost, mode, errors, project, time, tasks, tools (got "nope")',
+      'settings.json: "status" must be one of: lead, context, tokens, cost, mode, errors, memory, project, time, ' +
+        'tasks, tools (got "nope")',
     );
   });
 

@@ -203,9 +203,13 @@ export class Memory {
     } else this.#track(this.#join());
   }
 
-  // Sets up Tachikoma's own palace in the background ("Yes", or /memory setup), then joins.
+  // Sets up Tachikoma's own palace in the background ("Yes", or /memory setup), then joins. Also off after an install
+  // that failed in this launch, its environment still without a ready file (/memory setup's "Try again now", the
+  // user's choice at step 28): the failed try let its lock go, and its folder is made again.
   setUp(): void {
-    if (this.#use !== undefined || this.#winding || this.#state.is !== "not set up") return;
+    if (this.#use !== undefined || this.#winding) return;
+    const failed = this.#state.is === "off" && !existsSync(readyFile(this.#paths!));
+    if (this.#state.is !== "not set up" && !failed) return;
     this.#started = true;
     this.#change({ is: "setting up" });
     this.#track(this.#install());

@@ -111,7 +111,7 @@ describe("StatusLine's pieces", () => {
     const shown = SEGMENTS.filter((s): s is LineSegment => s !== "tools");
     for (const mode of ["ask", "project", "auto", "never"] as const)
       for (const context of [100_000, 750_000, 900_000]) {
-        const i = { ...info, mode, context, contextWindow: 1_000_000, errors: 1, running: 1 };
+        const i = { ...info, mode, context, contextWindow: 1_000_000, errors: 1, running: 1, memory: "off" as const };
         for (const s of shown) for (const p of pieces(s, i, none, off)) expect(p.color).toBeUndefined();
         const line = coloured(i, shown, { look: off, palette: none });
         expect(line).toContain("█");
@@ -169,8 +169,8 @@ describe("StatusLine's pieces", () => {
   it("are each drawn in their own colour, every piece of every part", () => {
     const shown = SEGMENTS.filter((s): s is LineSegment => s !== "tools");
     for (const i of [
-      { ...info, running: 1 },
-      { ...info, contextWindow: null, errors: 1, mode: "never", branch: null, running: 1 },
+      { ...info, running: 1, memory: "setting up" },
+      { ...info, contextWindow: null, errors: 1, mode: "never", branch: null, running: 1, memory: "off" },
     ] satisfies StatusInfo[]) {
       const line = coloured(i, shown);
       for (const s of shown)
@@ -188,6 +188,23 @@ describe("StatusLine's tasks part", () => {
     expect(frame({ ...info, running: 2 }, ["errors", "tasks"])).toBe(" 2 errors | 2 running");
     expect(frame(info, ["errors", "tasks"])).toBe(" 2 errors");
     expect(frame({ ...info, errors: 1 }, ["errors"])).toBe(" 1 error");
+  });
+});
+
+// 8d plan, step 28 (Q14): long-term memory's marker, the design's three texts, only when it has something to say.
+describe("StatusLine's memory part", () => {
+  it("says memory is setting up, off or failing, and nothing when all is well", () => {
+    expect(frame({ ...info, memory: "setting up" }, ["errors", "memory"])).toBe(" 2 errors | memory: setting up");
+    expect(frame({ ...info, memory: "off" }, ["errors", "memory"])).toBe(" 2 errors | memory off");
+    expect(frame({ ...info, memory: "failing" }, ["errors", "memory"])).toBe(" 2 errors | memory failing");
+    expect(frame(info, ["errors", "memory"])).toBe(" 2 errors");
+  });
+
+  it("colours setting up as work under way, and off and failing as errors", () => {
+    const of = (memory: StatusInfo["memory"]) => pieces("memory", { ...info, memory }, dark, on);
+    expect(of("setting up")).toEqual([{ text: "memory: setting up", color: dark.warning }]);
+    expect(of("off")).toEqual([{ text: "memory off", color: dark.error }]);
+    expect(of("failing")).toEqual([{ text: "memory failing", color: dark.error }]);
   });
 });
 
@@ -265,7 +282,9 @@ describe("StatusLine's fit", () => {
 
 describe("StatusLine", () => {
   it("shows every part by default", () => {
-    expect(SEGMENTS).toEqual(["lead", "context", "tokens", "cost", "mode", "errors", "project", "time", "tasks", "tools"]);
+    expect(SEGMENTS).toEqual([
+      "lead", "context", "tokens", "cost", "mode", "errors", "memory", "project", "time", "tasks", "tools",
+    ]);
     // In two parts: all of them are wider than the test terminal's 100 columns.
     const shown = frame(info, SEGMENTS.slice(0, 4));
     expect(shown).toContain("lead anthropic:claude-opus-5-5");

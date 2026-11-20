@@ -5,9 +5,12 @@ import { type Mode, visible } from "../core/permissions.js";
 import { type Colour, type Look, type Palette, ThemeContext } from "./theme.js";
 
 // The status line's parts, and `tools`, the line under it (release 3 design, "On screen"); `tasks`,
-// how many subagents run (release 4 design, "On screen").
-export type Segment = "lead" | "context" | "tokens" | "cost" | "mode" | "errors" | "project" | "time" | "tasks" | "tools";
-export const SEGMENTS: Segment[] = ["lead", "context", "tokens", "cost", "mode", "errors", "project", "time", "tasks", "tools"];
+// how many subagents run (release 4 design, "On screen"); `memory`, long-term memory's marker (8d plan, Q14).
+export type Segment =
+  | "lead" | "context" | "tokens" | "cost" | "mode" | "errors" | "memory" | "project" | "time" | "tasks" | "tools";
+export const SEGMENTS: Segment[] = [
+  "lead", "context", "tokens", "cost", "mode", "errors", "memory", "project", "time", "tasks", "tools",
+];
 export type LineSegment = Exclude<Segment, "tools">;
 
 export interface StatusInfo {
@@ -24,6 +27,9 @@ export interface StatusInfo {
   branch: string | null; // the git branch; null outside a repository (see git.ts)
   elapsed: number; // ms since the session started
   running: number; // subagents running or waiting for a place
+  // Long-term memory, when it has something to say (8d plan, Q14): setting up, or off or failing for a reason of this
+  // run; none when all is well, and none for the user's own choices or a missing uv.
+  memory?: "setting up" | "off" | "failing";
 }
 
 // The unit is picked after rounding, so 999,999 shows as 1.0M, not 1000.0k.
@@ -99,6 +105,12 @@ export function pieces(s: LineSegment, i: StatusInfo, p: Palette, look: Look): P
       return [{ text: "perm", color: p.muted }, { text: " " }, { text: i.mode, color: look.color ? MODE_COLOR[i.mode] : undefined }];
     case "errors": // shown only once there is one (zero, below)
       return [{ text: `${i.errors} error${i.errors === 1 ? "" : "s"}`, color: p.error }];
+    case "memory": // the design's three texts (8d design, section 6), shown only with one (zero, below)
+      return [
+        i.memory === "setting up"
+          ? { text: "memory: setting up", color: p.warning }
+          : { text: `memory ${i.memory}`, color: p.error },
+      ];
     case "project": {
       // Folder and branch names come from the disk, so they are escaped like everything else on screen.
       const folder: Piece = { text: visible(i.project), color: p.warning };
@@ -113,9 +125,11 @@ export function pieces(s: LineSegment, i: StatusInfo, p: Palette, look: Look): P
 }
 
 // A part with nothing to say yet (TUI design pass, Task 10): no errors, no tokens either way, a cost of 0 that is known.
-// The ChatGPT plan's cost part still says the plan is in use (costText). `tasks` shows only while a subagent runs.
+// The ChatGPT plan's cost part still says the plan is in use (costText). `tasks` shows only while a subagent runs,
+// `memory` only with a marker.
 function zero(s: LineSegment, i: StatusInfo): boolean {
   if (s === "tasks") return i.running === 0;
+  if (s === "memory") return i.memory === undefined;
   if (s === "errors") return i.errors === 0;
   if (s === "tokens") return i.input === 0 && i.output === 0;
   return s === "cost" && i.cost === 0 && !i.costUnknown && !i.lead.startsWith("chatgpt:");

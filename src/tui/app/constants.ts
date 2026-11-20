@@ -56,7 +56,8 @@ export const isFile = (file: string) => {
 
 export const COMMANDS =
   "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /clear, /resume, /branch [name], /rename <name>, " +
-  "/export [file], /compact [words], /autocompact <tokens>, /tasks, /hooks, /mcp, /errors, /screen, /settings, /keybindings, /vim, /exit";
+  "/export [file], /compact [words], /autocompact <tokens>, /tasks, /hooks, /mcp, /memory, /lesson <text>, " +
+  "/errors, /screen, /settings, /keybindings, /vim, /exit";
 // Release 8a plan, Task 7's words, approved by the user on 2026-11-06: the `/` menu's notes; /resume with no other
 // session saved; /branch before any prompt, or once saving has stopped (session.ts, "Saving fails"), and /rename then, as
 // nothing they wrote would be saved; and the in-window list's hint, whose Esc closes the list where `tachi -r`'s quits.
@@ -88,6 +89,36 @@ export const SHORTEN_WORDS = {
   off: "Shortens only when a request would not fit.",
   usage: "Usage: /autocompact <tokens>, such as 200k, or /autocompact off",
 };
+// Long-term memory's words in the window (8d plan, step 28's drafts, approved by the user on 2026-11-20, "Approve
+// all"): the `/` menu's notes, /memory's lines, /memory setup's and /lesson's. The first-use question is the design's
+// (approved 2026-11-19, N = 230 at step 7), with the lines after its answer (approved 2026-11-20, step 27), which the
+// launch asks and /memory setup asks again.
+export const MEMORY_WORDS = {
+  memoryNote: "Show long-term memory's state",
+  lessonNote: "Record a lesson for next time",
+  own: (palace: string) => `Memory: on, Tachikoma's own palace (${palace})`,
+  use: (program: string) => `Memory: on, your MemPalace at ${program}`,
+  hub: (state: "running" | "starting" | "not answering") => `Hub: ${state}`,
+  counts: (entries: number, lessons: number) => `Entries: ${entries}, lessons: ${lessons}`,
+  unsaved: (n: number) => `Unsaved turns: ${n}`,
+  settingUp: "Memory: setting up",
+  off: (reason: string) => `Memory: off (${reason})`,
+  settings: '"memory": false in settings.json',
+  flag: "--no-memory",
+  notSetUp: "not set up; /memory setup sets it up",
+  usage: "Usage: /memory, /memory setup",
+  already: "Long-term memory is already set up.",
+  nothingToSetUp: (program: string) => `Memory uses your own MemPalace at ${program}; there is nothing to set up.`,
+  switchedOff: (why: string) => `Memory is switched off: ${why}.`,
+  lessonUsage: "Usage: /lesson <what went wrong, what fixed it, and how to spot it next time>",
+  recorded: "Lesson recorded.",
+  notRecorded: (reason: string) => `Not recorded: ${reason}`,
+  question:
+    "Long-term memory: Tachikoma can remember your conversations and lessons using MemPalace. Setting it up " +
+    "downloads MemPalace 3.12.0 and its packages (about 230 MB) into Tachikoma's own folder. Set it up now?",
+  settingUpNow: "Setting up long-term memory in the background.",
+  setUp: "Long-term memory is set up. Its tools join at the next launch.",
+};
 // A number of tokens as the session's too-long line writes it, as providers/pictures.ts writes a number (session.ts).
 export const tokens = (n: number) => n.toLocaleString("en-US");
 // Ids as the lines list them: "t1", "t1 and t2", "t1, t2 and t3" (names, and /tasks stop's line, choice 40).
@@ -118,6 +149,7 @@ export const characters = (text: string) => {
 export const NAMES = [
   "/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/hooks", "/mcp", "/screen", "/settings", "/keybindings", "/vim",
   "/clear", "/resume", "/branch", "/rename", "/export", "/compact", "/autocompact",
+  "/memory", "/lesson", // 8d plan, step 28: so `/lesson some words` is a command, not a paid prompt
 ];
 export const isCommand = (text: string) =>
   NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text) || /^\/[^\s/:]+:\S/.test(text);

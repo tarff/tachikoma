@@ -1301,7 +1301,16 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // Background commands plan, Task 9: /tasks lists both kinds, in the plan's words.
   it("lists /hooks in the help, after /tasks, and /mcp after it", () => {
     expect(tachi("--help").stdout).toContain(
-      "/tasks lists\nsubagents and background commands (/tasks t1 shows one, /tasks stop stops them), /hooks lists\nthe hooks in force, /mcp lists the MCP servers, /errors summarises the error log,",
+      "/tasks lists\nsubagents and background commands (/tasks t1 shows one, /tasks stop stops them), /hooks lists\n" +
+        "the hooks in force, /mcp lists the MCP servers, /memory",
+    );
+  });
+
+  // 8d plan, step 28: /memory and /lesson before /errors, in the words the user approved on 2026-11-20.
+  it("lists /memory and /lesson in the help, before /errors", () => {
+    expect(tachi("--help").stdout).toContain(
+      "/mcp lists the MCP servers, /memory shows long-term memory's state\n(/memory setup sets it up), " +
+        "/lesson <text> records a lesson, /errors summarises the error log,\n/screen switches",
     );
   });
 });

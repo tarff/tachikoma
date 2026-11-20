@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs, styleText } from "node:util";
@@ -78,8 +78,8 @@ import type { McpSandbox } from "./mcp/place.js";
 import { Servers } from "./mcp/servers.js";
 import { approveOf, mcpTools } from "./mcp/tools.js";
 import { EFFORTS } from "./providers/anthropic.js";
-import { dontAsk, recordDontAsk } from "./memory/asked.js";
-import { uvProgram } from "./memory/install.js";
+import { clearDontAsk, dontAsk, recordDontAsk } from "./memory/asked.js";
+import { readyFile, uvProgram } from "./memory/install.js";
 import { Memory, type MemoryState, NO_UV } from "./memory/memory.js";
 import { memoryPaths, roomName } from "./memory/paths.js";
 import { Saver } from "./memory/saver.js";
@@ -102,7 +102,7 @@ import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { memoryTools } from "./tools/memory.js";
 import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
-import { NOT_GONE } from "./tui/app/constants.js";
+import { MEMORY_WORDS, NOT_GONE } from "./tui/app/constants.js";
 import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
 import { asBlock } from "./tui/describe.js";
@@ -169,9 +169,11 @@ In a session: /lead <provider:model> switches the lead model, /lead or /model pi
 it, /compact [words] shortens it into a summary now, /autocompact <tokens> shortens it once it
 passes that many tokens (/autocompact off: only when a request would not fit), /tasks lists
 subagents and background commands (/tasks t1 shows one, /tasks stop stops them), /hooks lists
-the hooks in force, /mcp lists the MCP servers, /errors summarises the error log, /screen switches
-between full screen and classic, /settings opens the settings file in your editor, /keybindings
-opens the keys file in your editor, /vim switches vim mode in this window, /exit quits.
+the hooks in force, /mcp lists the MCP servers, /memory shows long-term memory's state
+(/memory setup sets it up), /lesson <text> records a lesson, /errors summarises the error log,
+/screen switches between full screen and classic, /settings opens the settings file in your
+editor, /keybindings opens the keys file in your editor, /vim switches vim mode in this
+window, /exit quits.
 Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty
 prompt quits. Ctrl+T hides or shows the to-do list. Esc and Ctrl+T can be moved in the keys file;
 Ctrl-C and Ctrl-D cannot. ? on an empty prompt lists every key.`;
@@ -215,16 +217,13 @@ function askAtStart(question: string): Promise<boolean> {
 }
 
 // Long-term memory's first-use question (8d plan, step 27; Q3): the design's question (approved 2026-11-19, N = 230,
-// step 7) and its three keys (approved 2026-11-20), asked as askAtStart asks, before the screen is drawn: y is Yes, d
-// is "Don't ask again", any other key is "Not now", as any other key leaves the instruction files out, and Ctrl-C
-// quits.
+// step 7; kept with /memory setup's words, step 28) and its three keys (approved 2026-11-20), asked as askAtStart
+// asks, before the screen is drawn: y is Yes, d is "Don't ask again", any other key is "Not now", as any other key
+// leaves the instruction files out, and Ctrl-C quits.
 // The key pressed is said by its answer's name.
-const MEMORY_QUESTION =
-  "Long-term memory: Tachikoma can remember your conversations and lessons using MemPalace. Setting it up downloads " +
-  "MemPalace 3.12.0 and its packages (about 230 MB) into Tachikoma's own folder. Set it up now?";
 type MemoryAnswer = "Yes" | "Not now" | "Don't ask again";
 function askMemory(): Promise<MemoryAnswer> {
-  process.stdout.write(`${MEMORY_QUESTION} [y] Yes  [n] Not now  [d] Don't ask again `);
+  process.stdout.write(`${MEMORY_WORDS.question} [y] Yes  [n] Not now  [d] Don't ask again `);
   process.stdin.ref();
   process.stdin.setRawMode(true);
   return new Promise((resolve) => {
@@ -690,7 +689,7 @@ if (interactive && memory.state.is === "not set up" && !dontAsk(memoryAt)) {
     // The lines after the answer (approved 2026-11-20).
     if (answer === "Yes") {
       settingUp = true;
-      console.log("Setting up long-term memory in the background.");
+      console.log(MEMORY_WORDS.settingUpNow);
     } else if (answer === "Don't ask again") {
       try {
         recordDontAsk(memoryAt);
@@ -707,6 +706,9 @@ if (interactive && memory.state.is === "not set up" && !dontAsk(memoryAt)) {
 const SEARCH_LIMIT = 3_400;
 const ADD_LIMIT = 13_000;
 const LAST_SAVE = 14_000;
+// /memory's two counts (the user's choice at step 28): 5 times the slowest pair measured, 3,612.6 ms, sent behind a
+// 100,000-character save of the launch's catch-up (step 28's run 3; the record is build-step-28.md, section 10).
+const COUNT_LIMIT = 18_100;
 // One saver per palace in this process (step 22); its save lock in Tachikoma's memory folder, or in memory/use/ for the
 // user's own MemPalace, which two such palaces share and take turns on (decided at step 22).
 const saver =
@@ -720,6 +722,17 @@ const saver =
         timeout: ADD_LIMIT,
       });
 const saveLast = saver && { limit: LAST_SAVE, run: saver.run };
+// A set-up in the background, on the launch's "Yes" or on /memory setup's yes (step 28), and its line once memory is
+// on (approved 2026-11-20; Q1: its tools wait for the next launch). A set-up that fails says why as memory's own row.
+const setUpMemory = () => {
+  const done = (s: MemoryState) => {
+    if (s.is === "setting up") return;
+    bus.off("memory", done);
+    if (s.is === "on") bus.emit("note", MEMORY_WORDS.setUp);
+  };
+  bus.on("memory", done);
+  memory.setUp();
+};
 // The three tools, only when memory is on at the launch (step 23): "all" searches Tachikoma's wing, or the whole of the
 // user's own palace (the design's section 3).
 const remembering = memoryOn
@@ -1169,6 +1182,21 @@ if (parsed.print !== undefined) {
         // Memory's closing as the window is left (8d plan, step 27; Q16): the lesson requests cancelled, the saver's
         // last chance, then the hub left.
         {...(saveLast ? { closeMemory: () => memory.close({ lessons: "cancel", save: saveLast }) } : {})}
+        // Long-term memory for /memory, /lesson and the status line (8d plan, step 28): which of the user's choices
+        // switched it off, read from the flag and the file, as resolve() gives "off" for both (step 15's duty).
+        memory={{
+          service: memory,
+          ...(saver ? { saver } : {}),
+          choice: options.memory,
+          ...(options.memory === "off" ? { off: parsed["no-memory"] ? ("flag" as const) : ("settings" as const) } : {}),
+          palace: memoryAt.palace,
+          room,
+          limits: { count: COUNT_LIMIT, add: ADD_LIMIT },
+          ready: () => existsSync(readyFile(memoryAt)),
+          uv: () => uvProgram() !== null,
+          setUp: setUpMemory,
+          clearDontAsk: () => clearDontAsk(memoryAt),
+        }}
       />
     </ThemeContext>,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
@@ -1182,17 +1210,7 @@ if (parsed.print !== undefined) {
   // typed, which waits for them (choice 25).
   servers.startAll();
   memory.start();
-  // "Yes" sets memory up in the background; the line when it is on (approved 2026-11-20; Q1: its tools wait for the
-  // next launch). A set-up that fails says why as memory's own row.
-  if (settingUp) {
-    const done = (s: MemoryState) => {
-      if (s.is === "setting up") return;
-      bus.off("memory", done);
-      if (s.is === "on") bus.emit("note", "Long-term memory is set up. Its tools join at the next launch.");
-    };
-    bus.on("memory", done);
-    memory.setUp();
-  }
+  if (settingUp) setUpMemory(); // "Yes"
   for (const line of mcpLines(servers, { print: false })) bus.emit("mcp-note", line);
   for (const message of unsaved) bus.emit("error", { kind: "mcp", attempted: "MCP answers", message, lead: session.lead.id });
   session.load(opened.conversation);

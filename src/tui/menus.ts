@@ -5,7 +5,7 @@ import { visible } from "../core/permissions.js";
 import { errorText } from "../core/types.js";
 import type { Servers } from "../mcp/servers.js";
 import { resolveIn } from "../tools/files.js";
-import { EXPORT_WORDS, SESSION_WORDS, SHORTEN_WORDS } from "./app/constants.js";
+import { EXPORT_WORDS, MEMORY_WORDS, SESSION_WORDS, SHORTEN_WORDS } from "./app/constants.js";
 
 // The `/` and `@` menus (release 3 design, "Menus and modes"), worked out from the prompt's text: what
 // each entry shows, what Tab (and, for a path, Enter) puts in the prompt in place of the text from
@@ -42,6 +42,8 @@ const COMMANDS: { label: string; run: string; note: string }[] = [
   { label: "/tasks", run: "/tasks", note: "List subagents and background commands; /tasks t1 shows one, /tasks stop stops them" },
   { label: "/hooks", run: "/hooks", note: "List the hooks in force" }, // the user's words, 2026-11-10 (release 8b plan, Task 12)
   { label: "/mcp", run: "/mcp", note: "List the MCP servers" }, // release 8c plan, "Lines this plan adds"
+  { label: "/memory", run: "/memory", note: MEMORY_WORDS.memoryNote }, // 8d plan, step 28
+  { label: "/lesson <text>", run: "/lesson", note: MEMORY_WORDS.lessonNote },
   { label: "/errors", run: "/errors", note: "Summarise the error log" },
   { label: "/screen", run: "/screen", note: "Switch between full screen and classic" },
   { label: "/settings", run: "/settings", note: "Open the settings file in your editor" },

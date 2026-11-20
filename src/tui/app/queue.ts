@@ -18,11 +18,15 @@ import { limitOf } from "../../hooks/hooks.js";
 import { KEYBINDINGS } from "../../keybindings.js";
 import { NotReached, type Server } from "../../mcp/server.js";
 import { until } from "../../mcp/tools.js";
+import { type MemoryState, NO_UV } from "../../memory/memory.js";
+import { LESSONS } from "../../memory/paths.js";
+import { LONGEST_ENTRY } from "../../memory/saver.js";
 import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS, shownFile } from "../../settings.js";
 import { firstLine } from "../../tools/commands.js";
-import type { Fns } from "../App.js";
+import { failed, HELD, late, LESSON_TOO_LONG, lessonLabel, NOT_READY, OFF, refused } from "../../tools/memory.js";
+import type { Fns, WindowMemory } from "../App.js";
 import { typeOf, unquoted } from "../clipboard.js";
 import { asBlock, callLines, type Line } from "../describe.js";
 import { conversationLines } from "../fold.js";
@@ -35,7 +39,8 @@ import { taskRow } from "../TaskPanel.js";
 import type { Palette } from "../theme.js";
 import { FOLLOWING, textWidth } from "../view.js";
 import {
-  characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, listed, names, NOT_GONE, reviewUnopened, SESSION_WORDS, SHORTEN_WORDS,
+  characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, listed, MEMORY_WORDS, names, NOT_GONE, reviewUnopened,
+  SESSION_WORDS, SHORTEN_WORDS,
 } from "./constants.js";
 import type { UI } from "./state.js";
 
@@ -156,6 +161,20 @@ export const queue = (ui: UI, fns: Fns) => {
       // Release 8a plan, Task 13: /compact's words are all that follows it, line breaks and all.
       if (command === "/compact") return await compact(text.slice(first.length).trim());
       if (command === "/autocompact") return autoCompact(words);
+      // Long-term memory (8d plan, step 28): /memory, /memory setup and /lesson <text>, whose words are all that
+      // follows it, line breaks and all. Each may wait on the palace or a question: what is typed meanwhile waits in
+      // the queue, as during /export.
+      if (command === "/memory" || command === "/lesson") {
+        ui.working.current = true;
+        try {
+          if (command === "/lesson") return await lesson(text.slice(first.length).trim());
+          if (!words.length) return await memoryShown();
+          if (words.length === 1 && words[0]!.toLowerCase() === "setup") return await memorySetup();
+          return fns.say({ text: MEMORY_WORDS.usage, color: "error" });
+        } finally {
+          ui.working.current = false;
+        }
+      }
       if (alone("/clear") || alone("/resume") || command === "/branch") {
         const refused = fns.stillRunning(command);
         if (refused) return fns.say(refused);
@@ -616,6 +635,100 @@ export const queue = (ui: UI, fns: Fns) => {
     if (more.length || (word !== "off" && !(Number.isSafeInteger(n) && n >= 1))) return fns.say({ text: SHORTEN_WORDS.usage, color: "error" });
     ui.session.autoCompact = word === "off" ? null : n;
     fns.say(gray(word === "off" ? SHORTEN_WORDS.off : SHORTEN_WORDS.passes(n)));
+  };
+  // Long-term memory in the window (8d plan, step 28), in the user's words (constants.ts, MEMORY_WORDS); with none
+  // given, as with --no-memory. Why memory is off, as /memory's brackets and /lesson's line say it: the user's choice
+  // by its name (--no-memory wins, as at the launch); not set up; or the reason of this run, memory's own line
+  // (memory.ts) without its opening "Memory is off: " or "Memory is failing: " and its last full stop. None while
+  // memory is setting up or on, nor while it closes, which it does only as the window is left.
+  const offReason = (m: WindowMemory | undefined): string | undefined => {
+    const s: MemoryState = m?.service.state ?? { is: "switched off" };
+    if (s.is === "switched off") return m?.off === "settings" ? MEMORY_WORDS.settings : MEMORY_WORDS.flag;
+    if (s.is === "not set up" && s.reason === undefined) return MEMORY_WORDS.notSetUp;
+    if (s.is === "not set up" || s.is === "off" || s.is === "failing")
+      return s.reason!.replace(/^Memory is (off|failing): /, "").replace(/\.$/, "");
+    return undefined;
+  };
+  // /memory: whether memory is on and which palace, the hub's state (Tachikoma's own palace only: starting while its
+  // ready environment joins, running, not answering while it fails), the counts, or why it is off; then the unsaved
+  // turns, when there are any. The counts are entries, by step 18's count (mempalace_list_drawers' total, not the
+  // pieces mempalace_list_rooms counts), this project's room and the lessons'; a turn saved in parts counts as that
+  // many (Q26), so they are not saved turns (step 14). A palace that cannot count, or a count that fails, leaves the
+  // line out. Unsaved turns are turns, from the saver's queue (step 22), a turn with some of its parts in counting as
+  // one.
+  const memoryShown = async () => {
+    const m = ui.memory;
+    const s = m?.service.state;
+    const own = m?.choice === "own";
+    const lines: string[] = [];
+    if (m && s && (s.is === "on" || s.is === "failing" || (s.is === "setting up" && own && m.ready()))) {
+      const which = typeof m.choice === "object" ? MEMORY_WORDS.use(m.choice.use) : MEMORY_WORDS.own(m.palace);
+      lines.push(visible(which, { tabs: true }));
+      const hub = s.is === "on" ? "running" : s.is === "failing" ? "not answering" : "starting";
+      if (own) lines.push(MEMORY_WORDS.hub(hub));
+      if (s.is === "on") lines.push(...(await counts(m)));
+    } else if (s?.is === "setting up") lines.push(MEMORY_WORDS.settingUp);
+    else {
+      const reason = offReason(m);
+      if (reason !== undefined) lines.push(MEMORY_WORDS.off(visible(reason, { tabs: true })));
+    }
+    if (m?.saver?.unsaved) lines.push(MEMORY_WORDS.unsaved(m.saver.unsaved));
+    fns.say(...lines.map(gray));
+  };
+  const counts = async (m: WindowMemory): Promise<string[]> => {
+    const palace = m.service.palace;
+    if (!palace?.offers.counts) return [];
+    const count = (room: string) => palace.entries(room, m.limits.count);
+    const [here, lessons] = await Promise.all([count(m.room), count(LESSONS)]);
+    if (here.is !== "counted" || lessons.is !== "counted") return [];
+    return [MEMORY_WORDS.counts(here.entries, lessons.entries)];
+  };
+  // /memory setup: the first-use question again, as the window's own yes or no, once "Don't ask again" is cleared, and
+  // on yes the set-up in the background, as the launch's Yes; so too after an install that failed in this launch, its
+  // environment not ready (the user's choice at step 28, "Try again now"). Without uv, the design's line in its place.
+  // Nothing to set up when switched off, with the user's own MemPalace, or on; otherwise, as while an install runs or
+  // once a set-up memory's hub failed, it says what /memory says (the user's choice at step 28's review).
+  const memorySetup = async () => {
+    const m = ui.memory;
+    if (!m || m.choice === "off") return fns.say(gray(MEMORY_WORDS.switchedOff(offReason(m)!)));
+    if (typeof m.choice === "object") return fns.say(gray(MEMORY_WORDS.nothingToSetUp(visible(m.choice.use))));
+    const s = m.service.state;
+    if (s.is === "on") return fns.say(gray(MEMORY_WORDS.already));
+    if (s.is !== "not set up" && !(s.is === "off" && !m.ready())) return memoryShown();
+    try {
+      m.clearDontAsk();
+    } catch {
+      // kept: the next launch does not ask, as before
+    }
+    if (!m.uv()) return fns.say({ text: NO_UV, color: "error" });
+    const question = MEMORY_WORDS.question.replace(/\?$/, ""); // the window's question puts its own after it
+    if (!(await (ui.asking.current?.(question, undefined, undefined, true) ?? false))) return;
+    fns.say(gray(MEMORY_WORDS.settingUpNow));
+    m.setUp();
+  };
+  // /lesson <text>: stored as record_lesson stores it (step 23), in the lessons' room under its label, a repeat of a
+  // lesson already held not added and a text over MemPalace's longest entry refused, in the tool's lines. Not while
+  // memory is not on, saying why; a request the palace did not answer, refused or failed says so in the tool's words.
+  const lesson = async (text: string) => {
+    if (!text) return fns.say({ text: MEMORY_WORDS.lessonUsage, color: "error" });
+    if ([...text].length > LONGEST_ENTRY) return fns.say({ text: LESSON_TOO_LONG, color: "error" });
+    const m = ui.memory;
+    const palace = m?.service.on() ? m.service.palace : undefined;
+    const notRecorded = (why: string) =>
+      fns.say({ text: MEMORY_WORDS.notRecorded(visible(why, { tabs: true })), color: "error" });
+    const off = offReason(m);
+    if (!m || !palace) return notRecorded(off === undefined ? NOT_READY : `${off}.`);
+    const r = await palace.add(LESSONS, lessonLabel(m.room), text, m.limits.add);
+    if (r.is === "added") return fns.say(gray(MEMORY_WORDS.recorded));
+    if (r.is === "already there") return fns.say(gray(HELD));
+    const now = offReason(m); // memory may have changed meanwhile
+    if (now !== undefined) return notRecorded(`${now}.`);
+    notRecorded(
+      r.is === "timed out" ? late(m.limits.add)
+      : r.is === "refused" ? refused(r.reason)
+      : r.is === "failed" ? failed(r.reason)
+      : OFF,
+    );
   };
   const closePicker = () => {
     ui.listOpen.current = false;
