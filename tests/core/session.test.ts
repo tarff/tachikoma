@@ -38,6 +38,7 @@ import { shellText } from "../../src/tools/shell.js";
 import { defineTool, type Tool, type ToolContext } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
 import { connect, type Hit, type Palace, type Scope } from "../../src/memory/client.js";
+import type { MemoryState } from "../../src/memory/memory.js";
 import { LESSONS, WING } from "../../src/memory/paths.js";
 import { entriesOf, type Turn as SavedTurn } from "../../src/memory/saver.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, standInRun, tempContext, texts, usage } from "../helpers.js";
@@ -4220,5 +4221,290 @@ describe("Session, lessons when a tool fails", { timeout: 15_000 }, () => {
     await s.session.send("go");
     expect(s.outputs()).toEqual([lessoned("Unknown tool: nope", PULL)]);
     expect(r.searched).toEqual([lessonsOf("nope Unknown tool: nope")]);
+  });
+});
+
+// The lesson ask (8d plan, step 26), with a stand-in for memory whose `on()` is Memory's own rule (true only in the
+// state on, src/memory/memory.ts) and whose lesson requests run at once; tests/memory/lessons.test.ts has the real
+// Memory. No real model is called.
+describe("Session, the lesson ask", { timeout: 15_000 }, () => {
+  const REQUEST = "A tool call failed earlier in this turn, and a later call doing the same job worked. If there is " +
+    "a lesson worth keeping for next time, write it in one line: what went wrong, what fixed it, and how to spot it. " +
+    "If there is none, answer: none.";
+  const ROOM = "agent-harness-3f9a1c2b";
+  const ADD_LIMIT = 7_000; // the tests' own, passed through to the store as it is
+  const AUTH = shellText({ code: 128, signal: null, stdout: "Everything up-to-date\n",
+    stderr: "fatal: Authentication failed\nmore\n" });
+  const asked = (failed: string, error: string, worked: string) =>
+    `${REQUEST}\n\nFailed call: ${failed}\nIts error: ${error}\nThe call that worked: ${worked}`;
+  // A project folder by name only: nothing is read or written there.
+  const gate = () =>
+    ({ root: path.resolve("made-up-project"), gate: new PermissionGate("never", async () => false) }) as unknown as
+      Omit<ToolContext, "signal">;
+
+  // A tool of that name that fails or works as `outcomes` say, one call each, in order.
+  const scripted = (name: string, outcomes: (string | Error)[]) =>
+    defineTool(name, "Scripted", z.object({ command: z.string().optional(), path: z.string().optional(),
+      content: z.string().optional() }), async () => {
+      const o = outcomes.shift();
+      if (o instanceof Error) throw o;
+      return o ?? "done";
+    });
+
+  // A FakeProvider that keeps every request whole, but what cannot be copied.
+  class Recording extends FakeProvider {
+    readonly requests: Omit<CompletionRequest, "signal" | "shrunk" | "leftOut">[] = [];
+    override async complete(req: CompletionRequest): Promise<Turn> {
+      const { signal: _signal, shrunk: _shrunk, leftOut: _leftOut, ...kept } = req;
+      this.requests.push(structuredClone(kept));
+      return super.complete(req);
+    }
+  }
+  const isAsk = (r: { messages: Message[] }) => {
+    const first = r.messages[0]?.parts[0];
+    return first?.type === "text" && first.text.startsWith(REQUEST);
+  };
+  const askText = (r: { messages: Message[] }) => (r.messages[0]!.parts[0] as { text: string }).text;
+
+  // Memory, in the state given: what is stored, and its lesson requests run at once.
+  function standIn(state: MemoryState) {
+    const stored: { room: string; label: string; text: string; timeout: number }[] = [];
+    const palace = {
+      add: async (room: string, label: string, text: string, timeout: number) => {
+        stored.push({ room, label, text, timeout });
+        return { is: "added" as const };
+      },
+    } as unknown as Palace;
+    const runs: Promise<void>[] = [];
+    const memory = {
+      state,
+      on: () => memory.state.is === "on",
+      lesson<T>(ask: (signal: AbortSignal) => Promise<T | undefined>,
+        store: (p: Palace, value: T) => Promise<unknown>) {
+        runs.push((async () => {
+          const value = await ask(new AbortController().signal);
+          if (value !== undefined) await store(palace, value);
+        })());
+      },
+    };
+    return { memory, stored, done: () => Promise.all(runs) };
+  }
+
+  // A lead's session given the lesson ask, its model making each of `calls` in a reply of its own, then saying "done",
+  // then giving `after` (the lesson ask's answer, and any later turn's).
+  function asking(tools: Tool[], calls: [string, object][], after: Turn[] = [], o: { state?: MemoryState;
+    more?: Partial<ConstructorParameters<typeof Session>[0]> } = {}) {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const spent: Events["usage"][0][] = [];
+    bus.on("usage", (u) => spent.push(u));
+    const lead = new Recording("a", [...calls.map(([name, input], i) => callTool(`c${i + 1}`, name, input)),
+      reply("done"), ...after]);
+    const m = standIn(o.state ?? { is: "on" });
+    const session = new Session({ lead, tools, system: "t", ctx: gate(), bus,
+      lessonAsk: { memory: m.memory, room: ROOM, timeout: ADD_LIMIT }, ...o.more });
+    const asks = () => lead.requests.filter(isAsk);
+    return { session, lead, bus, errors, spent, asks, ...m };
+  }
+
+  it("asks for a command retried with the same first word: the approved text and the three items alone", async () => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push origin main" }],
+      ["shell", { command: "git push --force-with-lease" }]], [reply("A lesson.")]);
+    await s.session.send("go");
+    await s.done();
+    expect(s.asks()).toEqual([{ system: "", tools: [], cache: false, messages: [{ role: "user", parts: [{ type: "text",
+      text: asked('shell {"command":"git push origin main"}', AUTH, 'shell {"command":"git push --force-with-lease"}'),
+    }] }] }]);
+    // The whole error from the status line on, never the lesson search's query.
+    expect(askText(s.asks()[0]!)).toContain("Its error: exit code: 128\n--- stderr ---\nfatal: Authentication failed");
+    expect(askText(s.asks()[0]!)).not.toContain("shell git fatal");
+  });
+
+  it("asks for an edit of the same file, by edit_file then write_file", async () => {
+    const edit = scripted("edit_file", [new Error("old_text was not found in src/cart.ts")]);
+    const write = scripted("write_file", ["wrote src/cart.ts"]);
+    const s = asking([edit, write], [["edit_file", { path: "src/cart.ts" }],
+      ["write_file", { path: "src/cart.ts", content: "x" }]], [reply("A lesson.")]);
+    await s.session.send("go");
+    expect(s.asks().map(askText)).toEqual([asked('edit_file {"path":"src/cart.ts"}',
+      "old_text was not found in src/cart.ts", 'write_file {"path":"src/cart.ts","content":"x"}')]);
+  });
+
+  it("asks for the same tool, whatever its input", async () => {
+    const read = scripted("read_file", [new Error("ENOENT: a.ts"), "the text"]);
+    const s = asking([read], [["read_file", { path: "a.ts" }], ["read_file", { path: "src/a.ts" }]],
+      [reply("A lesson.")]);
+    await s.session.send("go");
+    expect(s.asks().map(askText)).toEqual([asked('read_file {"path":"a.ts"}', "ENOENT: a.ts",
+      'read_file {"path":"src/a.ts"}')]);
+  });
+
+  it("does not ask for a later success at another job", async () => {
+    const shell = scripted("shell", [new Error(AUTH), "tested"]);
+    const read = scripted("read_file", ["the text"]);
+    const s = asking([shell, read], [["shell", { command: "git push" }], ["shell", { command: "npm test" }],
+      ["read_file", { path: "git" }]]);
+    await s.session.send("go");
+    expect(s.asks()).toEqual([]);
+    expect(s.lead.requests).toHaveLength(4);
+  });
+
+  it("does not ask for a declined call followed by one that worked", async () => {
+    const shell = scripted("shell", [new Declined("The user declined: shell"), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]]);
+    await s.session.send("go");
+    expect(s.asks()).toEqual([]);
+  });
+
+  it("does not ask for a failure followed by the same job cancelled", async () => {
+    const stop = new AbortController();
+    let n = 0;
+    const shell = defineTool("shell", "Fails, then stops the turn", z.object({ command: z.string() }), async () => {
+      if (n++ === 0) throw new Error(AUTH);
+      stop.abort();
+      throw new Error("stopped");
+    });
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]]);
+    await s.session.send("go", stop.signal);
+    expect(s.asks()).toEqual([]);
+  });
+
+  it("does not ask for a turn with no failure", async () => {
+    const shell = scripted("shell", ["pushed", "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]]);
+    await s.session.send("go");
+    expect(s.asks()).toEqual([]);
+  });
+
+  it("does not count the three memory tools' own failures", async () => {
+    const names = ["memory_search", "memory_save", "record_lesson"];
+    const tools = names.map((n) => scripted(n, [new Error("Memory is not ready yet; try again shortly."), "Saved."]));
+    const s = asking(tools, names.flatMap((n): [string, object][] => [[n, {}], [n, {}]]));
+    await s.session.send("go");
+    expect(s.asks()).toEqual([]);
+  });
+
+  it("asks once a turn, and again in the next turn", async () => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed", new Error(AUTH), "pushed"]);
+    const read = scripted("read_file", [new Error("ENOENT: a.ts"), "the text"]);
+    const next = [callTool("c5", "shell", { command: "git push" }), callTool("c6", "shell", { command: "git push" }),
+      reply("done"), reply("Another lesson.")];
+    const s = asking([shell, read], [["shell", { command: "git push" }], ["read_file", { path: "a.ts" }],
+      ["shell", { command: "git push" }], ["read_file", { path: "a.ts" }]], [reply("A lesson."), ...next]);
+    await s.session.send("go");
+    expect(s.asks()).toHaveLength(1);
+    expect(askText(s.asks()[0]!)).toContain('Failed call: shell {"command":"git push"}');
+    await s.session.send("again");
+    expect(s.asks()).toHaveLength(2);
+  });
+
+  it("shows the input that ran when a PreToolUse hook rewrote the failed call", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "tachi-lessonask-"));
+    onTestFinished(() => removeTree(root));
+    const script = path.join(root, "hook.cjs");
+    writeFileSync(script, 'process.stdin.resume().on("end", () => process.stdout.write(process.argv[2]));');
+    const answer = { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "npm run build" } } };
+    const hook: Hook = { event: "PreToolUse", matcher: { all: true }, command: process.execPath,
+      args: [script, JSON.stringify(answer)], async: false, where: '"PreToolUse"' };
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => "never",
+      effort: () => undefined, lead: () => "fake:a" };
+    const hooks = new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, new Bus());
+    const ctx = { root, gate: new PermissionGate("never", async () => false) } as unknown as
+      Omit<ToolContext, "signal">;
+    const shell = scripted("shell", [new Error(AUTH), "built"]);
+    const s = asking([shell], [["shell", { command: "make" }], ["shell", { command: "make all" }]],
+      [reply("A lesson.")], { more: { hooks, ctx } });
+    await s.session.send("go");
+    expect(s.asks().map(askText)).toEqual([asked('shell {"command":"npm run build"}', AUTH,
+      'shell {"command":"npm run build"}')]);
+  });
+
+  it("sends the plain error, without the lessons added to the failed result", async () => {
+    const lesson: Hit = { text: "Run git pull before pushing.", wing: WING, room: LESSONS,
+      label: "tachikoma lesson, agent-harness-3f9a1c2b, 2026-11-19", distance: 0.1, date: "2026-11-19T10:00:00" };
+    const palace = { search: async () => ({ is: "found" as const, hits: [lesson] }) } as unknown as Palace;
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]],
+      [reply("A lesson.")], { more: { lessons: { memory: { on: () => true, palace }, timeout: 10_000 } } });
+    await s.session.send("go");
+    const results = s.session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [p] : [])));
+    expect(results[0]!.output).toContain(lesson.text);
+    expect(s.asks().map(askText)).toEqual([asked('shell {"command":"git push"}', AUTH,
+      'shell {"command":"git push"}')]);
+  });
+
+  it("cuts the calls and the error as the error log cuts them", async () => {
+    const write = scripted("write_file", [new Error(`could not write: ${"e".repeat(40_000)}`), "wrote"]);
+    const s = asking([write], [["write_file", { path: "big.txt", content: "x".repeat(40_000) }],
+      ["write_file", { path: "big.txt", content: "y" }]], [reply("A lesson.")]);
+    await s.session.send("go");
+    const [row] = s.errors;
+    expect(row!.attempted).toContain("[cut: ");
+    expect(row!.message).toContain("[cut: ");
+    expect(s.asks().map(askText)).toEqual([asked(row!.attempted, row!.message,
+      'write_file {"path":"big.txt","content":"y"}')]);
+  });
+
+  it("stores the reply's first line in the lessons, labelled with the project's room and the day", async () => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]],
+      [reply("Pushing failed on auth; a new token fixed it.\nA second line.")]);
+    await s.session.send("go");
+    await s.done();
+    expect(s.stored).toEqual([{ room: LESSONS, label: `tachikoma lesson, ${ROOM}, ${localDate()}`,
+      text: "Pushing failed on auth; a new token fixed it.", timeout: ADD_LIMIT }]);
+  });
+
+  it.each([
+    { what: "none", turn: reply("none") },
+    { what: "None.", turn: reply("None.") },
+    { what: "a cut-off reply", turn: { ...reply("A lesson that was cut"), cutOff: { kind: "max_tokens" as const,
+      detail: "limit" } } },
+  ])("stores nothing for $what", async ({ turn }) => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]], [turn]);
+    await s.session.send("go");
+    await s.done();
+    expect(s.asks()).toHaveLength(1);
+    expect(s.stored).toEqual([]);
+  });
+
+  it("marks its spend as the lesson ask's: counted in the cost, not in the conversation's context", async () => {
+    const big = { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0 };
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]],
+      [{ ...reply("A lesson."), usage: big }]);
+    const stats = new Stats(s.bus);
+    await s.session.send("go");
+    await s.done();
+    expect(s.spent.filter((u) => u.lesson)).toEqual([{ provider: "fake:a", usage: big, lesson: true }]);
+    expect([stats.input, stats.output, stats.context]).toEqual([3 * 10 + 1000, 3 * 5 + 100, 15]);
+  });
+
+  it.each<MemoryState>([
+    { is: "switched off" },
+    { is: "not set up" },
+    { is: "not set up", reason: "Memory is off: it needs uv, which was not found on PATH." },
+    { is: "setting up" },
+    { is: "failing", reason: "Memory is failing: the hub stopped answering; restarting it." },
+    { is: "off", reason: "Memory is off: the hub did not start (exit code: 1)." },
+  ])("sends no request at all with memory $is", async (state) => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]],
+      [reply("A lesson.")], { state });
+    await s.session.send("go");
+    await s.done();
+    expect(s.asks()).toEqual([]);
+    expect(s.lead.requests).toHaveLength(3);
+    expect(s.stored).toEqual([]);
+  });
+
+  it("sends no request from a subagent's session", async () => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]],
+      [reply("A lesson.")], { more: { subagent: true } });
+    await s.session.send("go");
+    expect(s.asks()).toEqual([]);
   });
 });

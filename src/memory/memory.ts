@@ -235,6 +235,19 @@ export class Memory {
     })();
   }
 
+  // Waits for the lesson requests running now (step 26): one that answers meanwhile stores its lesson, once, as at
+  // any other time. When `signal` fires, the wait ends at once and they are cancelled.
+  async waitLessons(signal?: AbortSignal): Promise<void> {
+    const requests = [...this.#requests];
+    await until(Promise.all(requests.map((r) => r.done)), signal);
+    if (signal?.aborted) for (const r of requests) r.stop.abort();
+  }
+
+  // Cancels the lesson requests running now: each stores nothing and reports nothing.
+  cancelLessons(): void {
+    for (const r of this.#requests) r.stop.abort();
+  }
+
   // Closing, one operation for the whole service, safe to call twice: the first call's options hold.
   close(o: CloseOptions): Promise<void> {
     this.#closing ??= this.#close(o);
@@ -252,9 +265,8 @@ export class Memory {
     this.#emit({ is: "winding down" });
     this.#winding = true;
     this.#stop.abort();
-    const requests = [...this.#requests];
-    if (o.lessons === "cancel") for (const r of requests) r.stop.abort();
-    else await until(Promise.all(requests.map((r) => r.done)), cut);
+    if (o.lessons === "cancel") this.cancelLessons();
+    else await this.waitLessons(cut);
     if (o.save && !cut?.aborted) {
       const limit = new AbortController();
       const timer = setTimeout(() => limit.abort(), o.save.limit);

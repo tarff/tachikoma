@@ -27,8 +27,9 @@ export type ToolOutcome = "ok" | "failed" | "declined" | "cancelled";
 export interface Events {
   message: [Message];
   // `task`: a subagent's, such as "t3"; `judge`: the judge's request (release 7 plan, choice 9); `summary`: a shortening's
-  // summary request (release 8a plan, Task 12)
-  usage: [{ provider: string; usage: Usage; priceKnown?: boolean; task?: string; judge?: boolean; summary?: boolean }];
+  // summary request (release 8a plan, Task 12); `lesson`: the lesson ask's request (8d plan, step 26)
+  usage: [{ provider: string; usage: Usage; priceKnown?: boolean; task?: string; judge?: boolean; summary?: boolean;
+    lesson?: boolean }];
   error: [ErrorEvent];
   lead: [string];
   // Each call the session takes up, as it runs; its result reaches the conversation with the others.

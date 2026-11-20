@@ -8,10 +8,12 @@ import type { Offered, Servers } from "../mcp/servers.js";
 import type { McpTools } from "../mcp/tools.js";
 import type { Hit, Palace } from "../memory/client.js";
 import { lessonQuery } from "../memory/lessonQuery.js";
+import { askLesson, lessonRequest, pairOf } from "../memory/lessons.js";
+import type { Memory } from "../memory/memory.js";
 import { LESSONS } from "../memory/paths.js";
 import type { Turn as SavedTurn } from "../memory/saver.js";
 import type { Cache } from "../providers/pictures.js";
-import { matchText } from "../tools/memory.js";
+import { lessonLabel, matchText } from "../tools/memory.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
@@ -204,6 +206,18 @@ export interface SessionOptions {
   // The lessons added to a failed tool call's result (8d plan, step 25): memory, whose lessons are searched while it
   // is on (step 21), and the search's time limit, the caller's. The lead's alone.
   lessons?: { memory: { on(): boolean; readonly palace: Palace | undefined }; timeout: number };
+  // The lesson ask at a turn's end (8d plan, step 26): memory, which owns the request and is asked first whether it is
+  // on, as nothing is sent otherwise (step 21; Q16); the project's room, for the lesson's label (step 16); and the
+  // time limit of the add that stores it, the caller's, as record_lesson's is (step 23). The lead's alone.
+  lessonAsk?: { memory: Pick<Memory, "on" | "lesson">; room: string; timeout: number };
+}
+
+// A call of the turn as the lesson ask sees it (step 26): the call's place in the record of calls, which a hook's
+// rewrite replaces, how it ended, and for a failure the plain error, before any lessons are added to it.
+interface Called {
+  entry: { name: string; input: unknown };
+  outcome?: ToolOutcome;
+  error?: string;
 }
 
 // A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
@@ -301,6 +315,8 @@ export class Session {
   // Whether the next typed message is the first of a launch's or /clear's new conversation, or the first after a
   // shortening, which the note from long-term memory goes in front of once memory is on (8d plan, step 24; Q9).
   #recallDue = false;
+  // The turn's calls in the order of its replies, for the lesson ask at its end (8d plan, step 26); none without it.
+  #called: Called[] | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -557,12 +573,39 @@ export class Session {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
+    this.#called = this.opts.lessonAsk && !this.opts.subagent ? [] : undefined;
     try {
       return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal, supply);
     } finally {
       this.#running = false;
       this.#ended();
+      this.#askLesson();
     }
+  }
+
+  // The lesson ask, at the end of a turn, typed or not, however it ended (8d plan, step 26): only while memory is on
+  // (Q16), and only when a failed call, not one of the three memory tools' own, was followed by a call doing the same
+  // job that worked. One request, owned by memory and never waited on, with the calls and the error cut as the error
+  // log cuts them; its lesson stored in the lessons as record_lesson stores one, its text alone, the project and the
+  // day in its label.
+  #askLesson(): void {
+    const called = this.#called;
+    this.#called = undefined;
+    const a = this.opts.lessonAsk;
+    if (!a || !called || !a.memory.on()) return;
+    const calls = called
+      .flatMap((c) => (c.outcome === undefined ? [] : [{ ...c.entry, outcome: c.outcome, error: c.error }]))
+      .filter((c) => !(c.outcome === "failed" && MEMORY_TOOLS.has(c.name)));
+    const pair = pairOf(calls, this.opts.ctx.root);
+    if (!pair) return;
+    const shown = (c: { name: string; input: unknown }) => truncate(`${c.name} ${JSON.stringify(c.input)}`);
+    const text = lessonRequest(shown(pair.failed), pair.failed.error ?? "", shown(pair.worked));
+    const lead = this.#lead;
+    const { bus } = this.opts;
+    a.memory.lesson(
+      (signal) => askLesson(lead, text, signal, bus),
+      (palace, lesson: string) => palace.add(LESSONS, lessonLabel(a.room), lesson, a.timeout),
+    );
   }
 
   // A typed turn's end, however it ended (8d plan, step 22; Q4, Q22): its boundary line, then the turn to the saver
@@ -833,14 +876,20 @@ export class Session {
       const results: ToolResult[] = new Array(calls.length);
       // The loaded set before the calls, so a search that grows it is saved (release 8c plan, choice 41).
       const loaded = this.opts.mcp?.loaded.size;
+      // Each call's place in the turn's calls, in the reply's order, for the lesson ask (8d plan, step 26).
+      const called: Called[] = entries.map((entry) => ({ entry }));
+      this.#called?.push(...called);
       try {
         // tool_search runs alongside the others too (release 8c plan, choice 44).
         const parallel = (name: string) => (this.opts.tools.find((t) => t.spec.name === name) ?? (this.#search?.spec.name === name ? this.#search : undefined))?.parallel;
-        const together = calls.map((c, i) => (parallel(c.name) ? this.#runTool(c, entries[i]!, round).then((r) => (results[i] = r)) : null));
+        const together = calls.map((c, i) =>
+          (parallel(c.name) ? this.#runTool(c, called[i]!, round).then((r) => (results[i] = r)) : null));
         // Each is handled now, so one that fails while a call after it runs is no unhandled rejection; Promise.all below
         // still rejects with it (Task 7's code review).
         for (const p of together) p?.catch(() => {});
-        for (const [i, call] of calls.entries()) if (!together[i]) results[i] = await this.#runTool(call, entries[i]!, round);
+        for (const [i, call] of calls.entries()) {
+          if (!together[i]) results[i] = await this.#runTool(call, called[i]!, round);
+        }
         await Promise.all(together);
       } finally {
         signal?.removeEventListener("abort", join);
@@ -1155,16 +1204,19 @@ export class Session {
     this.opts.bus.emit("error", sent ? { ...error, sent: true } : error);
   }
 
-  // `entry` is the call's place in the record of calls, which a hook's rewrite replaces.
-  async #runTool(call: ToolCall, entry: { name: string; input: unknown }, round: Round): Promise<ToolResult> {
+  // `called.entry` is the call's place in the record of calls, which a hook's rewrite replaces; how the call ended is
+  // kept beside it, for the lesson ask (8d plan, step 26).
+  async #runTool(call: ToolCall, called: Called, round: Round): Promise<ToolResult> {
     const { bus } = this.opts;
     bus.emit("tool-start", { id: call.id, name: call.name, input: call.input });
-    const [res, outcome] = await this.#execute(call, entry, round);
+    const [res, outcome] = await this.#execute(call, called.entry, round, called);
+    called.outcome = outcome;
     bus.emit("tool-end", { id: call.id, outcome });
     return res;
   }
 
-  async #execute(call: ToolCall, entry: { name: string; input: unknown }, round: Round): Promise<[ToolResult, ToolOutcome]> {
+  async #execute(call: ToolCall, entry: { name: string; input: unknown }, round: Round, called: Called):
+    Promise<[ToolResult, ToolOutcome]> {
     const { signal } = round;
     // A call a stop came before or during: the user's, or a hook's continue: false, in its own words (release 8b plan,
     // Task 7).
@@ -1174,6 +1226,7 @@ export class Session {
       // Capped like the message: a failed write_file's input is the whole file. The input that ran, a hook's rewrite among
       // them, as the record of calls holds it (Task 6's code review).
       this.opts.bus.emit("error", { kind: "tool", attempted: truncate(`${call.name} ${JSON.stringify(entry.input)}`), message, lead: this.#lead.id });
+      called.error = message; // the plain error, for the lesson ask (8d plan, step 26)
       return [result(call, message, true), "failed"];
     };
     const tool = this.#tool(call.name);

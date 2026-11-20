@@ -34,4 +34,16 @@ describe("Stats", () => {
     // 4 and 20 USD a million input and output tokens (pricing.ts), as above.
     expect(stats.cost).toBeCloseTo((3000 * 4 + 600 * 20) / 1_000_000, 12);
   });
+
+  // 8d plan, step 26: the lesson ask's request is apart from the conversation, as the judge's is.
+  it("adds the lesson ask's usage to the tokens and cost, and leaves the lead's context alone", () => {
+    const bus = new Bus();
+    const stats = new Stats(bus);
+    const provider = "anthropic:claude-opus-5-5";
+    bus.emit("usage", { provider, usage: { input: 2000, output: 500, cacheRead: 0, cacheWrite: 0 } });
+    bus.emit("usage", { provider, usage: { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0 }, lesson: true });
+    expect([stats.input, stats.output, stats.context]).toEqual([3000, 600, 2500]);
+    // 4 and 20 USD a million input and output tokens (pricing.ts), as above.
+    expect(stats.cost).toBeCloseTo((3000 * 4 + 600 * 20) / 1_000_000, 12);
+  });
 });
