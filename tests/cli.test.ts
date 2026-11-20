@@ -2334,7 +2334,8 @@ describe("tachi's long-term memory", { timeout: 90_000 }, () => {
   const TOOLS = ["memory_search", "memory_save", "record_lesson"];
   // As tests/memory/memory.test.ts's stand-in Python: the hub (`-m mempalace.mcp_server`) and the supervisor's helper,
   // told by control.json in TACHI_TEST_HUB's folder, else step 19's stand-in Python. The hub records each call it
-  // receives in calls-<its pid>.jsonl in the control's `calls` folder, and takes the control's `args` too.
+  // receives in calls-<its pid>.jsonl in the control's `calls` folder, each with its time, as its start's line has,
+  // and takes the control's `args` too.
   const PYTHON = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
@@ -2378,15 +2379,21 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
       wait();
     }
   } else {
-    fs.appendFileSync(c.record, JSON.stringify({ hub: { args: rest, pid: process.pid } }) + "\n");
+    fs.appendFileSync(c.record, JSON.stringify({ hub: { args: rest, pid: process.pid }, at: Date.now() }) + "\n");
     fs.writeFileSync(startOf(process.pid), String(Date.now()) + "-" + String(process.hrtime.bigint()));
     setInterval(() => {
       if (!fs.existsSync(controlFile)) process.exit(0);
+      fs.writeFileSync(path.join(dir, "alive-" + process.pid), String(Date.now())); // the last time it was alive
     }, 100);
     (async () => {
       while (c.hold && !fs.existsSync(c.hold)) await new Promise((r) => setTimeout(r, 20));
       if (c.exit !== undefined) process.exit(c.exit);
-      process.argv.push("--record", path.join(c.calls, "calls-" + process.pid + ".jsonl"), ...(c.args ?? []));
+      // Each line of the stand-in's own record is given the time it was written, for when this hub served.
+      const calls = path.join(c.calls, "calls-" + process.pid + ".jsonl");
+      const append = fs.appendFileSync;
+      fs.appendFileSync = (f, d, ...more) =>
+        append(f, f === calls ? d.replace(/}\n$/, ',"at":' + Date.now() + "}\n") : d, ...more);
+      process.argv.push("--record", calls, ...(c.args ?? []));
       await import(pathToFileURL(c.standin).href);
     })();
   }
@@ -2582,8 +2589,17 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
       readdirSync(calls).flatMap((f) => jsonLines(path.join(calls, f)).flatMap((l) => (l.call ? [l.call] : [])));
     const added = (room?: string) =>
       callsMade().filter((c) => c.name === "mempalace_add_drawer" && (room === undefined || c.arguments.room === room));
-    const hubsServing = () =>
-      readdirSync(calls).filter((f) => jsonLines(path.join(calls, f)).some((l) => l.call)).length;
+    // When each hub that served calls was running: from its start to the later of its last call and the last time it
+    // was seen alive (its stand-in Python's 100 ms check), so a hub left running after its last call still counts.
+    const serving = () =>
+      readdirSync(calls).flatMap((f) => {
+        const lines = jsonLines(path.join(calls, f)).filter((l) => l.call);
+        const pid = Number(/^calls-(\d+)\.jsonl$/.exec(f)?.[1]);
+        const start = jsonLines(record).find((l) => l.hub?.pid === pid);
+        const beat = path.join(hub, `alive-${pid}`);
+        const seen = existsSync(beat) ? Number(readFileSync(beat, "utf8")) : 0;
+        return lines.length && start ? [{ pid, from: start.at as number, to: Math.max(lines.at(-1).at, seen) }] : [];
+      });
     const hubPids = () => jsonLines(record).flatMap((l) => (l.hub ? [l.hub.pid as number] : []));
     const uvPids = () => jsonLines(uvRecord).flatMap((l) => (l.as === "uv" ? [l.pid as number] : []));
     // The stand-in hubs end once their control file is gone; the case's folder goes once they and uv have ended.
@@ -2595,7 +2611,7 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
       await removeTree(top);
     });
     return {
-      top, proj, data, paths, env, run, sent, control, added, calls: callsMade, hubsServing, hubPids, uvPids,
+      top, proj, data, paths, env, run, sent, control, added, calls: callsMade, serving, hubPids, uvPids,
       lessonAsks: () => lessonAsks,
       releaseLessons: () => {
         lessonsGo = true;
@@ -2753,9 +2769,12 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
     const c = await memoryCase({ ready: true });
     const [a, b] = [c.run(false, "-p", "first"), c.run(false, "-p", "second")];
     expect([await a.closed, await b.closed]).toEqual([0, 0]);
+    // Each hub that served began after the one before it had stopped running.
+    const served = c.serving().sort((x, y) => x.from - y.from);
+    expect(served.length).toBeGreaterThan(0);
+    for (const [i, hub] of served.entries()) if (i) expect(hub.from).toBeGreaterThan(served[i - 1]!.to);
     const turns = c.added(roomName(c.proj)).map((x) => x.arguments.content);
     expect(turns.sort()).toEqual(["first\n\ndone", "second\n\ndone"]);
-    expect([1, 2]).toContain(c.hubsServing());
     await vi.waitFor(() => expect(c.hubPids().filter(alive)).toEqual([]), WAIT);
   });
 
@@ -2829,8 +2848,11 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
     await vi.waitFor(() => expect(p.stdout()).toBe("done\n"), WAIT);
     const done = Date.now();
     expect(await p.closed).toBe(0);
-    // Ended by the last save's limit, before the look-up's own 13 s limit (each request's) could end it.
-    expect(Date.now() - done).toBeLessThan(13_000);
+    // Ended by the test's own last-save limit (`lastSave`, 1 s). From the answer to the exit this PC took 1,092, 1,106,
+    // 1,114, 1,130, 1,147 and 1,106 ms over 6 runs of this case alone (2026-11-20, step 27's fixes round 2), so the
+    // bound is 1 s and 5 times the slowest 147 ms above it, the user's usual margin. With the limit removed, the
+    // look-up's own 13 s limit ends it instead (13,114 ms, fixes round 1).
+    expect(Date.now() - done).toBeLessThan(1_000 + 5 * 147);
     // The palace connected and was asked for the turn's label, the look-up that is not answered.
     expect(c.calls().filter((x) => x.arguments.dry_run)).toHaveLength(1);
     expect(c.added()).toEqual([]);
@@ -2840,8 +2862,6 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
     expect("problem" in read ? read : read.unsaved.map((u) => u.n)).toEqual([1]);
   });
 
-  // Q21 at the launch: a -p run saved with memory not set up, resumed with -c once it is: the prompt is rebuilt with
-  // the line and no line is said, as the reply has no Anthropic thinking to leave out.
   // The user's choices after step 27's review: set up already, memory joins without uv ("Start memory anyway"), and
   // after "Don't ask again" nothing is said ("Stay silent").
   it("joins a set-up memory with no uv on PATH, saying nothing of uv", async () => {
@@ -2882,6 +2902,8 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
     expect(c.hubPids().filter(alive)).toHaveLength(1);
   });
 
+  // Q21 at the launch: a -p run saved with memory not set up, resumed with -c once it is: the prompt is rebuilt with
+  // the line and no line is said, as the reply has no Anthropic thinking to leave out.
   it("rebuilds a resumed session's prompt with the memory line, silent when no thinking is left out", async () => {
     const c = await memoryCase();
     expect(await c.run(false, "-p", "hi").closed).toBe(0);
