@@ -29,6 +29,9 @@
 //                            with a palace file it cannot open (step 20's run 3, in the same words);
 // --stop-after <tool>=<n>    once that tool's nth call is answered, it stops: later calls get no answer and change
 //                            nothing, until the file `--gate <file>` exists (never, without --gate);
+// --pause-after <tool>=<n>   once that tool's nth call is answered, later calls wait, and are answered in order once
+//                            the file `--gate <file>` exists (never, without --gate), as a saver held between two parts
+//                            (8d plan, step 22);
 // --hang <ms>                over stdio, it answers `initialize` that much later and nothing after it, and keeps
 //                            running when its input closes, as a program stuck in its start.
 // Over HTTP it prints { "port": <p> } on a line of its own once it listens (port 0, or none given: any free one).
@@ -71,6 +74,11 @@ for (let i = 0; i < argv.length; i++) {
     case "--stop-after": {
       const [tool, n] = next().split("=");
       opt.stopAfter = { tool, n: Number(n) };
+      break;
+    }
+    case "--pause-after": {
+      const [tool, n] = next().split("=");
+      opt.pauseAfter = { tool, n: Number(n) };
       break;
     }
     case "--gate": opt.gate = next(); break;
@@ -251,6 +259,19 @@ const LIST = [
 // ---- MCP ----
 const answered = {};
 let stopped = false;
+const gateOpen = () => opt.gate !== undefined && fs.existsSync(opt.gate);
+// --pause-after's held calls, answered in order once the gate exists; looked for every 20 ms, a figure of the tests'.
+let paused = false;
+const held = [];
+function pause() {
+  paused = true;
+  const timer = setInterval(() => {
+    if (!gateOpen()) return;
+    clearInterval(timer);
+    paused = false;
+    for (const go of held.splice(0)) go();
+  }, 20);
+}
 function answer(m, reply) {
   if (m.method === "initialize") {
     return reply({ result: { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} },
@@ -262,7 +283,12 @@ function answer(m, reply) {
   const { name } = m.params;
   const args = m.params.arguments ?? {};
   record({ call: { name, arguments: args } });
-  if (stopped && !(opt.gate && fs.existsSync(opt.gate))) return;
+  if (paused) return void held.push(() => respond(name, args, reply));
+  respond(name, args, reply);
+}
+
+function respond(name, args, reply) {
+  if (stopped && !gateOpen()) return;
   stopped = false;
   if (name === "mempalace_search" && opt.holdRoom.has(args.room)) return;
   if (opt.lack.has(name) || !Object.hasOwn(TOOLS, name)) {
@@ -274,6 +300,7 @@ function answer(m, reply) {
     reply(out.rpcError ? { error: out.rpcError } : { result: { content: [{ type: "text", text }] } });
     answered[name] = (answered[name] ?? 0) + 1;
     if (opt.stopAfter?.tool === name && answered[name] === opt.stopAfter.n) stopped = true;
+    if (opt.pauseAfter?.tool === name && answered[name] === opt.pauseAfter.n) pause();
   };
   if (opt.slow) setTimeout(send, opt.slow);
   else send();

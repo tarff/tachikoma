@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
+import { copySession } from "../../src/core/sessions.js";
 import { type Line, readOutline, readTranscript, Transcript, wholeLines } from "../../src/core/transcript.js";
 import type { Message, Part, Setup } from "../../src/core/types.js";
 import { removeTree } from "../helpers.js";
@@ -855,5 +856,110 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect(full.damaged).toBe(1);
     expect(outline).toEqual({ start: full.start, print: full.print, name: full.name, lead: full.lead, firstPrompt: full.firstPrompt, said: true });
     expect(outline).toMatchObject({ name: "the fix", lead: "fake:b", firstPrompt: "the real prompt" });
+  });
+
+  // 8d plan, step 22 (Q4, Q5, Q17, Q22): the turns a resumed session hands to the saver.
+  describe("turns not yet saved", () => {
+    const replying = (text: string, id: string): Message => ({
+      role: "assistant",
+      parts: [
+        { type: "text", text },
+        { type: "tool_call", id, name: "read_file", input: { path: "a.txt" } },
+      ],
+    });
+
+    it("returns each turn with a boundary and no saved record, with the model's text up to its boundary", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      t.write({ t: "message", message: prompt("one") });
+      t.write({ t: "message", message: replying("first", "c1") });
+      t.write({ t: "message", message: answers("c1", "the tool's output") });
+      t.write({ t: "message", message: said("second") });
+      t.write({ t: "turn", n: 1 });
+      t.write({ t: "message", message: prompt("two") });
+      t.write({ t: "message", message: said("saved already") });
+      t.write({ t: "turn", n: 2 });
+      t.write({ t: "saved", n: 2 });
+      // A background turn: no typed words, no boundary, and its text joins no typed turn.
+      const finished: Part = { type: "text", text: "Command t1 finished", from: "tasks" };
+      t.write({ t: "message", message: { role: "user", parts: [finished] } });
+      t.write({ t: "message", message: said("about the command") });
+      // A turn a crash cut off: no boundary.
+      t.write({ t: "message", message: prompt("three") });
+      t.write({ t: "message", message: said("cut off") });
+      const r = read(p);
+      expect(r.unsaved).toEqual([{ n: 1, typed: "one", texts: ["first", "second"] }]);
+      expect(r.damaged).toBe(0);
+      expect(r.prompts).toEqual(["one", "two", "three"]);
+    });
+
+    it("rebuilds a turn's text across a shortening in it, leaving the summary out", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      t.write({ t: "message", message: prompt("go") });
+      t.write({ t: "message", message: replying("before the shortening", "c1") });
+      t.write({ t: "message", message: answers("c1", "out") });
+      t.write({ t: "shortened", system: "Be brief.", message: prompt("the summary's words") });
+      t.write({ t: "message", message: said("after the shortening") });
+      t.write({ t: "turn", n: 1 });
+      const texts = ["before the shortening", "after the shortening"];
+      expect(read(p).unsaved).toEqual([{ n: 1, typed: "go", texts }]);
+    });
+
+    it("numbers a turn by its prompt's place, a picture as its marker, returning none without model text", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      t.write({ t: "message", message: prompt("hello") });
+      t.write({ t: "turn", n: 1 });
+      t.write({ t: "message", message: picture(1, Buffer.from([0x89, 0x50, 0x4e, 0x47])) });
+      t.write({ t: "message", message: said("a picture") });
+      t.write({ t: "turn", n: 2 });
+      expect(read(p).unsaved).toEqual([{ n: 2, typed: "look at [Image #1]", texts: ["a picture"] }]);
+    });
+
+    it("returns nothing from a transcript saved before this release, which holds no boundary", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      t.write({ t: "message", message: prompt("one") });
+      t.write({ t: "message", message: said("an answer") });
+      expect(read(p).unsaved).toEqual([]);
+    });
+
+    // Q17: an older Tachikoma skips the new lines and counts them, as today's reader does a kind it does not know.
+    it("skips a line of a kind it does not know and counts it, reading the rest", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      t.write({ t: "message", message: prompt("one") });
+      appendFileSync(p.file, `${JSON.stringify({ t: "later-kind", at: "2026-11-20T00:00:00.000Z", n: 1 })}\n`);
+      t.write({ t: "message", message: said("an answer") });
+      const r = read(p);
+      expect(r.damaged).toBe(1);
+      expect(r.messages).toEqual([prompt("one"), said("an answer")]);
+    });
+
+    it("marks a copy's copied turns saved, never to be saved again under its id, leaving the source's", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      t.write({ t: "message", message: prompt("one") });
+      t.write({ t: "message", message: said("first") });
+      t.write({ t: "turn", n: 1 });
+      const id = path.basename(p.file, ".jsonl");
+      const copy = copySession(shared, id);
+      const copied = { file: path.join(shared, `${copy}.jsonl`), pictures: path.join(shared, copy, "pictures") };
+      expect(read(copied).unsaved).toEqual([]);
+      expect(read(p).unsaved).toEqual([{ n: 1, typed: "one", texts: ["first"] }]);
+      // The copy's own turns are its to save.
+      const c = new Transcript(copied.file, copied.pictures);
+      c.write({ t: "message", message: prompt("two") });
+      c.write({ t: "message", message: said("second") });
+      c.write({ t: "turn", n: 2 });
+      expect(read(copied).unsaved).toEqual([{ n: 2, typed: "two", texts: ["second"] }]);
+    });
   });
 });

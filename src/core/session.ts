@@ -6,6 +6,7 @@ import type { Hooks } from "../hooks/hooks.js";
 import { errorOf, fromClaude, isMcp, outputFrom, type Paths, pathsFor, responseOf, toClaude } from "../hooks/tools.js";
 import type { Offered, Servers } from "../mcp/servers.js";
 import type { McpTools } from "../mcp/tools.js";
+import type { Turn as SavedTurn } from "../memory/saver.js";
 import type { Cache } from "../providers/pictures.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
@@ -14,7 +15,7 @@ import { type Ask, Declined, type PermissionGate, StoppedFirst, visible } from "
 import { dueNotes, isSetupNote, localDate, type Told, toldAfter } from "./setup.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
-import { CUT_OFF, type Transcript } from "./transcript.js";
+import { CUT_OFF, type Transcript, type Unsaved } from "./transcript.js";
 import {
   type CompletionRequest,
   errorText,
@@ -155,6 +156,10 @@ export interface SessionOptions {
   // moment (clilib.ts, setupOf), `today` the local date, `root` and `platform` the host's, for the setup note. The
   // lead's alone: a subagent's session has none, and gets no notes.
   setup?: { now: () => Setup; today: () => string; root: string; platform: NodeJS.Platform };
+  // The lead's saver of turns (8d plan, step 22), given whenever memory is not switched off: each typed turn's end is
+  // written as a boundary line and the turn handed to it, never waited on; `send` starts sending the turns not yet
+  // saved, before a shortening. A subagent's session saves nothing.
+  memory?: { hand(turn: SavedTurn): void; send(): void };
 }
 
 // A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
@@ -175,6 +180,7 @@ export interface Conversation {
   tools?: ToolSpec[];
   asked?: string[]; // the calls the user was asked about, read back from the transcript (release 8c plan, Task 15)
   told?: Told; // what the model was told, for the notes (system prompt plan, Task 7); none, no notes
+  unsaved?: Unsaved[]; // the turns its transcript shows not yet saved, for the saver (8d plan, step 22)
 }
 
 export class Session {
@@ -245,6 +251,9 @@ export class Session {
   // What the model was told, from the loaded conversation and each note pushed since (design, "What the model was
   // told"); none, no notes (system prompt plan, Task 7).
   #told: Told | undefined;
+  // The typed turn under way, for the saver (8d plan, step 22; Q4, Q5): its number, its typed words and the model's
+  // text, gathered as each reply is stored, never read back from the history, which a shortening replaces.
+  #turnNow: Unsaved | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -255,6 +264,16 @@ export class Session {
     this.#serversFirst = opts.servers !== undefined;
     // A launch's start line holds Tachikoma's own tools.
     this.#savedTools = madeUnder("", this.#own());
+    // Before a shortening, the turns not yet saved are sent, not waited on; it cannot throw, as the loop that runs
+    // onShorten has no catch, and the shortening goes ahead when the save fails (8d plan, step 22).
+    const memory = opts.subagent ? undefined : opts.memory;
+    if (memory) {
+      this.onShorten.push(() => {
+        try {
+          memory.send();
+        } catch {}
+      });
+    }
   }
 
   #own(): ToolSpec[] {
@@ -318,6 +337,8 @@ export class Session {
     this.opts.pictures?.from(c.nextPicture);
     this.opts.tasks?.from(c.nextTask);
     this.#saving(); // a write made before the load, such as launch's start line or mend
+    // The turns its transcript shows not yet saved go to the saver (8d plan, step 22).
+    for (const turn of c.unsaved ?? []) this.#hand(turn);
   }
 
   // The system prompt built afresh, for /clear and a shortening (release 8a plan, Task 7; system prompt plan, Task 8):
@@ -490,7 +511,31 @@ export class Session {
       return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal, supply);
     } finally {
       this.#running = false;
+      this.#ended();
     }
+  }
+
+  // A typed turn's end, however it ended (8d plan, step 22; Q4, Q22): its boundary line, then the turn to the saver
+  // when the model wrote any text, never waited on.
+  #ended(): void {
+    const turn = this.#turnNow;
+    if (!turn) return;
+    this.#turnNow = undefined;
+    this.#transcript?.write({ t: "turn", n: turn.n });
+    this.#saving();
+    if (turn.texts.length) this.#hand(turn);
+  }
+
+  // A turn to the saver, with its saved record, written only while this session is still the window's (Q6): after a
+  // switch, another window may hold its transcript, and the saver's look-up finds the turn when it is next resumed.
+  #hand(turn: Unsaved): void {
+    const t = this.#transcript;
+    const record = () => {
+      if (this.#transcript !== t || !t) return;
+      t.write({ t: "saved", n: turn.n });
+      this.#saving();
+    };
+    if (!this.opts.subagent) this.opts.memory?.hand({ session: this.id, ...turn, record });
   }
 
   async #turn(typed: Part[], signal?: AbortSignal, supply?: Supply): Promise<Ended | void> {
@@ -536,6 +581,10 @@ export class Session {
       return { unsupplied: true };
     }
     if (words && !this.opts.subagent) this.prompts.push(words);
+    // A typed turn, numbered by its prompt's place among the session's prompts (Q4), for the saver (8d plan, step 22).
+    if (words && !this.opts.subagent && this.opts.memory) {
+      this.#turnNow = { n: this.prompts.length, typed: words, texts: [] };
+    }
     const own: Part[] = [...typed, ...(supplied ?? []), ...prompted, ...this.#waiting()];
     if (!own.length) return;
     // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message.
@@ -659,6 +708,8 @@ export class Session {
       // before the reply reaches the window, which folds it by this set.
       for (const p of turn.parts) if (p.type === "tool_call") this.asked.delete(p.id);
       this.#push(answer);
+      // The model's text, as each reply is stored (8d plan, step 22; Q5): tool calls and their outputs left out.
+      for (const p of turn.parts) if (p.type === "text" && p.text) this.#turnNow?.texts.push(p.text);
 
       const calls = turn.parts.filter((p) => p.type === "tool_call");
       if (turn.cutOff) {

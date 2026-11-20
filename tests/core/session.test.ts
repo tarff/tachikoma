@@ -36,6 +36,7 @@ import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files
 import { shellText } from "../../src/tools/shell.js";
 import { defineTool, type Tool } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
+import { entriesOf, type Turn as SavedTurn } from "../../src/memory/saver.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, standInRun, tempContext, texts, usage } from "../helpers.js";
 
 const echo = defineTool("echo", "Echo text back", z.object({ text: z.string() }), async ({ text }) => text);
@@ -999,6 +1000,23 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
   });
 });
 
+// 8d plan, step 22: a stand-in for the saver of turns, keeping each turn handed to it and counting its sends; `fails`,
+// a send that throws.
+function handing(fails = false) {
+  const handed: SavedTurn[] = [];
+  let sends = 0;
+  return {
+    handed,
+    sends: () => sends,
+    hand: (t: SavedTurn) => void handed.push(t),
+    send: () => {
+      sends++;
+      if (fails) throw new Error("the saver broke");
+    },
+  };
+}
+const bare = ({ session, n, typed, texts }: SavedTurn) => ({ session, n, typed, texts });
+
 // Release 8a plan, Task 12: the session shortens a conversation that will not fit, before the request or after a "too
 // long" answer (design, "When to shorten" and "How shortening works").
 describe("Session, shortening", { timeout: 15_000 }, () => {
@@ -1958,6 +1976,80 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     await session.send("next");
     expect(session.messages.at(-2)!.parts.at(-1)).toEqual(note);
     expect(shortenedLine(transcript)).toBeUndefined(); // the file is written once the next message is
+  });
+
+  // 8d plan, step 22: a turn's text is gathered as each reply is stored, never read back from the history, which a
+  // shortening replaces with its summary; the transcript's reader rebuilds the same text.
+  const withText = (text: string, id: string): Turn => {
+    const call = callTool(id, "echo", { text: "one" });
+    return { ...call, parts: [{ type: "text", text }, ...call.parts] };
+  };
+  // The start line a launch writes first, which the reader needs.
+  const begin = (t: Transcript) =>
+    t.write({ t: "start", v: 1, id: "s", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t",
+      tools: [] });
+  const unsavedOf = (t: Transcript) => {
+    const r = readTranscript(t.file, t.pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    return r.unsaved;
+  };
+  const asRead = (handed: SavedTurn[]) => handed.map(({ n, typed, texts }) => ({ n, typed, texts }));
+
+  it("keeps a turn's text from before and after a shortening in it, none of the summary, as read back", async () => {
+    const memory = handing();
+    const turns = [measured("noted"), withText("Before it.", "c1"), new TooLong("prompt is too long"),
+      summaryOf("The summary."), reply("After it.")];
+    const { session, transcript, summaries } = await setup(new Lead("fake:a", turns, 1_000_000), { memory, id: "s9" });
+    begin(transcript);
+    await session.send(big);
+    await session.send("do it");
+    expect(summaries).toEqual(["The summary."]);
+    expect(memory.handed.map(bare)).toEqual([
+      { session: "s9", n: 1, typed: big, texts: ["noted"] },
+      { session: "s9", n: 2, typed: "do it", texts: ["Before it.", "After it."] },
+    ]);
+    expect(unsavedOf(transcript)).toEqual(asRead(memory.handed));
+  });
+
+  it("numbers turns the same live and read back, across a shortening and a blocked prompt", async () => {
+    const script = path.join(top, `block${++n}.cjs`);
+    writeFileSync(
+      script,
+      `let t = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => {
+  const block = JSON.stringify({ decision: "block", reason: "not this one" });
+  if (JSON.parse(t).prompt === "skip this") process.stdout.write(block);
+  process.exit(0);
+});`,
+    );
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root: top, mode: () => "never",
+      effort: () => undefined, lead: () => "fake:a" };
+    const hook: Hook = { event: "UserPromptSubmit", matcher: { all: true }, command: process.execPath, args: [script],
+      async: false, where: '"UserPromptSubmit"' };
+    const hooks = new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, new Bus());
+    const memory = handing();
+    const turns = [measured("noted"), withText("Before it.", "c1"), new TooLong("prompt is too long"), summaryOf("S."),
+      reply("After it."), reply("Last.")];
+    const { session, transcript } = await setup(new Lead("fake:a", turns, 1_000_000), { memory, hooks });
+    begin(transcript);
+    await session.send(big);
+    expect(await session.send("skip this")).toEqual({ blocked: "not this one" });
+    await session.send("do it");
+    await session.send("last");
+    expect(memory.handed.map((t) => [t.n, t.typed])).toEqual([[1, big], [2, "do it"], [3, "last"]]);
+    expect(session.prompts).toEqual([big, "do it", "last"]);
+    expect(unsavedOf(transcript)).toEqual(asRead(memory.handed));
+  });
+
+  it("starts sending the unsaved turns before a shortening, which goes ahead when that fails", async () => {
+    const memory = handing(true);
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Many x."), reply("done")], 700);
+    const { session, summaries } = await setup(lead, { memory });
+    await session.send(big);
+    await session.send("now this");
+    expect(memory.sends()).toBe(1);
+    expect(summaries).toEqual(["Many x."]);
+    expect(texts(session.messages.at(-1)!)).toEqual(["done"]);
   });
 });
 
@@ -3469,5 +3561,168 @@ describe("Session, notes to the model", { timeout: 15_000 }, () => {
     expect(fresh.system).toBe("t");
     expect(days).toContain(fresh.date);
     expect("setup" in fresh).toBe(false);
+  });
+});
+
+// 8d plan, step 22 (Q4, Q5, Q6, Q22): the lead's session writes each typed turn's boundary line and hands the turn to
+// the saver, and a loaded conversation hands over the turns its transcript shows unsaved.
+describe("Session, saving turns", { timeout: 15_000 }, () => {
+  let top: string;
+  let n = 0;
+  beforeAll(async () => {
+    top = await mkdtemp(path.join(tmpdir(), "tachi-saving-"));
+  });
+  afterAll(() => removeTree(top));
+  // Two levels inside the test's temp folder; `inherits`, so no PowerShell starts. Each begins with its start line.
+  const saving = (id = `s${++n}`) => {
+    const dir = path.join(top, "sessions", "project");
+    const t = new Transcript(path.join(dir, `${id}.jsonl`), path.join(dir, id, "pictures"), { inherits: true });
+    t.write({ t: "start", v: 1, id, project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t",
+      tools: [] });
+    return t;
+  };
+  const savedLines = (t: Transcript) =>
+    readFileSync(t.file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Line);
+  const read = (t: Transcript) => {
+    const r = readTranscript(t.file, t.pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    return r;
+  };
+  const conversation = (id: string, t: Transcript, r: Read): Conversation => ({
+    id,
+    messages: r.messages,
+    system: r.system,
+    transcript: t,
+    prompts: r.prompts,
+    calls: r.calls,
+    nextPicture: r.nextPicture,
+    nextTask: r.nextTask,
+    unsaved: r.unsaved,
+  });
+  const said = (text: string): Message => ({ role: "assistant", parts: [{ type: "text", text }] });
+  const typed = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
+  // A lead's session with no turns to give and the saver's stand-in, for a loaded conversation.
+  const loading = async (memory: ReturnType<typeof handing>) =>
+    new Session({ lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+      memory });
+  async function setup(turns: Turn[], more: Partial<ConstructorParameters<typeof Session>[0]> = {}) {
+    const memory = handing();
+    const transcript = saving();
+    const session = new Session({
+      lead: new FakeProvider("a", turns), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+      id: "s1", transcript, memory, ...more,
+    });
+    return { session, memory, transcript };
+  }
+
+  it("writes a typed turn's boundary, then hands its words, pictures as markers, and the model's text", async () => {
+    const waiting = ["Background task t1 finished"];
+    const call = { type: "tool_call" as const, id: "c1", name: "echo", input: { text: "the tool's output" } };
+    const replying: Turn = { parts: [{ type: "text", text: "Reading." }, call], usage };
+    const { session, memory, transcript } = await setup([replying, reply("Done.")], { inbox: () => waiting.splice(0) });
+    let last: Line | undefined;
+    memory.hand = (t) => {
+      last = savedLines(transcript).at(-1);
+      memory.handed.push(t);
+    };
+    const data = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const picture = { type: "image" as const, id: 1, mediaType: "image/png" as const, data };
+    const served = { type: "text" as const, text: "a server's text", from: "server" as const };
+    await session.send([{ type: "text", text: "look at " }, picture, served]);
+    expect(memory.handed.map(bare)).toEqual([
+      { session: "s1", n: 1, typed: "look at [Image #1]", texts: ["Reading.", "Done."] },
+    ]);
+    expect(last).toEqual({ t: "turn", at: expect.any(String), n: 1 });
+    // Its saved record, once the saver has every entry of it in.
+    memory.handed[0]!.record();
+    expect(savedLines(transcript).at(-1)).toEqual({ t: "saved", at: expect.any(String), n: 1 });
+    expect(read(transcript).unsaved).toEqual([]);
+  });
+
+  it("writes no boundary for a turn with no typed words, handing neither it nor one with no model text", async () => {
+    const waiting = ["Command t1 finished"];
+    const inbox = () => waiting.splice(0);
+    const { session, memory, transcript } = await setup([reply("About the command."), reply("")], { inbox });
+    await session.send("");
+    expect(savedLines(transcript).filter((l) => l.t === "turn")).toEqual([]);
+    await session.send("hi");
+    expect(memory.handed).toEqual([]);
+    expect(savedLines(transcript).filter((l) => l.t === "turn")).toEqual([{ t: "turn", at: expect.any(String), n: 1 }]);
+  });
+
+  it("saves nothing of a subagent's own session, and none of a subagent's words in the lead's turn", async () => {
+    const sub = await setup([reply("Sub words.")], { subagent: true, id: "t1" });
+    await sub.session.send("the brief");
+    expect(sub.memory.handed).toEqual([]);
+    expect(savedLines(sub.transcript).map((l) => l.t)).toEqual(["start", "message", "message"]);
+    const ctx = await tempContext();
+    const worker = () => new FakeProvider("w", [reply("The subagent's own words.")]);
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker, system: "sub", tools: [readFileTool], ctx });
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x" }), reply("The lead's words.")];
+    const { session, memory } = await setup(turns, { tools: [delegateTool(tasks, { headless: false })] });
+    await session.send("go");
+    expect(memory.handed.map(bare)).toEqual([{ session: "s1", n: 1, typed: "go", texts: ["The lead's words."] }]);
+  });
+
+  it("hands a loaded conversation's unsaved turns, recording them only while it is still the window's", async () => {
+    const a = saving("a1");
+    for (const message of [typed("one"), said("first")]) a.write({ t: "message", message });
+    a.write({ t: "turn", n: 1 });
+    for (const message of [typed("two"), said("second")]) a.write({ t: "message", message });
+    a.write({ t: "turn", n: 2 });
+    const memory = handing();
+    const session = await loading(memory);
+    session.load(conversation("a1", a, read(a)));
+    expect(memory.handed.map(bare)).toEqual([
+      { session: "a1", n: 1, typed: "one", texts: ["first"] },
+      { session: "a1", n: 2, typed: "two", texts: ["second"] },
+    ]);
+    memory.handed[0]!.record();
+    expect(read(a).unsaved.map((t) => t.n)).toEqual([2]);
+    // The window switches to another session: the first one's record is no longer written (Q6).
+    const b = saving("b1");
+    session.load(conversation("b1", b, read(b)));
+    memory.handed[1]!.record();
+    expect(read(a).unsaved.map((t) => t.n)).toEqual([2]);
+    expect(savedLines(b).map((l) => l.t)).toEqual(["start"]);
+  });
+
+  it("hands a resumed typed turn its own text only, after a background turn and a crash before its save", async () => {
+    const waiting: string[] = [];
+    const inbox = () => waiting.splice(0);
+    const { session, memory, transcript } = await setup([reply("Fixed."), reply("About the command.")], { inbox });
+    await session.send("fix it");
+    waiting.push("Command t1 finished");
+    await session.send("");
+    // Nothing was recorded saved: the window died first. A new window resumes the session.
+    const again = handing();
+    const resumed = await loading(again);
+    resumed.load(conversation("s1", transcript, read(transcript)));
+    expect(again.handed.map(bare)).toEqual([{ session: "s1", n: 1, typed: "fix it", texts: ["Fixed."] }]);
+    expect(again.handed.map(bare)).toEqual(memory.handed.map(bare));
+  });
+
+  it("hands nothing from a session saved before this release, which has no boundary lines", async () => {
+    const old = saving();
+    for (const message of [typed("one"), said("first")]) old.write({ t: "message", message });
+    const memory = handing();
+    const session = await loading(memory);
+    session.load(conversation("old", old, read(old)));
+    expect(memory.handed).toEqual([]);
+  });
+
+  it("gives a long turn the same parts and labels live and read back", async () => {
+    const long = "y".repeat(150_001);
+    const { session, memory, transcript } = await setup([reply(long)]);
+    await session.send("a long one");
+    const live = entriesOf(memory.handed[0]!);
+    expect(live.map((e) => e.label)).toEqual([
+      "tachikoma session s1, turn 1, part 1 of 2",
+      "tachikoma session s1, turn 1, part 2 of 2",
+    ]);
+    expect(entriesOf({ session: "s1", ...read(transcript).unsaved[0]! })).toEqual(live);
   });
 });

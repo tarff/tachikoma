@@ -72,7 +72,11 @@ export type Line<M = SavedMessage> =
   // A background command as it joins the task list, and how it ended, `lost` by a resume that told the model it had not
   // ended (background commands plan, choice 15).
   | { t: "command"; at: string; id: string; command: string }
-  | { t: "command-ended"; at: string; id: string; state: "done" | "failed" | "stopped" | "lost" };
+  | { t: "command-ended"; at: string; id: string; state: "done" | "failed" | "stopped" | "lost" }
+  // The end of a typed turn, by its number among the prompts, and that turn's saved record, written once every entry of
+  // it is in the palace (8d plan, step 22; Q22). An older Tachikoma skips both, counting them as damaged lines (Q17).
+  | { t: "turn"; at: string; n: number }
+  | { t: "saved"; at: string; n: number };
 
 // Omit on a union keeps only the shared fields, so each variant is omitted on its own, as boxWorkspace.ts:106 does.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -185,6 +189,7 @@ export interface Read {
   told: Told; // what the model was told: the start or last shortened line's date and setup, then each note since
   loaded: string[]; // the MCP tools loaded through tool_search: the last loaded line's, kept by a shortening (release 8c plan, choice 41)
   asked: string[]; // the calls the user was asked about, from the whole file (release 8c plan, Task 15)
+  unsaved: Unsaved[]; // the turns not yet saved, for a resumed session's saver (8d plan, step 22)
   // The history for a launch with these tools and system prompt: an Anthropic reply keeps its own content only when the
   // tools and system prompt it was saved under are these, as Anthropic refuses a thinking block once either changed
   // before it (release 8a design, "Before the build", check 2; plan, choice 4); other providers' replies keep theirs
@@ -331,6 +336,7 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       told,
       loaded,
       asked: [...asked],
+      unsaved: unsavedOf(lines),
       withTools,
     };
   } catch (err) {
@@ -424,8 +430,46 @@ function valid(l: unknown): l is Line {
   if (r.t === "asked") return strings("id");
   if (r.t === "command") return strings("id", "command");
   if (r.t === "command-ended") return strings("id") && (r.state === "done" || r.state === "failed" || r.state === "stopped" || r.state === "lost");
+  if (r.t === "turn" || r.t === "saved") return Number.isInteger(r.n) && (r.n as number) >= 1;
   return false;
 }
+
+// A typed turn not yet saved (8d plan, step 22): its number among the prompts, its typed words, each picture as its
+// marker, and the model's text in it, in order (Q4, Q5).
+export interface Unsaved {
+  n: number;
+  typed: string;
+  texts: string[];
+}
+
+// The typed turns with a boundary line and no saved record, each with the model's text between its typed message and
+// its boundary line, from message lines alone, so a shortening's summary is never part of one. These are the texts the
+// live session gathered, letter for letter. A turn with no boundary line is never one of them: one a crash cut off,
+// and every turn of a session saved before release 8d; nor is a turn with no model text (Q4).
+function unsavedOf(lines: Line[]): Unsaved[] {
+  const ended: Unsaved[] = [];
+  const saved = new Set<number>();
+  let n = 0;
+  let now: Unsaved | undefined;
+  for (const l of lines) {
+    if (l.t === "message") {
+      const words = l.message.role === "user" ? l.message.parts.flatMap(own).join("") : "";
+      if (words) now = { n: ++n, typed: words, texts: [] };
+      else if (l.message.role === "assistant") {
+        for (const p of l.message.parts) if (p.type === "text" && p.text) now?.texts.push(p.text);
+      }
+    }
+    if (l.t === "turn" && now?.n === l.n) {
+      ended.push(now);
+      now = undefined;
+    }
+    if (l.t === "saved") saved.add(l.n);
+  }
+  return ended.filter((t) => t.texts.length && !saved.has(t.n));
+}
+
+// The same, from a transcript's text: what a copy marks saved (sessions.ts, copySession).
+export const unsavedIn = (text: string): Unsaved[] => unsavedOf(parse(text).filter((l) => l !== undefined));
 
 // Each picture read back from its file, named from its number and format as #save names it, so a line cannot lead the
 // read elsewhere; one that cannot be read becomes a note in its place (choice 5).
