@@ -10,8 +10,9 @@ import { tryLock } from "../../src/memory/oslock.js";
 import { Saver } from "../../src/memory/saver.js";
 
 const [url, folder, turnFile, record, mode] = process.argv.slice(2) as [string, string, string, string, string?];
-// The test's own limit for a request that should answer, as saver.test.ts's.
-const LIMIT = 10_000;
+// Each request's limit, the one Tachikoma gives its saver (src/cli.tsx, ADD_LIMIT): 13 s, 5 times the slowest whole
+// part's add (the user's choice at step 22).
+const LIMIT = 13_000;
 
 if (mode === "probe") {
   const lock = tryLock(folder, "save");
