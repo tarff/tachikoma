@@ -93,12 +93,12 @@ describe("which calls make a pair", () => {
 });
 
 describe("the request", () => {
-  it("is the approved text, a blank line, then the failed call, its error and the call that worked", () => {
+  it("is the approved text, and a message of the failed call, its error and the call that worked alone", () => {
     expect(LESSON_REQUEST).toBe("A tool call failed earlier in this turn, and a later call doing the same job " +
       "worked. If there is a lesson worth keeping for next time, write it in one line: what went wrong, what fixed " +
       "it, and how to spot it. If there is none, answer: none.");
     expect(lessonRequest('shell {"command":"git push"}', "exit code: 1\nboom", 'shell {"command":"git push -f"}'))
-      .toBe(`${LESSON_REQUEST}\n\nFailed call: shell {"command":"git push"}\nIts error: exit code: 1\nboom\n` +
+      .toBe('Failed call: shell {"command":"git push"}\nIts error: exit code: 1\nboom\n' +
         'The call that worked: shell {"command":"git push -f"}');
   });
 });
@@ -116,9 +116,9 @@ describe("asking for a lesson", () => {
     return { line, provider, spent, errors };
   };
 
-  it("sends one request with no system prompt and no tools, its one message the request alone", async () => {
+  it("sends one request, the approved text its system prompt, no tools, its one message the three lines", async () => {
     const a = await ask([reply("Push failed on auth; a fresh token fixed it; look for 'Authentication failed'.")]);
-    expect(a.provider.requests).toEqual([{ system: "", tools: [], cache: false,
+    expect(a.provider.requests).toEqual([{ system: LESSON_REQUEST, tools: [], cache: false,
       messages: [{ role: "user", parts: [{ type: "text", text: TEXT }] }] }]);
     expect(a.line).toBe("Push failed on auth; a fresh token fixed it; look for 'Authentication failed'.");
   });
@@ -219,8 +219,7 @@ class Split implements Provider {
   readonly held = new Held("fake:a");
   readonly turns: Turn[] = [];
   complete(req: CompletionRequest): Promise<Turn> {
-    const first = req.messages[0]?.parts[0];
-    if (first?.type === "text" && first.text.startsWith(LESSON_REQUEST)) return this.held.complete(req);
+    if (req.system === LESSON_REQUEST) return this.held.complete(req);
     const next = this.turns.shift();
     return next ? Promise.resolve(next) : Promise.reject(new Error("Split ran out of turns"));
   }

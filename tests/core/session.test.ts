@@ -4235,8 +4235,9 @@ describe("Session, the lesson ask", { timeout: 15_000 }, () => {
   const ADD_LIMIT = 7_000; // the tests' own, passed through to the store as it is
   const AUTH = shellText({ code: 128, signal: null, stdout: "Everything up-to-date\n",
     stderr: "fatal: Authentication failed\nmore\n" });
+  // The ask's one message: the three lines alone, the approved request being its system prompt (the user, 2026-11-20).
   const asked = (failed: string, error: string, worked: string) =>
-    `${REQUEST}\n\nFailed call: ${failed}\nIts error: ${error}\nThe call that worked: ${worked}`;
+    `Failed call: ${failed}\nIts error: ${error}\nThe call that worked: ${worked}`;
   // A project folder by name only: nothing is read or written there.
   const gate = () =>
     ({ root: path.resolve("made-up-project"), gate: new PermissionGate("never", async () => false) }) as unknown as
@@ -4260,10 +4261,7 @@ describe("Session, the lesson ask", { timeout: 15_000 }, () => {
       return super.complete(req);
     }
   }
-  const isAsk = (r: { messages: Message[] }) => {
-    const first = r.messages[0]?.parts[0];
-    return first?.type === "text" && first.text.startsWith(REQUEST);
-  };
+  const isAsk = (r: { system: string }) => r.system === REQUEST;
   const askText = (r: { messages: Message[] }) => (r.messages[0]!.parts[0] as { text: string }).text;
 
   // Memory, in the state given: what is stored, and its lesson requests run at once.
@@ -4307,15 +4305,20 @@ describe("Session, the lesson ask", { timeout: 15_000 }, () => {
     return { session, lead, bus, errors, spent, asks, ...m };
   }
 
-  it("asks for a command retried with the same first word: the approved text and the three items alone", async () => {
+  it("asks for a command retried with the same first word: the approved text as the system prompt, the three items " +
+    "alone as the message", async () => {
     const shell = scripted("shell", [new Error(AUTH), "pushed"]);
     const s = asking([shell], [["shell", { command: "git push origin main" }],
       ["shell", { command: "git push --force-with-lease" }]], [reply("A lesson.")]);
     await s.session.send("go");
     await s.done();
-    expect(s.asks()).toEqual([{ system: "", tools: [], cache: false, messages: [{ role: "user", parts: [{ type: "text",
-      text: asked('shell {"command":"git push origin main"}', AUTH, 'shell {"command":"git push --force-with-lease"}'),
-    }] }] }]);
+    const message = asked('shell {"command":"git push origin main"}', AUTH,
+      'shell {"command":"git push --force-with-lease"}');
+    expect(s.asks()).toEqual([{ system: REQUEST, tools: [], cache: false,
+      messages: [{ role: "user", parts: [{ type: "text", text: message }] }] }]);
+    expect(message.startsWith("Failed call: ")).toBe(true);
+    // Every request the provider received but the turn's own three is the ask.
+    expect(s.lead.requests).toHaveLength(4);
     // The whole error from the status line on, never the lesson search's query.
     expect(askText(s.asks()[0]!)).toContain("Its error: exit code: 128\n--- stderr ---\nfatal: Authentication failed");
     expect(askText(s.asks()[0]!)).not.toContain("shell git fatal");

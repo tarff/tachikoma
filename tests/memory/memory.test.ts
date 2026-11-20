@@ -14,10 +14,11 @@ import type { Palace } from "../../src/memory/client.js";
 import { hubEnv } from "../../src/memory/env.js";
 import { type Figures, hubRecord } from "../../src/memory/hub.js";
 import { type Program, readyFile } from "../../src/memory/install.js";
+import { askLesson, lessonRequest } from "../../src/memory/lessons.js";
 import { Memory, type MemoryOptions, type MemoryState } from "../../src/memory/memory.js";
 import { type OsLock, tryLock } from "../../src/memory/oslock.js";
 import { LESSONS, makeMemoryFolder, memoryPaths } from "../../src/memory/paths.js";
-import { removeTree } from "../helpers.js";
+import { Held, removeTree } from "../helpers.js";
 
 // Memory's state, its reasons and its closing (8d plan, step 21), against the stand-ins only: the stand-in uv
 // (tests/standin/uv.mjs), the stand-in MemPalace (tests/memory/standin.mjs) as the hub and as the user's own
@@ -623,6 +624,56 @@ describe("the user's own MemPalace", () => {
     const reason = `Memory is off: your MemPalace at ${STANDIN} stopped answering.`;
     expect(s.states).toEqual([{ is: "on" }, { is: "off", reason }]);
     expect(s.errors.map((e) => e.message)).toEqual([reason]);
+  });
+});
+
+// The gate in memory itself (8d plan, step 26, after its review; the user, 2026-11-20): a lesson request made straight
+// to memory starts only while memory is on, so the provider is sent nothing in any other state.
+describe("lesson requests and memory's state", () => {
+  // A lesson request made straight to memory, sent to a held provider only if memory lets it start.
+  const asks = async (m: Memory) => {
+    const held = new Held();
+    m.lesson((signal) => askLesson(held, lessonRequest("a 1", "it broke", "a 2"), signal, new Bus()), async () => {});
+    await sleep(50);
+    return held.asked.length;
+  };
+
+  it("sends the provider no request while memory is setting up", async () => {
+    const s = await use();
+    const m = s.memory();
+    expect(m.state).toEqual({ is: "setting up" });
+    expect(await asks(m)).toBe(0);
+  });
+
+  it("sends the provider no request while memory is failing", async () => {
+    const s = await own({ ready: true });
+    const m = s.memory();
+    m.start();
+    await turnedOn(s);
+    // The restart's hub start is held, so memory stays failing.
+    s.control({ hold: path.join(s.top, "never") });
+    const first = s.launched()[0]!.pid;
+    process.kill(first);
+    await until(() => !alive(first), "the hub to die");
+    vi.advanceTimersByTime(5_000);
+    await until(() => lastState(s)?.is === "failing", "memory failing");
+    expect(await asks(m)).toBe(0);
+  });
+
+  it("sends the provider no request while memory is off", async () => {
+    const s = await use(["--lack", "mempalace_search"]);
+    const m = s.memory();
+    m.start();
+    await until(() => lastState(s)?.is === "off", "memory off");
+    expect(await asks(m)).toBe(0);
+  });
+
+  it("sends the provider the request while memory is on", async () => {
+    const s = await use();
+    const m = s.memory();
+    m.start();
+    await turnedOn(s);
+    expect(await asks(m)).toBe(1);
   });
 });
 

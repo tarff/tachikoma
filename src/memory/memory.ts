@@ -213,12 +213,14 @@ export class Memory {
 
   // A lesson request (step 26), owned here with a stop signal of its own: `ask` runs now; what it answers is stored
   // by `store` while the palace is connected, also during the first stage of closing, and never once closed. A request
-  // that fails or is cancelled stores nothing. Once closing has begun, none starts.
+  // that fails or is cancelled stores nothing. None starts unless memory is on, so no paid request goes out in any
+  // other state, once closing has begun included (the user's choice after step 26's review, 2026-11-20); the store
+  // still goes by the palace, so a lesson waited for during closing's first stage is stored.
   lesson<T>(
     ask: (signal: AbortSignal) => Promise<T | undefined>,
     store: (palace: Palace, value: T) => Promise<unknown>,
   ): void {
-    if (this.#winding) return;
+    if (this.#winding || this.#state.is !== "on") return;
     const r: Request = { stop: new AbortController(), done: Promise.resolve() };
     this.#requests.add(r);
     r.done = (async () => {

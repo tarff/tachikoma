@@ -6,16 +6,17 @@ import { LONGEST_ENTRY } from "./saver.js";
 
 // The lesson ask (8d plan, step 26; the design's section 5): at a turn's end, when a tool call failed and a later call
 // in that turn did the same job and worked, one request to the lead, apart from the conversation, made as the judge's
-// is (src/safety/judge.ts): the approved text, then the failed call, its error and the call that worked. Its reply's
-// first line is the lesson, stored as record_lesson stores one (step 23).
+// is (src/safety/judge.ts): the approved text as its system prompt, and a message of the failed call, its error and
+// the call that worked. Its reply's first line is the lesson, stored as record_lesson stores one (step 23).
 
-// The design's request (approved 2026-11-19), and the three lines after it (approved 2026-11-20, before the build);
-// the request carries no system prompt of its own (approved 2026-11-20).
+// The design's request (approved 2026-11-19), sent as the request's system prompt on every provider, so none is sent
+// an empty one (the user's choice after step 26's review, 2026-11-20); and the three lines of its one message
+// (approved 2026-11-20, before the build).
 export const LESSON_REQUEST = "A tool call failed earlier in this turn, and a later call doing the same job worked. " +
   "If there is a lesson worth keeping for next time, write it in one line: what went wrong, what fixed it, and how " +
   "to spot it. If there is none, answer: none.";
 export const lessonRequest = (failed: string, error: string, worked: string) =>
-  `${LESSON_REQUEST}\n\nFailed call: ${failed}\nIts error: ${error}\nThe call that worked: ${worked}`;
+  `Failed call: ${failed}\nIts error: ${error}\nThe call that worked: ${worked}`;
 
 // A call of the turn, as the session records it: the input that ran (after any hook's rewrite), how it ended, and for
 // a failure the plain error, before any lessons are added to it.
@@ -65,16 +66,16 @@ function lessonIn(turn: Turn): string | undefined {
   return [...line].length > LONGEST_ENTRY ? undefined : line;
 }
 
-// One request to `lead` with the request's text alone. Its spend is reported as the judge's is, marked as the
-// lesson ask's, so it adds to the cost and not to the conversation's context. A failed or stopped request gives
-// nothing and says nothing.
+// One request to `lead`: the approved request as its system prompt, `text` (lessonRequest's) its one message. Its
+// spend is reported as the judge's is, marked as the lesson ask's, so it adds to the cost and not to the
+// conversation's context. A failed or stopped request gives nothing and says nothing.
 export async function askLesson(lead: Provider, text: string, signal: AbortSignal, bus: Bus):
   Promise<string | undefined> {
   if (signal.aborted) return undefined;
   let turn: Turn;
   try {
     const messages: Message[] = [{ role: "user", parts: [{ type: "text", text }] }];
-    turn = await lead.complete({ system: "", messages, tools: [], signal, cache: false });
+    turn = await lead.complete({ system: LESSON_REQUEST, messages, tools: [], signal, cache: false });
   } catch {
     return undefined;
   }
