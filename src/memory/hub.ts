@@ -74,7 +74,8 @@ export type Why =
   | { is: "lock" } // the join lock could not be taken (oslock's own words are never passed on)
   | { is: "newer palace"; version: string } // the design's reason, with the version
   | { is: "no port"; detail: string } // no free port on loopback (Node's own words)
-  | { is: "exited"; code: number | null } // the start exited, and no other hub answers
+  // the start exited, and no other hub answers; ended by a signal, its name (the user's choice at step 21)
+  | { is: "exited"; code: number | null; signal?: string }
   | { is: "not started"; detail: string } // the program could not be started (Node's own words)
   | { is: "start limit" } // no answer, or no serverinfo.json naming the port, within the start limit
   | { is: "start time" } // the serving process's start time could not be read within its limit
@@ -261,6 +262,10 @@ const moduleArgs = (port: number, palace: string) => ["--transport", "http", "--
   String(port), "--palace", palace, "--backend", BACKEND];
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+// A start that exited: its code, and the signal that ended it, if one did.
+const ended = (e: { code: number | null; signal?: string }): Why =>
+  ({ is: "exited", code: e.code, ...(e.signal && { signal: e.signal }) });
 
 // Waits `ms`, or less when the signal fires.
 const wait = (ms: number, signal?: AbortSignal) =>
@@ -490,7 +495,7 @@ export class Hub {
     const began = performance.now();
     const left = () => this.f.startLimit - (performance.now() - began);
     let child: ChildProcess;
-    let exited: { code: number | null; error?: string } | undefined;
+    let exited: { code: number | null; signal?: string; error?: string } | undefined;
     try {
       child = spawn(p.command, [...p.args, "-I", "-m", "mempalace.mcp_server", ...moduleArgs(port, this.paths.palace)],
         { cwd: this.paths.home, env: hubEnv(this.paths, this.env), detached: true, windowsHide: true,
@@ -498,7 +503,7 @@ export class Hub {
     } catch (err) {
       return { why: { is: "not started", detail: message(err) } };
     }
-    child.once("exit", (code) => (exited ??= { code }));
+    child.once("exit", (code, signal) => (exited ??= { code, ...(signal && { signal }) }));
     child.once("error", (err) => (exited ??= { code: null, error: message(err) }));
     child.unref();
     const end = () => {
@@ -516,7 +521,7 @@ export class Hub {
         const other = await this.another(left);
         return other ? { record: other } : { why: { is: "exited", code: 2 } };
       }
-      if (exited) return { why: { is: "exited", code: exited.code } };
+      if (exited) return { why: ended(exited) };
       end();
       return { why: { is: "start limit" } };
     }
@@ -527,7 +532,7 @@ export class Hub {
     }
     if (!info) {
       end();
-      return { why: exited ? { is: "exited", code: exited.code } : { is: "start limit" } };
+      return { why: exited ? ended(exited) : { is: "start limit" } };
     }
     const start = await this.startTime(info.pid);
     if (!start) {

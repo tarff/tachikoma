@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import type { MemoryState } from "../memory/memory.js";
 import type { TodoItem } from "../tools/todo.js";
 import type { Message, Usage } from "./types.js";
 
@@ -7,8 +8,10 @@ export interface ErrorEvent {
   // the session's transcript could not be written, which stops nothing else (release 8a plan, Task 5); "shortening": a
   // conversation too long for the model could not be shortened, or was still too long once it was (Task 12); "hook": a
   // hook failed, which stops nothing (release 8b plan, choice 22); "mcp": an MCP server failed or stopped, or the project's
-  // answers could not be read, which fails no -p run (release 8c plan, choice 26)
-  kind: "tool" | "provider" | "refusal" | "max_tokens" | "fallback" | "judge" | "saving" | "shortening" | "hook" | "mcp";
+  // answers could not be read, which fails no -p run (release 8c plan, choice 26); "memory": long-term memory went off
+  // or is failing, one row per change of state, which fails no -p run (8d plan, Q15)
+  kind: "tool" | "provider" | "refusal" | "max_tokens" | "fallback" | "judge" | "saving" | "shortening" | "hook" |
+    "mcp" | "memory";
   attempted: string;
   message: string;
   lead: string;
@@ -42,6 +45,8 @@ export interface Events {
   "hook-status": [message: string, running: boolean];
   // An MCP grey line, such as a tool left out or a late server ready (release 8c plan, choice 26).
   "mcp-note": [line: string];
+  // Long-term memory's state, at each change (8d plan, step 21).
+  memory: [MemoryState];
 }
 
 // The session emits; the interface, status line, headless output and error log listen.

@@ -135,6 +135,7 @@ export async function connect(
   // One limit for the whole connect: the list gets what the connect left of it.
   const began = performance.now();
   const left = () => opts.timeout - (performance.now() - began);
+  let unstarted: Error | undefined;
   try {
     const transport: Transport =
       "url" in target
@@ -145,6 +146,14 @@ export async function connect(
             env: commandEnv() as Record<string, string>,
             stderr: "ignore",
           });
+    // A program that cannot be started: the library hands Node's own error to the transport's onerror, and then
+    // reports only "Connection closed", so the error is kept here and is what the connect says (the user's choice at
+    // step 21's review).
+    if (!("url" in target)) {
+      transport.onerror = (err) => {
+        if ((err as NodeJS.ErrnoException).syscall?.startsWith("spawn")) unstarted ??= err;
+      };
+    }
     await client.connect(transport, { timeout: opts.timeout });
     if (left() <= 0) return given(client, link, { is: "timed out" });
     const { tools } = await client.listTools(undefined, { timeout: left() });
@@ -152,6 +161,7 @@ export async function connect(
     link.connected = true;
     return { is: "connected", palace: new Palace(client, link, names, kind) };
   } catch (err) {
+    if (unstarted) return given(client, link, { is: "failed", reason: unstarted.message });
     return given(client, link, timedOut(err) ? { is: "timed out" } : { is: "failed", reason: message(err) });
   }
 }

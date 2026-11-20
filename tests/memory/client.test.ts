@@ -358,6 +358,16 @@ describe("the palace client, over stdio", () => {
     expect(running.has(child!)).toBe(false);
   });
 
+  // The library reports a program that cannot be started only as "Connection closed"; the client says Node's own words
+  // (the user's choice at step 21's review).
+  it("says Node's own words for a program that cannot be started", async () => {
+    const missing = path.join(await folder(), "no-such-mempalace-mcp");
+    expect(await connect({ command: missing, args: [] }, "use", { timeout: LIMIT })).toEqual({
+      is: "failed",
+      reason: `spawn ${missing} ENOENT`,
+    });
+  });
+
   it("marks the program lost when it exits, and says so to the next call", async () => {
     const p = await startProgram();
     let lost = 0;

@@ -827,7 +827,8 @@ if (parsed.print !== undefined) {
     // does a transcript that cannot be saved (release 8a plan, Task 5), nor a shortening's line after which the request was
     // sent as it is (Task 13): a later line that ends the turn has no mark, and still fails it. Nor does a hook that failed
     // (release 8b design, "What the user sees"), nor an MCP server, nor the project's answers (release 8c plan, choice 26).
-    const harmless = ["tool", "fallback", "judge", "saving", "hook", "mcp"];
+    // Nor long-term memory: work never stops for memory (8d plan, Q15).
+    const harmless = ["tool", "fallback", "judge", "saving", "hook", "mcp", "memory"];
     if (!harmless.includes(e.kind) && !(e.kind === "shortening" && e.sent)) failed = true;
   });
   if (parsed.json) {
