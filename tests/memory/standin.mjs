@@ -19,7 +19,8 @@
 // default, chroma; the model is MEMPALACE_EMBEDDING_MODEL's, else minilm, written as given.
 //
 // What it was started with and every call it receives are added to `--record <file>`, one JSON line each:
-// { start: { argv, env, pid } }, { call: { name, arguments } } and, over HTTP, { get: <path> }. Flags it does not
+// { start: { argv, env, pid } }, { call: { name, arguments } } and, over HTTP, { get: <path> } and
+// { dropped: { name } } for a call whose connection closed before it was answered. Flags it does not
 // know are passed over, as the real server's are (item 12, _guards.py:66-68). Told by its arguments:
 // --lack <tool>              that tool is not offered (repeatable);
 // --slow <ms>                every tool call is answered that much later;
@@ -392,7 +393,16 @@ function serveHttp() {
       if (!String(req.headers["content-type"] ?? "").startsWith("application/json")) return res.writeHead(415).end();
       const m = JSON.parse(body);
       if (m.id === undefined) return res.writeHead(202).end();
-      answer(m, (r) => json(200, { jsonrpc: "2.0", id: m.id, ...r }));
+      // A call whose connection closes before it is answered, as when Tachikoma closes the palace with a request
+      // still out, is recorded as dropped.
+      let answered = false;
+      res.on("close", () => {
+        if (!answered && m.method === "tools/call") record({ dropped: { name: m.params.name } });
+      });
+      answer(m, (r) => {
+        answered = true;
+        json(200, { jsonrpc: "2.0", id: m.id, ...r });
+      });
     });
   });
   server.listen(opt.port, opt.host, () => {

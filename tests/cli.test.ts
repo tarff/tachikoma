@@ -2560,7 +2560,12 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
       onTestFinished(() => void child.kill());
       let stdout = "";
       let stderr = "";
-      child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+      // When the answer's line came, as it came, for the cases that time what follows it.
+      let answered: number | undefined;
+      child.stdout.setEncoding("utf8").on("data", (d: string) => {
+        stdout += d;
+        if (answered === undefined && stdout.endsWith("done\n")) answered = Date.now();
+      });
       child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
       if (!window) child.stdin.end();
       const closed = new Promise<number | null>((resolve, reject) => {
@@ -2583,7 +2588,8 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
         await type("/exit");
         return closed;
       };
-      return { child, write, type, exit, closed, stdout: () => stdout, plain, stderr: () => stderr };
+      const answeredAt = () => answered;
+      return { child, write, type, exit, closed, stdout: () => stdout, plain, stderr: () => stderr, answeredAt };
     };
     const callsMade = (): Call[] =>
       readdirSync(calls).flatMap((f) => jsonLines(path.join(calls, f)).flatMap((l) => (l.call ? [l.call] : [])));
@@ -2600,6 +2606,13 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
         const seen = existsSync(beat) ? Number(readFileSync(beat, "utf8")) : 0;
         return lines.length && start ? [{ pid, from: start.at as number, to: Math.max(lines.at(-1).at, seen) }] : [];
       });
+    // The calls whose connection closed before they were answered, with when.
+    const dropped = () =>
+      readdirSync(calls).flatMap((f) =>
+        jsonLines(path.join(calls, f)).flatMap((l) =>
+          l.dropped ? [{ name: String(l.dropped.name), at: Number(l.at) }] : [],
+        ),
+      );
     const hubPids = () => jsonLines(record).flatMap((l) => (l.hub ? [l.hub.pid as number] : []));
     const uvPids = () => jsonLines(uvRecord).flatMap((l) => (l.as === "uv" ? [l.pid as number] : []));
     // The stand-in hubs end once their control file is gone; the case's folder goes once they and uv have ended.
@@ -2611,7 +2624,7 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
       await removeTree(top);
     });
     return {
-      top, proj, data, paths, env, run, sent, control, added, calls: callsMade, serving, hubPids, uvPids,
+      top, proj, data, paths, env, run, sent, control, added, calls: callsMade, dropped, serving, hubPids, uvPids,
       lessonAsks: () => lessonAsks,
       releaseLessons: () => {
         lessonsGo = true;
@@ -2845,16 +2858,20 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
       upFirst: "connected",
     });
     const p = c.run(false, "-p", "hi");
-    await vi.waitFor(() => expect(p.stdout()).toBe("done\n"), WAIT);
-    const done = Date.now();
     expect(await p.closed).toBe(0);
-    // Ended by the test's own last-save limit (`lastSave`, 1 s). From the answer to the exit this PC took 1,092, 1,106,
-    // 1,114, 1,130, 1,147 and 1,106 ms over 6 runs of this case alone (2026-11-20, step 27's fixes round 2), so the
-    // bound is 1 s and 5 times the slowest 147 ms above it, the user's usual margin. With the limit removed, the
-    // look-up's own 13 s limit ends it instead (13,114 ms, fixes round 1).
-    expect(Date.now() - done).toBeLessThan(1_000 + 5 * 147);
+    expect(p.stdout()).toBe("done\n");
+    const done = p.answeredAt()!;
     // The palace connected and was asked for the turn's label, the look-up that is not answered.
-    expect(c.calls().filter((x) => x.arguments.dry_run)).toHaveLength(1);
+    const lookUp = c.calls().filter((x) => x.arguments.dry_run);
+    expect(lookUp).toHaveLength(1);
+    // The look-up was dropped as the last save gave up and the palace was closed, before the hub's stop.
+    const dropped = c.dropped().filter((d) => d.name === lookUp[0]!.name);
+    expect(dropped).toHaveLength(1);
+    // Ended by the test's own last-save limit (`lastSave`, 1 s), the hub's stop after it not timed. From the answer's
+    // line to the look-up dropped, this PC took 1,003, 1,009, 1,001, 1,015, 1,005 and 1,009 ms over 6 runs of this case
+    // alone (2026-11-20, step 27's fixes round 3), so the bound is 1 s and 5 times the slowest 15 ms above it, the
+    // user's usual margin. With the limit removed, the look-up's own 13 s limit ends it instead (fixes round 1).
+    expect(dropped[0]!.at - done).toBeLessThan(1_000 + 5 * 15);
     expect(c.added()).toEqual([]);
     const [file] = readdirSync(c.sessions()).filter((f) => f.endsWith(".jsonl"));
     const id = file!.replace(/.jsonl$/, "");
