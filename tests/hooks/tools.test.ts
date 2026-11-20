@@ -35,6 +35,10 @@ const CASES: [string, Record<string, unknown>, string, Record<string, unknown>][
   ["shell", { command: "npm run dev", background: true, timeout: 5000 }, "Bash", { command: "npm run dev", run_in_background: true, timeout: 5000 }],
   ["stop_task", { id: "t4" }, "TaskStop", { task_id: "t4" }],
   ["shell_output", { id: "t4" }, "shell_output", { id: "t4" }],
+  // 8d plan, step 23: the memory tools, by their own names, as shell_output.
+  ["memory_search", { query: "lock file", scope: "all" }, "memory_search", { query: "lock file", scope: "all" }],
+  ["memory_save", { text: "a note" }, "memory_save", { text: "a note" }],
+  ["record_lesson", { lesson: "a lesson" }, "record_lesson", { lesson: "a lesson" }],
 ];
 
 describe("toClaude and fromClaude: every tool both ways", () => {
@@ -300,6 +304,9 @@ describe("responseOf and errorOf: what PostToolUse and PostToolUseFailure are se
 describe("outputFrom: a hook's updatedToolOutput, turned back into what the model reads", () => {
   it("takes text for the tools whose result is the text", () => {
     for (const name of ["read_file", "edit_file", "find_files", "search_files", "todo", "shell_output", "stop_task"]) {
+      expect(outputFrom(name, "new text")).toBe("new text");
+    }
+    for (const name of ["memory_search", "memory_save", "record_lesson"]) {
       expect(outputFrom(name, "new text")).toBe("new text");
     }
   });

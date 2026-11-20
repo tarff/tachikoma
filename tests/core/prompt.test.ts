@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gitLine, subagentPrompt, systemPrompt } from "../../src/core/prompt.js";
+import { gitLine, MEMORY_LINE, subagentPrompt, systemPrompt } from "../../src/core/prompt.js";
 import type { Setup } from "../../src/core/types.js";
 
 const OFF: Setup = { sandbox: "off", git: "repo" };
@@ -140,6 +140,20 @@ describe("systemPrompt", () => {
     );
   });
 
+  // 8d plan, step 23: the design's line, present only while memory is on (approved 2026-11-19).
+  it("adds the memory line, word for word, only with memory on", () => {
+    const line =
+      "Long-term memory: memory_search finds earlier conversations and lessons (this project by default, or all " +
+      "projects). Save something worth keeping with memory_save, and record a lesson with record_lesson when you " +
+      "fix a failure.";
+    expect(MEMORY_LINE).toBe(line);
+    const off = systemPrompt(at(OFF), "win32");
+    expect(systemPrompt({ ...at(OFF), memory: false }, "win32")).toBe(off);
+    expect(off).not.toContain("memory_search");
+    const on = systemPrompt({ ...at(OFF), memory: true }, "win32").split("\n");
+    expect(on).toEqual([...off.split("\n"), line]);
+  });
+
   it("does not promise that someone will be asked", () => {
     // In headless runs nobody is there to ask: the action is refused instead.
     expect(systemPrompt(at(OFF), "linux")).not.toContain("asks the user before risky actions");
@@ -156,5 +170,21 @@ describe("subagentPrompt", () => {
     expect(prompt).toContain("file paths and line numbers");
     // It has no shell (release 4 design), so nothing of commands or the background (background commands plan, choice 30).
     expect(prompt).not.toMatch(/command|background/i);
+  });
+
+  // 8d plan, step 23 (Q11): with memory on, the line names memory_search too.
+  it("names memory_search only with memory on", () => {
+    const off = subagentPrompt("/proj").split("\n");
+    expect(subagentPrompt("/proj", false).split("\n")).toEqual(off);
+    expect(off).toContain("You can only read, with read_file, find_files and search_files. Call them directly.");
+    const on = subagentPrompt("/proj", true).split("\n");
+    expect(on).toEqual(
+      off.map((l) =>
+        l.startsWith("You can only read")
+          ? "You can only read, with read_file, find_files and search_files, and search long-term memory with " +
+            "memory_search. Call them directly."
+          : l,
+      ),
+    );
   });
 });

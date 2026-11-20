@@ -21,13 +21,21 @@ export function gitLine(git: Git): string {
 // prompt is built picks them; a /lead switch keeps the prompt (system prompt plan, decisions 1 and 2).
 const MAKER_LINES: Record<string, readonly string[]> = {};
 
+// The memory line (8d design, section 4, approved 2026-11-19), present only while memory is on; one constant, so a
+// resume can tell whether a saved prompt holds it (8d plan, Q21).
+export const MEMORY_LINE =
+  "Long-term memory: memory_search finds earlier conversations and lessons (this project by default, or all " +
+  "projects). Save something worth keeping with memory_save, and record a lesson with record_lesson when you fix a " +
+  "failure.";
+
 // The lead's prompt (design, "The lead's prompt"; the user's words, 2026-11-17), built at the launch and again at
 // /clear and each shortening, and never changed in between (see SessionOptions.system). `root` is where the model's
 // commands run: /work in the box, where they run with bash (release 7 plan, choice 19); `platform` is the host's.
 // `sites`: the entries in force with the network "sites", beside the setup, as the setup is saved and compared and the
-// list is not part of it (8c-2b plan, Step 10; decision 16).
+// list is not part of it (8c-2b plan, Step 10; decision 16). `memory`: whether memory is on at the launch (8d plan,
+// step 23), which adds the memory line.
 export function systemPrompt(
-  o: { root: string; date: string; setup: Setup; lead: string; sites?: Site[] },
+  o: { root: string; date: string; setup: Setup; lead: string; sites?: Site[]; memory?: boolean },
   platform: NodeJS.Platform = process.platform,
 ): string {
   const { setup } = o;
@@ -68,6 +76,7 @@ export function systemPrompt(
     // A tool call's row shows only `⎿ ok` or its error's first line (describe.ts), so the reply must carry the rest.
     "In the interactive window, replies are shown as markdown, and the user sees each tool call as one short line, " +
       "not its output, so put what they need from it in your reply.",
+    ...(o.memory ? [MEMORY_LINE] : []),
     ...(Object.hasOwn(MAKER_LINES, kind) ? MAKER_LINES[kind]! : []), // `in` would take "constructor" (registry.ts)
   ].join("\n");
 }
@@ -91,12 +100,16 @@ function sitesLine(sites: Site[]): string {
 }
 
 // A subagent's own prompt, also fixed for its whole conversation (release 4 design, "What a subagent
-// is given").
-export function subagentPrompt(root: string): string {
+// is given"). `memory`: whether memory is on at the launch, when the line names memory_search too (8d plan, Q11; the
+// wording approved at step 23).
+export function subagentPrompt(root: string, memory = false): string {
   return [
     "You are a Tachikoma subagent. The lead agent gave you one task: to find something out in the user's project.",
     `The project root is ${root}. File paths are relative to it.`,
-    "You can only read, with read_file, find_files and search_files. Call them directly.",
+    memory
+      ? "You can only read, with read_file, find_files and search_files, and search long-term memory with " +
+        "memory_search. Call them directly."
+      : "You can only read, with read_file, find_files and search_files. Call them directly.",
     "When you know the answer, reply with what you found, citing file paths and line numbers. Your last reply is all the lead sees, so put everything it needs there.",
   ].join("\n");
 }
