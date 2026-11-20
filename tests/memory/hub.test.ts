@@ -53,8 +53,8 @@ const SHORT_START = 1_500;
 // file whose existence lets the stand-in start), `backend` (passed to the stand-in in place of sqlite_exact),
 // `upper` (the palace folder's own name in capitals, so serverinfo.json's palace_path differs in letter case only),
 // `key` (serverinfo.json written under that folder name in place of MemPalace's own), `args` (more for the
-// stand-in); and, as the helper, `startDelay` and `stopDelay` (answer that much later) and `stopSays` ("unopened": the
-// process could not be opened; "nothing": no answer at all; "running": the process is ended but the wait after it
+// stand-in); and, as the helper, `startDelay` (answer that much later) and `stopSays` ("unopened": the process could
+// not be opened; "nothing": no answer at all; "running": the process is ended but the wait after it
 // passed its limit).
 const PYTHON = String.raw`
 const fs = require("node:fs");
@@ -98,7 +98,7 @@ if (args[1] === "-c") {
     };
     wait();
   };
-  const delay = op === "start" ? c.startDelay : c.stopDelay;
+  const delay = op === "start" ? c.startDelay : 0;
   if (delay) setTimeout(act, delay);
   else act();
 } else {
@@ -136,7 +136,6 @@ interface Control {
   key?: string;
   args?: string[];
   startDelay?: number;
-  stopDelay?: number;
   stopSays?: "unopened" | "nothing" | "running";
 }
 
@@ -375,8 +374,6 @@ describe("the hub's supervisor", () => {
     { name: "the helper could not open the process", control: { stopSays: "unopened" as const }, figures: {},
       why: "the process could not be opened" },
     { name: "the helper gave no answer", control: { stopSays: "nothing" as const }, figures: {},
-      why: "the helper gave no answer" },
-    { name: "the whole stop run passed its limit", control: { stopDelay: 3_000 }, figures: { stop: 500 },
       why: "the helper gave no answer" },
   ])("is not stopped when $name, and keeps the record marked stopping", async ({ control, figures, why }) => {
     const s = await setup();

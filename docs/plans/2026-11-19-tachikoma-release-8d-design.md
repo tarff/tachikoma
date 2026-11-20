@@ -4391,6 +4391,11 @@ two junctions inside it, uv's Python links), was then removed by that name, the 
 followed, and it no longer exists. It held the snapshots, the throwaway installs, palaces and hubs, and the
 measurement outputs whose figures are in this record. The snapshot was not run again after this.
 
+**Other tests' leftovers in the user's Temp folder** are not this step's: 223,256 top-level `tachi-*` entries since
+2026-10-22, 6,533 of them from 2026-11-20 (mostly `tachi-`, 4,834, and `tachi-app-data-`, 1,399). They are left for
+the cleanup release, where the tests that leave them will be fixed (the user's choice, "Leave for cleanup",
+2026-11-21). Nothing of them was deleted.
+
 ## As built
 
 Where the build differs from this design, or settles what it left open. The build plan's open questions are cited by
@@ -4421,8 +4426,12 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   that warning", 2026-11-20).
 - **Figures:** start limit 40 s, for every start; check interval while a hub starts 100 ms; health check 0.75 s
   (MemPalace's own); wait between lock tries 500 ms (M3, 2026-11-19). The stop: 1.3 s for the whole stop (5 x
-  257.5 ms), replacing M3's 1 s; a stop past it counts as stopped. The read-back of the storage and model: 0.9 s (5 x
-  165.2 ms). The start-time read after a start: 1 s (5 x 195.5 ms). All the user's choices of 2026-11-20 (step 20).
+  257.5 ms), replacing M3's 1 s. The read-back of the storage and model: 0.9 s (5 x 165.2 ms). The start-time read
+  after a start: 1 s (5 x 195.5 ms). All the user's choices of 2026-11-20 (step 20).
+- **What counts as a stop** (the user's choice at step 20's code review, 2026-11-20, which changed the first choice
+  that a stop past its limit counts as stopped): only the helper's answer that the serving process ended. That is
+  "stopped", "gone", or "running" when only the wait after `TerminateProcess` passed its limit. Any other answer, no
+  answer within the 1.3 s among them, keeps the record marked stopping for the next window.
 - **"In use"** (M4, 2026-11-19): refreshed every 5 s; one older than 27 s counts as gone.
 - **An empty palace** (2026-11-20): MemPalace refuses `mempalace_status` on a new palace until its first entry. A
   refusal with no palace file, or with a file that opens and has no model row, means memory on; a file that cannot be
@@ -4512,3 +4521,9 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
 **Not run here:** Linux and macOS; the real lesson request to each provider (`scripts/8d/live-lesson-ask.mjs`, the
 user's to run with their key). The tests against a real MemPalace (`TACHI_TEST_MEMPALACE=1`) passed, 19 of 19, on
 2026-11-20.
+
+**The real tests' own waits** (step 29, 2026-11-20, from 50 runs each of `scripts/8d/measure-close.mjs`; these bound
+the tests in `tests/memory/real.test.ts`, not Tachikoma): closing the MCP connection to the throwaway copy that
+stands in for the user's own program (it and the Python it starts) 0.9 s (5 x 167.5 ms), not the hub's 0.9 s
+read-back above; the wait for that program to exit after the close 0.1 s, the rounding's least, as it had always exited when the close returned (50 of
+50; that wait never ran); and the start of each child saver 2.6 s (5 x 514.9 ms).
