@@ -4525,5 +4525,6 @@ user's to run with their key). The tests against a real MemPalace (`TACHI_TEST_M
 **The real tests' own waits** (step 29, 2026-11-20, from 50 runs each of `scripts/8d/measure-close.mjs`; these bound
 the tests in `tests/memory/real.test.ts`, not Tachikoma): closing the MCP connection to the throwaway copy that
 stands in for the user's own program (it and the Python it starts) 0.9 s (5 x 167.5 ms), not the hub's 0.9 s
-read-back above; the wait for that program to exit after the close 0.1 s, the rounding's least, as it had always exited when the close returned (50 of
-50; that wait never ran); and the start of each child saver 2.6 s (5 x 514.9 ms).
+read-back above; the wait for that program to exit after the close 0.1 s, the rounding's least, as it had always
+exited when the close returned (50 of 50; that wait never ran); and the start of each child saver 2.6 s (5 x
+514.9 ms).
