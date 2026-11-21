@@ -932,7 +932,8 @@ the reason goes to the error log and `/memory`, and the session carries on witho
 **Privacy.** The palace holds what you typed and what the model answered, which can include
 anything you pasted, and the notes and lessons the model or you saved. It stays on this computer,
 in a folder only you can read. Several Tachikoma windows share it through one MemPalace server on
-this computer, which stops when the last window exits.
+this computer, which stops when the last window exits. That server answers only requests that bring
+a key Tachikoma keeps in that private folder, so other accounts on this computer cannot use it.
 
 ## How the screen looks
 
