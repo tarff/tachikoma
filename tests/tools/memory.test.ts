@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { setTimeout as sleep } from "node:timers/promises";
+import { PermissionGate } from "../../src/core/permissions.js";
+import { Session } from "../../src/core/session.js";
 import { localDate } from "../../src/core/setup.js";
 import { connect, type Palace } from "../../src/memory/client.js";
 import type { MemoryState } from "../../src/memory/memory.js";
@@ -10,7 +12,7 @@ import { LESSONS, WING } from "../../src/memory/paths.js";
 import type { ToolContext } from "../../src/tools/tool.js";
 import { memoryTools } from "../../src/tools/memory.js";
 import { readLog } from "../mcp/fake.js";
-import { removeTree } from "../helpers.js";
+import { Bus, callTool, FakeProvider, removeTree, reply } from "../helpers.js";
 
 // The three memory tools (8d plan, step 23) against the stand-in MemPalace (tests/memory/standin.mjs) as a program over
 // stdio, which keeps its entries in memory and records every call into a folder the test made. Nothing here starts a
@@ -309,5 +311,43 @@ describe("the three tools, with memory not on", () => {
     await expect(t.tools.save.run({ text: "a note" }, CTX)).rejects.toThrow(
       new Error("Memory refused it: the stand-in refuses writes."),
     );
+  });
+});
+
+// PR #26 review, finding 6: Esc or Ctrl-C ends a memory tool's wait, as it ends a command's. The stand-in answers each
+// call 2 s after it gets it, so a call still waiting SHORT after the stop has not ended at it.
+describe("a stop during a memory tool's request", () => {
+  const ended = (p: Promise<unknown>) =>
+    Promise.race([p.then(() => "answered", (e: Error) => e.message), sleep(SHORT).then(() => "still waiting")]);
+
+  it("ends each tool's call at once, its request still unanswered", async () => {
+    const t = await start(["--slow", "2000"]);
+    const runs = [
+      (ctx: ToolContext) => t.tools.search.run({ query: "lock" }, ctx),
+      (ctx: ToolContext) => t.tools.save.run({ text: "a note" }, ctx),
+      (ctx: ToolContext) => t.tools.lesson.run({ lesson: "a lesson" }, ctx),
+    ];
+    for (const [i, run] of runs.entries()) {
+      const stop = new AbortController();
+      const pending = run({ signal: stop.signal } as ToolContext);
+      await sleep(200);
+      expect(t.calls()).toHaveLength(i === 0 ? 2 : i + 2); // the search asks two rooms; each add is one call
+      stop.abort();
+      expect(await ended(pending)).toBe("Cancelled");
+    }
+  });
+
+  it("ends the turn at once when the user stops it during memory_save", async () => {
+    const t = await start(["--slow", "2000"]);
+    const lead = new FakeProvider("a", [callTool("c1", "memory_save", { text: "a note" }), reply("done")]);
+    const ctx = { root: path.dirname(t.record), gate: new PermissionGate("never", async () => false) } as unknown as
+      ToolContext;
+    const session = new Session({ lead, tools: [t.tools.save], system: "t", ctx, bus: new Bus() });
+    const stop = new AbortController();
+    const sent = session.send("go", stop.signal);
+    await sleep(200);
+    expect(t.calls().map((c) => c.name)).toEqual(["mempalace_add_drawer"]);
+    stop.abort();
+    expect(await ended(sent)).toBe("answered");
   });
 });

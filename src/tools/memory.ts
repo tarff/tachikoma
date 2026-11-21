@@ -62,6 +62,20 @@ const dayOf = (filed: string) => {
 // 800 characters, step 6 item 8), the user's choice before step 23.
 export const matchText = (hit: Hit) => `${dayOf(hit.date)} · ${hit.label} · ${hit.room}\n${hit.text}`;
 
+// The request's answer, or Cancelled once the turn's signal comes, so Esc or Ctrl-C ends the call at once, as it ends
+// a command's (commands.ts); the request runs on to its own time limit, as the note's searches do (session.ts,
+// unlessStopped). The palace client never rejects (PR #26 review, finding 6).
+const unlessStopped = <T>(p: Promise<T>, signal?: AbortSignal) =>
+  new Promise<T>((resolve, reject) => {
+    const stop = () => reject(new Error("Cancelled"));
+    if (signal?.aborted) return stop();
+    signal?.addEventListener("abort", stop, { once: true });
+    void p.then((value) => {
+      signal?.removeEventListener("abort", stop);
+      resolve(value);
+    });
+  });
+
 const codePoints = (s: string) => {
   let n = 0;
   for (const _ of s) n++;
@@ -112,12 +126,14 @@ export function memoryTools(o: MemoryToolsOptions): { search: TextTool; save: Te
       query: z.string().min(1).describe(QUERY),
       scope: z.enum(["project", "all"]).optional().describe(SCOPE),
     }),
-    async ({ query, scope }) => {
+    async ({ query, scope }, ctx) => {
       const p = palace();
       const ms = o.timeouts.search;
-      const r =
-        scope === "all" ? await p.search(query, o.everything, RESULTS, ms)
-        : await p.searchTwo(query, [o.room, LESSONS], RESULTS, ms);
+      const r = await unlessStopped(
+        scope === "all" ? p.search(query, o.everything, RESULTS, ms)
+        : p.searchTwo(query, [o.room, LESSONS], RESULTS, ms),
+        ctx.signal,
+      );
       if (r.is !== "found") throw fail(r, ms);
       const hits = r.hits.slice(0, RESULTS);
       return hits.length ? hits.map(matchText).join("\n\n") : NO_MATCHES;
@@ -128,12 +144,12 @@ export function memoryTools(o: MemoryToolsOptions): { search: TextTool; save: Te
     "memory_save",
     SAVE,
     z.object({ text: z.string().min(1).describe(NOTE) }),
-    async ({ text }) => {
+    async ({ text }, ctx) => {
       if (codePoints(text) > LONGEST_ENTRY) throw new Error(NOTE_TOO_LONG);
       const p = palace();
       const session = o.session();
       const n = (notes.get(session) ?? 0) + 1;
-      const r = await p.add(o.room, noteLabel(session, n), text, o.timeouts.add);
+      const r = await unlessStopped(p.add(o.room, noteLabel(session, n), text, o.timeouts.add), ctx.signal);
       if (r.is !== "added" && r.is !== "already there") throw fail(r as Failure, o.timeouts.add);
       notes.set(session, n);
       return SAVED;
@@ -144,9 +160,9 @@ export function memoryTools(o: MemoryToolsOptions): { search: TextTool; save: Te
     "record_lesson",
     RECORD,
     z.object({ lesson: z.string().min(1).describe(LESSON) }),
-    async ({ lesson }) => {
+    async ({ lesson }, ctx) => {
       if (codePoints(lesson) > LONGEST_ENTRY) throw new Error(LESSON_TOO_LONG);
-      const r = await palace().add(LESSONS, lessonLabel(o.room), lesson, o.timeouts.add);
+      const r = await unlessStopped(palace().add(LESSONS, lessonLabel(o.room), lesson, o.timeouts.add), ctx.signal);
       if (r.is === "already there") return HELD;
       if (r.is !== "added") throw fail(r as Failure, o.timeouts.add);
       return RECORDED;

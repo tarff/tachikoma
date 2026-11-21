@@ -4496,6 +4496,9 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
 - **`memory_search`** returns at most 5 matches, MemPalace's own default, and a match shows its matched piece (800
   characters at most), not the whole entry (2026-11-20). Dates are the local day.
 - **Tool time limits:** searches 3.4 s, adds 13 s (2026-11-20).
+- **A stop** (PR #26 review, finding 6; the user's decision, 2026-11-22): Esc or Ctrl-C ends a call of any of the
+  three tools at once, as it ends a command's. The request itself runs on to its time limit, as the note's searches
+  do, so a note or lesson already sent may still be stored.
 - **The subagents' line** names `memory_search` when memory is on (Q11, 2026-11-20).
 - **A resumed session** (Q21, 2026-11-20): when the saved prompt's memory line and this launch's memory differ, the
   prompt is rebuilt; the existing tools-changed line is said only when thinking was really left out.
