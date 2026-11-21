@@ -2631,8 +2631,11 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
       const began = Date.now();
       while ([...hubPids(), ...uvPids()].some(alive) && Date.now() - began < 15_000) await sleep(50);
       // A hub the stand-in helper stopped (TerminateProcess) is reported gone before Windows lets go of memory/home,
-      // its working folder: for 2.4 to 10.1 ms here (measured 2026-11-22), about 170 ms for a killed program in
-      // tests/hooks/run.test.ts (2026-10-31). So the removal is tried again every 50 ms, within the same 15 s.
+      // its working folder: refused at once 100 times in 100, then held 2.8 to 8.1 ms after "gone" in 50 more (measured
+      // 2026-11-22, recorded in ~/.claude/orch/Agent Harness/2026-11-19-memory-and-lessons/build-ci-fix.md), and about
+      // 170 ms for a killed program in tests/hooks/run.test.ts (2026-10-31). So the removal is tried again every 50 ms
+      // until the wait's 15 s, though vitest ends this hook first, at its default hook limit of 10 s, as it is given no
+      // limit of its own.
       for (;;) {
         try {
           return await removeTree(top);
