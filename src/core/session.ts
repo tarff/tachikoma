@@ -239,6 +239,7 @@ export interface Conversation {
   asked?: string[]; // the calls the user was asked about, read back from the transcript (release 8c plan, Task 15)
   told?: Told; // what the model was told, for the notes (system prompt plan, Task 7); none, no notes
   unsaved?: Unsaved[]; // the turns its transcript shows not yet saved, for the saver (8d plan, step 22)
+  lastTurn?: number; // the highest turn number its transcript holds, 0 when absent (PR #26 review, finding 2)
 }
 
 export class Session {
@@ -312,6 +313,10 @@ export class Session {
   // The typed turn under way, for the saver (8d plan, step 22; Q4, Q5): its number, its typed words and the model's
   // text, gathered as each reply is stored, never read back from the history, which a shortening replaces.
   #turnNow: Unsaved | undefined;
+  // How far the loaded conversation's highest turn number is past its prompts read back, which a damaged line can make
+  // fewer than were numbered live, so a typed turn is numbered after every number its transcript holds and never takes
+  // a saved turn's label (PR #26 review, finding 2); 0 for a transcript without damage.
+  #skipped = 0;
   // Whether the next typed message is the first of a launch's or /clear's new conversation, or the first after a
   // shortening, which the note from long-term memory goes in front of once memory is on (8d plan, step 24; Q9).
   #recallDue = false;
@@ -372,6 +377,7 @@ export class Session {
     this.messages.splice(0, this.messages.length, ...c.messages);
     this.#told = c.told;
     this.prompts.splice(0, this.prompts.length, ...c.prompts);
+    this.#skipped = Math.max(0, (c.lastTurn ?? 0) - c.prompts.length);
     this.asked.clear();
     for (const id of c.asked ?? []) this.asked.add(id);
     this.#hookText.splice(0); // the last conversation's hook text, not yet sent, is not this one's (Task 6's code review)
@@ -684,7 +690,7 @@ export class Session {
     if (words && !this.opts.subagent) this.prompts.push(words);
     // A typed turn, numbered by its prompt's place among the session's prompts (Q4), for the saver (8d plan, step 22).
     if (words && !this.opts.subagent && this.opts.memory) {
-      this.#turnNow = { n: this.prompts.length, typed: words, texts: [] };
+      this.#turnNow = { n: this.prompts.length + this.#skipped, typed: words, texts: [] };
     }
     const own: Part[] = [...typed, ...(supplied ?? []), ...prompted, ...this.#waiting()];
     if (!own.length) return;

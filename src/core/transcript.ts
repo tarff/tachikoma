@@ -190,6 +190,7 @@ export interface Read {
   loaded: string[]; // the MCP tools loaded through tool_search: the last loaded line's, kept by a shortening (release 8c plan, choice 41)
   asked: string[]; // the calls the user was asked about, from the whole file (release 8c plan, Task 15)
   unsaved: Unsaved[]; // the turns not yet saved, for a resumed session's saver (8d plan, step 22)
+  lastTurn: number; // the highest number on a turn or saved line, 0 with none, so a resume never numbers one again
   // The history for a launch with these tools and system prompt: an Anthropic reply keeps its own content only when the
   // tools and system prompt it was saved under are these, as Anthropic refuses a thinking block once either changed
   // before it (release 8a design, "Before the build", check 2; plan, choice 4); other providers' replies keep theirs
@@ -336,7 +337,8 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       told,
       loaded,
       asked: [...asked],
-      unsaved: unsavedOf(lines),
+      unsaved: unsavedOf(rows),
+      lastTurn: Math.max(0, ...lines.flatMap((l) => (l.t === "turn" || l.t === "saved" ? [l.n] : []))),
       withTools,
     };
   } catch (err) {
@@ -445,14 +447,23 @@ export interface Unsaved {
 // The typed turns with a boundary line and no saved record, each with the model's text between its typed message and
 // its boundary line, from message lines alone, so a shortening's summary is never part of one. These are the texts the
 // live session gathered, letter for letter. A turn with no boundary line is never one of them: one a crash cut off,
-// and every turn of a session saved before release 8d; nor is a turn with no model text (Q4).
-function unsavedOf(lines: Line[]): Unsaved[] {
+// and every turn of a session saved before release 8d; nor is a turn with no model text (Q4). A damaged line may have
+// been a prompt, so no turn from it on can be numbered as it was live: the turn it is in and every turn after it are
+// set apart, while a saved record after it still counts (design, "The rule for cutting old transcripts into turns";
+// PR #26 review, finding 2).
+function unsavedOf(rows: (Line | undefined)[]): Unsaved[] {
   const ended: Unsaved[] = [];
   const saved = new Set<number>();
   let n = 0;
   let now: Unsaved | undefined;
-  for (const l of lines) {
-    if (l.t === "message") {
+  let damaged = false;
+  for (const l of rows) {
+    if (l === undefined) {
+      damaged = true;
+      now = undefined;
+      continue;
+    }
+    if (l.t === "message" && !damaged) {
       const words = l.message.role === "user" ? l.message.parts.flatMap(own).join("") : "";
       if (words) now = { n: ++n, typed: words, texts: [] };
       else if (l.message.role === "assistant") {
@@ -469,7 +480,7 @@ function unsavedOf(lines: Line[]): Unsaved[] {
 }
 
 // The same, from a transcript's text: what a copy marks saved (sessions.ts, copySession).
-export const unsavedIn = (text: string): Unsaved[] => unsavedOf(parse(text).filter((l) => l !== undefined));
+export const unsavedIn = (text: string): Unsaved[] => unsavedOf(parse(text));
 
 // Each picture read back from its file, named from its number and format as #save names it, so a line cannot lead the
 // read elsewhere; one that cannot be read becomes a note in its place (choice 5).

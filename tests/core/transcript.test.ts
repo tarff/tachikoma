@@ -942,6 +942,58 @@ describe("transcript", { timeout: 15_000 }, () => {
       expect(r.messages).toEqual([prompt("one"), said("an answer")]);
     });
 
+    // PR #26 review, finding 2 (design, "The rule for cutting old transcripts into turns"): a damaged line may have
+    // been a prompt, so no turn from it on can be numbered as it was live.
+    it("sets apart the turn a damaged line is in and every turn after it, keeping those before", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      t.write({ t: "message", message: prompt("one") });
+      t.write({ t: "message", message: said("first") });
+      t.write({ t: "turn", n: 1 });
+      t.write({ t: "message", message: prompt("two") });
+      t.write({ t: "message", message: said("the line a crash tore") });
+      t.write({ t: "message", message: said("second") });
+      t.write({ t: "turn", n: 2 });
+      t.write({ t: "message", message: prompt("three") });
+      t.write({ t: "message", message: said("third") });
+      t.write({ t: "turn", n: 3 });
+      tear(p.file, 5);
+      const r = read(p);
+      expect(r.damaged).toBe(1);
+      expect(r.unsaved).toEqual([{ n: 1, typed: "one", texts: ["first"] }]);
+    });
+
+    it("sets apart an intact turn after a damaged prompt, never saving it under that prompt's number", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      t.write({ t: "message", message: prompt("one") });
+      t.write({ t: "message", message: said("first") });
+      t.write({ t: "turn", n: 1 });
+      // Numbered as a resume that counted only the whole prompts numbered it.
+      t.write({ t: "message", message: prompt("two") });
+      t.write({ t: "message", message: said("second") });
+      t.write({ t: "turn", n: 1 });
+      tear(p.file, 1);
+      const r = read(p);
+      expect(r.prompts).toEqual(["two"]);
+      expect(r.unsaved).toEqual([]);
+    });
+
+    it("still reads the saved record a turn before a damaged line gets after it", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      t.write({ t: "message", message: prompt("one") });
+      t.write({ t: "message", message: said("first") });
+      t.write({ t: "turn", n: 1 });
+      t.write({ t: "message", message: prompt("two") });
+      t.write({ t: "saved", n: 1 });
+      tear(p.file, 4);
+      expect(read(p).unsaved).toEqual([]);
+    });
+
     it("marks a copy's copied turns saved, never to be saved again under its id, leaving the source's", async () => {
       const p = place();
       const t = new Transcript(p.file, p.pictures);

@@ -3606,6 +3606,7 @@ describe("Session, saving turns", { timeout: 15_000 }, () => {
     nextPicture: r.nextPicture,
     nextTask: r.nextTask,
     unsaved: r.unsaved,
+    lastTurn: r.lastTurn,
   });
   const said = (text: string): Message => ({ role: "assistant", parts: [{ type: "text", text }] });
   const typed = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
@@ -3717,6 +3718,29 @@ describe("Session, saving turns", { timeout: 15_000 }, () => {
     const session = await loading(memory);
     session.load(conversation("old", old, read(old)));
     expect(memory.handed).toEqual([]);
+  });
+
+  // PR #26 review, finding 2: the whole prompts read back are fewer than the turns numbered live, and the next prompt's
+  // number would be a saved turn's label again.
+  it("numbers a resumed session's next prompt after its highest turn when a damaged line hid a prompt", async () => {
+    const { session, memory } = await setup([reply("Third.")]);
+    const a = saving("a2");
+    for (const message of [typed("one"), said("first")]) a.write({ t: "message", message });
+    a.write({ t: "turn", n: 1 });
+    a.write({ t: "saved", n: 1 });
+    for (const message of [typed("two"), said("second")]) a.write({ t: "message", message });
+    a.write({ t: "turn", n: 2 });
+    a.write({ t: "saved", n: 2 });
+    // The first prompt's line torn in half, as a crash or a full disk leaves one.
+    const rows = readFileSync(a.file, "utf8").split("\n");
+    rows[1] = rows[1]!.slice(0, rows[1]!.length / 2);
+    writeFileSync(a.file, rows.join("\n"));
+    const r = read(a);
+    expect(r.prompts).toEqual(["two"]);
+    session.load(conversation("a2", a, r));
+    await session.send("three");
+    expect(memory.handed.map(bare)).toEqual([{ session: "a2", n: 3, typed: "three", texts: ["Third."] }]);
+    expect(read(a).lastTurn).toBe(3); // its boundary line, under the same number
   });
 
   it("gives a long turn the same parts and labels live and read back", async () => {

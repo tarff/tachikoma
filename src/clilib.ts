@@ -1090,6 +1090,7 @@ export function resumed(
       tools: read.tools, // the tools saved last, which its replies were made under (Task 6b's quality review; choice 46)
       told: read.told, // what the model was told, for the notes (system prompt plan, Task 6)
       unsaved: read.unsaved, // the turns not yet saved, which the session hands to the saver (8d plan, step 22)
+      lastTurn: read.lastTurn, // so a typed turn is numbered after every turn it holds (PR #26 review, finding 2)
     },
     lines,
     // A command cut as every first line naming one cuts it (background commands plan, choice 24).
