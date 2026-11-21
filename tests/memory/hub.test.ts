@@ -323,7 +323,7 @@ describe("the hub's supervisor", () => {
         MEMPALACE_MCP_IDLE_HOURS: "0" });
       // The record, under the join lock: the environment folder, the port, the serving process and its start time.
       const start = readFileSync(path.join(s.paths.env, `start-${l.pid}`), "utf8");
-      expect(s.record()).toEqual({ env: s.paths.env, port, pid: l.pid, start, stopping: false });
+      expect(s.record()).toEqual({ env: s.paths.env, port, pid: l.pid, start, stopping: false, token: true });
       // The newest version that opened the palace.
       expect(JSON.parse(readFileSync(path.join(s.paths.palace, "tachikoma-version.json"), "utf8")))
         .toEqual({ mempalace: "3.12.0" });
@@ -353,6 +353,7 @@ describe("the hub's supervisor", () => {
     const s = await setup();
     const a = s.hub();
     const first = await a.join();
+    expect(tokenOf(first)).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(await a.close()).toEqual({ is: "stopped" });
     const second = await s.hub().join();
     expect(second.is).toBe("on");
@@ -360,6 +361,70 @@ describe("the hub's supervisor", () => {
     expect(tokenOf(second)).toBe(tokenOf(first));
     expect(s.launched()[1]!.env.MEMPALACE_MCP_HTTP_TOKEN).toBe(tokenOf(first));
   });
+
+  // PR #26 review of b83d076, point 5: owner-only on Linux and macOS too, beside memory/'s private folder. Windows
+  // keeps only the read-only bit of a mode, so there the private folder alone guards it.
+  it.runIf(process.platform !== "win32")("writes the token file for its owner only", async () => {
+    const s = await setup();
+    expect((await s.hub().join()).is).toBe("on");
+    expect(statSync(hubToken(s.paths)).mode & 0o777).toBe(0o600);
+  });
+
+  // Point 2: a token file that exists is never replaced, so a running hub's token is not lost; one that cannot be
+  // read turns memory off, with Node's own words, as a folder that cannot be made does.
+  it("turns memory off, keeping the token file, when the file cannot be read", async () => {
+    const s = await setup();
+    mkdirSync(s.paths.home, { recursive: true });
+    const kept = `${JSON.stringify({ token: "the-running-hub-s-token" })}\n`;
+    writeFileSync(hubToken(s.paths), kept);
+    vi.resetModules();
+    vi.doMock("node:fs", async (original) => {
+      const fs = await original<typeof import("node:fs")>();
+      const readFileSync = ((file: string, ...rest: unknown[]) => {
+        if (path.basename(String(file)) === "hub-token.json") {
+          throw Object.assign(new Error("EACCES: permission denied, open 'hub-token.json'"), { code: "EACCES" });
+        }
+        return (fs.readFileSync as (...a: unknown[]) => unknown)(file, ...rest);
+      }) as typeof fs.readFileSync;
+      return { ...fs, readFileSync, default: { ...fs, readFileSync } };
+    });
+    try {
+      const fresh = await import("../../src/memory/hub.js");
+      const h = new fresh.Hub({ paths: s.paths, env: s.env, launch, figures: TEST });
+      hubs.push(h);
+      expect(await h.join()).toEqual({ is: "off", why: { is: "folder", detail: expect.stringContaining("EACCES") } });
+    } finally {
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
+    expect(readFileSync(hubToken(s.paths), "utf8")).toBe(kept);
+    expect(s.launched()).toEqual([]);
+  });
+
+  // Point 1: a hub the record does not mark as started with the token (here one from before the token, with no such
+  // mark) is not reused on its health alone: it is treated as stopping. This window's start exits with code 2 while it
+  // holds the palace, the window joins it, and the last window to leave stops it; the next start has the token.
+  it("treats a hub not started with the token as stopping, and replaces it once the last window leaves",
+    async () => {
+      const s = await setup();
+      const old = await otherHub(s);
+      expect(old.env.MEMPALACE_MCP_HTTP_TOKEN).toBeUndefined();
+      const start = readFileSync(path.join(s.paths.env, `start-${old.pid}`), "utf8");
+      writeFileSync(hubRecord(s.paths),
+        JSON.stringify({ env: s.paths.env, port: serverinfoPort(s), pid: old.pid, start, stopping: false }));
+      const a = s.hub();
+      expect((await a.join()).is).toBe("on");
+      expect(s.launched()).toHaveLength(2); // the old hub, and this window's start, which exited 2
+      expect(s.record()).toMatchObject({ pid: old.pid, env: null, token: false });
+      expect(await a.close()).toEqual({ is: "stopped" });
+      expect(alive(old.pid)).toBe(false);
+      const b = s.hub();
+      const joined = await b.join();
+      expect(joined.is).toBe("on");
+      expect(s.launched()).toHaveLength(3);
+      expect(s.launched()[2]!.env.MEMPALACE_MCP_HTTP_TOKEN).toBe(tokenOf(joined));
+      expect(s.record()).toMatchObject({ pid: s.launched()[2]!.pid, token: true });
+    });
 
   it("finds serverinfo.json by listing, when its palace_path differs only in letter case", async () => {
     const s = await setup();

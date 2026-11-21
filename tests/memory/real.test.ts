@@ -416,7 +416,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     const port = Number(new URL(url).port);
     expect(port).not.toBe(8765);
     rec = recordOf(p1);
-    expect(rec).toEqual({ env: p1.env, port, pid: rec.pid, start: rec.start, stopping: false });
+    expect(rec).toEqual({ env: p1.env, port, pid: rec.pid, start: rec.start, stopping: false, token: true });
     expect(serverinfos(p1)).toEqual([expect.objectContaining({ pid: rec.pid, port })]);
     expect(await healthz(port)).toBe(true);
 
@@ -457,7 +457,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
       "the timer's join");
     expect(eventsA).toEqual([{ is: "failing" }, { is: "on", url, token }]);
     expect(existsSync(stoppingFile(p1))).toBe(false);
-    expect(recordOf(p1)).toEqual({ ...rec, env: null });
+    expect(recordOf(p1)).toEqual({ ...rec, env: null, token: false });
   });
 
   let hubB: Hub;
@@ -468,7 +468,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     hubB = new Hub({ paths: p1, env: hubBase });
     hubs.push(hubB);
     expect(await within(hubB.join(), JOIN, "hub B's join")).toEqual({ is: "on", url, token });
-    expect(recordOf(p1)).toEqual({ ...rec, env: null });
+    expect(recordOf(p1)).toEqual({ ...rec, env: null, token: false });
     // Only the first hub runs: this process's own Pythons are its launcher alone.
     const mine = list([process.pid]).filter((p) => p.ppid === process.pid && p.running && /^python/i.test(p.name));
     expect(mine.map((p) => p.pid)).toEqual([hubTrees[0]!.find((p) => p.ppid === process.pid)!.pid]);
@@ -495,13 +495,13 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     const p3 = { ...memoryPaths(path.join(root, "d3"), "x"), env: p1.env, envPython: p1.envPython };
     mkdirSync(p3.home, { recursive: true });
     const ended = spawnSync(process.execPath, ["-e", ""], { env: hubBase, windowsHide: true });
-    writeRecord(p3, { env: p1.env, port: 0, pid: ended.pid!, start: "1", stopping: false });
+    writeRecord(p3, { env: p1.env, port: 0, pid: ended.pid!, start: "1", stopping: false, token: true });
     const gone = new Hub({ paths: p3, env: hubBase });
     expect(await gone.close()).toEqual({ is: "left" });
     expect(existsSync(hubRecord(p3))).toBe(false);
     // Windows' System process (id 4), which no program of the user's may open to end. The helper only opens it, and
     // would end a process only if its start time were the one given, which "1" is not.
-    writeRecord(p3, { env: p1.env, port: 0, pid: 4, start: "1", stopping: false });
+    writeRecord(p3, { env: p1.env, port: 0, pid: 4, start: "1", stopping: false, token: true });
     const unopened = new Hub({ paths: p3, env: hubBase });
     expect(await unopened.close()).toEqual({ is: "not stopped", why: "the process could not be opened" });
     expect(recordOf(p3)).toEqual({ env: p1.env, port: 0, pid: 4, start: "1", stopping: true });

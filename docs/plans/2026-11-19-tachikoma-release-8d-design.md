@@ -4446,9 +4446,17 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   through sfw) answered 401 to a request with no token and with a wrong one, and 200 with the right one. A token file
   removed while a hub runs leaves that hub refusing the windows until it stops (a known limit). The user's own
   program is unchanged.
+- **The token, after the review of b83d076** (the user's decisions, 2026-11-22): the hub record marks whether the
+  hub was started with the token (`"token"`; false for a hub found after an exit with code 2, and absent in a record
+  from before the token). A hub not marked is treated as stopping, never reused on its health alone: the window's own
+  start exits with code 2 while that hub holds the palace, the window joins it, and the last window to leave stops
+  it, so the next start has the token. A new token is made only when the file does not exist; a file that cannot be
+  read turns memory off for that join with Node's own words, as a folder that cannot be made does, so a running hub's
+  token is never replaced. A file that reads but holds no token is replaced. The file is written for its owner only
+  (mode 0o600, which Windows does not keep; the private folder guards it there).
 - **The stop's Python** (PR #26 review, finding 4; the user's decision, 2026-11-22): the stop's helper runs with the
-  Python of the environment the hub's record names, which a newer window never removes while the hub runs; the
-  window's own Python only when that one is gone or the hub's environment is not known.
+  Python of the environment the hub's record names, which a newer window never removes while the record names it;
+  the window's own Python only when that one is gone or the hub's environment is not known.
 - **An empty palace** (2026-11-20): MemPalace refuses `mempalace_status` on a new palace until its first entry. A
   refusal with no palace file, or with a file that opens and has no model row, means memory on; a file that cannot be
   opened turns memory off.

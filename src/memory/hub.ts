@@ -52,13 +52,16 @@ const MODEL = "minilm";
 
 // Tachikoma's own hub record (Q7), written only under the join lock: the environment folder the hub runs from (null
 // when it was another window's, found after an exit with code 2, whose folder is not known), its port, the serving
-// process's id and start time, and the "stopping" mark.
+// process's id and start time, the "stopping" mark, and whether this install's token was given to it (PR #26 review of
+// b83d076, point 1: false for a hub found after an exit with code 2, whose start is not known, and for a record from
+// before the token, which has no such mark).
 export interface HubRecord {
   env: string | null;
   port: number;
   pid: number;
   start: string;
   stopping: boolean;
+  token: boolean;
 }
 export const hubRecord = (paths: MemoryPaths) => path.join(paths.home, "hub.json");
 // The stopping marker (the user's choice at step 20's re-check): written by a last window whose leave could not take
@@ -440,7 +443,9 @@ export class Hub {
       this.startTimer();
       token = this.token();
       const rec = this.record();
-      const stopping = rec?.stopping || this.marked(rec);
+      // A hub not started with the token is treated as stopping: never reused on its health alone (the health check
+      // needs no token), and stopped by the last window to leave.
+      const stopping = rec?.stopping || this.marked(rec) || !rec?.token;
       let hub = rec && !stopping && (await healthy(rec.port, this.f.health)) ? rec : undefined;
       if (!hub) {
         const version = this.palaceVersion();
@@ -468,17 +473,28 @@ export class Hub {
     return why ? { is: "off", why } : { is: "on", url, token };
   }
 
-  // Under the join lock: the install's token, read, or made once when there is none: 32 random bytes in base64url, as
-  // MemPalace 3.12.0 makes its own (mempalace/server_registry.py:99, secrets.token_urlsafe(32)).
+  // Under the join lock: the install's token, read, or made once when there is no file: 32 random bytes in base64url,
+  // as MemPalace 3.12.0 makes its own (mempalace/server_registry.py:99, secrets.token_urlsafe(32)), written for its
+  // owner only (0o600, beside memory/'s private folder). A file that cannot be read throws, with Node's own words, so
+  // a running hub's token is never replaced (PR #26 review of b83d076, point 2); one that reads but holds no token
+  // cannot be used by any hub, and is replaced.
   private token(): string {
+    let text: string | undefined;
     try {
-      const t = JSON.parse(readFileSync(hubToken(this.paths), "utf8")).token;
-      if (typeof t === "string" && t !== "") return t;
-    } catch {
-      // none yet, or not readable: a new one is made
+      text = readFileSync(hubToken(this.paths), "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    if (text !== undefined) {
+      try {
+        const t = JSON.parse(text).token;
+        if (typeof t === "string" && t !== "") return t;
+      } catch {
+        // not JSON: replaced below
+      }
     }
     const t = randomBytes(32).toString("base64url");
-    this.write(hubToken(this.paths), { token: t });
+    this.write(hubToken(this.paths), { token: t }, 0o600);
     return t;
   }
 
@@ -571,7 +587,7 @@ export class Hub {
       end();
       return { why: { is: "start time" } };
     }
-    return { record: { env: this.paths.env, port, pid: info.pid, start, stopping: false } };
+    return { record: { env: this.paths.env, port, pid: info.pid, start, stopping: false, token: true } };
   }
 
   // Another window's hub for this palace, after a start that exited with code 2: its serverinfo.json by the listing,
@@ -582,7 +598,7 @@ export class Hub {
       for (const info of this.serverinfos()) {
         if (!(await healthy(info.port, this.f.health))) continue;
         const start = await this.startTime(info.pid);
-        if (start) return { env: null, port: info.port, pid: info.pid, start, stopping: false };
+        if (start) return { env: null, port: info.port, pid: info.pid, start, stopping: false, token: false };
       }
       if (left() <= 0) return undefined;
       await wait(this.f.startCheck);
@@ -697,8 +713,9 @@ export class Hub {
   }
 
   // The Python the stop is run by (PR #26 review 4): that of the environment the hub runs from, which a newer window
-  // never removes while the hub runs (removeOld), where this window's own may have been removed; this window's own
-  // when the hub's is not known (another window's, found after an exit with code 2) or its Python is gone.
+  // never removes while the record names it (removeOld), where this window's own may have been removed; this
+  // window's own when the hub's is not known (another window's, found after an exit with code 2) or its Python is
+  // gone.
   private pythonOf(rec: HubRecord): string {
     if (rec.env === null) return this.paths.envPython;
     const python = path.join(rec.env, path.relative(this.paths.env, this.paths.envPython));
@@ -777,7 +794,8 @@ export class Hub {
       const r = JSON.parse(readFileSync(hubRecord(this.paths), "utf8"));
       const fine = typeof r.port === "number" && typeof r.pid === "number" && typeof r.start === "string" &&
         typeof r.stopping === "boolean" && (r.env === null || typeof r.env === "string");
-      return fine ? r : undefined;
+      // A record from before the token has no mark: its hub was not given the token.
+      return fine ? { ...r, token: r.token === true } : undefined;
     } catch {
       return undefined;
     }
@@ -792,10 +810,11 @@ export class Hub {
     }
   }
 
-  // Written whole: to a file of this window's beside it, then moved into place, so no reader sees half of it.
-  private write(file: string, value: unknown): void {
+  // Written whole: to a file of this window's beside it, then moved into place, so no reader sees half of it. The mode
+  // is the new file's (Node's own default unless given; Windows keeps only its read-only bit).
+  private write(file: string, value: unknown, mode = 0o666): void {
     const part = `${file}.${path.basename(this.inUse)}.part`;
-    writeFileSync(part, `${JSON.stringify(value)}\n`);
+    writeFileSync(part, `${JSON.stringify(value)}\n`, { mode });
     renameSync(part, file);
   }
 
