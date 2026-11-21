@@ -3,8 +3,9 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/client";
 import { collect, killTree, running } from "../exec/local.js";
-import { connect, palaceFile } from "./client.js";
+import { connect, palaceFile, VERSION } from "./client.js";
 import { hubEnv } from "./env.js";
 import { MEMPALACE, type Program, readyFile } from "./install.js";
 import { type OsLock, tryLock } from "./oslock.js";
@@ -308,6 +309,26 @@ async function healthy(port: number, limit: number): Promise<boolean> {
   }
 }
 
+// Whether the hub at `port` needs a key: MCP's first request sent to it without one, within `limit`. MemPalace
+// 3.12.0 started with a key refused that request with 401 in the real check of PR #26 review 1
+// (mcp_server/http.py:447-451); any other answer, or none, is a hub without a key.
+async function keyed(port: number, limit: number): Promise<boolean> {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+        protocolVersion: LATEST_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "tachikoma", version: VERSION },
+      } }),
+      signal: AbortSignal.timeout(limit),
+    });
+    await r.text();
+    return r.status === 401;
+  } catch {
+    return false;
+  }
+}
+
 // MemPalace's version numbers, compared part by part.
 function newer(a: string, b: string): boolean {
   const pa = a.split(".").map(Number);
@@ -476,8 +497,9 @@ export class Hub {
   // Under the join lock: the install's token, read, or made once when there is no file: 32 random bytes in base64url,
   // as MemPalace 3.12.0 makes its own (mempalace/server_registry.py:99, secrets.token_urlsafe(32)), written for its
   // owner only (0o600, beside memory/'s private folder). A file that cannot be read throws, with Node's own words, so
-  // a running hub's token is never replaced (PR #26 review of b83d076, point 2); one that reads but holds no token
-  // cannot be used by any hub, and is replaced.
+  // a running hub's token is never replaced (PR #26 review of b83d076, point 2). One that reads but holds no token
+  // (damaged from outside, perhaps while a hub runs) is replaced all the same: no token can be read from it, so no
+  // window could reach that hub with it anyway, and the next hub started gets the new one.
   private token(): string {
     let text: string | undefined;
     try {
@@ -598,7 +620,11 @@ export class Hub {
       for (const info of this.serverinfos()) {
         if (!(await healthy(info.port, this.f.health))) continue;
         const start = await this.startTime(info.pid);
-        if (start) return { env: null, port: info.port, pid: info.pid, start, stopping: false, token: false };
+        // Marked by whether it refuses a call without the key, within the health check's limit (review of 0b7cda2).
+        if (start) {
+          const token = await keyed(info.port, this.f.health);
+          return { env: null, port: info.port, pid: info.pid, start, stopping: false, token };
+        }
       }
       if (left() <= 0) return undefined;
       await wait(this.f.startCheck);

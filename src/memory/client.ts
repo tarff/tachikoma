@@ -43,7 +43,7 @@ const MODEL_KEY = "embedder_model:mempalace_drawers";
 
 // Tachikoma's version, read as src/mcp/server.ts reads it: package.json is two folders up from both src/memory/ and
 // dist/memory/.
-const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
+export const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 
 // A hub's address, with its token when it needs one (Tachikoma's own, PR #26 review 1), or a program to start.
 export type Target = { url: string; token?: string } | { command: string; args: string[] };

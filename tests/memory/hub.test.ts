@@ -236,13 +236,13 @@ async function setup(hash = "test", top?: string) {
 type Setup = Awaited<ReturnType<typeof setup>>;
 
 // The stand-in hub started by the test itself, as another window's hub with no record: it answers, and serverinfo.json
-// names it.
-async function otherHub(s: Setup): Promise<Launch> {
+// names it. `more` is added to its environment (a token, for a hub of this build's).
+async function otherHub(s: Setup, more: NodeJS.ProcessEnv = {}): Promise<Launch> {
   mkdirSync(s.paths.home, { recursive: true });
   const port = await freePort();
   const child = spawn(process.execPath, [s.paths.envPython, "-I", "-m", "mempalace.mcp_server", "--transport", "http",
     "--host", "127.0.0.1", "--port", String(port), "--palace", s.paths.palace, "--backend", "sqlite_exact"],
-  { cwd: s.paths.home, env: hubEnv(s.paths, s.env), stdio: "ignore", windowsHide: true });
+  { cwd: s.paths.home, env: { ...hubEnv(s.paths, s.env), ...more }, stdio: "ignore", windowsHide: true });
   await until(() => s.launched().some((l) => l.pid === child.pid), "the other hub to start");
   await until(() => serverinfoPort(s) === port, "the other hub's serverinfo.json");
   return s.launched().find((l) => l.pid === child.pid)!;
@@ -568,6 +568,29 @@ describe("the hub's supervisor", () => {
     writeFileSync(stoppingFile(s.paths), JSON.stringify({ pid: 2_147_000_000, start: "a hub long gone" }));
     expect((await s.hub().join()).is).toBe("on");
     expect(existsSync(stoppingFile(s.paths))).toBe(false);
+  });
+
+  // Review of 0b7cda2, point C: a hub found after an exit with code 2 is asked without the key; a refusal (401) means
+  // it has one, and it is reused as it is; any other answer means it has none, and it is treated as stopping.
+  it("marks a hub found after an exit with code 2 by whether it refuses a call without the key", async () => {
+    const s = await setup();
+    mkdirSync(s.paths.home, { recursive: true });
+    writeFileSync(hubToken(s.paths), JSON.stringify({ token: "this-install-s-token" }));
+    const other = await otherHub(s, { MEMPALACE_MCP_HTTP_TOKEN: "this-install-s-token" });
+    expect((await s.hub().join()).is).toBe("on");
+    expect(s.launched()).toHaveLength(2); // the other, and this window's start, which exited 2
+    expect(s.record()).toMatchObject({ pid: other.pid, env: null, token: true });
+    expect((await s.hub().join()).is).toBe("on");
+    expect(s.launched()).toHaveLength(2); // reused: no start
+  });
+
+  it("treats a hub found after an exit with code 2 that takes a call without the key as stopping", async () => {
+    const s = await setup();
+    const other = await otherHub(s);
+    expect((await s.hub().join()).is).toBe("on");
+    expect(s.record()).toMatchObject({ pid: other.pid, env: null, token: false });
+    expect((await s.hub().join()).is).toBe("on");
+    expect(s.launched()).toHaveLength(3); // the next join's start exited 2 too
   });
 
   it("joins another window's hub when its own start exits with code 2, writing the record from it", async () => {

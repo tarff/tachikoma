@@ -4452,8 +4452,15 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   start exits with code 2 while that hub holds the palace, the window joins it, and the last window to leave stops
   it, so the next start has the token. A new token is made only when the file does not exist; a file that cannot be
   read turns memory off for that join with Node's own words, as a folder that cannot be made does, so a running hub's
-  token is never replaced. A file that reads but holds no token is replaced. The file is written for its owner only
-  (mode 0o600, which Windows does not keep; the private folder guards it there).
+  token is never replaced. A file that reads but holds no token is replaced, even if outside damage hit it while a
+  hub runs: no token can be read from it, so no window could reach that hub with it anyway. The file is written for
+  its owner only (mode 0o600, which Windows does not keep; the private folder guards it there).
+- **A hub found after an exit with code 2** (the review of 0b7cda2, point C; the user's decision, 2026-11-22): it is
+  asked MCP's first request without the key, within the health check's 0.75 s. A refusal with 401, as the real
+  MemPalace 3.12.0 check measured for no key, marks it as started with the token, and it is reused as it is; any
+  other answer, or none, marks it as not, and it is treated as stopping. A known limit (point A): on a computer that
+  still runs a hub from a build before the token, windows keep joining that hub, which any account on the computer
+  can reach, until the last window leaves; a released install never has one.
 - **The stop's Python** (PR #26 review, finding 4; the user's decision, 2026-11-22): the stop's helper runs with the
   Python of the environment the hub's record names, which a newer window never removes while the record names it;
   the window's own Python only when that one is gone or the hub's environment is not known.
