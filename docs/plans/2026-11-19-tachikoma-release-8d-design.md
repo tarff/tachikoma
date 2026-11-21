@@ -4468,10 +4468,11 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   is the prompt's place in the session, from 1. A turn without typed words is not saved.
 - **Where a turn ends** (Q22, 2026-11-20): a line in the transcript at each typed turn's end; a turn without one is
   never saved. An older Tachikoma counts the new lines as damaged (Q17, 2026-11-20: kept, a known limit).
-- **A damaged line** (PR #26 review, finding 2; the user's decision, 2026-11-22): as in the measurements' rule for
-  cutting transcripts into turns, the turn a damaged line is in and every turn after it are set apart, so a resume
-  saves none of them; a saved record after it still counts. A resumed session numbers its next prompt after the
-  highest turn number its transcript holds, so no turn's label is used twice.
+- **A damaged line** (PR #26 review, finding 2; the user's choice "Only that turn", 2026-11-22): as in the
+  measurements' rule for cutting transcripts into turns, the turn a damaged line is in is set apart, and a resume
+  still saves the turns after it. Read back, each turn takes its number from its own boundary line, the one it had
+  live, not from the prompts counted. A resumed session numbers its next prompt after the highest turn number its
+  transcript holds.
 - **The room name** (Q19, 2026-11-19): the folder's name, a hyphen and 8 hex characters, e.g. `tachikoma-3fa9c2d1`
   (form approved 2026-11-20).
 - **A turn over 100,000 characters** is saved in parts (Q26, 2026-11-19), labelled `tachikoma session <id>, turn <n>,

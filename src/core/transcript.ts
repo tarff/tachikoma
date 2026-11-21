@@ -447,31 +447,28 @@ export interface Unsaved {
 // The typed turns with a boundary line and no saved record, each with the model's text between its typed message and
 // its boundary line, from message lines alone, so a shortening's summary is never part of one. These are the texts the
 // live session gathered, letter for letter. A turn with no boundary line is never one of them: one a crash cut off,
-// and every turn of a session saved before release 8d; nor is a turn with no model text (Q4). A damaged line may have
-// been a prompt, so no turn from it on can be numbered as it was live: the turn it is in and every turn after it are
-// set apart, while a saved record after it still counts (design, "The rule for cutting old transcripts into turns";
-// PR #26 review, finding 2).
+// and every turn of a session saved before release 8d; nor is a turn with no model text (Q4). Each turn's number is
+// its boundary line's, the one it had live, as a damaged line may have been a prompt; a turn with a damaged line in it
+// cannot be rebuilt and is set apart, the turns after it kept (design, "The rule for cutting old transcripts into
+// turns"; PR #26 review, finding 2; the user's choice "Only that turn", 2026-11-22).
 function unsavedOf(rows: (Line | undefined)[]): Unsaved[] {
   const ended: Unsaved[] = [];
   const saved = new Set<number>();
-  let n = 0;
-  let now: Unsaved | undefined;
-  let damaged = false;
+  let now: Omit<Unsaved, "n"> | undefined;
   for (const l of rows) {
     if (l === undefined) {
-      damaged = true;
       now = undefined;
       continue;
     }
-    if (l.t === "message" && !damaged) {
+    if (l.t === "message") {
       const words = l.message.role === "user" ? l.message.parts.flatMap(own).join("") : "";
-      if (words) now = { n: ++n, typed: words, texts: [] };
+      if (words) now = { typed: words, texts: [] };
       else if (l.message.role === "assistant") {
         for (const p of l.message.parts) if (p.type === "text" && p.text) now?.texts.push(p.text);
       }
     }
-    if (l.t === "turn" && now?.n === l.n) {
-      ended.push(now);
+    if (l.t === "turn" && now) {
+      ended.push({ n: l.n, ...now });
       now = undefined;
     }
     if (l.t === "saved") saved.add(l.n);

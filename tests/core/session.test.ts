@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -3741,6 +3741,26 @@ describe("Session, saving turns", { timeout: 15_000 }, () => {
     await session.send("three");
     expect(memory.handed.map(bare)).toEqual([{ session: "a2", n: 3, typed: "three", texts: ["Third."] }]);
     expect(read(a).lastTurn).toBe(3); // its boundary line, under the same number
+  });
+
+  // The user's choice "Only that turn" (2026-11-22): a torn last line sets apart its own turn alone.
+  it("hands a turn made after a crash's torn line and a resume to the saver at the next resume", async () => {
+    const a = saving("a3");
+    for (const message of [typed("one"), said("first")]) a.write({ t: "message", message });
+    a.write({ t: "turn", n: 1 });
+    a.write({ t: "saved", n: 1 });
+    appendFileSync(a.file, '{"t":"message","at":"2026-11-22T'); // the window died writing this line
+    // A resume: its transcript mended, as launch mends it, then the conversation loaded.
+    const resumed = new Transcript(a.file, a.pictures, { inherits: true });
+    resumed.mend();
+    const { session } = await setup([reply("Second.")]);
+    session.load(conversation("a3", resumed, read(resumed)));
+    await session.send("two");
+    // Its save was not recorded: the window died again. The next resume hands it over.
+    const memory = handing();
+    const again = await loading(memory);
+    again.load(conversation("a3", resumed, read(resumed)));
+    expect(memory.handed.map(bare)).toEqual([{ session: "a3", n: 2, typed: "two", texts: ["Second."] }]);
   });
 
   it("gives a long turn the same parts and labels live and read back", async () => {

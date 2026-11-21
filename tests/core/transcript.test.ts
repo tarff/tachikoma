@@ -942,9 +942,10 @@ describe("transcript", { timeout: 15_000 }, () => {
       expect(r.messages).toEqual([prompt("one"), said("an answer")]);
     });
 
-    // PR #26 review, finding 2 (design, "The rule for cutting old transcripts into turns"): a damaged line may have
-    // been a prompt, so no turn from it on can be numbered as it was live.
-    it("sets apart the turn a damaged line is in and every turn after it, keeping those before", async () => {
+    // PR #26 review, finding 2 (design, "The rule for cutting old transcripts into turns"; the user's choice "Only that
+    // turn", 2026-11-22): a turn with a damaged line in it cannot be rebuilt and is set apart; each other turn keeps
+    // the number its own boundary line gives, as a damaged line may have been a prompt.
+    it("sets apart only the turn a damaged line is in, the turns after it keeping their own numbers", async () => {
       const p = place();
       const t = new Transcript(p.file, p.pictures);
       t.write(start);
@@ -961,24 +962,37 @@ describe("transcript", { timeout: 15_000 }, () => {
       tear(p.file, 5);
       const r = read(p);
       expect(r.damaged).toBe(1);
-      expect(r.unsaved).toEqual([{ n: 1, typed: "one", texts: ["first"] }]);
+      expect(r.unsaved).toEqual([{ n: 1, typed: "one", texts: ["first"] }, { n: 3, typed: "three", texts: ["third"] }]);
     });
 
-    it("sets apart an intact turn after a damaged prompt, never saving it under that prompt's number", async () => {
+    it("numbers an intact turn after a damaged prompt by its own boundary line, not by the prompts read", async () => {
       const p = place();
       const t = new Transcript(p.file, p.pictures);
       t.write(start);
       t.write({ t: "message", message: prompt("one") });
       t.write({ t: "message", message: said("first") });
       t.write({ t: "turn", n: 1 });
-      // Numbered as a resume that counted only the whole prompts numbered it.
       t.write({ t: "message", message: prompt("two") });
       t.write({ t: "message", message: said("second") });
-      t.write({ t: "turn", n: 1 });
+      t.write({ t: "turn", n: 2 });
       tear(p.file, 1);
       const r = read(p);
       expect(r.prompts).toEqual(["two"]);
-      expect(r.unsaved).toEqual([]);
+      expect(r.unsaved).toEqual([{ n: 2, typed: "two", texts: ["second"] }]);
+    });
+
+    it("sets apart a turn whose boundary line is damaged, saving the next one", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      t.write({ t: "message", message: prompt("one") });
+      t.write({ t: "message", message: said("first") });
+      t.write({ t: "turn", n: 1 });
+      t.write({ t: "message", message: prompt("two") });
+      t.write({ t: "message", message: said("second") });
+      t.write({ t: "turn", n: 2 });
+      tear(p.file, 3);
+      expect(read(p).unsaved).toEqual([{ n: 2, typed: "two", texts: ["second"] }]);
     });
 
     it("still reads the saved record a turn before a damaged line gets after it", async () => {
