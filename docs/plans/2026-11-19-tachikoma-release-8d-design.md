@@ -4517,6 +4517,10 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   <input>`, `Its error: <error>`, `The call that worked: <tool> <input>` ("Request as system", 2026-11-20), as some
   providers reportedly refuse an empty system prompt. The memory tools' own failures do not count. A failed request
   stays silent; the window cancels running requests at exit, `-p` waits for them.
+- **The call that worked** (PR #26 review, finding 5; the user's decision, 2026-11-22): of the commands, only one
+  that finished with exit code 0; one started in the background, or moved there by its timeout or Ctrl+B, has not
+  finished and does not count. The shell tool tells the session so; the approved wording is unchanged. This can only
+  make asks rarer than M7's 0 in 80 turns, so M7 was not measured again.
 - **The duplicate check** is MemPalace's exact one (`already_exists`), not `mempalace_check_duplicate` (2026-11-19).
 
 **What the user sees** (section 6)

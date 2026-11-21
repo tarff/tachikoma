@@ -19,12 +19,14 @@ export const lessonRequest = (failed: string, error: string, worked: string) =>
   `Failed call: ${failed}\nIts error: ${error}\nThe call that worked: ${worked}`;
 
 // A call of the turn, as the session records it: the input that ran (after any hook's rewrite), how it ended, and for
-// a failure the plain error, before any lessons are added to it.
+// a failure the plain error, before any lessons are added to it. `running`: its command was still running when it
+// returned, started in the background or moved there, so it has not finished (PR #26 review, finding 5).
 export interface Ran {
   name: string;
   input: unknown;
   outcome: ToolOutcome;
   error?: string;
+  running?: boolean;
 }
 
 const FILE_EDITS = new Set(["write_file", "edit_file"]);
@@ -46,11 +48,12 @@ function sameJob(a: Ran, b: Ran, root: string): boolean {
 }
 
 // The turn's first failed call that a later call doing the same job worked after, with the first such call; declined
-// and cancelled calls count as neither. None when there is no such pair: a turn asks once at most.
+// and cancelled calls count as neither, nor does a command still running, which only a finished exit code 0 makes one
+// that worked (the user's decision, 2026-11-22). None when there is no such pair: a turn asks once at most.
 export function pairOf(calls: Ran[], root: string): { failed: Ran; worked: Ran } | undefined {
   for (const [i, failed] of calls.entries()) {
     if (failed.outcome !== "failed") continue;
-    const worked = calls.slice(i + 1).find((c) => c.outcome === "ok" && sameJob(failed, c, root));
+    const worked = calls.slice(i + 1).find((c) => c.outcome === "ok" && !c.running && sameJob(failed, c, root));
     if (worked) return { failed, worked };
   }
   return undefined;

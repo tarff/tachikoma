@@ -213,11 +213,13 @@ export interface SessionOptions {
 }
 
 // A call of the turn as the lesson ask sees it (step 26): the call's place in the record of calls, which a hook's
-// rewrite replaces, how it ended, and for a failure the plain error, before any lessons are added to it.
+// rewrite replaces, how it ended, and for a failure the plain error, before any lessons are added to it; `running`,
+// when its command was still running as it returned (PR #26 review, finding 5).
 interface Called {
   entry: { name: string; input: unknown };
   outcome?: ToolOutcome;
   error?: string;
+  running?: boolean;
 }
 
 // A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
@@ -600,7 +602,8 @@ export class Session {
     const a = this.opts.lessonAsk;
     if (!a || !called || !a.memory.on()) return;
     const calls = called
-      .flatMap((c) => (c.outcome === undefined ? [] : [{ ...c.entry, outcome: c.outcome, error: c.error }]))
+      .flatMap((c) => (c.outcome === undefined ? [] : [{ ...c.entry, outcome: c.outcome, error: c.error,
+        running: c.running }]))
       .filter((c) => !(c.outcome === "failed" && MEMORY_TOOLS.has(c.name)));
     const pair = pairOf(calls, this.opts.ctx.root);
     if (!pair) return;
@@ -1269,7 +1272,8 @@ export class Session {
       // A yes to a hook's own question, given after a hook stopped the turn, runs nothing either (Task 7's code review).
       if (signal.aborted) return stopped(NOT_RUN);
       started = Date.now();
-      const ran = await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal, ...report });
+      const running = () => void (called.running = true);
+      const ran = await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal, ...report, running });
       const before = round.pictures.length; // #pictured adds this call's at once, so those after `before` are its own
       text = typeof ran === "string" ? truncate(ran) : this.#pictured(ran, round);
       pictures = round.pictures.slice(before);

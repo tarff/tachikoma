@@ -46,6 +46,7 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
       if (ctx.signal?.aborted) throw new Error("Cancelled");
       // A window's background command has no time limit; under -p its timeout is its limit (design, "What the model gets").
       const t = tasks.adopt(ctx.executor.start(command, ctx.root), { command, ...(opts.headless && timeout !== undefined ? { limit: timeout } : {}) });
+      ctx.running?.();
       return `Started ${t.id} in the background.`;
     },
   );
@@ -77,6 +78,7 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
     if (way === "timeout" || way === "moved") {
       // What it printed so far stays in its log, unread, so the first shell_output gives it (design, "A command that runs long").
       const { id } = tasks.adopt(run, { command, moved: true, started });
+      ctx.running?.();
       if (way === "moved") return `Moved to the background as ${id} by the user.`;
       return `Command did not complete within its ${s}s timeout and was moved to the background as ${id}.`;
     }

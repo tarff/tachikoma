@@ -75,6 +75,15 @@ describe("which calls make a pair", () => {
     expect(pairOf([failed("shell", job), ran("shell", job, "cancelled")], root)).toBeUndefined();
   });
 
+  // PR #26 review, finding 5: a command still running when its call returned has not finished, so it has not worked.
+  it("does not take a command still running when its call returned for the one that worked", () => {
+    const a = failed("shell", { command: "npm test" });
+    const running: Ran = { ...ok("shell", { command: "npm run dev", background: true }), running: true };
+    const b = ok("shell", { command: "npm test -- --run" });
+    expect(pairOf([a, running], root)).toBeUndefined();
+    expect(pairOf([a, running, b], root)).toEqual({ failed: a, worked: b });
+  });
+
   it("pairs only a call that worked after the failure, and gives the first pair of several", () => {
     const job = { command: "git push" };
     expect(pairOf([ok("shell", job), failed("shell", job)], root)).toBeUndefined();

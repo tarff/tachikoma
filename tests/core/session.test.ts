@@ -4397,6 +4397,28 @@ describe("Session, the lesson ask", { timeout: 15_000 }, () => {
     expect(s.asks()).toEqual([]);
   });
 
+  // PR #26 review, finding 5 (the user's decision, 2026-11-22): only a command that finished with exit code 0 worked.
+  it("takes neither a command started in the background nor one moved there for the call that worked", async () => {
+    const done = (code: number) => Promise.resolve({ code, signal: null, stdout: "", stderr: `exit ${code}` });
+    // "npm test" fails, "npm test -- --run" passes, any other runs until it is stopped.
+    const executor: Executor = {
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: (command) => standInRun(command === "npm test" ? done(1) : command === "npm test -- --run" ? done(0)
+        : new Promise(() => {})),
+    };
+    const ctx = { ...gate(), executor } as unknown as Omit<ToolContext, "signal">;
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub",
+      tools: [], ctx });
+    onTestFinished(() => void tasks.stop());
+    const s = asking(shellTools(tasks, { shell: "sh", headless: false }), [["shell", { command: "npm test" }],
+      ["shell", { command: "npm run dev", background: true }], ["shell", { command: "npm start", timeout: 1 }],
+      ["shell", { command: "npm test -- --run" }]], [reply("A lesson.")], { more: { ctx } });
+    await s.session.send("go");
+    const error = shellText({ code: 1, signal: null, stdout: "", stderr: "exit 1" });
+    expect(s.asks().map(askText)).toEqual([asked('shell {"command":"npm test"}', error,
+      'shell {"command":"npm test -- --run"}')]);
+  });
+
   it("does not ask for a turn with no failure", async () => {
     const shell = scripted("shell", ["pushed", "pushed"]);
     const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]]);
