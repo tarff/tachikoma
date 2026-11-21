@@ -4445,6 +4445,11 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   `UV_ASTRAL_MIRROR_URL` are passed to uv; every other `UV_` name is left out, the package-index ones too ("Drop the
   mirror settings", after uv issue #6349), and `UV_NO_CONFIG=1` is set. `sfw.exe` or `sfw.cmd` is used ("Accept
   sfw.cmd too", 2026-11-20).
+- **The home's folders** (section 2, `home/`): uv and the hub get `HOME` set to `memory/home` on every system, and
+  `USERPROFILE` too on Windows; on Windows also `APPDATA` and `LOCALAPPDATA` in `home/AppData/Roaming` and `Local`
+  ("Redirect AppData too", 2026-11-21); and on every system `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` and
+  `XDG_CONFIG_HOME` in `home/.local/share`, `.local/state`, `.cache` and `.config` ("Fix both", 2026-11-21). The
+  user's own program keeps the user's.
 - **The model** is downloaded by Node's own `fetch`, not through sfw, and is checked against its hash; that download
   ignores `HTTPS_PROXY` (a known limit, 2026-11-20).
 - **Without uv** (section 6): memory is off with the design's line, as designed, with two exceptions the user chose

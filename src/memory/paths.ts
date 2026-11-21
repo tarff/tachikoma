@@ -40,6 +40,12 @@ export interface MemoryPaths {
   // review, "Redirect AppData too", as tests/memory/real.test.ts's real run had them).
   appData: string;
   localAppData: string;
+  // The four XDG base folders on every system, where the XDG spec puts them under a home (the user's choice after the
+  // final review's re-check, "Fix both").
+  xdgData: string;
+  xdgState: string;
+  xdgCache: string;
+  xdgConfig: string;
   palace: string;
 }
 
@@ -63,6 +69,10 @@ export function memoryPaths(
     home,
     appData: path.join(home, "AppData", "Roaming"),
     localAppData: path.join(home, "AppData", "Local"),
+    xdgData: path.join(home, ".local", "share"),
+    xdgState: path.join(home, ".local", "state"),
+    xdgCache: path.join(home, ".cache"),
+    xdgConfig: path.join(home, ".config"),
     palace: path.join(root, "palace"),
   };
 }

@@ -37,6 +37,10 @@ const user: NodeJS.ProcessEnv = {
   TMPDIR: "/tmp",
   APPDATA: "C:\\Users\\someone\\AppData\\Roaming",
   localappdata: "C:\\Users\\someone\\AppData\\Local",
+  XDG_DATA_HOME: "/home/someone/.local/share",
+  xdg_state_home: "/home/someone/.local/state",
+  XDG_CACHE_HOME: "/home/someone/.cache",
+  XDG_CONFIG_HOME: "/home/someone/.config",
   HF_HOME: "C:\\Users\\someone\\.cache\\huggingface",
   HF_HUB_OFFLINE: "0",
   HF_HUB_CACHE: "C:\\Users\\someone\\.cache\\huggingface\\hub",
@@ -105,6 +109,43 @@ describe("the memory environments", () => {
       const use = commandEnv(user, "win32");
       expect(use.APPDATA).toBe(user.APPDATA);
       expect(use.localappdata).toBe(user.localappdata);
+    });
+
+  // The user's choice after the final review's re-check, "Fix both": HOME on Windows too, and the four XDG base
+  // folders on every system, each where the XDG spec puts it under a home. The user's own program keeps the user's.
+  const XDG: Record<string, string[]> = {
+    XDG_DATA_HOME: [".local", "share"],
+    XDG_STATE_HOME: [".local", "state"],
+    XDG_CACHE_HOME: [".cache"],
+    XDG_CONFIG_HOME: [".config"],
+  };
+
+  it("give Windows HOME too, memory/'s home, in one spelling; the \"use\" program the user's", () => {
+    const p = paths("win32");
+    for (const make of [uvEnv, hubEnv]) {
+      const env = make(p, user, "win32");
+      expect(env.HOME).toBe(p.home);
+      expect(names(env).filter((k) => k === "HOME")).toHaveLength(1);
+    }
+    expect(commandEnv(user, "win32").HOME).toBe(user.HOME);
+  });
+
+  it(
+    "put the four XDG folders inside memory/'s home on every system, one spelling each; the \"use\" program the user's",
+    () => {
+      for (const platform of PLATFORMS) {
+        const p = paths(platform);
+        for (const make of [uvEnv, hubEnv]) {
+          const env = make(p, user, platform);
+          for (const [name, parts] of Object.entries(XDG)) {
+            expect(env[name], `${platform} ${name}`).toBe(path.join(p.home, ...parts));
+            expect(names(env).filter((k) => k === name), name).toHaveLength(1);
+          }
+        }
+        const use = commandEnv(user, platform);
+        for (const name of ["XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"]) expect(use[name]).toBe(user[name]);
+        expect(use.xdg_state_home).toBe(user.xdg_state_home);
+      }
     });
 
   it("let none of the user's own MemPalace or uv settings through", () => {

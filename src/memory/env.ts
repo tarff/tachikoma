@@ -30,7 +30,9 @@ const DOWNLOADS = (name: string) =>
 // The given environment without the user's settings above (but those `keep` names) or any spelling of a name set
 // here, then those names. The home folder is the platform's own variable: Python's home is USERPROFILE on Windows and
 // HOME elsewhere (step 5, ntpath.py:362 and posixpath.py:244), and on Windows APPDATA and LOCALAPPDATA inside it too
-// (the user's choice after the final review, "Redirect AppData too"). TEMP and TMP inside memory/ (the user's choice
+// (the user's choice after the final review, "Redirect AppData too"). HOME on Windows as well, and the four XDG base
+// folders inside the home on every system (the user's choice after its re-check, "Fix both"); the settings set below,
+// MEMPALACE_CONFIG_DIR, HF_HOME and uv's folders, are read before them. TEMP and TMP inside memory/ (the user's choice
 // after step 8), and TMPDIR, which Python's tempfile looks at before them on every system.
 function own(
   paths: MemoryPaths,
@@ -42,7 +44,12 @@ function own(
   const all: Record<string, string> = {
     ...(platform === "win32"
       ? { USERPROFILE: paths.home, APPDATA: paths.appData, LOCALAPPDATA: paths.localAppData }
-      : { HOME: paths.home }),
+      : {}),
+    HOME: paths.home,
+    XDG_DATA_HOME: paths.xdgData,
+    XDG_STATE_HOME: paths.xdgState,
+    XDG_CACHE_HOME: paths.xdgCache,
+    XDG_CONFIG_HOME: paths.xdgConfig,
     TEMP: paths.tmp,
     TMP: paths.tmp,
     TMPDIR: paths.tmp,

@@ -146,8 +146,8 @@ function sync(run) {
   }
   // The install passes when uv exits 0. The tamper run passes only when uv refuses: a non-zero exit, not a failed
   // start.
-  const ok = run === "tamper" ? Number.isInteger(r.status) && r.status !== 0 : r.status === 0;
-  process.exitCode = ok ? 0 : 1;
+  const passed = run === "tamper" ? Number.isInteger(r.status) && r.status !== 0 : r.status === 0;
+  process.exitCode = passed ? 0 : 1;
 }
 
 function version() {

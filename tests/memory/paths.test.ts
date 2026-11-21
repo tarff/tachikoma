@@ -194,6 +194,10 @@ describe("the memory folder", { timeout: 15_000 }, () => {
       expect(p.home).toBe(path.join(p.root, "home"));
       expect(p.appData).toBe(path.join(p.home, "AppData", "Roaming"));
       expect(p.localAppData).toBe(path.join(p.home, "AppData", "Local"));
+      expect(p.xdgData).toBe(path.join(p.home, ".local", "share"));
+      expect(p.xdgState).toBe(path.join(p.home, ".local", "state"));
+      expect(p.xdgCache).toBe(path.join(p.home, ".cache"));
+      expect(p.xdgConfig).toBe(path.join(p.home, ".config"));
       expect(p.palace).toBe(path.join(p.root, "palace"));
       for (const [name, file] of Object.entries(p)) {
         if (name !== "root") expect(inside(file, p.root), `${name}: ${file}`).toBe(true);
