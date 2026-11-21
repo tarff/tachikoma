@@ -77,8 +77,9 @@ export function shellTools(tasks: Tasks, opts: { shell: string; headless: boolea
     }
     if (way === "timeout" || way === "moved") {
       // What it printed so far stays in its log, unread, so the first shell_output gives it (design, "A command that runs long").
-      const { id } = tasks.adopt(run, { command, moved: true, started });
-      ctx.running?.();
+      const t = tasks.adopt(run, { command, moved: true, started });
+      const { id } = t;
+      ctx.running?.(() => t.state === "done"); // `done`: it ended by itself with exit code 0 (tasks.ts)
       if (way === "moved") return `Moved to the background as ${id} by the user.`;
       return `Command did not complete within its ${s}s timeout and was moved to the background as ${id}.`;
     }

@@ -4431,7 +4431,8 @@ describe("Session, the lesson ask", { timeout: 15_000 }, () => {
   });
 
   // PR #26 review, finding 5 (the user's decision, 2026-11-22): only a command that finished with exit code 0 worked.
-  it("takes neither a command started in the background nor one moved there for the call that worked", async () => {
+  it("takes neither a command started in the background nor one moved there and still running for the call that " +
+    "worked", async () => {
     const done = (code: number) => Promise.resolve({ code, signal: null, stdout: "", stderr: `exit ${code}` });
     // "npm test" fails, "npm test -- --run" passes, any other runs until it is stopped.
     const executor: Executor = {
@@ -4451,6 +4452,39 @@ describe("Session, the lesson ask", { timeout: 15_000 }, () => {
     expect(s.asks().map(askText)).toEqual([asked('shell {"command":"npm test"}', error,
       'shell {"command":"npm test -- --run"}')]);
   });
+
+  // The user's choice "Only if it passed" (2026-11-22): a command moved to the background counts once it has ended
+  // with exit code 0 by the turn's end.
+  it("takes a command moved to the background for the call that worked only when it passed by the turn's end",
+    async () => {
+      for (const code of [0, 1]) {
+        let end = (_code: number) => {};
+        // "npm test" fails; any other runs until `end` ends it.
+        const executor: Executor = {
+          exec: () => Promise.reject(new Error("exec is not used here")),
+          start: (command) => standInRun(command === "npm test"
+            ? Promise.resolve({ code: 1, signal: null, stdout: "", stderr: "exit 1" })
+            : new Promise((resolve) => (end = (c) => resolve({ code: c, signal: null, stdout: "", stderr: "" })))),
+        };
+        const ctx = { ...gate(), executor } as unknown as Omit<ToolContext, "signal">;
+        const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub",
+          tools: [], ctx });
+        onTestFinished(() => void tasks.stop());
+        // A later call of the turn, during which the moved command ends and the task list takes its end.
+        const ending = defineTool("read_file", "Ends the moved command", z.object({}), async () => {
+          end(code);
+          await tasks.get("t1")!.done;
+          return "read";
+        });
+        const s = asking([...shellTools(tasks, { shell: "sh", headless: false }), ending],
+          [["shell", { command: "npm test" }], ["shell", { command: "npm test -- --watch", timeout: 1 }],
+            ["read_file", {}]], [reply("A lesson.")], { more: { ctx } });
+        await s.session.send("go");
+        const error = shellText({ code: 1, signal: null, stdout: "", stderr: "exit 1" });
+        const worked = 'shell {"command":"npm test -- --watch","timeout":1}';
+        expect(s.asks().map(askText)).toEqual(code === 0 ? [asked('shell {"command":"npm test"}', error, worked)] : []);
+      }
+    });
 
   // The user's choice "Yes, exclude it" (2026-11-22): a subagent started in the background has not finished either.
   it("does not take a subagent started in the background for the call that worked", async () => {

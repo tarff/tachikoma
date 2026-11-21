@@ -13,8 +13,10 @@ export interface ToolContext {
   // The parts of a result, for the shape hooks are sent (release 8b plan, choice 12): shell, write_file and delegate call it.
   report?: (parts: unknown) => void;
   // Called by a call that returns while its command or subagent still runs, started in the background or moved there,
-  // so the lesson ask does not take it for a call that worked (PR #26 review, finding 5).
-  running?: () => void;
+  // so the lesson ask does not take it for a call that worked (PR #26 review, finding 5). A command moved there gives
+  // `passed`, whether it has since ended with exit code 0, which the lesson ask reads at the turn's end and then takes
+  // it for one that worked (the user's choice "Only if it passed", 2026-11-22).
+  running?: (passed?: () => boolean) => void;
 }
 
 export interface Tool {

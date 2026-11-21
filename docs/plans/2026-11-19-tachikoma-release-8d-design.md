@@ -4540,9 +4540,10 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   providers reportedly refuse an empty system prompt. The memory tools' own failures do not count. A failed request
   stays silent; the window cancels running requests at exit, `-p` waits for them.
 - **The call that worked** (PR #26 review, finding 5; the user's decision, 2026-11-22): of the commands, only one
-  that finished with exit code 0; one started in the background, or moved there by its timeout or Ctrl+B, has not
-  finished and does not count; nor does a subagent started in the background (the user's choice "Yes, exclude it",
-  2026-11-22). The shell and delegate tools tell the session so; the approved wording is unchanged. This can only
+  that finished with exit code 0. One started in the background does not count, nor does a subagent started in the
+  background (the user's choice "Yes, exclude it", 2026-11-22). One moved there by its timeout or Ctrl+B counts only
+  if it has ended with exit code 0 when the turn ends and the pair is looked for ("Only if it passed", 2026-11-22).
+  The shell and delegate tools tell the session so; the approved wording is unchanged. This can only
   make asks rarer than M7's 0 in 80 turns, so M7 was not measured again.
 - **The duplicate check** is MemPalace's exact one (`already_exists`), not `mempalace_check_duplicate` (2026-11-19).
 

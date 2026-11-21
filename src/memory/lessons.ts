@@ -20,7 +20,8 @@ export const lessonRequest = (failed: string, error: string, worked: string) =>
 
 // A call of the turn, as the session records it: the input that ran (after any hook's rewrite), how it ended, and for
 // a failure the plain error, before any lessons are added to it. `running`: its command or subagent was still running
-// when it returned, started in the background or moved there, so it has not finished (PR #26 review, finding 5).
+// when it returned, started in the background or moved there, and a moved command had not ended with exit code 0 by
+// the turn's end, so it has not finished (PR #26 review, finding 5; the user's choice "Only if it passed").
 export interface Ran {
   name: string;
   input: unknown;
