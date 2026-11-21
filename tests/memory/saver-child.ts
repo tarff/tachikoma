@@ -3,7 +3,8 @@
 // It connects to the hub, gives its saver the turn in the turn file ({ session, n, typed, texts, room }), saves it, and
 // prints "done <unsaved turns>". Its saved record is a line in the record file, beside the hub's own, so the test sees
 // the order of both. `probe`: before anything, it tries the save lock once and prints "busy" or "free", letting go at
-// once if it took it, so its saver never takes a lock this process holds.
+// once if it took it, so its saver never takes a lock this process holds. A hub that needs a token (Tachikoma's own,
+// in tests/memory/real.test.ts) is given it in TACHI_TEST_HUB_TOKEN.
 import { appendFileSync, readFileSync } from "node:fs";
 import { connect } from "../../src/memory/client.js";
 import { tryLock } from "../../src/memory/oslock.js";
@@ -19,7 +20,7 @@ if (mode === "probe") {
   console.log(lock ? "free" : "busy");
   lock?.release();
 }
-const c = await connect({ url }, "own", { timeout: LIMIT });
+const c = await connect({ url, token: process.env.TACHI_TEST_HUB_TOKEN }, "own", { timeout: LIMIT });
 if (c.is !== "connected") {
   console.log(`not connected: ${JSON.stringify(c)}`);
   process.exit(1);

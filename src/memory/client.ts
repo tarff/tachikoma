@@ -45,7 +45,8 @@ const MODEL_KEY = "embedder_model:mempalace_drawers";
 // dist/memory/.
 const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 
-export type Target = { url: string } | { command: string; args: string[] };
+// A hub's address, with its token when it needs one (Tachikoma's own, PR #26 review 1), or a program to start.
+export type Target = { url: string; token?: string } | { command: string; args: string[] };
 // Tachikoma's own palace, or the user's own MemPalace.
 export type Kind = "own" | "use";
 // One room of Tachikoma's wing, the whole wing, or the whole palace (with the user's own, its earlier memories too).
@@ -120,7 +121,9 @@ class Link {
 
 // Connects within the caller's time limit, and lists the palace's tools. A program is started with the commands'
 // environment, which holds no API key (src/exec/env.ts), and with no argument but the caller's. The hub is reached
-// with the library's own plain fetch, never through the MCP servers' fetch or the allowed sites' check.
+// with the library's own plain fetch, never through the MCP servers' fetch or the allowed sites' check; its token,
+// when given, goes in every request's Authorization header, as MemPalace's hub reads it (`Bearer <token>`,
+// mempalace/mcp_server/http.py:447-451).
 export async function connect(
   target: Target,
   kind: Kind,
@@ -139,7 +142,8 @@ export async function connect(
   try {
     const transport: Transport =
       "url" in target
-        ? new StreamableHTTPClientTransport(new URL(target.url))
+        ? new StreamableHTTPClientTransport(new URL(target.url), target.token === undefined ? undefined :
+            { requestInit: { headers: { Authorization: `Bearer ${target.token}` } } })
         : new Program({
             command: target.command,
             args: target.args,

@@ -13,7 +13,10 @@
 //   palace exits with code 2, as with MEMPALACE_MCP_WRITER_WAIT_SECONDS=0 (item 5);
 // - over HTTP it answers the health check, GET /healthz, and the read-back of item 12: GET /statusz and
 //   mempalace_status give the backend, and with `--backend sqlite_exact` the palace file `sqlite_exact.sqlite3` holds
-//   the model in its `meta` table from the first add on, as a new palace records it at its first write.
+//   the model in its `meta` table from the first add on, as a new palace records it at its first write;
+// - over HTTP, started with MEMPALACE_MCP_HTTP_TOKEN, a POST to /mcp and GET /statusz without
+//   `Authorization: Bearer <token>` are answered 401, and GET /healthz needs none (MemPalace 3.12.0's
+//   mempalace/mcp_server/http.py:447-451, :737-756, :1341).
 // Not modelled: meaning. A hit's distance is one minus the share of words its piece and the query have in common
 // (lower is closer, as MemPalace's), so the tests can set the order. The backend is `--backend`'s, else MemPalace's
 // default, chroma; the model is MEMPALACE_EMBEDDING_MODEL's, else minilm, written as given.
@@ -370,7 +373,9 @@ function serveHttp() {
       return;
     }
   }
+  const token = process.env.MEMPALACE_MCP_HTTP_TOKEN ?? "";
   const server = http.createServer((req, res) => {
+    const unauthorized = () => token !== "" && req.headers.authorization !== `Bearer ${token}`;
     let body = "";
     req.setEncoding("utf8");
     req.on("data", (c) => (body += c));
@@ -382,6 +387,7 @@ function serveHttp() {
         record({ get: req.url });
         if (req.url === "/healthz") return json(200, { status: "ok" });
         if (req.url === "/statusz") {
+          if (unauthorized()) return res.writeHead(401).end();
           const palace = { backend: opt.backend, path: opt.palace ?? null };
           return json(200, { palace, server: { version: "3.12.0" } });
         }
@@ -390,6 +396,7 @@ function serveHttp() {
       if (req.method !== "POST" || req.url !== "/mcp") return res.writeHead(404).end();
       const proxied = req.headers.via !== undefined || req.headers["x-forwarded-for"] !== undefined;
       if (proxied) return res.writeHead(403).end();
+      if (unauthorized()) return res.writeHead(401).end();
       if (!String(req.headers["content-type"] ?? "").startsWith("application/json")) return res.writeHead(415).end();
       const m = JSON.parse(body);
       if (m.id === undefined) return res.writeHead(202).end();

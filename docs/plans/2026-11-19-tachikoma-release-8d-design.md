@@ -4434,6 +4434,21 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   "stopped", "gone", or "running" when only the wait after `TerminateProcess` passed its limit. Any other answer, no
   answer within the 1.3 s among them, keeps the record marked stopping for the next window.
 - **"In use"** (M4, 2026-11-19): refreshed every 5 s; one older than 27 s counts as gone.
+- **"In use" while a hub starts** (PR #26 review, finding 3; the user's decision, 2026-11-22): the 5 s refresh runs
+  from the join's first write of the file, under the join lock, so a first start longer than 27 s no longer lets a
+  leaving window count this one as gone and stop the new hub. While a join is under way the timer only refreshes the
+  file; the join checks the hub itself.
+- **The hub's token** (PR #26 review, finding 1; the user's decision, 2026-11-22): the install's own random token, 32
+  bytes in base64url as MemPalace makes its own (`server_registry.py:99`), made once under the join lock and kept in
+  `memory/home/hub-token.json`. Every hub is started with it in `MEMPALACE_MCP_HTTP_TOKEN`, never on its command line,
+  and Tachikoma's client sends `Authorization: Bearer <token>` on every request; the health check needs none
+  (`mcp_server/http.py:737-756`). A real MemPalace 3.12.0 hub started this way (2026-11-22, a throwaway install
+  through sfw) answered 401 to a request with no token and with a wrong one, and 200 with the right one. A token file
+  removed while a hub runs leaves that hub refusing the windows until it stops (a known limit). The user's own
+  program is unchanged.
+- **The stop's Python** (PR #26 review, finding 4; the user's decision, 2026-11-22): the stop's helper runs with the
+  Python of the environment the hub's record names, which a newer window never removes while the hub runs; the
+  window's own Python only when that one is gone or the hub's environment is not known.
 - **An empty palace** (2026-11-20): MemPalace refuses `mempalace_status` on a new palace until its first entry. A
   refusal with no palace file, or with a file that opens and has no model row, means memory on; a file that cannot be
   opened turns memory off.

@@ -401,6 +401,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
 
   let rec: HubRecord;
   let url: string;
+  let token: string;
   let hubA: Hub;
   const eventsA: HubEvent[] = [];
 
@@ -411,6 +412,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     const a = await within(hubA.join(), JOIN, "hub A's join");
     if (a.is !== "on") throw new Error(`not on: ${JSON.stringify(a)}`);
     url = a.url;
+    token = a.token;
     const port = Number(new URL(url).port);
     expect(port).not.toBe(8765);
     rec = recordOf(p1);
@@ -419,7 +421,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     expect(await healthz(port)).toBe(true);
 
     // It serves: an add and a search, through Tachikoma's own client.
-    const c = await connect({ url }, "own", { timeout: FIGURES.readBack });
+    const c = await connect({ url, token }, "own", { timeout: FIGURES.readBack });
     if (c.is !== "connected") throw new Error(`not connected: ${JSON.stringify(c)}`);
     try {
       expect(c.palace.offers.missing).toEqual([]);
@@ -453,7 +455,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     // palace, and finds this hub, all within the start limit; then the read-back.
     await eventually(() => eventsA.some((e) => e.is === "on"), FIGURES.refresh + FIGURES.startLimit + FIGURES.readBack,
       "the timer's join");
-    expect(eventsA).toEqual([{ is: "failing" }, { is: "on", url }]);
+    expect(eventsA).toEqual([{ is: "failing" }, { is: "on", url, token }]);
     expect(existsSync(stoppingFile(p1))).toBe(false);
     expect(recordOf(p1)).toEqual({ ...rec, env: null });
   });
@@ -465,7 +467,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     rmSync(hubRecord(p1));
     hubB = new Hub({ paths: p1, env: hubBase });
     hubs.push(hubB);
-    expect(await within(hubB.join(), JOIN, "hub B's join")).toEqual({ is: "on", url });
+    expect(await within(hubB.join(), JOIN, "hub B's join")).toEqual({ is: "on", url, token });
     expect(recordOf(p1)).toEqual({ ...rec, env: null });
     // Only the first hub runs: this process's own Pythons are its launcher alone.
     const mine = list([process.pid]).filter((p) => p.ppid === process.pid && p.running && /^python/i.test(p.name));
@@ -564,7 +566,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     writeFileSync(file, JSON.stringify({ session: turn.session, n: turn.n, typed: turn.typed, texts: turn.texts,
       room: ROOM }));
     const childDir = path.join(root, "child-env");
-    const env = envOf(childDir, { ...appData(childDir), TSX_DISABLE_CACHE: "1" });
+    const env = envOf(childDir, { ...appData(childDir), TSX_DISABLE_CACHE: "1", TACHI_TEST_HUB_TOKEN: token });
     // Each child within: its start, 5 times the slowest of 50 starts of this child as here, each to its exit when
     // refused at once (514.9 ms, so 2.6 s; scripts/8d/measure-close.mjs, step 29, 2026-11-20); its own requests, each
     // within the 13 s it is given (ADD), the connect, the look-up, a removal and the add; and, while the other child

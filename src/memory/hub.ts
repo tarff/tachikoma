@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { collect, killTree, running } from "../exec/local.js";
@@ -64,6 +64,9 @@ export const hubRecord = (paths: MemoryPaths) => path.join(paths.home, "hub.json
 // The stopping marker (the user's choice at step 20's re-check): written by a last window whose leave could not take
 // the join lock, naming the record's hub by its id and start time; settled only under the lock.
 export const stoppingFile = (paths: MemoryPaths) => path.join(paths.home, "hub-stopping.json");
+// The install's token for its hub (PR #26 review 1), in memory's private folder: the hub refuses every call without
+// it, so no other account on the computer can use the hub's port.
+export const hubToken = (paths: MemoryPaths) => path.join(paths.home, "hub-token.json");
 // The palace's version record (the design's "Versions side by side"; the name the user approved after step 20's proof).
 const versionFile = (paths: MemoryPaths) => path.join(paths.palace, "tachikoma-version.json");
 const IN_USE = "in-use-";
@@ -81,8 +84,8 @@ export type Why =
   | { is: "start time" } // the serving process's start time could not be read within its limit
   | { is: "read-back"; failed: "timed out" | "refused" | "failed" | "lost" | "not offered" }
   | { is: "not tachikoma's"; backend?: string; model?: string };
-export type Joined = { is: "on"; url: string } | { is: "off"; why: Why } | { is: "closed" };
-export type HubEvent = { is: "failing" } | { is: "on"; url: string } | { is: "off"; why: Why };
+export type Joined = { is: "on"; url: string; token: string } | { is: "off"; why: Why } | { is: "closed" };
+export type HubEvent = { is: "failing" } | { is: "on"; url: string; token: string } | { is: "off"; why: Why };
 export type Left =
   | { is: "left" } // this window's file is gone; the hub is another window's, or there was none
   | { is: "stopped" } // the helper said the serving process ended
@@ -369,14 +372,15 @@ export class Hub {
   // A join's end: a start that completes after closing never makes this window on (the leave handles its hub).
   private after(r: Joined): Joined {
     if (this.closing.signal.aborted) return { is: "closed" };
-    if (r.is === "on") {
-      this.port = Number(new URL(r.url).port);
-      if (!this.timer) {
-        this.timer = setInterval(() => this.tick(), this.f.refresh);
-        this.timer.unref?.();
-      }
-    } else if (r.is === "off") this.stopTimer();
+    if (r.is === "on") this.port = Number(new URL(r.url).port);
+    else if (r.is === "off") this.stopTimer();
     return r;
+  }
+
+  private startTimer(): void {
+    if (this.timer) return;
+    this.timer = setInterval(() => this.tick(), this.f.refresh);
+    this.timer.unref?.();
   }
 
   private stopTimer(): void {
@@ -386,14 +390,16 @@ export class Hub {
 
   // The timer: the "in use" file is rewritten first, so a slow health check never makes it late (step 9's note); then
   // the hub is checked, and a hub found gone or stopping means joining again (Q25: with the idle exit off, this is
-  // what brings back one that went away).
+  // what brings back one that went away). The timer runs from a join's first touch, so a start that holds the join
+  // lock keeps the file fresh (PR #26 review 3); while a join is under way it only refreshes, as the join checks the
+  // hub itself.
   private tick(): void {
     try {
       this.touch();
     } catch {
       // the next tick tries again; a file left unrefreshed counts as gone only after the stale age
     }
-    if (this.checking || this.closing.signal.aborted) return;
+    if (this.checking || this.busy || this.closing.signal.aborted) return;
     this.checking = true;
     void this.check().finally(() => {
       this.checking = false;
@@ -428,15 +434,18 @@ export class Hub {
     }
     if (!lock) return { is: "closed" };
     let port: number;
+    let token: string;
     try {
       this.touch();
+      this.startTimer();
+      token = this.token();
       const rec = this.record();
       const stopping = rec?.stopping || this.marked(rec);
       let hub = rec && !stopping && (await healthy(rec.port, this.f.health)) ? rec : undefined;
       if (!hub) {
         const version = this.palaceVersion();
         if (version && newer(version, MEMPALACE)) return { is: "off", why: { is: "newer palace", version } };
-        const started = await this.start();
+        const started = await this.start(token);
         if ("why" in started) return { is: "off", why: started.why };
         hub = started.record;
         this.write(hubRecord(this.paths), hub);
@@ -455,17 +464,31 @@ export class Hub {
     }
     if (this.closing.signal.aborted) return { is: "closed" };
     const url = `http://127.0.0.1:${port}/mcp`;
-    const why = await this.readBack(url);
-    return why ? { is: "off", why } : { is: "on", url };
+    const why = await this.readBack(url, token);
+    return why ? { is: "off", why } : { is: "on", url, token };
+  }
+
+  // Under the join lock: the install's token, read, or made once when there is none: 32 random bytes in base64url, as
+  // MemPalace 3.12.0 makes its own (mempalace/server_registry.py:99, secrets.token_urlsafe(32)).
+  private token(): string {
+    try {
+      const t = JSON.parse(readFileSync(hubToken(this.paths), "utf8")).token;
+      if (typeof t === "string" && t !== "") return t;
+    } catch {
+      // none yet, or not readable: a new one is made
+    }
+    const t = randomBytes(32).toString("base64url");
+    this.write(hubToken(this.paths), { token: t });
+    return t;
   }
 
   // The backend and the model in force, within the read-back's limit. A refused status with no palace file yet is a
   // palace not written yet, not a mismatch, as a model not yet recorded is not (the user's choices after steps 18 and
   // 20); a refused status with a palace file that cannot be opened, or any other failure, turns memory off.
-  private async readBack(url: string): Promise<Why | undefined> {
+  private async readBack(url: string, token: string): Promise<Why | undefined> {
     const began = performance.now();
     const left = () => this.f.readBack - (performance.now() - began);
-    const c = await connect({ url }, "own", { timeout: this.f.readBack });
+    const c = await connect({ url, token }, "own", { timeout: this.f.readBack });
     if (c.is !== "connected") return { is: "read-back", failed: c.is === "timed out" ? "timed out" : "failed" };
     try {
       const r = left() > 0 ? await c.palace.inForce(this.paths.palace, left()) : ({ is: "timed out" } as const);
@@ -490,8 +513,10 @@ export class Hub {
   // its serverinfo.json naming the port (MemPalace writes it after the bind), and reads the serving process's start
   // time within its own limit. A start that exits with code 2 (Q8) means another window's hub holds the palace: that
   // hub is found the same way and used. A start that passes the limit is ended (only the child this window started,
-  // whose exit it has not seen, as killTree requires).
-  private async start(): Promise<{ record: HubRecord } | { why: Why }> {
+  // whose exit it has not seen, as killTree requires). The install's token is given in the hub's environment, never
+  // on its command line, as MEMPALACE_MCP_HTTP_TOKEN, which makes MemPalace 3.12.0 refuse a call without it on
+  // loopback too (mempalace/mcp_server/http.py:447-451, :1341; PR #26 review 1, the real check in its build report).
+  private async start(token: string): Promise<{ record: HubRecord } | { why: Why }> {
     let port: number;
     try {
       port = await freePort();
@@ -505,8 +530,8 @@ export class Hub {
     let exited: { code: number | null; signal?: string; error?: string } | undefined;
     try {
       child = spawn(p.command, [...p.args, "-I", "-m", "mempalace.mcp_server", ...moduleArgs(port, this.paths.palace)],
-        { cwd: this.paths.home, env: hubEnv(this.paths, this.env), detached: true, windowsHide: true,
-          stdio: "ignore" });
+        { cwd: this.paths.home, env: { ...hubEnv(this.paths, this.env), MEMPALACE_MCP_HTTP_TOKEN: token },
+          detached: true, windowsHide: true, stdio: "ignore" });
     } catch (err) {
       return { why: { is: "not started", detail: message(err) } };
     }
@@ -591,10 +616,10 @@ export class Hub {
     return said && said !== "gone" && !said.startsWith("unopened") ? said : undefined;
   }
 
-  // The helper, run by the environment's own Python with -I, in `running` so it dies with the window, ended when it
-  // passes its limit (it then answers nothing).
-  private helper(args: string[], limit: number): Promise<string | undefined> {
-    const p = this.launch(this.paths.envPython);
+  // The helper, run by an environment's own Python with -I (this window's, unless the caller gives another), in
+  // `running` so it dies with the window, ended when it passes its limit (it then answers nothing).
+  private helper(args: string[], limit: number, python = this.paths.envPython): Promise<string | undefined> {
+    const p = this.launch(python);
     return new Promise((resolve) => {
       let child: ChildProcess;
       try {
@@ -654,7 +679,7 @@ export class Hub {
       if (!rec) return { is: "left" };
       this.write(hubRecord(this.paths), { ...rec, stopping: true });
       const said = await this.helper(["stop", String(rec.pid), rec.start, String(this.f.stop),
-        path.dirname(this.paths.env)], this.f.stop);
+        path.dirname(this.paths.env)], this.f.stop, this.pythonOf(rec));
       const word = said?.split(" ")[0];
       if (word === "stopped" || word === "running" || word === "gone") {
         rmSync(hubRecord(this.paths), { force: true });
@@ -669,6 +694,15 @@ export class Hub {
     } finally {
       lock?.release();
     }
+  }
+
+  // The Python the stop is run by (PR #26 review 4): that of the environment the hub runs from, which a newer window
+  // never removes while the hub runs (removeOld), where this window's own may have been removed; this window's own
+  // when the hub's is not known (another window's, found after an exit with code 2) or its Python is gone.
+  private pythonOf(rec: HubRecord): string {
+    if (rec.env === null) return this.paths.envPython;
+    const python = path.join(rec.env, path.relative(this.paths.env, this.paths.envPython));
+    return existsSync(python) ? python : this.paths.envPython;
   }
 
   // A leave whose take of the lock failed, as the last window: the stopping marker names the record's hub by its id

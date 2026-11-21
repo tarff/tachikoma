@@ -73,7 +73,7 @@ function ownEnv(dir: string, more: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 // The stand-in started as the hub, with its home and palace in a folder the test made and the hub's model setting.
-async function startHub(args: string[] = []) {
+async function startHub(args: string[] = [], more: NodeJS.ProcessEnv = {}) {
   const dir = await folder();
   const record = path.join(dir, "record.jsonl");
   const home = path.join(dir, "home");
@@ -83,7 +83,7 @@ async function startHub(args: string[] = []) {
     [STANDIN, "--transport", "http", "--port", "0", "--palace", palace, "--backend", "sqlite_exact", "--record", record,
       ...args],
     {
-      env: ownEnv(dir, { MEMPALACE_EMBEDDING_MODEL: "minilm" }),
+      env: ownEnv(dir, { MEMPALACE_EMBEDDING_MODEL: "minilm", ...more }),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     },
@@ -413,6 +413,15 @@ describe("the palace client, against the hub", () => {
     const made = await connect(h.target, "own", { timeout: LIMIT, onLost: () => lost++ });
     expect(made.is).toBe("failed");
     expect(lost).toBe(0);
+  });
+
+  // PR #26 review 1: Tachikoma's own hub is started with a token, and answers only the requests that give it.
+  it("gives the hub's token on every request, and is refused without it", async () => {
+    const h = await startHub([], { MEMPALACE_MCP_HTTP_TOKEN: "the-hub-token" });
+    expect((await connect(h.target, "own", { timeout: LIMIT })).is).toBe("failed");
+    const palace = await open({ ...h.target, token: "the-hub-token" });
+    expect(await palace.add(ROOM, "a label", "some text", LIMIT)).toEqual({ is: "added" });
+    expect(calls(h.record).map((c) => c.name)).toEqual(["mempalace_add_drawer"]);
   });
 
   it("says a malformed hub address failed, without throwing", async () => {

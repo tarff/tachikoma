@@ -339,7 +339,7 @@ export class Memory {
   async #joined(r: Joined, restart: boolean): Promise<void> {
     if (this.#closed || r.is === "closed") return;
     if (r.is === "off") return this.#fail({ is: "off", reason: hubLine(r.why, restart, this.#f.startLimit) });
-    await this.#open({ url: r.url }, "own", restart);
+    await this.#open({ url: r.url, token: r.token }, "own", restart);
   }
 
   // Connects this window's own palace client. To the hub within the read-back's limit, which was measured over a

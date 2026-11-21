@@ -24,6 +24,7 @@ import {
   type HubEvent,
   hubRecord,
   type HubRecord,
+  hubToken,
   stoppingFile,
 } from "../../src/memory/hub.js";
 import type { Program } from "../../src/memory/install.js";
@@ -273,6 +274,21 @@ function staleInfo(s: Setup, key: string, info: Record<string, unknown>) {
 }
 
 const portOf = (url: string) => Number(new URL(url).port);
+const tokenOf = (joined: unknown) => (joined as { token: string }).token;
+
+// MCP's first request to the hub at `url`, with the Authorization header given, if any: the status it is answered with.
+async function initialize(url: string, authorization?: string): Promise<number> {
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream",
+      ...(authorization !== undefined && { authorization }) },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18",
+      capabilities: {}, clientInfo: { name: "hub-test", version: "0" } } }),
+    signal: AbortSignal.timeout(LIMIT),
+  });
+  await r.text();
+  return r.status;
+}
 
 describe("the hub's supervisor", () => {
   it("uses the figures the build measured and the user chose", () => {
@@ -293,7 +309,8 @@ describe("the hub's supervisor", () => {
     async () => {
       const s = await setup();
       const joined = await s.hub().join();
-      expect(joined).toEqual({ is: "on", url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/) });
+      expect(joined).toEqual({ is: "on", url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/),
+        token: expect.any(String) });
       expect(s.launched()).toHaveLength(1);
       const l = s.launched()[0]!;
       expect(l.file).toBe(s.paths.envPython);
@@ -312,6 +329,37 @@ describe("the hub's supervisor", () => {
         .toEqual({ mempalace: "3.12.0" });
       expect(s.inUse()).toHaveLength(1);
     });
+
+  // PR #26 review 1: the hub needs a token only Tachikoma has, kept in memory's private folder and given to the hub in
+  // its environment, never on its command line; a call without it, or with another, is refused.
+  it("starts the hub with the install's own token, which every call must give", async () => {
+    const s = await setup();
+    const joined = await s.hub().join();
+    expect(joined.is).toBe("on");
+    const token = JSON.parse(readFileSync(hubToken(s.paths), "utf8")).token;
+    // 32 random bytes in base64url, as MemPalace makes its own (mempalace/server_registry.py:99, token_urlsafe(32)).
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(tokenOf(joined)).toBe(token);
+    const l = s.launched()[0]!;
+    expect(l.env.MEMPALACE_MCP_HTTP_TOKEN).toBe(token);
+    expect(l.args.join(" ")).not.toContain(token);
+    const { url } = joined as { url: string };
+    expect(await initialize(url)).toBe(401);
+    expect(await initialize(url, "Bearer another-token")).toBe(401);
+    expect(await initialize(url, `Bearer ${token}`)).toBe(200);
+  });
+
+  it("keeps the install's token: a hub started later is given the same one", async () => {
+    const s = await setup();
+    const a = s.hub();
+    const first = await a.join();
+    expect(await a.close()).toEqual({ is: "stopped" });
+    const second = await s.hub().join();
+    expect(second.is).toBe("on");
+    expect(s.launched()).toHaveLength(2);
+    expect(tokenOf(second)).toBe(tokenOf(first));
+    expect(s.launched()[1]!.env.MEMPALACE_MCP_HTTP_TOKEN).toBe(tokenOf(first));
+  });
 
   it("finds serverinfo.json by listing, when its palace_path differs only in letter case", async () => {
     const s = await setup();
@@ -462,7 +510,7 @@ describe("the hub's supervisor", () => {
     const other = await otherHub(s);
     expect(s.record()).toBeUndefined();
     const joined = await s.hub().join();
-    expect(joined).toEqual({ is: "on", url: `http://127.0.0.1:${serverinfoPort(s)}/mcp` });
+    expect(joined).toEqual({ is: "on", url: `http://127.0.0.1:${serverinfoPort(s)}/mcp`, token: expect.any(String) });
     expect(s.launched()).toHaveLength(2); // the other, and this window's start, which exited 2
     expect(s.record()).toMatchObject({ pid: other.pid, port: serverinfoPort(s), stopping: false });
   });
@@ -560,6 +608,34 @@ describe("the hub's supervisor", () => {
     expect(alive(pid)).toBe(false);
   });
 
+  // PR #26 review 3: a first start longer than the stale age. The window's in-use file is refreshed on the timer while
+  // its start holds the join lock, so another window's leave, waiting for that lock, does not count it as gone and
+  // stop the new hub. The file is made older here, and the timer moved on by one refresh, in place of the wait.
+  it("keeps its in-use file fresh while its start runs, so another window's leave does not stop the hub",
+    async () => {
+      const s = await setup();
+      const gate = path.join(s.top, "gate");
+      s.control({ hold: gate });
+      const a = s.hub();
+      const joining = a.join();
+      await until(() => s.launched().length === 1, "the start");
+      const { pid } = s.launched()[0]!;
+      const mine = path.join(s.paths.home, s.inUse()[0]!);
+      const long = (Date.now() - FIGURES.stale - 1_000) / 1000;
+      utimesSync(mine, long, long);
+      vi.advanceTimersByTime(FIGURES.refresh);
+      expect(Date.now() - statSync(mine).mtimeMs).toBeLessThan(FIGURES.stale);
+      const leaving = s.hub().close();
+      await sleep(FIGURES.lockRetry);
+      writeFileSync(gate, "");
+      expect((await joining).is).toBe("on");
+      expect(await leaving).toEqual({ is: "left" });
+      expect(alive(pid)).toBe(true);
+      expect(s.record()?.pid).toBe(pid);
+      // While the join ran, the timer only refreshed the file: it did not check the hub, so it told of no change.
+      expect(s.events).toEqual([]);
+    });
+
   it("refreshes its in-use file on the timer, and restarts a hub killed mid-run", async () => {
     const s = await setup();
     const h = s.hub();
@@ -574,7 +650,7 @@ describe("the hub's supervisor", () => {
     await until(() => s.events.length >= 2, "the restart");
     expect(Date.now() - statSync(mine).mtimeMs).toBeLessThan(FIGURES.stale);
     expect(s.events[0]).toEqual({ is: "failing" });
-    expect(s.events[1]).toEqual({ is: "on", url: expect.any(String) });
+    expect(s.events[1]).toEqual({ is: "on", url: expect.any(String), token: tokenOf(first) });
     expect(s.events[1]).not.toEqual(first);
     expect(s.launched()).toHaveLength(2);
     expect(alive(s.launched()[1]!.pid)).toBe(true);
@@ -623,6 +699,38 @@ describe("the hub's supervisor", () => {
       expect(existsSync(same)).toBe(true);
       expect(existsSync(t.paths.env)).toBe(true);
     });
+
+  // PR #26 review 4: the leave stops the hub with the Python of the environment the hub runs from, which a newer
+  // window may have removed only once no hub runs from it; the window's own Python only when that one is gone.
+  it("stops the hub with the Python of the hub's own environment, not the leaving window's", async () => {
+    const s = await setup("aaaa");
+    const t = await setup("bbbb", s.top);
+    const a = s.hub();
+    const b = t.hub();
+    expect((await a.join()).is).toBe("on");
+    expect((await b.join()).is).toBe("on");
+    const { pid } = s.launched()[0]!;
+    expect(s.record()?.env).toBe(s.paths.env);
+    expect(await a.close()).toEqual({ is: "left" });
+    expect(await b.close()).toEqual({ is: "stopped" });
+    expect(alive(pid)).toBe(false);
+    const stops = (hash: string) =>
+      lines(path.join(s.top, `record-${hash}.jsonl`)).filter((l) => l.helper?.op === "stop");
+    expect(stops("aaaa")).toEqual([{ helper: { op: "stop", pid } }]);
+    expect(stops("bbbb")).toEqual([]);
+  });
+
+  it("stops the hub with the leaving window's own Python when the hub's environment folder is gone", async () => {
+    const s = await setup();
+    const h = s.hub();
+    expect((await h.join()).is).toBe("on");
+    const { pid } = s.launched()[0]!;
+    writeFileSync(hubRecord(s.paths), JSON.stringify({ ...s.record(), env: path.join(s.top, "a-removed-env") }));
+    expect(await h.close()).toEqual({ is: "stopped" });
+    expect(alive(pid)).toBe(false);
+    expect(lines(path.join(s.top, "record-test.jsonl")).filter((l) => l.helper?.op === "stop"))
+      .toEqual([{ helper: { op: "stop", pid } }]);
+  });
 
   describe("closing", () => {
     it("closed while a hub start is held, as the only window: no hub, no in-use file, a free lock, no timer",
