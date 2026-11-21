@@ -4461,6 +4461,19 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   other answer, or none, marks it as not, and it is treated as stopping. A known limit (point A): on a computer that
   still runs a hub from a build before the token, windows keep joining that hub, which any account on the computer
   can reach, until the last window leaves; a released install never has one.
+  - Why a 401 means a key: MemPalace 3.12.0's `mempalace/mcp_server/http.py` (the file at tag v3.12.0 on GitHub,
+    github.com/MemPalace/mempalace, read 2026-11-22) answers 401 in one place only, `_http_request_rejected` under
+    `if require_auth and srv.auth_token:` (the Bearer compare); a hub without a key refuses only with 403 (the Host
+    pin, a proxied request, Sec-Fetch-Site, Origin). So a 401 to MCP's first request sent without the key means the
+    hub has one; the real check (PR #26 review 1) gave 401 for no key.
+  - The 0.75 s is the health check's limit reused (MemPalace's own for `/healthz`), not measured for this request.
+    It runs under the join lock, so a join whose start exits with code 2 can take up to 0.75 s more.
+  - Tests: of the two, only "marks a hub found after an exit with code 2 by whether it refuses a call without the
+    key" fails without this change; the one for a hub without a key guards what was already so.
+- **The timer and a hub without the key** (the review of 0b7cda2, point B; the user's choice B2, 2026-11-22): the
+  timer's check is left as it was, so it keeps a hub found without the key while that hub answers and does not
+  restart it on every 5 s tick. The join still treats such a hub as stopping: a window that starts afresh starts a
+  hub first, and the found hub is then joined as before (limit A above covers it).
 - **The stop's Python** (PR #26 review, finding 4; the user's decision, 2026-11-22): the stop's helper runs with the
   Python of the environment the hub's record names, which a newer window never removes while the record names it;
   the window's own Python only when that one is gone or the hub's environment is not known.
