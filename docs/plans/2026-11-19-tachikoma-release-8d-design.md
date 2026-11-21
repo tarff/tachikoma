@@ -4473,6 +4473,9 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   still saves the turns after it. Read back, each turn takes its number from its own boundary line, the one it had
   live, not from the prompts counted. A resumed session numbers its next prompt after the highest turn number its
   transcript holds.
+- **A turn whose boundary line was not written** (the user's choice "Don't save it", 2026-11-22) is not saved to
+  memory, as a resume could give its number to another turn; once saving the transcript fails, no later turn of that
+  session is saved to memory. With this, no turn's label is used twice.
 - **The room name** (Q19, 2026-11-19): the folder's name, a hyphen and 8 hex characters, e.g. `tachikoma-3fa9c2d1`
   (form approved 2026-11-20).
 - **A turn over 100,000 characters** is saved in parts (Q26, 2026-11-19), labelled `tachikoma session <id>, turn <n>,

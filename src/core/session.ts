@@ -618,14 +618,16 @@ export class Session {
   }
 
   // A typed turn's end, however it ended (8d plan, step 22; Q4, Q22): its boundary line, then the turn to the saver
-  // when the model wrote any text, never waited on.
+  // when the model wrote any text, never waited on. Only once its boundary line is written: a resume could give a turn
+  // without one its number again (PR #26 review, finding 2; the user's choice "Don't save it", 2026-11-22).
   #ended(): void {
     const turn = this.#turnNow;
     if (!turn) return;
     this.#turnNow = undefined;
-    this.#transcript?.write({ t: "turn", n: turn.n });
+    const t = this.#transcript;
+    t?.write({ t: "turn", n: turn.n });
     this.#saving();
-    if (turn.texts.length) this.#hand(turn);
+    if (turn.texts.length && t && t.failed === null) this.#hand(turn);
   }
 
   // A turn to the saver, with its saved record, written only while this session is still the window's (Q6): after a

@@ -3743,6 +3743,19 @@ describe("Session, saving turns", { timeout: 15_000 }, () => {
     expect(read(a).lastTurn).toBe(3); // its boundary line, under the same number
   });
 
+  // The user's choice "Don't save it" (2026-11-22): a turn whose boundary line was not written could be numbered
+  // again by a resume, so it is not saved to memory.
+  it("hands no turn to the saver when its boundary line could not be written", async () => {
+    const blocker = path.join(top, "a file");
+    writeFileSync(blocker, "");
+    const broken = new Transcript(path.join(blocker, "s.jsonl"), path.join(blocker, "s", "pictures"),
+      { inherits: true });
+    const { session, memory } = await setup([reply("Done.")], { transcript: broken });
+    await session.send("hi");
+    expect(broken.failed).not.toBeNull();
+    expect(memory.handed).toEqual([]);
+  });
+
   // The user's choice "Only that turn" (2026-11-22): a torn last line sets apart its own turn alone.
   it("hands a turn made after a crash's torn line and a resume to the saver at the next resume", async () => {
     const a = saving("a3");
