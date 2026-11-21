@@ -2630,7 +2630,17 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
       rmSync(controlFile, { force: true });
       const began = Date.now();
       while ([...hubPids(), ...uvPids()].some(alive) && Date.now() - began < 15_000) await sleep(50);
-      await removeTree(top);
+      // A hub the stand-in helper stopped (TerminateProcess) is reported gone before Windows lets go of memory/home,
+      // its working folder: for 2.4 to 10.1 ms here (measured 2026-11-22), about 170 ms for a killed program in
+      // tests/hooks/run.test.ts (2026-10-31). So the removal is tried again every 50 ms, within the same 15 s.
+      for (;;) {
+        try {
+          return await removeTree(top);
+        } catch (err) {
+          if (Date.now() - began >= 15_000) throw err;
+          await sleep(50);
+        }
+      }
     });
     return {
       top, proj, data, paths, env, run, sent, control, added, calls: callsMade, dropped, serving, hubPids, uvPids,
