@@ -11,7 +11,11 @@ export function delegateTool(tasks: Tasks, opts: { headless: boolean }): Tool {
     "Hand a search or reading task to a subagent, which has read_file, find_files and search_files and reports what it found with file paths and line numbers. Write the task for someone who has not seen this conversation, and give a description of a few words naming it, which is shown on screen. Several delegate calls in one reply run at the same time. With background: true the call returns at once and the answer comes in a later message; otherwise it waits for the answer.",
     z.object({ description: z.string().min(1), task: z.string().min(1), background: z.boolean().optional() }),
     async ({ description, task, background = false }, ctx) => {
-      if (background && !opts.headless) return `Started ${tasks.start(task, { description, background: true }).id} in the background; its answer will come in a later message.`;
+      if (background && !opts.headless) {
+        const { id } = tasks.start(task, { description, background: true });
+        ctx.running?.(); // not a call that worked, for the lesson ask (the user's choice "Yes, exclude it", 2026-11-22)
+        return `Started ${id} in the background; its answer will come in a later message.`;
+      }
       const t = tasks.start(task, { description, background: false, ...(ctx.signal ? { signal: ctx.signal } : {}) });
       const r = await t.done;
       // A failure is the answer too, so the lead knows; the error itself is logged as the subagent's.

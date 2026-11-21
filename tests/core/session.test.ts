@@ -4452,6 +4452,20 @@ describe("Session, the lesson ask", { timeout: 15_000 }, () => {
       'shell {"command":"npm test -- --run"}')]);
   });
 
+  // The user's choice "Yes, exclude it" (2026-11-22): a subagent started in the background has not finished either.
+  it("does not take a subagent started in the background for the call that worked", async () => {
+    const ctx = { ...gate(), executor: {} } as unknown as Omit<ToolContext, "signal">;
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", [reply("Found it.")]),
+      system: "sub", tools: [], ctx });
+    onTestFinished(() => void tasks.stop());
+    // The first call lacks its task, so it fails as its input is refused.
+    const s = asking([delegateTool(tasks, { headless: false })], [["delegate", { description: "look" }],
+      ["delegate", { description: "look", task: "find x", background: true }]], [], { more: { ctx } });
+    await s.session.send("go");
+    expect(s.session.calls.map((c) => c.name)).toEqual(["delegate", "delegate"]);
+    expect(s.asks()).toEqual([]);
+  });
+
   it("does not ask for a turn with no failure", async () => {
     const shell = scripted("shell", ["pushed", "pushed"]);
     const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]]);

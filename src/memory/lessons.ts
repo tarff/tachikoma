@@ -19,8 +19,8 @@ export const lessonRequest = (failed: string, error: string, worked: string) =>
   `Failed call: ${failed}\nIts error: ${error}\nThe call that worked: ${worked}`;
 
 // A call of the turn, as the session records it: the input that ran (after any hook's rewrite), how it ended, and for
-// a failure the plain error, before any lessons are added to it. `running`: its command was still running when it
-// returned, started in the background or moved there, so it has not finished (PR #26 review, finding 5).
+// a failure the plain error, before any lessons are added to it. `running`: its command or subagent was still running
+// when it returned, started in the background or moved there, so it has not finished (PR #26 review, finding 5).
 export interface Ran {
   name: string;
   input: unknown;

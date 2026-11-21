@@ -12,8 +12,8 @@ export interface ToolContext {
   signal?: AbortSignal;
   // The parts of a result, for the shape hooks are sent (release 8b plan, choice 12): shell, write_file and delegate call it.
   report?: (parts: unknown) => void;
-  // Called by a call that returns while its command still runs, started in the background or moved there, so the
-  // lesson ask does not take it for a call that worked (PR #26 review, finding 5).
+  // Called by a call that returns while its command or subagent still runs, started in the background or moved there,
+  // so the lesson ask does not take it for a call that worked (PR #26 review, finding 5).
   running?: () => void;
 }
 
