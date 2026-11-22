@@ -3543,6 +3543,20 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect([s.results(), s.outcomes]).toEqual([[{ output: `The judge refused: ${verdict.reason}`, isError: true }], ["declined"]]);
   });
 
+  // As at PostToolUse: a throw that is not a stop, here a listener of the hooks' lines, is said as a red line, and the
+  // model gets the judge's refusal unchanged, the hook's retry not read.
+  it("gives the judge's refusal unchanged when a listener of the hooks' lines throws at PermissionDenied, saying so", async () => {
+    const says: Says[] = [{ event: "PermissionDenied", stdout: JSON.stringify({ systemMessage: "hello", hookSpecificOutput: { hookEventName: "PermissionDenied", retry: true } }) }];
+    const s = await setup({ mode: "auto", says, turns: shellCall("echo hi"), judge: NO });
+    s.bus.on("hook-note", () => {
+      throw new Error("listener broke");
+    });
+    await s.session.send("go");
+    expect(deniedInputs(s)).toHaveLength(1);
+    expect([s.results(), s.outcomes]).toEqual([[{ output: "The judge refused: It was not asked for.", isError: true }], ["declined"]]);
+    expect(s.errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([["hook", "PermissionDenied hook", "PermissionDenied hook failed: listener broke"]]);
+  });
+
   it("runs only the PermissionDenied hooks whose matcher names the refused tool", async () => {
     const says: Says[] = [
       { event: "PermissionDenied", names: ["Write"], stdout: denied({ retry: true }) },
