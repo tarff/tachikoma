@@ -319,6 +319,30 @@ describe("the saver", () => {
     expect(adds(hub.record).map((a) => a.arguments.source_file)).toEqual([label(1), label(2)]);
   });
 
+  // The outside review of 6140d38, finding 2: a session resumed again while its turn's save is under way hands that
+  // turn again with the new resume's saved record; the save under way writes that one, not the first.
+  it("writes the newer saved record of a turn handed again while its save is under way, once", async () => {
+    const gate = path.join(await folder(), "gate");
+    const hub = await startHub(["--pause-after", "mempalace_delete_by_source=1", "--gate", gate]);
+    const { saver } = saverOf(hub, await hub.open());
+    const first = turnOf(hub.record, 1, "go", ["an answer"]);
+    saver.hand(first.turn);
+    const run = saver.run(never());
+    // The look-up is answered; the add waits for the gate.
+    await until(() => steps(hub.record).length === 2, "the add to be sent");
+    const again = turnOf(hub.record, 1, "go", ["an answer"]);
+    saver.hand(again.turn);
+    expect(saver.unsaved).toBe(1);
+    writeFileSync(gate, "");
+    await run;
+    expect([first.saved, again.saved, saver.unsaved]).toEqual([[], [1], 0]);
+    expect(steps(hub.record)).toEqual([
+      { is: "look-up", label: label(1) },
+      { is: "add", label: label(1) },
+      { is: "saved", label: label(1), by: "test" },
+    ]);
+  });
+
   it("gives up at the final save's limit, unbound, with the turn still unsaved", async () => {
     const hub = await startHub(["--slow", String(LIMIT)]);
     const palace = await hub.open();

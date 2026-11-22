@@ -140,9 +140,12 @@ export class Saver {
     return this.#queue.length;
   }
 
-  // A turn to save, never waited on; one already waiting is not taken twice.
+  // A turn to save, never waited on; one already waiting is not taken twice, but takes the newer saved record, so a
+  // save under way writes the record of the session's latest resume (the outside review of 6140d38, finding 2).
   hand(turn: Turn): void {
-    if (!this.#queue.some((t) => t.session === turn.session && t.n === turn.n)) this.#queue.push(turn);
+    const queued = this.#queue.find((t) => t.session === turn.session && t.n === turn.n);
+    if (queued) queued.record = turn.record;
+    else this.#queue.push(turn);
     this.send();
   }
 

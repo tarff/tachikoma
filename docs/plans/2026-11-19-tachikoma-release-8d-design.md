@@ -4555,6 +4555,12 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
 - **Switching session** (Q6, 2026-11-20): nothing waits at the switch; each turn's look-up, removal, add and mark is
   done under one save lock per palace (`memory/`, or `memory/use/` for the user's own); `/branch` copies are marked
   saved.
+- **A turn handed again** (the outside review of 6140d38, finding 2; the user's choice, 2026-11-22): a session left
+  and resumed while one of its turns waits or is being saved hands that turn to the saver again. It is not queued
+  twice, but the queued turn takes the newer saved record, so the save writes the `saved` line into the transcript of
+  the latest resume. Before, the first resume's record was kept, found its transcript no longer the window's and
+  wrote nothing, and the next resume tried the stored turn again (no second entry with the look-up; a second one with
+  a user's own MemPalace that lacks it).
 - **Limits** (2026-11-20): each saver request 13 s (5 x 2,565.4 ms, the slowest full-part add); the exit save 14 s
   (M2, 2026-11-19: 5 x (1,445.9 + 1,146.9) + 100 ms, rounded up).
 - **At exit** (2026-11-20, "A: wait, then save"): closing lets a join and connect already under way finish inside the
