@@ -350,4 +350,19 @@ describe("a stop during a memory tool's request", () => {
     stop.abort();
     expect(await ended(sent)).toBe("answered");
   });
+
+  // PR #26 Codex review 3: the stopped note's request still reaches the palace, so its number is never given again.
+  it("gives the next note a new number after a stopped memory_save", async () => {
+    const t = await start(["--slow", "2000"]);
+    const stop = new AbortController();
+    const pending = t.tools.save.run({ text: "a stopped note" }, { signal: stop.signal } as ToolContext);
+    await sleep(200);
+    stop.abort();
+    expect(await ended(pending)).toBe("Cancelled");
+    expect(await t.tools.save.run({ text: "the next note" }, CTX)).toBe("Saved.");
+    expect(t.calls().filter((c) => c.name === "mempalace_add_drawer").map((c) => c.arguments.source_file)).toEqual([
+      `tachikoma session ${SESSION}, note 1`,
+      `tachikoma session ${SESSION}, note 2`,
+    ]);
+  });
 });

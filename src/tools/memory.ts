@@ -149,9 +149,11 @@ export function memoryTools(o: MemoryToolsOptions): { search: TextTool; save: Te
       const p = palace();
       const session = o.session();
       const n = (notes.get(session) ?? 0) + 1;
+      // Taken before the request: a stopped or late one may still be stored, so its number is never given again; a
+      // refused one leaves a gap (PR #26 Codex review 3).
+      notes.set(session, n);
       const r = await unlessStopped(p.add(o.room, noteLabel(session, n), text, o.timeouts.add), ctx.signal);
       if (r.is !== "added" && r.is !== "already there") throw fail(r as Failure, o.timeouts.add);
-      notes.set(session, n);
       return SAVED;
     },
   );
