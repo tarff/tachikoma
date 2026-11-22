@@ -495,6 +495,11 @@ describe("outcomeOf and combine: PreModelSwitch, PostModelSwitch, PostToolBatch 
     expect(one("PreModelSwitch", ranOf({ stdout: specific("PreModelSwitch", { permissionDecision: "allow", updatedInput: { model: "x" } }) })).rewrite).toBeUndefined();
   });
 
+  it("reads the old top-level \"approve\" at PreToolUse alone, so at PreModelSwitch it decides nothing (release 8e plan, step 3, the user's choice at its review)", () => {
+    expect(one("PreModelSwitch", ranOf({ stdout: JSON.stringify({ decision: "approve" }) }))).toEqual(EMPTY);
+    expect(one("PreToolUse", ranOf({ stdout: JSON.stringify({ decision: "approve" }) }))).toMatchObject({ decision: "allow" });
+  });
+
   it("takes deny over ask over allow among several PreModelSwitch hooks, in both orders (release 8e plan, step 3)", () => {
     const at = (permissionDecision: string, reason: string) => {
       const hook = hookOf({ args: [reason] });

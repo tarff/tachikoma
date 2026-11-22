@@ -261,10 +261,11 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
     const reason = (json.reason as string | undefined) ?? "";
     if (event === "PreToolUse" || event === "PreModelSwitch") {
       // Claude Code reads permissionDecision only inside hookSpecificOutput; decision's old values approve and block stand
-      // for allow and deny. An exit 2 is a deny the fields cannot undo. PreModelSwitch reads them as PreToolUse writes
-      // them (release 8e plan, step 3, D3), with no defer and no rewrite.
+      // for allow and deny. An exit 2 is a deny the fields cannot undo. PreModelSwitch reads permissionDecision as
+      // PreToolUse writes it, with no defer and no rewrite, and of the top-level decision only "block" (release 8e plan,
+      // step 3, D3; an "approve" there is ignored, the user's choice at the step's review).
       const said = outcome.kind === "block" ? "deny" : (specific.permissionDecision as (typeof PERMISSIONS)[number] | undefined);
-      const old = json.decision === "approve" ? "allow" : json.decision === "block" ? "deny" : undefined;
+      const old = json.decision === "approve" && event === "PreToolUse" ? "allow" : json.decision === "block" ? "deny" : undefined;
       const decision = said ?? old;
       const why = outcome.kind === "block" ? outcome.reason : said ? ((specific.permissionDecisionReason as string | undefined) ?? "") : reason;
       if (decision === "defer") c.deferred = true;

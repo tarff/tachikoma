@@ -462,6 +462,16 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(errors.map((e) => e.message)).toEqual([`PreModelSwitch hook failed: ${commandOf(hook)} ran out of time after 30 s`]);
   });
 
+  // The user's choice at step 3's review: the old "approve" is PreToolUse's alone, so at PreModelSwitch it is no try to
+  // decide.
+  it("says nothing for an async PreModelSwitch hook that answers the old decision approve (release 8e plan, step 3)", async () => {
+    const p = await place();
+    const { hooks, errors } = setup(p, [p.hook("approve", { event: "PreModelSwitch", async: true }, { stdout: JSON.stringify({ decision: "approve" }) })]);
+    expect(await hooks.fire("PreModelSwitch", {})).toEqual(empty("PreModelSwitch"));
+    while (hooks.runs.length < 1) await pause(20);
+    expect(errors).toEqual([]);
+  });
+
   it("hands back no text from an async PostModelSwitch hook, plain or additionalContext, and says nothing for it (release 8e plan, step 3)", async () => {
     const p = await place();
     const context = JSON.stringify({ hookSpecificOutput: { hookEventName: "PostModelSwitch", additionalContext: "ctx" } });
