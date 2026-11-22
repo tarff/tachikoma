@@ -982,6 +982,20 @@ describe("the hub's supervisor", () => {
       expect(s.record()).toBeUndefined();
     });
 
+    // PR #26 Codex review 2: closed at once after join(), before the join's first touch: no timer is left to write
+    // the in-use file again after the leave removed it.
+    it("closed right after join(): no timer left, and no in-use file written after the leave", async () => {
+      const s = await setup();
+      const h = s.hub();
+      const joining = h.join();
+      const closing = h.close();
+      expect(await joining).toEqual({ is: "closed" });
+      expect(await closing).toEqual({ is: "stopped" });
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(FIGURES.refresh);
+      expect(s.inUse()).toEqual([]);
+    });
+
     it("is the same when closed twice", async () => {
       const s = await setup();
       const h = s.hub();

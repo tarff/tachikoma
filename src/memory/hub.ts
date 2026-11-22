@@ -395,14 +395,18 @@ export class Hub {
 
   // A join's end: a start that completes after closing never makes this window on (the leave handles its hub).
   private after(r: Joined): Joined {
-    if (this.closing.signal.aborted) return { is: "closed" };
+    if (this.closing.signal.aborted) {
+      this.stopTimer(); // a join that began before closing may have started it after the leave stopped it
+      return { is: "closed" };
+    }
     if (r.is === "on") this.port = Number(new URL(r.url).port);
     else if (r.is === "off") this.stopTimer();
     return r;
   }
 
+  // Never once closing (PR #26 Codex review 2): a join's first touch can come after close() has begun.
   private startTimer(): void {
-    if (this.timer) return;
+    if (this.timer || this.closing.signal.aborted) return;
     this.timer = setInterval(() => this.tick(), this.f.refresh);
     this.timer.unref?.();
   }
@@ -416,14 +420,15 @@ export class Hub {
   // the hub is checked, and a hub found gone or stopping means joining again (Q25: with the idle exit off, this is
   // what brings back one that went away). The timer runs from a join's first touch, so a start that holds the join
   // lock keeps the file fresh (PR #26 review 3); while a join is under way it only refreshes, as the join checks the
-  // hub itself.
+  // hub itself. Once closing it does nothing, so the file the leave removes is not written again.
   private tick(): void {
+    if (this.closing.signal.aborted) return;
     try {
       this.touch();
     } catch {
       // the next tick tries again; a file left unrefreshed counts as gone only after the stale age
     }
-    if (this.checking || this.busy || this.closing.signal.aborted) return;
+    if (this.checking || this.busy) return;
     this.checking = true;
     void this.check().finally(() => {
       this.checking = false;
