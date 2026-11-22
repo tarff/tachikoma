@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -75,7 +76,11 @@ const alive = (pid) => {
     return e.code === "EPERM";
   }
 };
-const startTime = (pid) => (!alive(pid) ? null : fs.existsSync(startOf(pid)) ? fs.readFileSync(startOf(pid), "utf8") :
+// The real helper reads the start time from the system, so any environment's Python gives the same answer: the file
+// is looked for in every environment folder beside this one.
+const noted = (pid) => fs.readdirSync(path.dirname(dir)).map((d) => path.join(path.dirname(dir), d, "start-" + pid))
+  .find((f) => fs.existsSync(f));
+const startTime = (pid) => (!alive(pid) ? null : noted(pid) ? fs.readFileSync(noted(pid), "utf8") :
   "another program's");
 if (args[1] === "-c") {
   const [op, p, want, ms] = args.slice(3);
@@ -425,6 +430,38 @@ describe("the hub's supervisor", () => {
       expect(s.launched()[2]!.env.MEMPALACE_MCP_HTTP_TOKEN).toBe(tokenOf(joined));
       expect(s.record()).toMatchObject({ pid: s.launched()[2]!.pid, token: true });
     });
+
+  // PR #26 Codex review 1: a record is reused only while its process is alive with the recorded start time. A hub that
+  // has gone may have left its port to another program, which answers the health check (it needs no token); that
+  // program is never sent the token, and a hub is started.
+  it.each([
+    { name: "whose process is gone", pid: 2_147_000_000 },
+    { name: "whose process id is another program's", pid: process.pid },
+  ])("never reuses a record $name, and sends what holds its port no token", async ({ pid }) => {
+    const s = await setup();
+    const seen: (string | undefined)[] = [];
+    const holder = createHttpServer((req, res) => {
+      seen.push(req.headers.authorization);
+      req.resume();
+      res.writeHead(200, { "content-type": "application/json" }).end("{}");
+    });
+    await new Promise<void>((resolve) => holder.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = holder.address() as { port: number };
+      mkdirSync(s.paths.home, { recursive: true });
+      writeFileSync(hubRecord(s.paths),
+        JSON.stringify({ env: s.paths.env, port, pid, start: "the recorded start", stopping: false, token: true }));
+      const joined = await s.hub().join();
+      expect(joined.is).toBe("on");
+      expect(portOf((joined as { url: string }).url)).not.toBe(port);
+      expect(s.launched()).toHaveLength(1);
+      expect(s.record()).toMatchObject({ pid: s.launched()[0]!.pid, token: true });
+      expect(seen.filter((a) => a !== undefined)).toEqual([]);
+    } finally {
+      holder.closeAllConnections();
+      await new Promise((resolve) => holder.close(resolve));
+    }
+  });
 
   it("finds serverinfo.json by listing, when its palace_path differs only in letter case", async () => {
     const s = await setup();

@@ -4474,6 +4474,13 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   timer's check is left as it was, so it keeps a hub found without the key while that hub answers and does not
   restart it on every 5 s tick. The join still treats such a hub as stopping: a window that starts afresh starts a
   hub first, and the found hub is then joined as before (limit A above covers it).
+- **A recorded hub's process** (PR #26 Codex review 1; the user's choice (i), 2026-11-22): a record is reused only
+  when, after its health answer, the helper's `start` reads its process alive with the recorded start time; any other
+  answer, or none, is no hub, and the window starts one. So a program that took a gone hub's port, which answers the
+  health check as it needs no token, is never sent the token. The read is one run of the environment's Python under
+  the join lock, within the start-time read's own limit, 1 s (5 x 195.5 ms, step 20's run 3, measured after a start),
+  so a join that reuses a hub can take up to 1 s more. A known limit: a hub that ends between that read and the
+  read-back's first request, its port taken by another program in those milliseconds, would be sent the token.
 - **The stop's Python** (PR #26 review, finding 4; the user's decision, 2026-11-22): the stop's helper runs with the
   Python of the environment the hub's record names, which a newer window never removes while the record names it;
   the window's own Python only when that one is gone or the hub's environment is not known.

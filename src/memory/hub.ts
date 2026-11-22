@@ -467,7 +467,11 @@ export class Hub {
       // A hub not started with the token is treated as stopping: never reused on its health alone (the health check
       // needs no token), and stopped by the last window to leave.
       const stopping = rec?.stopping || this.marked(rec) || !rec?.token;
-      let hub = rec && !stopping && (await healthy(rec.port, this.f.health)) ? rec : undefined;
+      // Reused only while its process is alive with the recorded start time, read after the health answer (PR #26
+      // Codex review 1): a hub that has gone may have left its port to another program, which must never be sent the
+      // token. That read is the helper's `start`, within its own limit (step 20's run 3).
+      let hub = rec && !stopping && (await healthy(rec.port, this.f.health)) &&
+        (await this.startTime(rec.pid)) === rec.start ? rec : undefined;
       if (!hub) {
         const version = this.palaceVersion();
         if (version && newer(version, MEMPALACE)) return { is: "off", why: { is: "newer palace", version } };
