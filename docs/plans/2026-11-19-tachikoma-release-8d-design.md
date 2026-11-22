@@ -4496,6 +4496,12 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
     whole second, with no 5x margin, and is one figure for every start-time read (after a start, reuse, the timer).
     Step 20's 1 s (5 x 195.5 ms) was measured after a start. A heavier load (two per processor) made the PC stop
     responding and was not measured. Not chosen: keep 1 s as a known limit; treat a slow read as "not sure".
+  - The Python of that read (the outside review of 6140d38, finding 1; the user's choice, 2026-11-22): at a join's
+    reuse and on the timer's tick, the read runs with the stop's Python (below), that of the environment the record
+    names. A newer window may remove an older window's environment folder; run by the older window's own Python, the
+    read then had no answer, the timer counted the live hub as gone, and the join after it tried to start a hub with
+    the missing Python and turned memory off. The read after a start is unchanged: it reads a hub this window just
+    started, or one found after an exit with code 2, whose environment is not known.
 - **The stop's Python** (PR #26 review, finding 4; the user's decision, 2026-11-22): the stop's helper runs with the
   Python of the environment the hub's record names, which a newer window never removes while the record names it;
   the window's own Python only when that one is gone or the hub's environment is not known.

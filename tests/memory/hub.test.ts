@@ -898,6 +898,45 @@ describe("the hub's supervisor", () => {
       .toEqual([{ helper: { op: "stop", pid } }]);
   });
 
+  // The outside review of 6140d38, finding 1: the reads that decide whether the recorded hub is still the recorded
+  // process run the Python of the environment the hub runs from, as the stop does, where this window's own may have
+  // been removed by a newer window. Here the window's own Python is gone; the hub's is there.
+  it("reuses a live hub from another environment when the joining window's own Python is gone", async () => {
+    const s = await setup("aaaa");
+    const t = await setup("bbbb", s.top);
+    const a = await s.hub().join();
+    rmSync(t.paths.envPython);
+    expect(await t.hub().join()).toEqual(a);
+    expect(s.launched()).toHaveLength(1);
+    expect(t.launched()).toEqual([]);
+    expect(alive(s.launched()[0]!.pid)).toBe(true);
+  });
+
+  it("keeps a live hub from another environment on the timer when the window's own Python is gone", async () => {
+    const s = await setup("aaaa");
+    const t = await setup("bbbb", s.top);
+    const a = s.hub();
+    const b = t.hub();
+    expect((await a.join()).is).toBe("on");
+    expect((await b.join()).is).toBe("on");
+    expect(await a.close()).toEqual({ is: "left" });
+    rmSync(t.paths.envPython);
+    const reads = () => lines(path.join(s.top, "record-aaaa.jsonl")).filter((l) => l.helper?.op === "start").length;
+    const before = reads();
+    // Two checks on the timer: a tick checks only once the check before it has finished, so the first one's answer
+    // is in once the second has read the start time.
+    const began = Date.now();
+    while (t.events.length === 0 && reads() < before + 2) {
+      if (Date.now() - began > LIMIT) throw new Error("waited too long for two checks");
+      vi.advanceTimersByTime(FIGURES.refresh);
+      await sleep(20);
+    }
+    expect(t.events).toEqual([]);
+    expect(s.launched()).toHaveLength(1);
+    expect(t.launched()).toEqual([]);
+    expect(alive(s.launched()[0]!.pid)).toBe(true);
+  });
+
   describe("closing", () => {
     it("closed while a hub start is held, as the only window: no hub, no in-use file, a free lock, no timer",
       async () => {

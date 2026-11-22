@@ -441,9 +441,11 @@ export class Hub {
     const m = this.marker(); // read only here: the join below settles it under the lock
     const marked = rec && m?.pid === rec.pid && m.start === rec.start;
     // Kept, as the join keeps a record, only while its process is alive with the recorded start time (PR #26 Codex
-    // review, round 2): another program that took a gone hub's port answers the health check.
+    // review, round 2): another program that took a gone hub's port answers the health check. That read is run by the
+    // Python of the hub's own environment, as the stop is, where this window's own may have been removed (the outside
+    // review of 6140d38, finding 1).
     if (rec && !rec.stopping && !marked && rec.port === this.port && (await healthy(rec.port, this.f.health)) &&
-      (await this.startTime(rec.pid)) === rec.start) return;
+      (await this.startTime(rec.pid, this.pythonOf(rec))) === rec.start) return;
     if (this.closing.signal.aborted) return;
     this.onEvent({ is: "failing" });
     const r = await this.join();
@@ -478,9 +480,10 @@ export class Hub {
       const stopping = rec?.stopping || this.marked(rec) || !rec?.token;
       // Reused only while its process is alive with the recorded start time, read after the health answer (PR #26
       // Codex review 1): a hub that has gone may have left its port to another program, which must never be sent the
-      // token. That read is the helper's `start`, within its own limit (PR #26 Codex review, round 3).
+      // token. That read is the helper's `start`, within its own limit (PR #26 Codex review, round 3), run by the
+      // Python of the hub's own environment, as the stop is (the outside review of 6140d38, finding 1).
       let hub = rec && !stopping && (await healthy(rec.port, this.f.health)) &&
-        (await this.startTime(rec.pid)) === rec.start ? rec : undefined;
+        (await this.startTime(rec.pid, this.pythonOf(rec))) === rec.start ? rec : undefined;
       if (!hub) {
         const version = this.palaceVersion();
         if (version && newer(version, MEMPALACE)) return { is: "off", why: { is: "newer palace", version } };
@@ -666,8 +669,8 @@ export class Hub {
     });
   }
 
-  private async startTime(pid: number): Promise<string | undefined> {
-    const said = await this.helper(["start", String(pid)], this.f.startRead);
+  private async startTime(pid: number, python?: string): Promise<string | undefined> {
+    const said = await this.helper(["start", String(pid)], this.f.startRead, python);
     return said && said !== "gone" && !said.startsWith("unopened") ? said : undefined;
   }
 
