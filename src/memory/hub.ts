@@ -22,8 +22,10 @@ import { makeMemoryFolder, type MemoryPaths } from "./paths.js";
 //   own, hub_client.py:21); the wait between tries for the join lock;
 // - M4 (step 9; the user's choices, 2026-11-19): the "in use" file's refresh, and the age at which one counts as gone;
 // - step 20's run 3 (the user's choices, 2026-11-20), each 5 times the slowest measured: the whole stop run of the
-//   environment's Python (5 x 257.5 ms, in place of M3's 1 s), the read-back (5 x 165.2 ms) and the start-time read
-//   after a start (5 x 195.5 ms).
+//   environment's Python (5 x 257.5 ms, in place of M3's 1 s) and the read-back (5 x 165.2 ms);
+// - the start-time read (PR #26 Codex review, round 3; the user's choice, 2026-11-22): 2 s, the slowest measured on a
+//   long-running process with one load process per processor (1,830.3 ms, 200 reads), rounded up to a whole second.
+//   Step 20's 5 x 195.5 ms was the read after a start.
 export interface Figures {
   startLimit: number;
   startCheck: number;
@@ -44,7 +46,7 @@ export const FIGURES: Figures = {
   stale: 27_000,
   stop: 1_300,
   readBack: 900,
-  startRead: 1_000,
+  startRead: 2_000,
 };
 
 // The storage and model Tachikoma's palace must be read back with (Q24; step 6 item 12).
@@ -476,7 +478,7 @@ export class Hub {
       const stopping = rec?.stopping || this.marked(rec) || !rec?.token;
       // Reused only while its process is alive with the recorded start time, read after the health answer (PR #26
       // Codex review 1): a hub that has gone may have left its port to another program, which must never be sent the
-      // token. That read is the helper's `start`, within its own limit (step 20's run 3).
+      // token. That read is the helper's `start`, within its own limit (PR #26 Codex review, round 3).
       let hub = rec && !stopping && (await healthy(rec.port, this.f.health)) &&
         (await this.startTime(rec.pid)) === rec.start ? rec : undefined;
       if (!hub) {

@@ -4282,7 +4282,8 @@ backend collection.", the same hint. So the refusal cannot tell them apart. The 
 - The read-back's limit: 0.9 s (5 x 165.2 ms). On a timeout memory is off for this launch; the next launch tries
   again.
 - The start-time read after a start: its own limit, 1 s (5 x 195.5 ms). The 40 s start limit stays as M3 measured
-  it, from the start until the hub answers and its serverinfo.json names its port.
+  it, from the start until the hub answers and its serverinfo.json names its port. PR #26's Codex review, round 3,
+  changed the 1 s to 2 s: see "A recorded hub's process" in As built.
 - The empty-palace rule: a refused status with no palace file is "not read yet", and memory is on. A refused status
   with a palace file that cannot be opened turns memory off. Step 18's client now tells "no file", "can't open" and
   "no model row" apart (`palaceFile`).
@@ -4427,8 +4428,9 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   that warning", 2026-11-20).
 - **Figures:** start limit 40 s, for every start; check interval while a hub starts 100 ms; health check 0.75 s
   (MemPalace's own); wait between lock tries 500 ms (M3, 2026-11-19). The stop: 1.3 s for the whole stop (5 x
-  257.5 ms), replacing M3's 1 s. The read-back of the storage and model: 0.9 s (5 x 165.2 ms). The start-time read
-  after a start: 1 s (5 x 195.5 ms). All the user's choices of 2026-11-20 (step 20).
+  257.5 ms), replacing M3's 1 s. The read-back of the storage and model: 0.9 s (5 x 165.2 ms). Both the user's
+  choices of 2026-11-20 (step 20). The start-time read: 2 s, in place of step 20's 1 s (the user's choice,
+  2026-11-22; see "A recorded hub's process").
 - **What counts as a stop** (the user's choice at step 20's code review, 2026-11-20, which changed the first choice
   that a stop past its limit counts as stopped): only the helper's answer that the serving process ended. That is
   "stopped", "gone", or "running" when only the wait after `TerminateProcess` passed its limit. Any other answer, no
@@ -4479,14 +4481,21 @@ each limit is 5 times this PC's slowest unless noted (the user's margin; no slow
   when, after its health answer, the helper's `start` reads its process alive with the recorded start time; any other
   answer, or none, is no hub, and the window starts one. So a program that took a gone hub's port, which answers the
   health check as it needs no token, is never sent the token. The read is one run of the environment's Python under
-  the join lock, within the start-time read's own limit, 1 s (5 x 195.5 ms, step 20's run 3, measured after a start),
-  so a join that reuses a hub can take up to 1 s more. The timer's check makes the same read on every 5 s tick
+  the join lock, within the start-time read's own limit, 2 s (below), so a join that reuses a hub can take up to 2 s
+  more. The timer's check makes the same read on every 5 s tick
   (round 2 of that review; the user's decision, 2026-11-22): a hub whose process is not the recorded one counts as
   gone, and the window joins again, so a connected window does not keep sending the token and memory text to a
   program that took its port. That is one more run of the Python per tick in each window with memory on, within the
-  same 1 s. Known limits: a hub that ends between that read and the read-back's first request, its port taken by
+  same 2 s. Known limits: a hub that ends between that read and the read-back's first request, its port taken by
   another program in those milliseconds, would be sent the token; and a connected window's requests made before the
   next tick finds its hub gone would go to such a program.
+  - The 2 s (round 3 of that review; the user's choice, option 2, 2026-11-22): a read past the limit counts as gone,
+    so on a busy computer a live hub would count as gone on such a tick and the window would reconnect. Measured
+    2026-11-22 on this PC, 200 reads of a Python process that had run 5 minutes: slowest 231.3 ms with no load, and
+    1,830.3 ms with one busy process per processor (24; 1 of 200 over 1 s). 2 s is that slowest read rounded up to a
+    whole second, with no 5x margin, and is one figure for every start-time read (after a start, reuse, the timer).
+    Step 20's 1 s (5 x 195.5 ms) was measured after a start. A heavier load (two per processor) made the PC stop
+    responding and was not measured. Not chosen: keep 1 s as a known limit; treat a slow read as "not sure".
 - **The stop's Python** (PR #26 review, finding 4; the user's decision, 2026-11-22): the stop's helper runs with the
   Python of the environment the hub's record names, which a newer window never removes while the record names it;
   the window's own Python only when that one is gone or the hub's environment is not known.

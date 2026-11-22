@@ -306,7 +306,7 @@ describe("the hub's supervisor", () => {
       stale: 27_000,
       stop: 1_300,
       readBack: 900,
-      startRead: 1_000,
+      startRead: 2_000,
     });
   });
 
