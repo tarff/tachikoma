@@ -65,6 +65,8 @@ export function truncateLeaving(s: string, around: number): string {
 // plan, "Lines this plan adds").
 const NOT_RUN = "Not run: a hook stopped the turn.";
 const STOPPED = "Stopped: a hook stopped the turn.";
+// The sentence a PermissionDenied hook's retry adds to the judge's refusal (release 8e design, "The permission events").
+const RETRY = "A hook says you may try this again.";
 // The grey line for a hook's continue: false, with its stopReason when it gave one (the same).
 const stoppedTurn = (event: Event, reason: string) => (reason ? `A ${event} hook stopped the turn: ${reason}` : `A ${event} hook stopped the turn.`);
 // Claude Code's hooks reference, "Stop input": Stop or SubagentStop blocks in a row, with no tool call between, before the
@@ -1284,8 +1286,13 @@ export class Session {
       ms = Date.now() - started;
     } catch (err) {
       // Ctrl-C at a question declines it and stops the turn: the call was cancelled, not declined.
-      // Cut as a failure's is: a hook's question names the call with its whole input, a write's content included.
-      if (err instanceof Declined) return [result(call, truncate(err.message), true), signal.aborted ? "cancelled" : "declined"];
+      // Cut as a failure's is: a hook's question names the call with its whole input, a write's content included. The
+      // judge's refusal first goes to the PermissionDenied hooks, and a retry's sentence is kept whole after the cut.
+      if (err instanceof Declined) {
+        const retry = hooks && err.judged ? await this.#permissionDenied(hooks, call, entry, err.judged, round) : false;
+        const told = retry ? `${truncateLeaving(err.message, RETRY.length + 1)} ${RETRY}` : truncate(err.message);
+        return [result(call, told, true), signal.aborted ? "cancelled" : "declined"];
+      }
       // Not a failure, so not logged. A yes after the stop ran nothing, though the tool had started (Task 7's re-check).
       if (signal.aborted) return stopped(started === undefined || err instanceof StoppedFirst ? NOT_RUN : STOPPED);
       const error = errorText(err);
@@ -1340,6 +1347,34 @@ export class Session {
     this.#hookText.push(...c.context);
     if (c.stop !== undefined) round.stop(event, c.stop);
     return c;
+  }
+
+  // PermissionDenied after auto mode's judge refused a call (release 8e plan, step 6; design, "The permission events"),
+  // sent the input that ran as PreToolUse's fields are built, the judge's reason as it gave it, and an MCP tool's server,
+  // matched on the tool's Claude Code name, under the reply's signal. Whether the refusal gets the retry sentence: only for
+  // the judge's own refusal, never when it could not be reached or its answer could not be read. False when a stop ended
+  // its hooks (run.ts), or anything else threw, said as #postToolUse says it.
+  async #permissionDenied(
+    hooks: Hooks,
+    call: ToolCall,
+    entry: { name: string; input: unknown },
+    judged: NonNullable<Declined["judged"]>,
+    round: Round,
+  ): Promise<boolean> {
+    let c: Combined;
+    try {
+      const { tool_name, tool_input } = toClaude(entry, this.#hookPaths());
+      const own = this.opts.tools.some((t) => t.spec.name === call.name);
+      const server = own ? undefined : this.#offered.find((o) => o.spec.name === call.name)?.server;
+      const fields = { tool_name, tool_input, tool_use_id: call.id, reason: judged.reason, ...(server !== undefined && { mcp_server: server }) };
+      c = await hooks.fire("PermissionDenied", fields, { match: tool_name, signal: round.signal });
+    } catch (err) {
+      if (round.signal.aborted) return false;
+      const message = `PermissionDenied hook failed: ${errorText(err)}`;
+      this.opts.bus.emit("error", { kind: "hook", attempted: "PermissionDenied hook", message, lead: this.#lead.id });
+      return false;
+    }
+    return c.retry === true && judged.noVerdict === undefined;
   }
 
   // The paths hooks are sent: the launch's, or without them ctx.root's on the host (SessionOptions.paths).

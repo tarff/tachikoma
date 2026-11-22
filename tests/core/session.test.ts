@@ -29,6 +29,8 @@ import { type Executor, MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import type { Event, Hook } from "../../src/hooks/config.js";
 import { Hooks, type Where } from "../../src/hooks/hooks.js";
+import type { Offered } from "../../src/mcp/servers.js";
+import type { McpTools } from "../../src/mcp/tools.js";
 import { fitted, LIMITS } from "../../src/providers/pictures.js";
 import { judgeOf } from "../../src/safety/judge.js";
 import { shellTools } from "../../src/tools/commands.js";
@@ -2130,10 +2132,11 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   type Answers = (boolean | Promise<boolean>)[];
   // `judge` is auto mode's, which says no at once unless given. With `worker`, the lead has delegate, its subagents running
   // on that model with the lead's hooks, and the session has their Tasks. With `commands`, a stand-in executor, the lead's
-  // shell, shell_output and stop_task are the real ones (tools/commands.ts), their commands in those Tasks.
+  // shell, shell_output and stop_task are the real ones (tools/commands.ts), their commands in those Tasks. `mcp`, the
+  // session's MCP tools.
   async function setup(o: {
     mode: Mode5; says: Says[]; turns: Turn[]; answers?: Answers; transcript?: Transcript; root?: string; tools?: Tool[]; judge?: Judge;
-    inbox?: () => string[]; worker?: Provider; commands?: Executor;
+    inbox?: () => string[]; worker?: Provider; commands?: Executor; mcp?: McpTools;
   }) {
     const root = o.root ?? (await folder());
     const { script, seq, out } = await hookFolder();
@@ -2207,6 +2210,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       ...(tasks ? { tasks, inbox: () => tasks.take() } : {}),
       ...(o.transcript ? { transcript: o.transcript } : {}),
       ...(o.inbox ? { inbox: o.inbox } : {}),
+      ...(o.mcp ? { mcp: o.mcp } : {}),
     });
     // Whole lines only: the last piece is empty once the hook has written its line, or the part of it written so far.
     const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").slice(0, -1).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
@@ -3467,6 +3471,134 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(prompt!.prompt_id).toEqual(expect.any(String));
     expect(end!.prompt_id).toBe(prompt!.prompt_id);
     expect("prompt_id" in start!).toBe(false);
+  });
+
+  // Release 8e plan, step 6 (design, "The permission events"): PermissionDenied runs when auto mode's judge refuses a call,
+  // before the refusal goes back to the model, and a hook's retry adds the design's sentence to the judge's own refusal
+  // only, not when the judge could not be reached or its answer could not be read.
+  const denied = (fields: object) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionDenied", ...fields } });
+  const RETRY = "A hook says you may try this again.";
+  const NO: Judge = async () => ({ allow: false, reason: "It was not asked for." });
+  const deniedInputs = (s: { inputs: () => Record<string, unknown>[] }) => s.inputs().filter((i) => i.hook_event_name === "PermissionDenied");
+  // A stand-in MCP server's tool, which asks the gate as approveOf does (mcp/tools.ts).
+  const lookup: Offered = {
+    spec: { name: "mcp__docs__lookup", description: "Looks a word up", inputSchema: { type: "object" } },
+    server: "docs", tool: "lookup", connection: 1, definition: "{}", forJudge: "Looks a word up", forNote: "Looks a word up",
+  };
+  const docs: McpTools = {
+    loaded: new Set(),
+    offer: () => ({ defined: [lookup] }),
+    tool: (o) => ({
+      spec: o.spec,
+      run: async (input, ctx) => {
+        await ctx.gate.require({ kind: "mcp", outside: true, summary: `${o.server}: ${o.tool} ${JSON.stringify(input)}` }, ctx.signal);
+        return "found";
+      },
+    }),
+  };
+
+  it("fires PermissionDenied when the judge refuses a write, sent the input that ran in Claude Code's names and the judge's reason", async () => {
+    const elsewhere = await folder();
+    const asked = path.join(elsewhere, "a.txt");
+    const ran = path.join(elsewhere, "b.txt");
+    const says: Says[] = [{ stdout: rewrite({ file_path: ran, content: "x" }) }, { event: "PermissionDenied", stdout: "" }];
+    const s = await setup({ mode: "auto", says, turns: oneCall("write_file", { path: asked, content: "x" }), judge: NO });
+    await s.session.send("go");
+    expect([existsSync(asked), existsSync(ran)]).toEqual([false, false]);
+    const fired = { tool_name: "Write", tool_input: { file_path: ran, content: "x" }, tool_use_id: "c1", reason: "It was not asked for." };
+    expect(deniedInputs(s)).toEqual([expect.objectContaining(fired)]);
+    expect("mcp_server" in deniedInputs(s)[0]!).toBe(false);
+    expect([s.results(), s.outcomes, s.notes, s.errors]).toEqual([[{ output: "The judge refused: It was not asked for.", isError: true }], ["declined"], [], []]);
+  });
+
+  it("sends PermissionDenied an MCP tool's server as mcp_server", async () => {
+    const says: Says[] = [{ event: "PermissionDenied", stdout: "" }];
+    const s = await setup({ mode: "auto", says, turns: oneCall("mcp__docs__lookup", { word: "hi" }), judge: NO, mcp: docs });
+    await s.session.send("go");
+    const fired = { tool_name: "mcp__docs__lookup", tool_input: { word: "hi" }, tool_use_id: "c1", reason: "It was not asked for.", mcp_server: "docs" };
+    expect(deniedInputs(s)).toEqual([expect.objectContaining(fired)]);
+    expect(s.results()).toEqual([{ output: "The judge refused: It was not asked for.", isError: true }]);
+  });
+
+  it("adds the design's sentence to the judge's refusal when a PermissionDenied hook says the model may try again", async () => {
+    const says: Says[] = [{ event: "PermissionDenied", stdout: denied({ retry: true }) }];
+    const s = await setup({ mode: "auto", says, turns: shellCall("echo hi"), judge: NO });
+    await s.session.send("go");
+    expect([s.results(), s.outcomes, s.ran, s.notes, s.errors]).toEqual([
+      [{ output: `The judge refused: It was not asked for. ${RETRY}`, isError: true }], ["declined"], [], [], [],
+    ]);
+    const mcp = await setup({ mode: "auto", says, turns: oneCall("mcp__docs__lookup", { word: "hi" }), judge: NO, mcp: docs });
+    await mcp.session.send("go");
+    expect(mcp.results()).toEqual([{ output: `The judge refused: It was not asked for. ${RETRY}`, isError: true }]);
+  });
+
+  it.each([
+    ["could not be reached", { allow: false, reason: "the judge could not be reached: offline", noVerdict: "unreachable" }],
+    ["gave an answer that could not be read", { allow: false, reason: "the judge's answer could not be read", noVerdict: "unreadable" }],
+  ] as const)("fires PermissionDenied but adds no sentence for its retry when the judge %s", async (_name, verdict) => {
+    const says: Says[] = [{ event: "PermissionDenied", stdout: denied({ retry: true }) }];
+    const s = await setup({ mode: "auto", says, turns: shellCall("echo hi"), judge: async () => verdict });
+    await s.session.send("go");
+    expect(deniedInputs(s)).toEqual([expect.objectContaining({ tool_name: "Bash", reason: verdict.reason })]);
+    expect([s.results(), s.outcomes]).toEqual([[{ output: `The judge refused: ${verdict.reason}`, isError: true }], ["declined"]]);
+  });
+
+  it("runs only the PermissionDenied hooks whose matcher names the refused tool", async () => {
+    const says: Says[] = [
+      { event: "PermissionDenied", names: ["Write"], stdout: denied({ retry: true }) },
+      { event: "PermissionDenied", names: ["Bash"], stdout: "" },
+    ];
+    const s = await setup({ mode: "auto", says, turns: shellCall("echo hi"), judge: NO });
+    await s.session.send("go");
+    expect(deniedInputs(s)).toEqual([expect.objectContaining({ tool_name: "Bash" })]);
+    expect(s.results()).toEqual([{ output: "The judge refused: It was not asked for.", isError: true }]);
+  });
+
+  it("still counts a refusal a PermissionDenied hook says may be tried again toward auto mode's pause", async () => {
+    const turns = [1, 2, 3, 4].map((n) => callTool(`c${n}`, "shell", { command: `echo ${n}` }));
+    const says: Says[] = [{ event: "PermissionDenied", stdout: denied({ retry: true }) }];
+    const s = await setup({ mode: "auto", says, turns: [...turns, reply("ok")], judge: NO });
+    await s.session.send("go");
+    expect(s.judged).toEqual(["run: echo 1", "run: echo 2", "run: echo 3"]);
+    expect(s.asked).toEqual([{ summary: "run: echo 4", note: "Auto mode paused after 3 refusals; approving this resumes it." }]);
+    expect(deniedInputs(s)).toHaveLength(3);
+  });
+
+  it("gives no red line for a PermissionDenied hook's exit code 2, and still reads a retry printed with it", async () => {
+    const plain = await setup({ mode: "auto", says: [{ event: "PermissionDenied", stdout: "nope", code: 2 }], turns: shellCall("echo hi"), judge: NO });
+    await plain.session.send("go");
+    expect([plain.results(), plain.notes, plain.errors]).toEqual([[{ output: "The judge refused: It was not asked for.", isError: true }], [], []]);
+    expect(deniedInputs(plain)).toHaveLength(1);
+    const retry = await setup({ mode: "auto", says: [{ event: "PermissionDenied", stdout: denied({ retry: true }), code: 2 }], turns: shellCall("echo hi"), judge: NO });
+    await retry.session.send("go");
+    expect([retry.results(), retry.errors]).toEqual([[{ output: `The judge refused: It was not asked for. ${RETRY}`, isError: true }], []]);
+  });
+
+  it("fires a subagent's PermissionDenied with its agent_id, and its retry reaches the subagent's model", async () => {
+    const root = await folder();
+    const elsewhere = path.join(await folder(), "a.txt");
+    writeFileSync(elsewhere, "A\n");
+    const { script, out } = await hookFolder();
+    const hook: Hook = { event: "PermissionDenied", matcher: { all: true }, command: process.execPath, args: [script, out, denied({ retry: true }), "0"], async: false, where: "" };
+    const bus = new Bus();
+    const gate = new PermissionGate("auto", async () => false, undefined, { root, headless: false, judge: NO });
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const worker = new FakeProvider("w", [callTool("c1", "read_file", { path: elsewhere }), reply("found it")]);
+    const tasks = new Tasks({
+      bus,
+      max: 8,
+      worker: () => worker,
+      system: "sub",
+      tools: [readFileTool],
+      ctx: { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate },
+      hooks: new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, bus),
+    });
+    expect(await tasks.start("look", { background: false }).done).toEqual({ state: "done", text: "found it" });
+    const inputs = readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+    const fired = { hook_event_name: "PermissionDenied", agent_id: "t1", agent_type: "Explore", tool_name: "Read", tool_input: { file_path: elsewhere }, tool_use_id: "c1" };
+    expect(inputs).toEqual([expect.objectContaining(fired)]);
+    const told = worker.seen[1]!.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [p.output] : [])));
+    expect(told).toEqual([`The judge refused: It was not asked for. ${RETRY}`]);
   });
 });
 
