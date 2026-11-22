@@ -781,6 +781,47 @@ describe("the hub's supervisor", () => {
     expect(alive(s.launched()[1]!.pid)).toBe(true);
   });
 
+  // PR #26 Codex review, round 2: the timer keeps a hub only while its process is alive with the recorded start time,
+  // as the join does. Another program that took a gone hub's port answers the health check; the window does not keep
+  // that hub, and that program is never sent the token.
+  it("does not keep a gone hub on the timer while another program answers on its port", async () => {
+    const s = await setup();
+    const h = s.hub();
+    const first = await h.join();
+    const port = portOf((first as { url: string }).url);
+    const { pid } = s.launched()[0]!;
+    process.kill(pid);
+    await until(() => !alive(pid), "the hub to die");
+    const seen: (string | undefined)[] = [];
+    const holder = createHttpServer((req, res) => {
+      seen.push(req.headers.authorization);
+      req.resume();
+      res.writeHead(200, { "content-type": "application/json" }).end("{}");
+    });
+    // The system may take a moment to free the port of a process that has ended.
+    const bound = () => new Promise<boolean>((resolve) => {
+      holder.once("error", () => resolve(false));
+      holder.listen(port, "127.0.0.1", () => resolve(true));
+    });
+    const began = Date.now();
+    while (!(await bound())) {
+      if (Date.now() - began > LIMIT) throw new Error("waited too long for the gone hub's port");
+      await sleep(20);
+    }
+    try {
+      vi.advanceTimersByTime(FIGURES.refresh);
+      await until(() => s.events.length >= 2, "the timer's join");
+      expect(s.events[0]).toEqual({ is: "failing" });
+      expect(s.events[1]).toEqual({ is: "on", url: expect.any(String), token: tokenOf(first) });
+      expect(portOf((s.events[1] as { url: string }).url)).not.toBe(port);
+      expect(s.launched()).toHaveLength(2);
+      expect(seen.filter((a) => a !== undefined)).toEqual([]);
+    } finally {
+      holder.closeAllConnections();
+      await new Promise((resolve) => holder.close(resolve));
+    }
+  });
+
   it("reports a start that fails", async () => {
     const s = await setup();
     s.control({ exit: 1 });

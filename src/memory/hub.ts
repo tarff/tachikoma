@@ -439,7 +439,10 @@ export class Hub {
     const rec = this.record();
     const m = this.marker(); // read only here: the join below settles it under the lock
     const marked = rec && m?.pid === rec.pid && m.start === rec.start;
-    if (rec && !rec.stopping && !marked && rec.port === this.port && (await healthy(rec.port, this.f.health))) return;
+    // Kept, as the join keeps a record, only while its process is alive with the recorded start time (PR #26 Codex
+    // review, round 2): another program that took a gone hub's port answers the health check.
+    if (rec && !rec.stopping && !marked && rec.port === this.port && (await healthy(rec.port, this.f.health)) &&
+      (await this.startTime(rec.pid)) === rec.start) return;
     if (this.closing.signal.aborted) return;
     this.onEvent({ is: "failing" });
     const r = await this.join();
