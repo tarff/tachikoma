@@ -68,9 +68,13 @@ refusals, auto mode's judge).
   is left out, as Tachikoma has no permission rules to suggest. The matcher is on the tool name.
 - **allow** runs the call without the question, for every question, the dangerous-command and
   protected-path warnings included (option chosen: "Every question, as Claude Code").
-- **allow with `updatedInput`** replaces the input, by 8b's rewrite rules. Tachikoma then checks the
-  new input as if the model had sent it; if it would need a question, the user is asked, and the
-  hook is not run a second time.
+- **allow with `updatedInput`** replaces the input, by 8b's rewrite rules. By the time the question
+  is reached, a tool has already worked out its path and what it will do, so a rewrite throws that
+  away: the call starts again with the new input, its path resolved, checked and asked about as if
+  the model had sent it (review, 2026-11-23, finding 1). PermissionRequest is not run a second time;
+  the PreToolUse hooks are, on the new input, so a rewrite cannot route around them (option chosen:
+  "Yes, run PreToolUse again"; Claude Code checks a rewrite against its permission rules only). If
+  the new input needs a question, the user is asked.
 - **deny** refuses the call, its `message` going to the model. `interrupt: true` also ends the turn,
   as 8b's `"continue": false` does.
 - **Several hooks:** deny over allow. If no hook decides, the question goes ahead as now; in `-p`
@@ -90,6 +94,9 @@ verdict").
 - It runs before the refusal goes back to the model. If its `retry` is true, the refusal gets one
   more sentence: "A hook says you may try this again." As in Claude Code, `retry` is ignored when the
   judge gave no verdict.
+- The judge's result says which of three it was: a refusal, the judge unreachable, or its answer
+  unreadable (a cut-off answer included). `retry` counts only for a refusal (review, 2026-11-23,
+  finding 5).
 - The refusal still counts toward auto mode's pause. Exit codes and error output are ignored.
 
 ## The turn ending, and tool batches
@@ -137,8 +144,13 @@ block wastes no shortening. Not for `/resume` into a session with another lead, 
 rescue (one reply, the lead unchanged), or Anthropic's own fallback.
 
 - **Sent:**
-  - `from_model` and `to_model`, the model's name without its provider (`claude-opus-5-5`), so
-    Claude Code's name matchers work; the matcher is on `to_model`;
+  - `from_model` and `to_model`, the model's name without its provider (`claude-opus-5-5`);
+  - the matcher is on `to_model`'s canonical name, as in Claude Code (review, 2026-11-23, finding 3;
+    option chosen: "Claude Code's way"): for an Anthropic model, its name with any date on the end
+    dropped (`claude-haiku-4-5-20251001` matches as `claude-haiku-4-5`), a reading of ours, as
+    Claude Code's docs do not say how the name is made. Another provider's model has no Claude
+    name, so every PreModelSwitch and PostModelSwitch hook runs for it, whatever its matcher, and
+    reads `to_model`, as Claude Code does for a model without one;
   - `requested_model`: the words typed, the file's value, or null for a pick from the list;
   - `context_tokens`: the conversation's size now;
   - `prompt_cache_warm`: true when the last request to Anthropic was under 5 minutes ago;
@@ -159,9 +171,11 @@ rescue (one reply, the lead unchanged), or Anthropic's own fallback.
 into a session with another lead, as `source: "resume"`.
 
 - It cannot block.
-- Plain output on exit 0, or `additionalContext`, goes to the model with the user's next request. If
-  the hook has not finished 5 seconds after that request is sent, the text goes with the one after.
-  After several switches in a row, only the last one's text goes, as in Claude Code.
+- Plain output on exit 0, or `additionalContext`, goes to the model with the user's next request. As
+  in Claude Code, that request waits for the hook up to 5 seconds from when the user sends the
+  prompt: text that arrives in that time goes with it; if the hook has not finished by then, the
+  request goes without it, and the text goes with the one after (review, 2026-11-23, finding 4).
+  After several switches in a row, only the last one's text goes.
 - Exit code 2 shows its error output as a red line.
 
 ## Notification, InstructionsLoaded, ConfigChange
@@ -196,9 +210,17 @@ does not watch the file.
 
 - **Sent:** `source: "user_settings"` and `file_path`. `keybindings.json` does not fire it: Claude
   Code has no such source.
-- It runs after the new text is read, before it applies. Exit code 2 or `"decision": "block"` keeps
-  the settings in force as they were; the next change is compared with those, and the next launch
-  reads the file as it is.
+- It runs after the new text is read, before any of it applies, hooks and MCP servers included. The
+  hooks in force are the ones that run, not the ones the new text would bring. Exit code 2 or
+  `"decision": "block"` keeps the whole change out: the settings in force stay as they were, the
+  next change is compared with those, and the next launch reads the file as it is (review,
+  2026-11-23, finding 2).
+- **One change at a time:** while ConfigChange hooks decide on one save, a newer save waits; a still
+  newer one replaces the waiting one, so only the newest waits. The save being decided applies, or
+  is kept out, first; then the waiting one is decided against what is in force by then. An older
+  save never lands after a newer one.
+- A change that removes the ConfigChange hook itself is decided by that hook, as it is still in
+  force; once the change applies, later changes have no hook to ask.
 - One departure from Claude Code, which shows nothing when a change is blocked: a grey line, "A
   ConfigChange hook stopped this settings change: `<reason>`.", as every other live edit has a
   line and a silent block would leave the user wondering why an edit did nothing.
@@ -224,7 +246,8 @@ The plan gives every new line's words for the user to approve; the ones above ar
 - `terminalSequence`, Claude Code's way for a hook to send text straight to the terminal (a bell, a
   desktop alert), is ignored: a hook makes its own sound or alert.
 - `to_model` and `from_model` drop the provider, so one model reached through two providers looks
-  the same to a hook.
+  the same to a hook. The canonical name used for matching (a dated Anthropic name without its
+  date) is a reading of ours; Claude Code's docs do not say how it makes the name.
 - StopFailure's error kinds are partly Tachikoma's choice.
 - Notification has only four kinds; FileChanged and CwdChanged are not run.
 
@@ -235,15 +258,19 @@ The plan gives every new line's words for the user to approve; the ones above ar
 - **Session tests with a stand-in model, no network:**
   - each event fires at its moment;
   - PermissionRequest's allow, deny, rewrite and `interrupt` in all four modes and in `-p`, an
-    allowed dangerous command included;
-  - PermissionDenied's retry sentence;
+    allowed dangerous command included; a rewrite to another file running from the start, the
+    PreToolUse hooks seeing the new input;
+  - PermissionDenied's retry sentence after a refusal, and none when the judge was unreachable or
+    its answer unreadable;
   - StopFailure's error kind for each status;
   - PostToolBatch ending a turn while a `delegate` runs;
-  - a blocked and an asked `/lead`, and a blocked settings-file switch;
-  - PostModelSwitch's 5-second rule;
+  - a blocked and an asked `/lead`, and a blocked settings-file switch; a dated Anthropic name
+    matching its undated matcher, and another provider's model running every switch hook;
+  - PostModelSwitch's text just inside and just outside the 5-second wait;
   - Notification's 6 s and 60 s waits, a keystroke starting the wait again;
   - InstructionsLoaded's three reasons;
-  - a ConfigChange block keeping the old settings.
+  - a ConfigChange block keeping the old settings; two quick saves while a ConfigChange hook runs,
+    the newer landing last; a change that removes its own ConfigChange hook.
 - **No real waiting:** every 6 s, 60 s and 5 s wait runs on a fake clock. Nothing runs under load
   on the user's machine.
 - **The user's terminal checklist:** a Notification hook that plays a sound at `idle_prompt`, a
