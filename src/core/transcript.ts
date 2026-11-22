@@ -313,6 +313,10 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       const kept = keepThinking(messages, (m) => savedUnder.get(m)?.under, madeUnder(nowSystem, now));
       return { messages: kept, dropped: kept.some((m, i) => m !== messages[i]) };
     };
+    // In a loop: a spread of every turn and saved line into one call can pass Node's limit on its arguments (PR #26
+    // Codex review 5).
+    let lastTurn = 0;
+    for (const l of lines) if ((l.t === "turn" || l.t === "saved") && l.n > lastTurn) lastTurn = l.n;
     return {
       start,
       messages,
@@ -338,7 +342,7 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       loaded,
       asked: [...asked],
       unsaved: unsavedOf(rows),
-      lastTurn: Math.max(0, ...lines.flatMap((l) => (l.t === "turn" || l.t === "saved" ? [l.n] : []))),
+      lastTurn,
       withTools,
     };
   } catch (err) {

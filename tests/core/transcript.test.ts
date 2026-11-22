@@ -1008,6 +1008,19 @@ describe("transcript", { timeout: 15_000 }, () => {
       expect(read(p).unsaved).toEqual([]);
     });
 
+    // PR #26 Codex review 5: Node v24.22.1 takes at most 124,683 arguments in one call there (its measurement), and a
+    // spread of every turn and saved line passed them all at once; about twice that many lines here.
+    it("gives the highest turn number of a transcript with more turn and saved lines than one call takes", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      const many = 250_000;
+      const at = "2026-11-22T00:00:00.000Z";
+      appendFileSync(p.file, Array.from({ length: many }, (_, i) => `${JSON.stringify({ t: "saved", at, n: i + 1 })}\n`)
+        .join(""));
+      expect(read(p).lastTurn).toBe(many);
+    });
+
     it("marks a copy's copied turns saved, never to be saved again under its id, leaving the source's", async () => {
       const p = place();
       const t = new Transcript(p.file, p.pictures);
