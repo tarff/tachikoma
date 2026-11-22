@@ -246,14 +246,13 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
         else c.rewrite = { input: specific.updatedInput, from: hook, ignored: [] };
       }
     } else if (event === "PermissionRequest") {
-      // Release 8e plan, step 2: deny over allow, the first in the file deciding with its own message and interrupt; the
-      // first allow's updatedInput is the rewrite, the others named as ignored, as at PreToolUse.
+      // Release 8e plan, step 2: deny over allow, the first in the file giving the message; any deny's interrupt: true ends
+      // the turn, as any hook's continue: false does (the user's choice at the step's review). The first allow's
+      // updatedInput is the rewrite, the others named as ignored, as at PreToolUse.
       const d = isObject(specific.decision) ? specific.decision : {};
       const behavior = d.behavior as "allow" | "deny" | undefined;
-      if (behavior && decided[behavior] === undefined) {
-        decided[behavior] = cut((d.message as string | undefined) ?? "");
-        if (behavior === "deny" && d.interrupt === true) c.interrupt = true;
-      }
+      if (behavior && decided[behavior] === undefined) decided[behavior] = cut((d.message as string | undefined) ?? "");
+      if (behavior === "deny" && d.interrupt === true) c.interrupt = true;
       if (behavior === "allow" && d.updatedInput != null) {
         if (c.rewrite) c.rewrite.ignored.push(hook);
         else c.rewrite = { input: d.updatedInput, from: hook, ignored: [] };

@@ -401,6 +401,11 @@ describe("outcomeOf and combine: Notification, StopFailure, InstructionsLoaded, 
       expect(combine("PermissionRequest", [...two].reverse())).toMatchObject({ decision: "deny", reason: "No", interrupt: true });
     });
 
+    it("ends the turn for any deny's interrupt: true, the first deny in the file still giving the message (release 8e plan, step 2, the user's choice at its review)", () => {
+      const two = [hookAt({ behavior: "deny", message: "not in src" }, "a"), hookAt({ behavior: "deny", message: "secret found, stop", interrupt: true }, "b")];
+      expect(combine("PermissionRequest", two)).toMatchObject({ decision: "deny", reason: "not in src", interrupt: true });
+    });
+
     it("of two rewrites, takes the first in the file and names the other, and drops both beside a deny (release 8e plan, step 2)", () => {
       const first = hookAt({ behavior: "allow", updatedInput: { command: "sfw npm i" } }, "first");
       const second = hookAt({ behavior: "allow", updatedInput: { command: "npm i --dry-run" } }, "second");
