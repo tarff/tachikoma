@@ -28,9 +28,11 @@ export interface Run { event: Event; hook: Hook; ran: Ran; outcome: Outcome; mat
 // Each mode under its nearest Claude Code name (release 8b design, "What a hook is sent").
 export const MODE_NAMES: Record<Mode, string> = { ask: "default", project: "acceptEdits", auto: "auto", never: "bypassPermissions" };
 
-// Claude Code's hooks reference, "Common fields": a hook's time limit is its timeout, or 600 s, or 30 s at UserPromptSubmit.
+// Claude Code's hooks reference, "Common fields": a hook's time limit is its timeout, or 600 s, or 30 s at UserPromptSubmit,
+// and at PreModelSwitch and PostModelSwitch (release 8e design, "Time limits").
 const LIMIT = 600;
 const PROMPT_LIMIT = 30;
+const SHORT: readonly Event[] = ["UserPromptSubmit", "PreModelSwitch", "PostModelSwitch"];
 // The same: SessionEnd's hooks share 1.5 s, which a hook's own longer timeout raises, to 60 s at most.
 const END_LIMIT = 1.5;
 const END_MOST = 60;
@@ -38,15 +40,16 @@ const END_MOST = 60;
 // A hook's own time limit in seconds, as fire gives it; at SessionEnd, as when it runs alone, since a longer timeout among
 // the hooks run with it raises their shared 1.5 s (fire). /hooks lists it (release 8b plan, "Lines this plan adds").
 export const limitOf = (hook: Hook): number =>
-  hook.event === "SessionEnd" ? Math.min(END_MOST, hook.timeout ?? END_LIMIT) : (hook.timeout ?? (hook.event === "UserPromptSubmit" ? PROMPT_LIMIT : LIMIT));
+  hook.event === "SessionEnd" ? Math.min(END_MOST, hook.timeout ?? END_LIMIT) : (hook.timeout ?? (SHORT.includes(hook.event) ? PROMPT_LIMIT : LIMIT));
 
 // Two entries are the same hook when every field of the entry is (release 8b design, "Running a hook"; review,
 // 2026-11-09, finding 3); its event, matcher and place are not fields of the entry.
 const entry = (h: Hook) => JSON.stringify([h.command, h.mcp, h.args, h.shell, h.timeout, h.async, h.onFailure, h.statusMessage]);
 
-// Whether `hook` runs at `event` for `match`; without one, only a hook that matches everything does.
-const runsFor = (hook: Hook, event: Event, match?: string) =>
-  hook.event === event && (match === undefined ? "all" in hook.matcher : matches(hook.matcher, match));
+// Whether `hook` runs at `event` for `match`; without one, only a hook that matches everything does. `every`: each of the
+// event's hooks runs, whatever its matcher (release 8e design, "Matchers": another provider's model at the switch events).
+const runsFor = (hook: Hook, event: Event, match?: string, every = false) =>
+  hook.event === event && (every || (match === undefined ? "all" in hook.matcher : matches(hook.matcher, match)));
 
 // Held by the lead's Hooks and every subagent's, so a live edit reaches them all, and a subagent, which has no prompt of
 // its own, sends the lead's prompt id. `left` stops the async hooks still running as Tachikoma exits, a subagent's
@@ -140,8 +143,9 @@ export class Hooks {
   }
 
   // `match` is what the event's matchers are matched against: a tool's Claude Code name, SessionStart's source, and so
-  // on. Without one only a hook that matches everything runs; UserPromptSubmit's and Stop's always do (config.ts).
-  async fire(event: Event, fields: object, opts: { match?: string; signal?: AbortSignal } = {}): Promise<Combined> {
+  // on. Without one only a hook that matches everything runs; UserPromptSubmit's and Stop's always do (config.ts). With
+  // `every`, all of the event's hooks run (runsFor).
+  async fire(event: Event, fields: object, opts: { match?: string; signal?: AbortSignal; every?: boolean } = {}): Promise<Combined> {
     const { hooks, off } = this.#shared.config;
     // Claude Code skips mcp_tool hooks at the launch's SessionStart, without a line, as its servers are still connecting
     // (release 8c plan, choice 21): the window's first SessionStart, whatever its source, as -c, -r and --fork-session
@@ -150,7 +154,7 @@ export class Hooks {
     if (event === "SessionStart") this.#shared.launched = true;
     const seen = new Set<string>();
     const picked = off ? [] : hooks.filter((h) => {
-      if (!runsFor(h, event, opts.match) || (launch && h.mcp)) return false;
+      if (!runsFor(h, event, opts.match, opts.every) || (launch && h.mcp)) return false;
       const key = entry(h);
       if (seen.has(key)) return false;
       seen.add(key);

@@ -6,9 +6,11 @@ import { commandOf, hookName } from "./answer.js";
 // wrong JSON type is a problem, as for every other entry (settings.ts), and the file is not applied.
 
 // Claude Code's names for the events Tachikoma runs hooks at (release 8b design, "What 8b covers"), and a server's forms'
-// two, matched on the server's name (release 8c plan, Task 8; Task 12 fires them).
+// two, matched on the server's name (release 8c plan, Task 8; Task 12 fires them), and release 8e's nine (release 8e design).
 export const EVENTS = ["SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
-  "Stop", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "Elicitation", "ElicitationResult"] as const;
+  "Stop", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "Elicitation", "ElicitationResult",
+  "PermissionRequest", "PermissionDenied", "StopFailure", "Notification", "PreModelSwitch", "PostModelSwitch", "PostToolBatch",
+  "InstructionsLoaded", "ConfigChange"] as const;
 export type Event = (typeof EVENTS)[number];
 
 // An mcp_tool hook calls `tool` on the running server `server` with `input`, its ${path} parts filled in from the hook's
@@ -45,7 +47,14 @@ const TIMEOUT = `a number of seconds above 0 and no more than ${MAX_SECONDS}, su
 const EXAMPLE = '{"type": "command", "command": "check.sh"}';
 const GROUP = `{"matcher": "Bash", "hooks": [${EXAMPLE}]}`;
 // Claude Code's events that take no matcher; one written there is ignored, as Claude Code ignores it.
-const NO_MATCHER: readonly Event[] = ["UserPromptSubmit", "Stop"];
+const NO_MATCHER: readonly Event[] = ["UserPromptSubmit", "Stop", "PostToolBatch"];
+// Two events Tachikoma never has, each with its own warning in place of the general one (release 8e design, "Two events
+// get their own warning"): at launch after the entry's name, and alone as /hooks's left-out row (release 8e plan, Q1).
+const NEVER = new Map([
+  ["FileChanged", "FileChanged: Tachikoma doesn't watch files for hooks, so this event never happens; its hooks were left out."],
+  ["CwdChanged", "CwdChanged: Tachikoma's working folder never changes, as each command starts in the project folder, so this event never " +
+    "happens; its hooks were left out."],
+]);
 
 // `entry` is the file's and the entry's names, `settings.json: "hooks"`, which each warning starts with. `leftOut` gets
 // /hooks's left-out row for each warning, in the same order: its words after `"hooks": `, a hook named in them as /hooks
@@ -61,6 +70,12 @@ export function readHooks(entry: string, value: unknown, warnings: string[], lef
       warnings.push(`${place} ${words}`);
       leftOut.push(`${where} ${short}`);
     };
+    const never = NEVER.get(name);
+    if (never !== undefined) {
+      warnings.push(`${entry}: ${never}`);
+      leftOut.push(never);
+      continue;
+    }
     if (!(EVENTS as readonly string[]).includes(name)) {
       leave("is not an event Tachikoma runs hooks at; its hooks were left out");
       continue;

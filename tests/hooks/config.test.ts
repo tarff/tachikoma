@@ -17,6 +17,13 @@ const command = (more: Record<string, unknown> = {}) => ({ type: "command", comm
 const pre = (...hooks: unknown[]) => ({ PreToolUse: [{ matcher: "Bash", hooks }] });
 const hooksOf = (hooks: unknown) => readHooks('settings.json: "hooks"', hooks, []);
 const TIMEOUT = "a number of seconds above 0 and no more than 2147483, such as 30";
+// Release 8e plan, step 1: the nine events 8e adds, and the design's two warnings ("Two events get their own warning").
+const NEW = ["PermissionRequest", "PermissionDenied", "StopFailure", "Notification", "PreModelSwitch", "PostModelSwitch", "PostToolBatch",
+  "InstructionsLoaded", "ConfigChange"];
+const FILE_CHANGED = "FileChanged: Tachikoma doesn't watch files for hooks, so this event never happens; its hooks were left out.";
+const CWD_CHANGED = "CwdChanged: Tachikoma's working folder never changes, as each command starts in the project folder, so this event never " +
+  "happens; its hooks were left out.";
+const TEAMMATE = '"TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out';
 
 describe("readHooks", () => {
   // Release 8b design, "The settings entry": Claude Code's shape, each command hook's fields kept as written.
@@ -45,22 +52,67 @@ describe("readHooks", () => {
     });
   });
 
-  // Release 8c plan, Task 8: Elicitation and ElicitationResult, matched on the server's name.
-  it("knows Claude Code's names for the 13 events", () => {
+  // Release 8c plan, Task 8: Elicitation and ElicitationResult, matched on the server's name. Release 8e plan, step 1: the
+  // nine more events.
+  it("knows Claude Code's names for the 22 events", () => {
     expect(EVENTS).toEqual([
       "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
       "Stop", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "Elicitation", "ElicitationResult",
+      ...NEW,
     ]);
     expect(hooksOf({ Elicitation: [{ matcher: "memory", hooks: [command()] }] })[0]!.matcher).toEqual({ names: ["memory"] });
   });
 
   it("leaves out an event it does not run hooks at, with a warning, and keeps the rest", () => {
-    const hooks = { Setup: [{ hooks: [command()] }], Notification: "anything", PreToolUse: [{ hooks: [command()] }] };
+    const hooks = { Setup: [{ hooks: [command()] }], TeammateIdle: "anything", PreToolUse: [{ hooks: [command()] }] };
     expect(warnings(hooks)).toEqual([
       'settings.json: "hooks": "Setup" is not an event Tachikoma runs hooks at; its hooks were left out',
-      'settings.json: "hooks": "Notification" is not an event Tachikoma runs hooks at; its hooks were left out',
+      'settings.json: "hooks": "TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out',
     ]);
     expect(hooksOf(hooks).map((h) => h.event)).toEqual(["PreToolUse"]);
+  });
+
+  // Release 8e plan, step 1: a hook at each of the nine more events is read, with its matcher.
+  it("reads a hook at each of the nine events release 8e adds, with no warning", () => {
+    const hooks = Object.fromEntries(NEW.map((event) => [event, [{ matcher: "x", hooks: [command()] }]]));
+    expect(warnings(hooks)).toEqual([]);
+    expect(hooksOf(hooks).map((h) => [h.event, h.where])).toEqual(NEW.map((event) => [event, JSON.stringify(event)]));
+  });
+
+  // Release 8e plan, step 1 (Q32): the nine are checked as the other 13 are, so a value of the wrong shape under one of
+  // them, which before 8e was left out with a warning, stops the settings read in 8b's words.
+  it("refuses a value that is not a list under each of the nine events release 8e adds", () => {
+    for (const event of NEW) {
+      expect(problem({ hooks: { [event]: "anything" } })).toBe(
+        `settings.json: "hooks": "${event}" must be a list, such as [{"matcher": "Bash", "hooks": [{"type": "command", "command": "check.sh"}]}] ` +
+          '(got "anything")',
+      );
+    }
+  });
+
+  // Release 8e plan, step 1 (Q1): FileChanged and CwdChanged get the design's own warning in place of the general one,
+  // whatever their value; at the launch after the entry's name, and alone as /hooks's left-out row.
+  it("leaves out FileChanged and CwdChanged with their own warnings, whatever their value, and another event with the general one", () => {
+    const r = read({ hooks: { FileChanged: "anything", CwdChanged: [{ hooks: [command()] }], TeammateIdle: "anything" } });
+    expect(r).toEqual({
+      settings: { hooks: [] },
+      warnings: [`settings.json: "hooks": ${FILE_CHANGED}`, `settings.json: "hooks": ${CWD_CHANGED}`, `settings.json: "hooks": ${TEAMMATE}`],
+      hooksLeftOut: [FILE_CHANGED, CWD_CHANGED, TEAMMATE],
+    });
+  });
+
+  // Release 8e design, "Matchers": PostToolBatch takes none, as Stop.
+  it("ignores a matcher on PostToolBatch, which takes none", () => {
+    expect(hooksOf({ PostToolBatch: [{ matcher: "(", hooks: [command()] }] }).map((h) => h.matcher)).toEqual([{ all: true }]);
+  });
+
+  // Release 8e design, "`if`": Claude Code checks it at PermissionRequest too, but Tachikoma cannot.
+  it("leaves out a hook with if at PermissionRequest, with 8b's warning", () => {
+    const hooks = { PermissionRequest: [{ hooks: [command({ if: "Bash(git *)" }), command({ command: "other.sh" })] }] };
+    expect(warnings(hooks)).toEqual([
+      'settings.json: "hooks": "PermissionRequest" has a hook with "if", which Tachikoma cannot check, so it was left out: check.sh',
+    ]);
+    expect(hooksOf(hooks).map((h) => h.command)).toEqual(["other.sh"]);
   });
 
   // Matching minds letter case, so an event's name does too.

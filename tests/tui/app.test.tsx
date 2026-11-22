@@ -12234,7 +12234,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // Choice 25: the list, printed once into the conversation, as /tasks prints its list. Each hook by its name, its matcher
   // when not every value, and its own timeout (the user's choice, 2026-11-10, terminal checklist).
   it("lists the hooks in force on /hooks, by event, each by its name, with the ones left out", async () => {
-    const leftOut = ['"Notification" is not an event Tachikoma runs hooks at; its hooks were left out'];
+    const leftOut = ['"TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out'];
     const hook = (event: HookEvent, matcher: Hook["matcher"], command: string, more: Partial<Hook> = {}): Hook => ({
       event, matcher, command, async: false, where: JSON.stringify(event), ...more,
     });
@@ -12282,8 +12282,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   it.each([
     ["none in force", { hooks: [], off: false, leftOut: [] }, `No hooks in force. They go in "hooks" in ${shownFile()}.`],
-    ["only left-out ones", { hooks: [], off: false, leftOut: ['"Notification" is not an event Tachikoma runs hooks at; its hooks were left out'] },
-      `No hooks in force. They go in "hooks" in ${shownFile()}.\nLeft out:\n  "Notification" is not an event Tachikoma runs hooks at; its hooks were left out`],
+    ["only left-out ones", { hooks: [], off: false, leftOut: ['"TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out'] },
+      `No hooks in force. They go in "hooks" in ${shownFile()}.\nLeft out:\n  "TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out`],
     ["hooks turned off", { hooks: [{ event: "Stop", matcher: { all: true }, command: "x", async: false, where: '"Stop"' }], off: true, leftOut: [] },
       `Hooks are off: "disableAllHooks" is true in ${shownFile()}.`],
   ] as [string, HooksConfig, string][])("says so on /hooks with %s", async (_name, config, said) => {
@@ -12573,8 +12573,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     writeFileSync(where, "{}");
     const { app } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} }, hooks: [] });
     const audit = { type: "command", command: "node", args: [path.join(home, "audit.js")], if: "Bash(*)" };
-    writeFileSync(where, JSON.stringify({ hooks: { Notification: [{ hooks: [{ type: "command", command: "x" }] }], Stop: [{ hooks: [audit] }] } }));
-    const warning = '"Notification" is not an event Tachikoma runs hooks at; its hooks were left out';
+    writeFileSync(where, JSON.stringify({ hooks: { TeammateIdle: [{ hooks: [{ type: "command", command: "x" }] }], Stop: [{ hooks: [audit] }] } }));
+    const warning = '"TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out';
     const unchecked = '"Stop" has a hook with "if", which Tachikoma cannot check, so it was left out: ';
     await untilSlowly(() => squashed(app.lastFrame()!).includes(squashed(`settings.json: "hooks": ${unchecked}node ${audit.args[0]}`)));
     expect(squashed(app.lastFrame()!)).toContain(squashed(`settings.json: "hooks": ${warning}`));
@@ -12582,6 +12582,36 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     // The user's choice, 2026-11-10, terminal checklist: the left-out row names the hook as /hooks does; the warning above
     // keeps its whole command.
     expect(app.lastFrame()).toContain(`No hooks in force. They go in "hooks" in ${shownFile()}.\nLeft out:\n  ${warning}\n  ${unchecked}node audit.js\n`);
+  });
+
+  // Release 8e plan, step 1 (Q1, Q32): FileChanged and CwdChanged's own warnings, after the entry's name above the prompt
+  // and alone in /hooks's left-out rows; a value that is not a list under one of the nine events 8e adds is refused, and
+  // the settings in force kept.
+  it("says FileChanged's and CwdChanged's own warnings at a live edit and on /hooks, and refuses a Notification that is not a list (release 8e plan, step 1)", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    onTestFinished(() => removeTree(home));
+    const where = path.join(settingsDir(home), "settings.json");
+    mkdirSync(settingsDir(home), { recursive: true });
+    writeFileSync(where, "{}");
+    const { app, hooks } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} }, hooks: [] });
+    const stop = [{ hooks: [{ type: "command", command: "x" }] }];
+    writeFileSync(where, JSON.stringify({ hooks: { FileChanged: stop, CwdChanged: "anything", Stop: stop } }));
+    const file = "FileChanged: Tachikoma doesn't watch files for hooks, so this event never happens; its hooks were left out.";
+    const cwd = "CwdChanged: Tachikoma's working folder never changes, as each command starts in the project folder, so this event never " +
+      "happens; its hooks were left out.";
+    await untilSlow(app, "Hooks changed: 1 hook at 1 event.");
+    expect(squashed(app.lastFrame()!)).toContain(squashed(`settings.json: "hooks": ${file}`));
+    expect(squashed(app.lastFrame()!)).toContain(squashed(`settings.json: "hooks": ${cwd}`));
+    await type(app, "/hooks");
+    const shown = squashed(app.lastFrame()!.slice(app.lastFrame()!.lastIndexOf("Hooks in force")));
+    expect(shown).toContain(squashed(`Stop\n  x\nLeft out:\n  ${file}\n  ${cwd}\n`));
+    writeFileSync(where, JSON.stringify({ hooks: { Notification: "anything" } }));
+    await untilSlow(app, "the last good settings still apply");
+    expect(squashed(app.lastFrame()!)).toContain(
+      squashed('settings.json: "hooks": "Notification" must be a list, such as [{"matcher": "Bash", "hooks": [{"type": "command", ' +
+        '"command": "check.sh"}]}] (got "anything"); the last good settings still apply'),
+    );
+    expect(hooks!.config.hooks.map((h) => [h.event, h.command])).toEqual([["Stop", "x"]]);
   });
 });
 

@@ -423,6 +423,28 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(vi.mocked(runHook).mock.calls.map((c) => c[2].limit)).toEqual([30, 600]);
   });
 
+  // Release 8e design, "Time limits": Claude Code's 30 s at the two switch events, its usual 600 s at the other seven.
+  it("gives a hook without a timeout 30 s at PreModelSwitch and PostModelSwitch and 600 s at the other events release 8e adds (release 8e plan, step 1)", async () => {
+    const p = await place();
+    const events: Event[] = ["PermissionRequest", "PermissionDenied", "StopFailure", "Notification", "PreModelSwitch", "PostModelSwitch",
+      "PostToolBatch", "InstructionsLoaded", "ConfigChange"];
+    const { hooks } = setup(p, events.map((event) => p.hook(event, { event })));
+    vi.mocked(runHook).mockClear();
+    for (const event of events) await hooks.fire(event, {});
+    expect(vi.mocked(runHook).mock.calls.map((c) => c[2].limit)).toEqual([600, 600, 600, 600, 30, 30, 600, 600, 600]);
+  });
+
+  // Release 8e design, "Matchers": for another provider's model every PreModelSwitch and PostModelSwitch hook runs,
+  // whatever its matcher (steps 13 and 14 use this).
+  it("runs every hook of an event, whatever its matcher, when the caller asks for all of them (release 8e plan, step 1)", async () => {
+    const p = await place();
+    const { hooks } = setup(p, [p.hook("haiku", { event: "PreModelSwitch", matcher: { names: ["claude-haiku-4-5"] } }), p.hook("other")]);
+    await hooks.fire("PreModelSwitch", {}, { match: "llama3" });
+    expect(p.inputs("haiku")).toHaveLength(0);
+    await hooks.fire("PreModelSwitch", {}, { match: "llama3", every: true });
+    expect([p.inputs("haiku").length, p.inputs("other").length]).toEqual([1, 0]);
+  });
+
   it("stops every hook it started when the turn stops, and rejects with Cancelled", async () => {
     const p = await place();
     const stop = new AbortController();

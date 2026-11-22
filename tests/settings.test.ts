@@ -376,19 +376,19 @@ describe("readSettings", () => {
           { type: "command", command: node, args: ["C:\\h\\audit.js"], if: "Bash(*)" },
           { type: "command", command: "jq -r '.x' || exit 2", statusMessage: "guard", comment: "mine" },
         ] }],
-        Notification: [],
+        TeammateIdle: [],
       };
       const r = read({ hooks });
       if ("problem" in r) throw new Error(r.problem);
       expect(r.warnings).toEqual([
         `settings.json: "hooks": "PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: ${node} C:\\h\\audit.js`,
         `settings.json: "hooks": "PreToolUse" has a hook with "comment", which is not a hook field; it was left out: jq -r '.x' || exit 2`,
-        'settings.json: "hooks": "Notification" is not an event Tachikoma runs hooks at; its hooks were left out',
+        'settings.json: "hooks": "TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out',
       ]);
       const rows = [
         '"PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: node audit.js',
         '"PreToolUse" has a hook with "comment", which is not a hook field; it was left out: guard',
-        '"Notification" is not an event Tachikoma runs hooks at; its hooks were left out',
+        '"TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out',
       ];
       expect(r.hooksLeftOut).toEqual(rows);
       expect(hooksOf(r.settings, r.hooksLeftOut).leftOut).toEqual(rows);
@@ -477,6 +477,26 @@ describe("loadSettings", () => {
     mkdirSync(path.join(settingsDir(home), "settings.json"), { recursive: true }); // a folder where the file goes
     const r = loadSettings(home);
     expect("problem" in r && r.problem).toMatch(/^settings\.json could not be read: EISDIR/);
+  });
+
+  // Release 8e plan, step 1 (Q32): the launch's read stops at a value that is not a list under one of the nine events 8e
+  // adds, which before 8e was left out with a warning; one under an event Tachikoma does not run hooks at still is.
+  it("gives a problem for a value that is not a list under one of release 8e's nine events, and not under another event", () => {
+    const home = temp();
+    mkdirSync(settingsDir(home));
+    const write = (hooks: object) => writeFileSync(path.join(settingsDir(home), "settings.json"), JSON.stringify({ hooks }));
+    for (const event of ["PermissionRequest", "PermissionDenied", "StopFailure", "Notification", "PreModelSwitch", "PostModelSwitch",
+      "PostToolBatch", "InstructionsLoaded", "ConfigChange"]) {
+      write({ [event]: "anything" });
+      expect(loadSettings(home)).toEqual({
+        problem: `settings.json: "hooks": "${event}" must be a list, such as [{"matcher": "Bash", "hooks": [{"type": "command", "command": "check.sh"}]}] ` +
+          '(got "anything")',
+      });
+    }
+    write({ TeammateIdle: "anything", FileChanged: "anything", CwdChanged: "anything" });
+    const r = loadSettings(home);
+    if ("problem" in r) throw new Error(r.problem);
+    expect([r.settings.hooks, r.warnings.length, r.hooksLeftOut!.length]).toEqual([[], 3, 3]);
   });
 });
 
