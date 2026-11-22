@@ -38,6 +38,27 @@ hook is sent, the exit-code and JSON table, `/hooks`, Ctrl+O, live edits, and th
 
 - **Time limits** are Claude Code's: 30 s at PreModelSwitch and PostModelSwitch; the usual 600 s at
   the other seven.
+- **`async: true`** hooks run without being waited for, as in 8b, and their answer decides nothing
+  (re-review, 2026-11-23, finding 1). At PermissionRequest, PermissionDenied, PreModelSwitch,
+  PostToolBatch and ConfigChange only hooks without `async` can decide (allow, deny, ask, block,
+  retry); the question, the refusal, the switch, the next request and the settings change wait for
+  those alone. An async hook that tries to decide gets 8b's line, "… asked to block, but an
+  "async" hook cannot block". An async PostModelSwitch hook's text is ignored too, as 8b ignores
+  every async hook's answer.
+- **Matchers** (re-review, 2026-11-23, finding 3):
+
+  | Event | The matcher is on |
+  |---|---|
+  | PermissionRequest, PermissionDenied | the tool name, under Claude Code's names, as PreToolUse |
+  | StopFailure | `error` |
+  | Notification | `notification_type` |
+  | PreModelSwitch, PostModelSwitch | `to_model`'s canonical name; for another provider's model every hook runs |
+  | PostToolBatch | none: a matcher is ignored, as on Stop |
+  | InstructionsLoaded | `load_reason` |
+  | ConfigChange | `source`, always `user_settings` |
+
+  Each event hands the hook runner that value, so a hook with a matcher is picked by it, not only
+  the hooks that match everything.
 - **`if`** hooks are still left out with a warning: Claude Code checks `if` at PermissionRequest and
   PermissionDenied too, but Tachikoma does not have its permission-rule syntax. `asyncRewake` still
   runs as plain `async`.
@@ -175,7 +196,10 @@ into a session with another lead, as `source: "resume"`.
   in Claude Code, that request waits for the hook up to 5 seconds from when the user sends the
   prompt: text that arrives in that time goes with it; if the hook has not finished by then, the
   request goes without it, and the text goes with the one after (review, 2026-11-23, finding 4).
-  After several switches in a row, only the last one's text goes.
+  After several switches in a row, only the last one's text goes. Text belongs to the conversation
+  the switch happened in (for `/resume`, the one resumed). If that conversation has changed by the
+  time the hook finishes, through `/clear`, `/resume` or `/branch`, its text is dropped, as 8b drops
+  the last conversation's waiting hook text (re-review, 2026-11-23, finding 2).
 - Exit code 2 shows its error output as a red line.
 
 ## Notification, InstructionsLoaded, ConfigChange
@@ -253,7 +277,9 @@ The plan gives every new line's words for the user to approve; the ones above ar
 
 ## Testing
 
-- **Rule tests:** the nine events accepted; the two special warnings; each event's matcher; each
+- **Rule tests:** the nine events accepted; the two special warnings; each row of the matcher table,
+  a hook with a matcher picked by the value its event hands over; an async hook deciding nothing at
+  each event that can decide; each
   event's answer rules, such as an exit code 2 ignored where Claude Code ignores it.
 - **Session tests with a stand-in model, no network:**
   - each event fires at its moment;
@@ -266,7 +292,8 @@ The plan gives every new line's words for the user to approve; the ones above ar
   - PostToolBatch ending a turn while a `delegate` runs;
   - a blocked and an asked `/lead`, and a blocked settings-file switch; a dated Anthropic name
     matching its undated matcher, and another provider's model running every switch hook;
-  - PostModelSwitch's text just inside and just outside the 5-second wait;
+  - PostModelSwitch's text just inside and just outside the 5-second wait, and a hook finishing
+    after a `/clear`, its text never reaching the new conversation;
   - Notification's 6 s and 60 s waits, a keystroke starting the wait again;
   - InstructionsLoaded's three reasons;
   - a ConfigChange block keeping the old settings; two quick saves while a ConfigChange hook runs,
