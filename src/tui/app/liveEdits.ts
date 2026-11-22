@@ -98,6 +98,9 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     } else if (key === "allowedSites") {
       // Read at the launch only, as network is (8c-2b plan, Step 3 and question 9; W3).
       fns.note(gray(`"allowedSites" changes in ${SETTINGS} take effect at the next launch`));
+    } else if (key === "memory") {
+      // Read at the launch only, with the same line (8d plan, step 15 and question Q20).
+      fns.note(gray(`"memory" changes in ${SETTINGS} take effect at the next launch`));
     } else if (key === "theme") {
       // Read at the launch only (TUI design pass, Task 1), with the same line; auto unless the launch's file set it.
       fns.note(gray(`"theme" changes in ${SETTINGS} take effect at the next launch; it stays ${ui.live?.loaded.settings.theme ?? "auto"}`));

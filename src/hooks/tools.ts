@@ -143,6 +143,19 @@ const TOOLS: Record<string, Spec> = {
       { ours: "max_results", theirs: "max_results", kind: "count" },
     ],
   },
+  // The memory tools (8d plan, step 23): Claude Code has none, so hooks see them by their own names, as shell_output.
+  memory_search: {
+    claude: "memory_search",
+    fields: [
+      { ours: "query", theirs: "query", kind: "text", required: true },
+      { ours: "scope", theirs: "scope", kind: "text" },
+    ],
+  },
+  memory_save: { claude: "memory_save", fields: [{ ours: "text", theirs: "text", kind: "text", required: true }] },
+  record_lesson: {
+    claude: "record_lesson",
+    fields: [{ ours: "lesson", theirs: "lesson", kind: "text", required: true }],
+  },
 };
 
 // The Tachikoma tool Claude Code's name stands for, or the name itself for a tool it does not know, for the lines, which
@@ -286,7 +299,8 @@ export function errorOf(name: string, text: string, parts?: unknown): string {
 }
 
 // The tools whose result Claude Code's docs give no shape for, so hooks get the text (choice 11) and may give text back.
-const TEXT_RESULT = new Set(["read_file", "edit_file", "find_files", "search_files", "todo", "shell_output", "stop_task"]);
+const TEXT_RESULT = new Set(["read_file", "edit_file", "find_files", "search_files", "todo", "shell_output",
+  "stop_task", "memory_search", "memory_save", "record_lesson"]);
 
 // A hook's `updatedToolOutput` as the text the model reads (choice 13), or null where it does not match the tool's result
 // and is not used, as Claude Code ignores one. PostToolUse runs only after a call that succeeded, so a rebuilt shell

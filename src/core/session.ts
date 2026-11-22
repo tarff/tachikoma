@@ -6,7 +6,14 @@ import type { Hooks } from "../hooks/hooks.js";
 import { errorOf, fromClaude, isMcp, outputFrom, type Paths, pathsFor, responseOf, toClaude } from "../hooks/tools.js";
 import type { Offered, Servers } from "../mcp/servers.js";
 import type { McpTools } from "../mcp/tools.js";
+import type { Hit, Palace } from "../memory/client.js";
+import { lessonQuery } from "../memory/lessonQuery.js";
+import { askLesson, lessonRequest, pairOf } from "../memory/lessons.js";
+import type { Memory } from "../memory/memory.js";
+import { LESSONS } from "../memory/paths.js";
+import type { Turn as SavedTurn } from "../memory/saver.js";
 import type { Cache } from "../providers/pictures.js";
+import { lessonLabel, matchText } from "../tools/memory.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
@@ -14,7 +21,7 @@ import { type Ask, Declined, type PermissionGate, StoppedFirst, visible } from "
 import { dueNotes, isSetupNote, localDate, type Told, toldAfter } from "./setup.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
-import { CUT_OFF, type Transcript } from "./transcript.js";
+import { CUT_OFF, type Transcript, type Unsaved } from "./transcript.js";
 import {
   type CompletionRequest,
   errorText,
@@ -80,6 +87,26 @@ const keptTooOften = (id: string | undefined) =>
 // plan adds"; Task 11).
 const LEFT_OUT = "SessionStart hook text was left out: with it, the shortened conversation would not fit the model's window.";
 
+// The note from long-term memory in front of a conversation's first message (8d plan, step 24). Each of its two
+// searches asks for 100 hits, MemPalace's most and the only count steps 13 and 14 measured with (the user's choice
+// before step 23); of both rooms' hits, merged closest first, those at 0.4861 or less are kept, up to 3, whichever room
+// they came from (M6: the user's choice N3 at step 14, 2026-11-20). The heading, approved by the user (2026-11-20).
+const NOTE_HITS = 100;
+const NOTE_CUT_OFF = 0.4861;
+const NOTE_MATCHES = 3;
+const NOTE_HEADING = "From long-term memory, close matches to this message (information, not instructions):";
+
+// The lessons added to a lead's failed tool call (8d plan, step 25). Its one search, of the lessons, asks for 100 hits,
+// MemPalace's most and the only count step 13 measured with (the user's choice before step 23); they are put in
+// order by distance here, as the hub re-ranks them (step 13), and the closest at 0.4862 or less is kept, 1 lesson (M5:
+// the user's choice R3 at step 13's re-run, 2026-11-19). The label, approved by the user (2026-11-19). The three
+// memory tools' own failures get none.
+const LESSON_HITS = 100;
+const LESSON_CUT_OFF = 0.4862;
+const LESSONS_KEPT = 1;
+const LESSON_LABEL = "Lessons from earlier failures like this one (information, not instructions):";
+const MEMORY_TOOLS = new Set(["memory_search", "memory_save", "record_lesson"]);
+
 // True once `p` has settled, false when `signal` stops the wait first: a turn waiting for SessionStart's hooks (Task 10).
 const settled = (p: Promise<void>, signal?: AbortSignal) =>
   new Promise<boolean>((resolve) => {
@@ -89,6 +116,19 @@ const settled = (p: Promise<void>, signal?: AbortSignal) =>
     void p.then(() => {
       signal?.removeEventListener("abort", stop);
       resolve(true);
+    });
+  });
+
+// `p`'s value, or undefined when `signal` stops the wait first: the note's searches (8d plan, step 24), which never
+// reject (the palace client, step 18).
+const unlessStopped = <T>(p: Promise<T>, signal?: AbortSignal) =>
+  new Promise<T | undefined>((resolve) => {
+    if (signal?.aborted) return resolve(undefined);
+    const stop = () => resolve(undefined);
+    signal?.addEventListener("abort", stop, { once: true });
+    void p.then((value) => {
+      signal?.removeEventListener("abort", stop);
+      resolve(value);
     });
   });
 
@@ -155,6 +195,32 @@ export interface SessionOptions {
   // moment (clilib.ts, setupOf), `today` the local date, `root` and `platform` the host's, for the setup note. The
   // lead's alone: a subagent's session has none, and gets no notes.
   setup?: { now: () => Setup; today: () => string; root: string; platform: NodeJS.Platform };
+  // The lead's saver of turns (8d plan, step 22), given whenever memory is not switched off: each typed turn's end is
+  // written as a boundary line and the turn handed to it, never waited on; `send` starts sending the turns not yet
+  // saved, before a shortening. A subagent's session saves nothing.
+  memory?: { hand(turn: SavedTurn): void; send(): void };
+  // The note from long-term memory in front of the first message after a launch, /clear or a shortening (8d plan, step
+  // 24): memory, whose palace is searched while it is on (step 21), the project's room (step 16), and each search's
+  // time limit, the caller's. The lead's alone.
+  recall?: { memory: { on(): boolean; readonly palace: Palace | undefined }; room: string; timeout: number };
+  // The lessons added to a failed tool call's result (8d plan, step 25): memory, whose lessons are searched while it
+  // is on (step 21), and the search's time limit, the caller's. The lead's alone.
+  lessons?: { memory: { on(): boolean; readonly palace: Palace | undefined }; timeout: number };
+  // The lesson ask at a turn's end (8d plan, step 26): memory, which owns the request and is asked first whether it is
+  // on, as nothing is sent otherwise (step 21; Q16); the project's room, for the lesson's label (step 16); and the
+  // time limit of the add that stores it, the caller's, as record_lesson's is (step 23). The lead's alone.
+  lessonAsk?: { memory: Pick<Memory, "on" | "lesson">; room: string; timeout: number };
+}
+
+// A call of the turn as the lesson ask sees it (step 26): the call's place in the record of calls, which a hook's
+// rewrite replaces, how it ended, and for a failure the plain error, before any lessons are added to it; `running`,
+// when its command or subagent was still running as it returned, whether it has not passed since, read at the turn's
+// end (PR #26 review, finding 5; the user's choice "Only if it passed", 2026-11-22).
+interface Called {
+  entry: { name: string; input: unknown };
+  outcome?: ToolOutcome;
+  error?: string;
+  running?: () => boolean;
 }
 
 // A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
@@ -175,6 +241,8 @@ export interface Conversation {
   tools?: ToolSpec[];
   asked?: string[]; // the calls the user was asked about, read back from the transcript (release 8c plan, Task 15)
   told?: Told; // what the model was told, for the notes (system prompt plan, Task 7); none, no notes
+  unsaved?: Unsaved[]; // the turns its transcript shows not yet saved, for the saver (8d plan, step 22)
+  lastTurn?: number; // the highest turn number its transcript holds, 0 when absent (PR #26 review, finding 2)
 }
 
 export class Session {
@@ -245,6 +313,18 @@ export class Session {
   // What the model was told, from the loaded conversation and each note pushed since (design, "What the model was
   // told"); none, no notes (system prompt plan, Task 7).
   #told: Told | undefined;
+  // The typed turn under way, for the saver (8d plan, step 22; Q4, Q5): its number, its typed words and the model's
+  // text, gathered as each reply is stored, never read back from the history, which a shortening replaces.
+  #turnNow: Unsaved | undefined;
+  // How far the loaded conversation's highest turn number is past its prompts read back, which a damaged line can make
+  // fewer than were numbered live, so a typed turn is numbered after every number its transcript holds and never takes
+  // a saved turn's label (PR #26 review, finding 2); 0 for a transcript without damage.
+  #skipped = 0;
+  // Whether the next typed message is the first of a launch's or /clear's new conversation, or the first after a
+  // shortening, which the note from long-term memory goes in front of once memory is on (8d plan, step 24; Q9).
+  #recallDue = false;
+  // The turn's calls in the order of its replies, for the lesson ask at its end (8d plan, step 26); none without it.
+  #called: Called[] | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -255,6 +335,16 @@ export class Session {
     this.#serversFirst = opts.servers !== undefined;
     // A launch's start line holds Tachikoma's own tools.
     this.#savedTools = madeUnder("", this.#own());
+    // Before a shortening, the turns not yet saved are sent, not waited on; it cannot throw, as the loop that runs
+    // onShorten has no catch, and the shortening goes ahead when the save fails (8d plan, step 22).
+    const memory = opts.subagent ? undefined : opts.memory;
+    if (memory) {
+      this.onShorten.push(() => {
+        try {
+          memory.send();
+        } catch {}
+      });
+    }
   }
 
   #own(): ToolSpec[] {
@@ -290,6 +380,7 @@ export class Session {
     this.messages.splice(0, this.messages.length, ...c.messages);
     this.#told = c.told;
     this.prompts.splice(0, this.prompts.length, ...c.prompts);
+    this.#skipped = Math.max(0, (c.lastTurn ?? 0) - c.prompts.length);
     this.asked.clear();
     for (const id of c.asked ?? []) this.asked.add(id);
     this.#hookText.splice(0); // the last conversation's hook text, not yet sent, is not this one's (Task 6's code review)
@@ -318,6 +409,8 @@ export class Session {
     this.opts.pictures?.from(c.nextPicture);
     this.opts.tasks?.from(c.nextTask);
     this.#saving(); // a write made before the load, such as launch's start line or mend
+    // The turns its transcript shows not yet saved go to the saver (8d plan, step 22).
+    for (const turn of c.unsaved ?? []) this.#hand(turn);
   }
 
   // The system prompt built afresh, for /clear and a shortening (release 8a plan, Task 7; system prompt plan, Task 8):
@@ -341,6 +434,9 @@ export class Session {
   // its request; a load or the session's end meanwhile stops its hooks and drops their text, as it was the last
   // conversation's. A shortening's (Task 11) is not fired here.
   start(source: "startup" | "resume" | "clear" | "fork"): void {
+    // A launch's or /clear's new conversation gets the note from long-term memory; a resumed or copied one does not
+    // (8d plan, step 24).
+    this.#recallDue = source === "startup" || source === "clear";
     const { hooks } = this.opts;
     if (!hooks) return;
     const stop = new AbortController();
@@ -486,11 +582,65 @@ export class Session {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
+    this.#called = this.opts.lessonAsk && !this.opts.subagent ? [] : undefined;
     try {
       return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal, supply);
     } finally {
       this.#running = false;
+      this.#ended();
+      this.#askLesson();
     }
+  }
+
+  // The lesson ask, at the end of a turn, typed or not, however it ended (8d plan, step 26): only while memory is on
+  // (Q16), and only when a failed call, not one of the three memory tools' own, was followed by a call doing the same
+  // job that worked. One request, owned by memory and never waited on, with the calls and the error cut as the error
+  // log cuts them; its lesson stored in the lessons as record_lesson stores one, its text alone, the project and the
+  // day in its label.
+  #askLesson(): void {
+    const called = this.#called;
+    this.#called = undefined;
+    const a = this.opts.lessonAsk;
+    if (!a || !called || !a.memory.on()) return;
+    const calls = called
+      .flatMap((c) => (c.outcome === undefined ? [] : [{ ...c.entry, outcome: c.outcome, error: c.error,
+        running: c.running?.() }]))
+      .filter((c) => !(c.outcome === "failed" && MEMORY_TOOLS.has(c.name)));
+    const pair = pairOf(calls, this.opts.ctx.root);
+    if (!pair) return;
+    const shown = (c: { name: string; input: unknown }) => truncate(`${c.name} ${JSON.stringify(c.input)}`);
+    const text = lessonRequest(shown(pair.failed), pair.failed.error ?? "", shown(pair.worked));
+    const lead = this.#lead;
+    const { bus } = this.opts;
+    a.memory.lesson(
+      (signal) => askLesson(lead, text, signal, bus),
+      (palace, lesson: string) => palace.add(LESSONS, lessonLabel(a.room), lesson, a.timeout),
+    );
+  }
+
+  // A typed turn's end, however it ended (8d plan, step 22; Q4, Q22): its boundary line, then the turn to the saver
+  // when the model wrote any text, never waited on. Only once its boundary line is written: a resume could give a turn
+  // without one its number again (PR #26 review, finding 2; the user's choice "Don't save it", 2026-11-22).
+  #ended(): void {
+    const turn = this.#turnNow;
+    if (!turn) return;
+    this.#turnNow = undefined;
+    const t = this.#transcript;
+    t?.write({ t: "turn", n: turn.n });
+    this.#saving();
+    if (turn.texts.length && t && t.failed === null) this.#hand(turn);
+  }
+
+  // A turn to the saver, with its saved record, written only while this session is still the window's (Q6): after a
+  // switch, another window may hold its transcript, and the saver's look-up finds the turn when it is next resumed.
+  #hand(turn: Unsaved): void {
+    const t = this.#transcript;
+    const record = () => {
+      if (this.#transcript !== t || !t) return;
+      t.write({ t: "saved", n: turn.n });
+      this.#saving();
+    };
+    if (!this.opts.subagent) this.opts.memory?.hand({ session: this.id, ...turn, record });
   }
 
   async #turn(typed: Part[], signal?: AbortSignal, supply?: Supply): Promise<Ended | void> {
@@ -535,11 +685,24 @@ export class Session {
       if (before) hooks!.restoreRuns(before);
       return { unsupplied: true };
     }
+    // The note from long-term memory, searched with the typed words once a hook has let the prompt through (8d plan,
+    // step 24); a stop meanwhile sends and saves nothing, as one while the hooks run does, and the note waits for the
+    // next prompt.
+    const recalled = words ? await this.#recall(words, signal) : [];
+    if (!recalled) {
+      if (before) hooks!.restoreRuns(before);
+      return;
+    }
     if (words && !this.opts.subagent) this.prompts.push(words);
+    // A typed turn, numbered by its prompt's place among the session's prompts (Q4), for the saver (8d plan, step 22).
+    if (words && !this.opts.subagent && this.opts.memory) {
+      this.#turnNow = { n: this.prompts.length + this.#skipped, typed: words, texts: [] };
+    }
     const own: Part[] = [...typed, ...(supplied ?? []), ...prompted, ...this.#waiting()];
     if (!own.length) return;
-    // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message.
-    const parts: Part[] = [...this.#hookParts(this.#nextText), ...own, ...this.#notes()];
+    // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message; the note
+    // from long-term memory goes in front of the prompt (8d plan, step 24).
+    const parts: Part[] = [...this.#hookParts(this.#nextText), ...recalled, ...own, ...this.#notes()];
     // The turn's request, kept for a shortening during the turn: after a first one it is no longer in the history.
     const asked: Message = { role: "user", parts };
     this.#push(asked);
@@ -659,6 +822,8 @@ export class Session {
       // before the reply reaches the window, which folds it by this set.
       for (const p of turn.parts) if (p.type === "tool_call") this.asked.delete(p.id);
       this.#push(answer);
+      // The model's text, as each reply is stored (8d plan, step 22; Q5): tool calls and their outputs left out.
+      for (const p of turn.parts) if (p.type === "text" && p.text) this.#turnNow?.texts.push(p.text);
 
       const calls = turn.parts.filter((p) => p.type === "tool_call");
       if (turn.cutOff) {
@@ -723,14 +888,20 @@ export class Session {
       const results: ToolResult[] = new Array(calls.length);
       // The loaded set before the calls, so a search that grows it is saved (release 8c plan, choice 41).
       const loaded = this.opts.mcp?.loaded.size;
+      // Each call's place in the turn's calls, in the reply's order, for the lesson ask (8d plan, step 26).
+      const called: Called[] = entries.map((entry) => ({ entry }));
+      this.#called?.push(...called);
       try {
         // tool_search runs alongside the others too (release 8c plan, choice 44).
         const parallel = (name: string) => (this.opts.tools.find((t) => t.spec.name === name) ?? (this.#search?.spec.name === name ? this.#search : undefined))?.parallel;
-        const together = calls.map((c, i) => (parallel(c.name) ? this.#runTool(c, entries[i]!, round).then((r) => (results[i] = r)) : null));
+        const together = calls.map((c, i) =>
+          (parallel(c.name) ? this.#runTool(c, called[i]!, round).then((r) => (results[i] = r)) : null));
         // Each is handled now, so one that fails while a call after it runs is no unhandled rejection; Promise.all below
         // still rejects with it (Task 7's code review).
         for (const p of together) p?.catch(() => {});
-        for (const [i, call] of calls.entries()) if (!together[i]) results[i] = await this.#runTool(call, entries[i]!, round);
+        for (const [i, call] of calls.entries()) {
+          if (!together[i]) results[i] = await this.#runTool(call, called[i]!, round);
+        }
         await Promise.all(together);
       } finally {
         signal?.removeEventListener("abort", join);
@@ -1008,6 +1179,8 @@ export class Session {
     // the model was told"), as a resume reads it from the line (transcript.ts).
     if (this.#told && fresh.setup) this.#told = toldAfter({ date: fresh.date, setup: fresh.setup }, message.parts);
     if (leftOut) bus.emit("hook-note", LEFT_OUT);
+    // The next typed message gets the note from long-term memory (8d plan, step 24).
+    this.#recallDue = true;
     bus.emit("shortened", r.summary);
     return "done";
   }
@@ -1043,16 +1216,19 @@ export class Session {
     this.opts.bus.emit("error", sent ? { ...error, sent: true } : error);
   }
 
-  // `entry` is the call's place in the record of calls, which a hook's rewrite replaces.
-  async #runTool(call: ToolCall, entry: { name: string; input: unknown }, round: Round): Promise<ToolResult> {
+  // `called.entry` is the call's place in the record of calls, which a hook's rewrite replaces; how the call ended is
+  // kept beside it, for the lesson ask (8d plan, step 26).
+  async #runTool(call: ToolCall, called: Called, round: Round): Promise<ToolResult> {
     const { bus } = this.opts;
     bus.emit("tool-start", { id: call.id, name: call.name, input: call.input });
-    const [res, outcome] = await this.#execute(call, entry, round);
+    const [res, outcome] = await this.#execute(call, called.entry, round, called);
+    called.outcome = outcome;
     bus.emit("tool-end", { id: call.id, outcome });
     return res;
   }
 
-  async #execute(call: ToolCall, entry: { name: string; input: unknown }, round: Round): Promise<[ToolResult, ToolOutcome]> {
+  async #execute(call: ToolCall, entry: { name: string; input: unknown }, round: Round, called: Called):
+    Promise<[ToolResult, ToolOutcome]> {
     const { signal } = round;
     // A call a stop came before or during: the user's, or a hook's continue: false, in its own words (release 8b plan,
     // Task 7).
@@ -1062,10 +1238,14 @@ export class Session {
       // Capped like the message: a failed write_file's input is the whole file. The input that ran, a hook's rewrite among
       // them, as the record of calls holds it (Task 6's code review).
       this.opts.bus.emit("error", { kind: "tool", attempted: truncate(`${call.name} ${JSON.stringify(entry.input)}`), message, lead: this.#lead.id });
+      called.error = message; // the plain error, for the lesson ask (8d plan, step 26)
       return [result(call, message, true), "failed"];
     };
     const tool = this.#tool(call.name);
-    if (!tool) return fail(`Unknown tool: ${call.name}`);
+    if (!tool) {
+      const unknown = `Unknown tool: ${call.name}`;
+      return withLessons(fail(unknown), await this.#lessons(call.name, entry.input, unknown, signal));
+    }
     const { hooks } = this.opts;
     let parts: unknown; // the result's parts as the tool reported them, for the shape hooks are sent (choice 12)
     let started: number | undefined; // unset: the tool never started
@@ -1095,7 +1275,8 @@ export class Session {
       // A yes to a hook's own question, given after a hook stopped the turn, runs nothing either (Task 7's code review).
       if (signal.aborted) return stopped(NOT_RUN);
       started = Date.now();
-      const ran = await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal, ...report });
+      const running = (passed?: () => boolean) => void (called.running = () => !passed?.());
+      const ran = await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal, ...report, running });
       const before = round.pictures.length; // #pictured adds this call's at once, so those after `before` are its own
       text = typeof ran === "string" ? truncate(ran) : this.#pictured(ran, round);
       pictures = round.pictures.slice(before);
@@ -1106,13 +1287,17 @@ export class Session {
       if (err instanceof Declined) return [result(call, truncate(err.message), true), signal.aborted ? "cancelled" : "declined"];
       // Not a failure, so not logged. A yes after the stop ran nothing, though the tool had started (Task 7's re-check).
       if (signal.aborted) return stopped(started === undefined || err instanceof StoppedFirst ? NOT_RUN : STOPPED);
-      const failed = fail(truncate(errorText(err)));
+      const error = errorText(err);
+      const failed = fail(truncate(error));
+      // Searched while the hook below runs, by the whole error, the input that ran and the tool's name; the error log
+      // and the hook have the plain error (step 25).
+      const lessons = this.#lessons(call.name, entry.input, error, signal);
       // Not for a call that never started, nor an input the tool's schema refused (Claude Code's hooks reference).
       if (hooks && started !== undefined && !(err instanceof InvalidInput)) {
         const fields = { error: errorOf(call.name, failed[0].output, parts), is_interrupt: false, duration_ms: Date.now() - started };
         await this.#postToolUse(hooks, "PostToolUseFailure", call, entry, fields, round);
       }
-      return failed;
+      return withLessons(failed, await lessons);
     }
     // A call a stop came during keeps its own result, such as a stopped delegate's, and no hook after it runs.
     if (!hooks || signal.aborted) return [result(call, text, false), "ok"];
@@ -1296,6 +1481,41 @@ export class Session {
     this.#saving();
   }
 
+  // The note from long-term memory for the first typed message of a conversation, or after a shortening (8d plan, step
+  // 24): once memory is on, as a message sent before that goes without it and the next one is searched (Q9), the
+  // typed words are searched in the project's room and the lessons at once, each within the one time limit (the client
+  // cuts them to MemPalace's 250 characters), and the closest hits inside the cut-off make one part, memory's, under
+  // the heading, each in memory_search's form. Nothing when none is close, or both searches failed or passed the
+  // limit; the other room's hits when one did (Q27). Undefined when a stop came first.
+  async #recall(words: string, signal?: AbortSignal): Promise<Part[] | undefined> {
+    const r = this.opts.recall;
+    if (!r || this.opts.subagent || !this.#recallDue || !r.memory.on()) return [];
+    const palace = r.memory.palace;
+    if (!palace) return [];
+    const found = await unlessStopped(palace.searchTwo(words, [r.room, LESSONS], NOTE_HITS, r.timeout), signal);
+    if (signal?.aborted) return undefined;
+    this.#recallDue = false;
+    if (found?.is !== "found") return [];
+    const close = found.hits.filter((h) => h.distance <= NOTE_CUT_OFF).slice(0, NOTE_MATCHES);
+    if (!close.length) return [];
+    return [{ type: "text", text: `${NOTE_HEADING}\n${close.map(matchText).join("\n\n")}`, from: "memory" }];
+  }
+
+  // The lessons close to a lead's failed call (8d plan, step 25): once memory is on, one search of the lessons, within
+  // the time limit, by the call's query (lessonQuery.ts); its hits closest first, those inside the cut-off, up to the
+  // count. None for a subagent or a memory tool, when the search fails or passes the limit, or at a stop.
+  async #lessons(tool: string, input: unknown, error: string, signal: AbortSignal): Promise<Hit[]> {
+    const l = this.opts.lessons;
+    if (!l || this.opts.subagent || MEMORY_TOOLS.has(tool) || !l.memory.on()) return [];
+    const palace = l.memory.palace;
+    if (!palace) return [];
+    const query = lessonQuery(tool, input, error);
+    const found = await unlessStopped(palace.search(query, { room: LESSONS }, LESSON_HITS, l.timeout), signal);
+    if (found?.is !== "found") return [];
+    const close = found.hits.filter((h) => h.distance <= LESSON_CUT_OFF).sort((a, b) => a.distance - b.distance);
+    return close.slice(0, LESSONS_KEPT);
+  }
+
   #waiting(): Part[] {
     return (this.opts.inbox?.() ?? []).map((text) => ({ type: "text", text, from: "tasks" }));
   }
@@ -1348,4 +1568,14 @@ export const cannot = (reason: string) => `The conversation could not be shorten
 
 function result(call: ToolCall, output: string, isError: boolean): ToolResult {
   return { type: "tool_result", callId: call.id, output, isError };
+}
+
+// A failed call's result with its lessons after the error, under the label, each in memory_search's form (8d plan,
+// step 25; Q23): whole, closest first, each only if the whole, with it, stays within the cap. The error is as it was,
+// a cut one included; with no lesson that fits, the result is as it was, byte for byte.
+function withLessons([res, outcome]: [ToolResult, ToolOutcome], lessons: Hit[]): [ToolResult, ToolOutcome] {
+  const text = (hits: Hit[]) => `${res.output}\n\n${LESSON_LABEL}\n${hits.map(matchText).join("\n\n")}`;
+  const kept: Hit[] = [];
+  for (const h of lessons) if (text([...kept, h]).length <= MAX_TOOL_OUTPUT) kept.push(h);
+  return kept.length ? [{ ...res, output: text(kept) }, outcome] : [res, outcome];
 }

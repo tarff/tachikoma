@@ -30,12 +30,18 @@ import { projectFile } from "../../src/core/datadir.js";
 import { attachErrorLog } from "../../src/core/errorlog.js";
 import { exportText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
+import { MEMORY_LINE } from "../../src/core/prompt.js";
 import { listSessions, openSession } from "../../src/core/sessions.js";
 import { INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
 import { readTranscript, sessionPaths, Transcript } from "../../src/core/transcript.js";
 import type { CompletionRequest, Message, Provider, Setup, Turn } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
+import { connect, type Palace } from "../../src/memory/client.js";
+import { type MemoryState, NO_UV } from "../../src/memory/memory.js";
+import { LESSONS } from "../../src/memory/paths.js";
+import { Saver } from "../../src/memory/saver.js";
+import { lessonLabel } from "../../src/tools/memory.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { shellTools } from "../../src/tools/commands.js";
 import { delegateTool } from "../../src/tools/delegate.js";
@@ -183,6 +189,7 @@ async function mount(
     copy?: AppProps["copy"]; // copy mode's copy, and what leave() does with it (release 7 plan, Task 21)
     sessions?: string; // the sessions folder, as sessionsDir gives it; a fresh one for this mount when not given
     save?: boolean; // the session saves there from the start, as cli.tsx starts one (App's sessions); unsaved otherwise
+    prompt?: string; // the launch's prompt, which /resume compares a saved one's with (8d plan, step 27); "t" if none
     // The user's hooks, as cli.tsx hands them to the session, the subagents and the App, or the whole of what the launch
     // read, with left-out rows and `off` for /hooks; none when not given (release 8b plan, Tasks 8 and 12).
     hooks?: Hook[] | HooksConfig;
@@ -192,6 +199,7 @@ async function mount(
     // listens and stopped at the test's end, with the project's from .mcp.json for live edits (Task 10); none when not given.
     mcp?: (bus: Bus) => { servers: Servers; project?: ServerConfig[] };
     theme?: Theme; // the look and palette, as cli.tsx gives them; the dark full one when not given (TUI design pass, Task 7)
+    memory?: AppProps["memory"]; // long-term memory in the window (8d plan, step 28); none when not given
   } = {},
 ) {
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
@@ -240,7 +248,7 @@ async function mount(
   const start = { project: ctx.root, version: "test", tools: tools.map((t) => t.spec) };
   const begin = { ...start, lead: lead.id, print: false, system: "t", date: "2026-11-17", setup: OFF };
   const opened = opts.save ? newSaved(sessions, { id: randomUUID(), ...begin }) : undefined;
-  const windowSessions = new WindowSessions(sessions, start, { setup: OFF, full: "t" }, opened);
+  const windowSessions = new WindowSessions(sessions, start, { setup: OFF, full: opts.prompt ?? "t" }, opened);
   const mcp = opts.mcp && { project: [], ...opts.mcp(bus) };
   if (mcp) onTestFinished(() => mcp.servers.stopAll());
   if (mcp && hooks) mcp.servers.forms.useHooks(hooks); // as cli.tsx gives the servers' forms the hooks (release 8c plan, Task 12)
@@ -325,6 +333,7 @@ async function mount(
       leftLines={opts.leftLines}
       hooks={hooks}
       {...(mcp ? { mcp } : {})}
+      memory={opts.memory}
     />
   );
   const app = render(themed(tree, opts.theme));
@@ -4286,7 +4295,7 @@ describe("App's menus", () => {
     expect(app.lastFrame()).not.toContain("/model");
     expect(app.lastFrame()).toContain("› /\n");
     await press(app, "m");
-    expect(app.lastFrame()).toContain("/model  Pick the lead model from a list");
+    expect(app.lastFrame()).toContain("/model   Pick the lead model from a list"); // /memory's column (8d step 28)
     await press(app, "\u007f"); // back at the text Esc closed it at, after a change: open
     expect(app.lastFrame()).toContain("/model                  Pick the lead model from a list"); // the whole list's column (Task 11)
     await press(app, "\u007f", "/tmp is full", "\r");
@@ -9304,6 +9313,13 @@ describe("App's live settings", () => {
     await sees(b.app, stays("light"));
   });
 
+  // Release 8d plan, step 15 and question Q20: memory is read at the launch only, so a live edit says so.
+  it("says an edit to memory waits for the next launch", async () => {
+    const a = await watching([], {});
+    a.write({ memory: false });
+    await sees(a.app, '"memory" changes in settings.json take effect at the next launch');
+  });
+
   // Release 8a plan, choice 26: "autoCompactWindow" is LIVE, set as /autocompact sets it; a bad one keeps the last good.
   it("sets the /autocompact size from a live autoCompactWindow, off when removed, and says a bad one", async () => {
     const { app, session, write } = await watching([], {});
@@ -10947,6 +10963,37 @@ describe("App's sessions", () => {
     await until(app, "an apple");
     expect(lead.seen[0]).toEqual([typed("remember apple"), { role: "assistant", parts: [{ type: "text", text: "noted" }] }, typed("which fruit?")]);
   });
+
+  // 8d plan, step 27 (Q21): /resume with memory on, the launch's prompt holding the memory line, of a session saved
+  // without it: the prompt is rebuilt; the tools line is said when an Anthropic reply's thinking was left out, and
+  // nothing otherwise.
+  const MEMORY_ON = `t\n\n${MEMORY_LINE}`;
+  const CHANGED =
+    "The tools have changed since this session was saved, so its earlier replies are sent without their thinking.";
+  const thinking = { provider: "anthropic", content: [{ type: "thinking", thinking: "hm", signature: "x" }] };
+  for (const [what, native, line] of [
+    ["an Anthropic reply's thinking, says the tools line", thinking, `Resumed: remember pear.\n${CHANGED}`],
+    ["no Anthropic reply, says nothing more", undefined, "Resumed: remember pear."],
+  ] as const) {
+    it(`rebuilds the prompt on /resume with memory on of a session saved without its line; with ${what}`, async () => {
+      const first = await saved([{ ...reply("noted"), ...(native ? { native } : {}) }]);
+      await type(first.app, "remember pear");
+      await until(first.app, "noted");
+      first.app.unmount();
+      const lead = new FakeProvider("a", [reply("a pear")]);
+      const { app, session } = await saved([], { lead, prompt: MEMORY_ON });
+      await type(app, "/resume");
+      await until(app, "Saved sessions in this folder, newest first:");
+      await press(app, "\r");
+      await until(app, "Resumed: remember pear.");
+      expect(bare(stripVTControlCharacters(app.lastFrame()!))).toContain(bare(`${line}\n`));
+      if (!native) expect(app.lastFrame()).not.toContain("The tools have changed");
+      expect(session.id).toBe(first.session.id);
+      expect(session.system).toBe(MEMORY_ON);
+      await type(app, "which fruit?");
+      await until(app, "a pear");
+    });
+  }
 
   // TUI design pass, Task 16: a resumed session's replies are drawn as markdown, as they were live.
   it("draws a session's replies as markdown on /resume, as live", async () => {
@@ -13820,5 +13867,347 @@ describe("App with NO_COLOR", () => {
         expect(colourCodes(app)).toEqual([]);
       }
     });
+  });
+});
+
+// 8d plan, step 28: long-term memory in the window: /memory, /memory setup, /lesson, the status line's marker and how
+// memory's error rows are drawn, in the words the user approved on 2026-11-20. The palace is the stand-in MemPalace
+// over stdio (tests/memory/standin.mjs), started here in a folder the test made; nothing starts a real hub or palace.
+describe("long-term memory in the window", () => {
+  const STANDIN = path.resolve("tests/memory/standin.mjs");
+  const ROOM = "proj-1a2b3c4d";
+  const PALACE = "/made-up/data/memory/palace";
+  const PROGRAM = "/made-up/tools/mempalace-mcp";
+  // The tests' own limit for a palace call that should answer: long enough never to be reached by one that does.
+  const LIMIT = 10_000;
+  const QUESTION =
+    "Long-term memory: Tachikoma can remember your conversations and lessons using MemPalace. Setting it up " +
+    "downloads MemPalace 3.12.0 and its packages (about 230 MB) into Tachikoma's own folder. Set it up now? [y/n]";
+  const OFF_LINE = "Memory is off: the hub did not start (exit code: 1).";
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " "); // a long line wraps
+  const soon = (check: () => void) => vi.waitFor(check, { timeout: 5_000 });
+  const shows = (app: ReturnType<typeof render>, text: string) => soon(() => expect(flat(app)).toContain(text));
+  const folder = () => {
+    const made = mkdtempSync(path.join(tmpdir(), "tachi-app-memory-"));
+    onTestFinished(() => removeTree(made));
+    return made;
+  };
+
+  // The stand-in over stdio, its calls recorded in a folder the test made, connected, and closed at the test's end.
+  async function standIn(args: string[] = []) {
+    const record = path.join(folder(), "record.jsonl");
+    const target = { command: process.execPath, args: [STANDIN, "--record", record, ...args] };
+    const made = await connect(target, "own", { timeout: LIMIT });
+    if (made.is !== "connected") throw new Error(`not connected: ${JSON.stringify(made)}`);
+    onTestFinished(() => made.palace.close());
+    return { palace: made.palace, record };
+  }
+  const calls = (record: string) => readLog(record).flatMap((l) => (l.call ? [l.call] : []));
+
+  // The window's memory as cli.tsx gives it, Tachikoma's own palace unless told: a service whose state a test changes
+  // as memory's events would (change, below); `asked` counts the set-ups asked for and the clearings of "Don't ask
+  // again".
+  type More = Partial<NonNullable<AppProps["memory"]>> & { connected?: Palace };
+  function windowMemory(state: MemoryState, more: More = {}) {
+    const asked = { setUp: 0, cleared: 0 };
+    const service = { state, palace: more.connected, on: () => service.state.is === "on" };
+    const { connected: _, ...rest } = more;
+    const memory: NonNullable<AppProps["memory"]> = {
+      service,
+      choice: "own",
+      palace: PALACE,
+      room: ROOM,
+      limits: { count: LIMIT, add: LIMIT },
+      ready: () => false,
+      uv: () => true,
+      setUp: () => void asked.setUp++,
+      clearDontAsk: () => void asked.cleared++,
+      ...rest,
+    };
+    const change = (bus: Bus, to: MemoryState) => {
+      service.state = to;
+      bus.emit("memory", to);
+    };
+    return { memory, asked, service, change };
+  }
+  const memoryOf = async (memory: AppProps["memory"], typed: string) => {
+    const m = await mount([], { memory });
+    await type(m.app, typed);
+    return m;
+  };
+
+  it("says with /memory that memory is switched off by --no-memory or by the settings file", async () => {
+    for (const [off, line] of [
+      ["flag", "Memory: off (--no-memory)"],
+      ["settings", 'Memory: off ("memory": false in settings.json)'],
+    ] as const) {
+      const { app } = await memoryOf(windowMemory({ is: "switched off" }, { choice: "off", off }).memory, "/memory");
+      await shows(app, line);
+    }
+    const { app } = await memoryOf(undefined, "/memory"); // given no memory, as most tests: as with --no-memory
+    await shows(app, "Memory: off (--no-memory)");
+  });
+
+  it("says with /memory that memory is not set up, or the line of a missing uv", async () => {
+    const first = await memoryOf(windowMemory({ is: "not set up" }).memory, "/memory");
+    await shows(first.app, "Memory: off (not set up; /memory setup sets it up)");
+    const { app } = await memoryOf(windowMemory({ is: "not set up", reason: NO_UV }).memory, "/memory");
+    await shows(
+      app,
+      "Memory: off (it needs uv, which was not found on PATH. Install uv (https://docs.astral.sh/uv/) and start " +
+        "Tachikoma again)",
+    );
+  });
+
+  it("says with /memory that memory is setting up, and the hub starting once its environment is ready", async () => {
+    const installing = await memoryOf(windowMemory({ is: "setting up" }).memory, "/memory");
+    await shows(installing.app, "Memory: setting up");
+    expect(installing.app.lastFrame()).not.toContain("Hub:");
+    const joining = await memoryOf(windowMemory({ is: "setting up" }, { ready: () => true }).memory, "/memory");
+    await shows(joining.app, `Memory: on, Tachikoma's own palace (${PALACE}) Hub: starting`);
+  });
+
+  it("says with /memory why memory is off in this run, and a failing hub as not answering", async () => {
+    const off = await memoryOf(windowMemory({ is: "off", reason: OFF_LINE }).memory, "/memory");
+    await shows(off.app, "Memory: off (the hub did not start (exit code: 1))");
+    const failing = { is: "failing", reason: "Memory is failing: the hub stopped answering; restarting it." } as const;
+    const { app } = await memoryOf(windowMemory(failing, { ready: () => true }).memory, "/memory");
+    await shows(app, `Memory: on, Tachikoma's own palace (${PALACE}) Hub: not answering`);
+  });
+
+  // A room holding 4 entries in 6 pieces shows 4: the last entry is 1,601 characters, 3 pieces of 800 (step 6 item 8).
+  it("says with /memory that memory is on, its hub running, and the palace's entries, not its pieces", async () => {
+    const { palace } = await standIn();
+    for (const [n, text] of ["one", "two", "three", "x".repeat(1_601)].entries())
+      expect(await palace.add(ROOM, `label ${n}`, text, LIMIT)).toEqual({ is: "added" });
+    expect(await palace.add(LESSONS, "a lesson", "the lesson", LIMIT)).toEqual({ is: "added" });
+    const { app } = await memoryOf(windowMemory({ is: "on" }, { connected: palace }).memory, "/memory");
+    await shows(app, `Memory: on, Tachikoma's own palace (${PALACE}) Hub: running Entries: 4, lessons: 1`);
+    expect(app.lastFrame()).not.toContain("Unsaved turns");
+  });
+
+  it("says with /memory the user's own MemPalace, no hub line, and no counts from a palace without them", async () => {
+    const { palace } = await standIn(["--lack", "mempalace_list_drawers"]);
+    const { app } = await memoryOf(windowMemory({ is: "on" }, { connected: palace, choice: { use: PROGRAM } }).memory,
+      "/memory");
+    await shows(app, `Memory: on, your MemPalace at ${PROGRAM}`);
+    expect(app.lastFrame()).not.toContain("Hub:");
+    expect(app.lastFrame()).not.toContain("Entries:");
+  });
+
+  // Over 200,000 characters, the turn is saved in three parts (Q26); the stand-in stops once two are added.
+  it("counts in /memory a turn with two of its three parts in as one unsaved turn", async () => {
+    const dir = folder();
+    const gate = path.join(dir, "gate");
+    const { palace, record } = await standIn(["--stop-after", "mempalace_add_drawer=2", "--gate", gate]);
+    const { memory, service } = windowMemory({ is: "on" }, { connected: palace });
+    const saver = new Saver({ memory: service, room: ROOM, folder: path.join(dir, "save"), timeout: LIMIT });
+    onTestFinished(async () => {
+      await palace.close(); // ends the look-up still out, so the saver lets its lock go before the folder goes
+      await saver.run(AbortSignal.timeout(LIMIT));
+    });
+    saver.hand({ session: "s1", n: 1, typed: "go", texts: ["x".repeat(250_000)], record: () => {} });
+    // A look-up and an add for each of two parts; the third part's look-up, the fifth call, is never answered.
+    await soon(() => expect(calls(record)).toHaveLength(5));
+    writeFileSync(gate, "");
+    const { app } = await memoryOf({ ...memory, saver }, "/memory");
+    await shows(app, "Hub: running Entries: 2, lessons: 0 Unsaved turns: 1");
+  });
+
+  it("says /memory's usage for other words after it", async () => {
+    const { app } = await memoryOf(windowMemory({ is: "on" }).memory, "/memory now");
+    await shows(app, "Usage: /memory, /memory setup");
+  });
+
+  it("asks with /memory setup the first-use question, clearing Don't ask again; sets memory up on yes", async () => {
+    // The question is drawn in its box.
+    const unboxed = (app: ReturnType<typeof render>) => flat(app).replaceAll("│", "").replaceAll(/ +/g, " ");
+    const asks = (app: ReturnType<typeof render>) => soon(() => expect(unboxed(app)).toContain(QUESTION));
+    const yes = windowMemory({ is: "not set up" });
+    const { app } = await memoryOf(yes.memory, "/memory setup");
+    await asks(app);
+    expect(yes.asked).toEqual({ setUp: 0, cleared: 1 });
+    await press(app, "y");
+    await shows(app, "Setting up long-term memory in the background.");
+    expect(yes.asked).toEqual({ setUp: 1, cleared: 1 });
+    const no = windowMemory({ is: "not set up" });
+    const other = await memoryOf(no.memory, "/memory setup");
+    await asks(other.app);
+    await press(other.app, "n");
+    await soon(() => expect(other.app.lastFrame()).not.toContain("[y/n]"));
+    expect(other.app.lastFrame()).not.toContain("Setting up long-term memory");
+    expect(no.asked).toEqual({ setUp: 0, cleared: 1 });
+  });
+
+  it("says with /memory setup that memory is set up already, the user's own, or switched off", async () => {
+    for (const [memory, line] of [
+      [windowMemory({ is: "on" }, { ready: () => true }).memory, "Long-term memory is already set up."],
+      [
+        windowMemory({ is: "on" }, { choice: { use: PROGRAM } }).memory,
+        `Memory uses your own MemPalace at ${PROGRAM}; there is nothing to set up.`,
+      ],
+      [
+        windowMemory({ is: "switched off" }, { choice: "off", off: "flag" }).memory,
+        "Memory is switched off: --no-memory.",
+      ],
+      [
+        windowMemory({ is: "switched off" }, { choice: "off", off: "settings" }).memory,
+        'Memory is switched off: "memory": false in settings.json.',
+      ],
+    ] as const) {
+      const { app } = await memoryOf(memory, "/memory setup");
+      await shows(app, line);
+      expect(app.lastFrame()).not.toContain("[y/n]");
+    }
+  });
+
+  // The reviewer's finding at step 28: a set-up memory whose hub failed is not "already set up"; it says why.
+  it("says with /memory setup why memory is off or failing once set up, not that it is set up", async () => {
+    const hubOff = windowMemory({ is: "off", reason: OFF_LINE }, { ready: () => true }).memory;
+    const off = await memoryOf(hubOff, "/memory setup");
+    await shows(off.app, "Memory: off (the hub did not start (exit code: 1))");
+    const failing = { is: "failing", reason: "Memory is failing: the hub stopped answering; restarting it." } as const;
+    const { app } = await memoryOf(windowMemory(failing, { ready: () => true }).memory, "/memory setup");
+    await shows(app, "Hub: not answering");
+    for (const a of [off.app, app]) {
+      expect(a.lastFrame()).not.toContain("already set up");
+      expect(a.lastFrame()).not.toContain("[y/n]");
+    }
+  });
+
+  it("says with /memory setup during an install what /memory says, asking nothing", async () => {
+    const m = windowMemory({ is: "setting up" });
+    const { app } = await memoryOf(m.memory, "/memory setup");
+    await shows(app, "Memory: setting up");
+    expect(app.lastFrame()).not.toContain("[y/n]");
+    expect(m.asked).toEqual({ setUp: 0, cleared: 0 });
+  });
+
+  // The user's choice at step 28, "Try again now".
+  it("asks with /memory setup again after an install that failed in this launch, and sets up on yes", async () => {
+    const failed = "Memory is off: setting it up failed (exit code: 2). The next launch tries again.";
+    const m = windowMemory({ is: "off", reason: failed });
+    const { app } = await memoryOf(m.memory, "/memory setup");
+    await soon(() => expect(flat(app).replaceAll("│", "").replaceAll(/ +/g, " ")).toContain(QUESTION));
+    expect(m.asked).toEqual({ setUp: 0, cleared: 1 });
+    await press(app, "y");
+    await shows(app, "Setting up long-term memory in the background.");
+    expect(m.asked).toEqual({ setUp: 1, cleared: 1 });
+  });
+
+  it("says with /memory setup without uv the design's line, asking nothing", async () => {
+    const m = windowMemory({ is: "not set up" }, { uv: () => false });
+    const { app } = await memoryOf(m.memory, "/memory setup");
+    await shows(app, NO_UV);
+    expect(app.lastFrame()).not.toContain("[y/n]");
+    expect(m.asked).toEqual({ setUp: 0, cleared: 1 });
+  });
+
+  it("shows with /lesson alone how to use it, and records a lesson in the lessons room, no prompt sent", async () => {
+    const { palace, record } = await standIn();
+    const { app, session } = await memoryOf(windowMemory({ is: "on" }, { connected: palace }).memory, "/lesson");
+    await shows(app, "Usage: /lesson <what went wrong, what fixed it, and how to spot it next time>");
+    await type(app, "/lesson npm test failed on a stale lock; deleting it fixed it");
+    await shows(app, "Lesson recorded.");
+    expect(calls(record)).toEqual([
+      {
+        name: "mempalace_add_drawer",
+        arguments: {
+          wing: "tachikoma",
+          room: LESSONS,
+          content: "npm test failed on a stale lock; deleting it fixed it",
+          source_file: lessonLabel(ROOM),
+        },
+      },
+    ]);
+    expect(session.messages).toEqual([]);
+  });
+
+  it("does not record with /lesson a lesson memory already holds", async () => {
+    const { palace } = await standIn();
+    const { app } = await memoryOf(windowMemory({ is: "on" }, { connected: palace }).memory, "/lesson the same lesson");
+    await shows(app, "Lesson recorded.");
+    await type(app, "/lesson the same lesson");
+    await shows(app, "Not recorded: memory already holds this lesson.");
+  });
+
+  it("refuses with /lesson a text over 100,000 characters, sending it nowhere", async () => {
+    const { palace, record } = await standIn();
+    const memory = windowMemory({ is: "on" }, { connected: palace }).memory;
+    const { app } = await memoryOf(memory, `/lesson ${"x".repeat(100_001)}`);
+    await shows(app, "Not recorded: a lesson can be at most 100,000 characters.");
+    expect(calls(record)).toEqual([]);
+  });
+
+  it("says with /lesson why memory is off", async () => {
+    for (const [memory, line] of [
+      [windowMemory({ is: "off", reason: OFF_LINE }).memory, "Not recorded: the hub did not start (exit code: 1)."],
+      [windowMemory({ is: "switched off" }, { choice: "off", off: "flag" }).memory, "Not recorded: --no-memory."],
+      [windowMemory({ is: "not set up" }).memory, "Not recorded: not set up; /memory setup sets it up."],
+    ] as const) {
+      const { app } = await memoryOf(memory, "/lesson a lesson");
+      await shows(app, line);
+    }
+  });
+
+  it("says with /lesson that memory is not ready while it starts, and why while its hub is failing", async () => {
+    const failing = { is: "failing", reason: "Memory is failing: the hub stopped answering; restarting it." } as const;
+    for (const [memory, line] of [
+      [windowMemory({ is: "setting up" }).memory, "Not recorded: Memory is not ready yet; try again shortly."],
+      [windowMemory(failing).memory, "Not recorded: the hub stopped answering; restarting it."],
+    ] as const) {
+      const { app } = await memoryOf(memory, "/lesson a lesson");
+      await shows(app, line);
+    }
+  });
+
+  // The test's own add limit, 0.2 s, against a stand-in that answers each call 2 s late.
+  it("says with /lesson a palace that did not answer in time, refused or failed", async () => {
+    const slow = await standIn(["--slow", "2000"]);
+    const late = windowMemory({ is: "on" }, { connected: slow.palace, limits: { count: LIMIT, add: 200 } }).memory;
+    const first = await memoryOf(late, "/lesson a lesson");
+    await shows(first.app, "Not recorded: Memory did not answer within 0.2 s; try again shortly.");
+    const refusing = await standIn(["--refuse-writes"]);
+    const refused = windowMemory({ is: "on" }, { connected: refusing.palace }).memory;
+    const second = await memoryOf(refused, "/lesson a lesson");
+    await shows(second.app, "Not recorded: Memory refused it: the stand-in refuses writes.");
+    // A palace whose add fails another way: the client's own answer for one that is not a JSON object.
+    const reason = "the answer is not a JSON object";
+    const failing = { offers: slow.palace.offers, add: async () => ({ is: "failed", reason }) } as unknown as Palace;
+    const third = await memoryOf(windowMemory({ is: "on" }, { connected: failing }).memory, "/lesson a lesson");
+    await shows(third.app, "Not recorded: Memory failed: the answer is not a JSON object.");
+  });
+
+  it("names /memory and /lesson <text> in the unknown command's list", async () => {
+    const { app } = await memoryOf(undefined, "/nope");
+    await shows(app, "/mcp, /memory, /lesson <text>, /errors, /screen");
+  });
+
+  // As -p prints it (the user's choice at step 27): the line names memory itself.
+  it("draws a memory failure's row as its line alone", async () => {
+    const { app, bus } = await mount([]);
+    bus.emit("error", { kind: "memory", attempted: "memory", message: OFF_LINE, lead: "a" });
+    await shows(app, `✗ ${OFF_LINE}`);
+    expect(app.lastFrame()).not.toContain("memory: Memory");
+  });
+
+  // Q14: `memory off` only for a failure in this run, never for the user's choices nor a missing uv.
+  it("shows memory's marker on the status line as memory changes, and none when all is well", async () => {
+    const m = windowMemory({ is: "setting up" });
+    const { app, bus } = await mount([], { memory: m.memory, segments: ["memory", "mode"] });
+    await shows(app, " memory: setting up | perm ask");
+    m.change(bus, { is: "off", reason: OFF_LINE });
+    await shows(app, " memory off | perm ask");
+    m.change(bus, { is: "failing", reason: "Memory is failing: the hub stopped answering; restarting it." });
+    await shows(app, " memory failing | perm ask");
+    m.change(bus, { is: "on" });
+    await soon(() => expect(app.lastFrame()).not.toContain("memory"));
+    m.change(bus, { is: "not set up", reason: NO_UV });
+    await tick();
+    expect(app.lastFrame()).not.toContain("memory");
+    const settings = windowMemory({ is: "switched off" }, { choice: "off", off: "settings" }).memory;
+    const off = await mount([], { memory: settings });
+    await tick();
+    expect(off.app.lastFrame()).not.toContain("memory");
   });
 });

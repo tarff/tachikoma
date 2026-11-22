@@ -18,11 +18,13 @@ export type Part =
   // choice 6). `from: "server"`: text an MCP server supplied, a picked resource's or a prompt command's, sent after the
   // typed words and never part of them (release 8c plan, choice 34). `from: "note"`: a note the session added for the
   // model when the date or the setup changed since it was last told, never drawn, with `note`, what it told (system
-  // prompt plan, Task 3; design, "Notes to the model").
+  // prompt plan, Task 3; design, "Notes to the model"). `from: "memory"`: the close matches from long-term memory put
+  // in front of a conversation's first message, not the user's words, never drawn and left out of /export (8d plan,
+  // step 24; Q10).
   | {
       type: "text";
       text: string;
-      from?: "tasks" | "hooks" | "server" | "note";
+      from?: "tasks" | "hooks" | "server" | "note" | "memory";
       note?: { date: string } | { setup: Setup };
     }
   | { type: "tool_call"; id: string; name: string; input: unknown }

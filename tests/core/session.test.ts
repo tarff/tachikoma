@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 import { privateDir } from "../../src/auth/private.js";
@@ -34,9 +35,14 @@ import { shellTools } from "../../src/tools/commands.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files.js";
 import { shellText } from "../../src/tools/shell.js";
-import { defineTool, type Tool } from "../../src/tools/tool.js";
+import { defineTool, type Tool, type ToolContext } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
+import { connect, type Hit, type Palace, type Scope } from "../../src/memory/client.js";
+import type { MemoryState } from "../../src/memory/memory.js";
+import { LESSONS, WING } from "../../src/memory/paths.js";
+import { entriesOf, type Turn as SavedTurn } from "../../src/memory/saver.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, standInRun, tempContext, texts, usage } from "../helpers.js";
+import { readLog } from "../mcp/fake.js";
 
 const echo = defineTool("echo", "Echo text back", z.object({ text: z.string() }), async ({ text }) => text);
 const boom = defineTool("boom", "Always fails", z.object({}), async () => {
@@ -999,6 +1005,23 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
   });
 });
 
+// 8d plan, step 22: a stand-in for the saver of turns, keeping each turn handed to it and counting its sends; `fails`,
+// a send that throws.
+function handing(fails = false) {
+  const handed: SavedTurn[] = [];
+  let sends = 0;
+  return {
+    handed,
+    sends: () => sends,
+    hand: (t: SavedTurn) => void handed.push(t),
+    send: () => {
+      sends++;
+      if (fails) throw new Error("the saver broke");
+    },
+  };
+}
+const bare = ({ session, n, typed, texts }: SavedTurn) => ({ session, n, typed, texts });
+
 // Release 8a plan, Task 12: the session shortens a conversation that will not fit, before the request or after a "too
 // long" answer (design, "When to shorten" and "How shortening works").
 describe("Session, shortening", { timeout: 15_000 }, () => {
@@ -1958,6 +1981,80 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     await session.send("next");
     expect(session.messages.at(-2)!.parts.at(-1)).toEqual(note);
     expect(shortenedLine(transcript)).toBeUndefined(); // the file is written once the next message is
+  });
+
+  // 8d plan, step 22: a turn's text is gathered as each reply is stored, never read back from the history, which a
+  // shortening replaces with its summary; the transcript's reader rebuilds the same text.
+  const withText = (text: string, id: string): Turn => {
+    const call = callTool(id, "echo", { text: "one" });
+    return { ...call, parts: [{ type: "text", text }, ...call.parts] };
+  };
+  // The start line a launch writes first, which the reader needs.
+  const begin = (t: Transcript) =>
+    t.write({ t: "start", v: 1, id: "s", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t",
+      tools: [] });
+  const unsavedOf = (t: Transcript) => {
+    const r = readTranscript(t.file, t.pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    return r.unsaved;
+  };
+  const asRead = (handed: SavedTurn[]) => handed.map(({ n, typed, texts }) => ({ n, typed, texts }));
+
+  it("keeps a turn's text from before and after a shortening in it, none of the summary, as read back", async () => {
+    const memory = handing();
+    const turns = [measured("noted"), withText("Before it.", "c1"), new TooLong("prompt is too long"),
+      summaryOf("The summary."), reply("After it.")];
+    const { session, transcript, summaries } = await setup(new Lead("fake:a", turns, 1_000_000), { memory, id: "s9" });
+    begin(transcript);
+    await session.send(big);
+    await session.send("do it");
+    expect(summaries).toEqual(["The summary."]);
+    expect(memory.handed.map(bare)).toEqual([
+      { session: "s9", n: 1, typed: big, texts: ["noted"] },
+      { session: "s9", n: 2, typed: "do it", texts: ["Before it.", "After it."] },
+    ]);
+    expect(unsavedOf(transcript)).toEqual(asRead(memory.handed));
+  });
+
+  it("numbers turns the same live and read back, across a shortening and a blocked prompt", async () => {
+    const script = path.join(top, `block${++n}.cjs`);
+    writeFileSync(
+      script,
+      `let t = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => {
+  const block = JSON.stringify({ decision: "block", reason: "not this one" });
+  if (JSON.parse(t).prompt === "skip this") process.stdout.write(block);
+  process.exit(0);
+});`,
+    );
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root: top, mode: () => "never",
+      effort: () => undefined, lead: () => "fake:a" };
+    const hook: Hook = { event: "UserPromptSubmit", matcher: { all: true }, command: process.execPath, args: [script],
+      async: false, where: '"UserPromptSubmit"' };
+    const hooks = new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, new Bus());
+    const memory = handing();
+    const turns = [measured("noted"), withText("Before it.", "c1"), new TooLong("prompt is too long"), summaryOf("S."),
+      reply("After it."), reply("Last.")];
+    const { session, transcript } = await setup(new Lead("fake:a", turns, 1_000_000), { memory, hooks });
+    begin(transcript);
+    await session.send(big);
+    expect(await session.send("skip this")).toEqual({ blocked: "not this one" });
+    await session.send("do it");
+    await session.send("last");
+    expect(memory.handed.map((t) => [t.n, t.typed])).toEqual([[1, big], [2, "do it"], [3, "last"]]);
+    expect(session.prompts).toEqual([big, "do it", "last"]);
+    expect(unsavedOf(transcript)).toEqual(asRead(memory.handed));
+  });
+
+  it("starts sending the unsaved turns before a shortening, which goes ahead when that fails", async () => {
+    const memory = handing(true);
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Many x."), reply("done")], 700);
+    const { session, summaries } = await setup(lead, { memory });
+    await session.send(big);
+    await session.send("now this");
+    expect(memory.sends()).toBe(1);
+    expect(summaries).toEqual(["Many x."]);
+    expect(texts(session.messages.at(-1)!)).toEqual(["done"]);
   });
 });
 
@@ -3469,5 +3566,1075 @@ describe("Session, notes to the model", { timeout: 15_000 }, () => {
     expect(fresh.system).toBe("t");
     expect(days).toContain(fresh.date);
     expect("setup" in fresh).toBe(false);
+  });
+});
+
+// 8d plan, step 22 (Q4, Q5, Q6, Q22): the lead's session writes each typed turn's boundary line and hands the turn to
+// the saver, and a loaded conversation hands over the turns its transcript shows unsaved.
+describe("Session, saving turns", { timeout: 15_000 }, () => {
+  let top: string;
+  let n = 0;
+  beforeAll(async () => {
+    top = await mkdtemp(path.join(tmpdir(), "tachi-saving-"));
+  });
+  afterAll(() => removeTree(top));
+  // Two levels inside the test's temp folder; `inherits`, so no PowerShell starts. Each begins with its start line.
+  const saving = (id = `s${++n}`) => {
+    const dir = path.join(top, "sessions", "project");
+    const t = new Transcript(path.join(dir, `${id}.jsonl`), path.join(dir, id, "pictures"), { inherits: true });
+    t.write({ t: "start", v: 1, id, project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t",
+      tools: [] });
+    return t;
+  };
+  const savedLines = (t: Transcript) =>
+    readFileSync(t.file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Line);
+  const read = (t: Transcript) => {
+    const r = readTranscript(t.file, t.pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    return r;
+  };
+  const conversation = (id: string, t: Transcript, r: Read): Conversation => ({
+    id,
+    messages: r.messages,
+    system: r.system,
+    transcript: t,
+    prompts: r.prompts,
+    calls: r.calls,
+    nextPicture: r.nextPicture,
+    nextTask: r.nextTask,
+    unsaved: r.unsaved,
+    lastTurn: r.lastTurn,
+  });
+  const said = (text: string): Message => ({ role: "assistant", parts: [{ type: "text", text }] });
+  const typed = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
+  // A lead's session with no turns to give and the saver's stand-in, for a loaded conversation.
+  const loading = async (memory: ReturnType<typeof handing>) =>
+    new Session({ lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+      memory });
+  async function setup(turns: Turn[], more: Partial<ConstructorParameters<typeof Session>[0]> = {}) {
+    const memory = handing();
+    const transcript = saving();
+    const session = new Session({
+      lead: new FakeProvider("a", turns), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
+      id: "s1", transcript, memory, ...more,
+    });
+    return { session, memory, transcript };
+  }
+
+  it("writes a typed turn's boundary, then hands its words, pictures as markers, and the model's text", async () => {
+    const waiting = ["Background task t1 finished"];
+    const call = { type: "tool_call" as const, id: "c1", name: "echo", input: { text: "the tool's output" } };
+    const replying: Turn = { parts: [{ type: "text", text: "Reading." }, call], usage };
+    const { session, memory, transcript } = await setup([replying, reply("Done.")], { inbox: () => waiting.splice(0) });
+    let last: Line | undefined;
+    memory.hand = (t) => {
+      last = savedLines(transcript).at(-1);
+      memory.handed.push(t);
+    };
+    const data = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const picture = { type: "image" as const, id: 1, mediaType: "image/png" as const, data };
+    const served = { type: "text" as const, text: "a server's text", from: "server" as const };
+    await session.send([{ type: "text", text: "look at " }, picture, served]);
+    expect(memory.handed.map(bare)).toEqual([
+      { session: "s1", n: 1, typed: "look at [Image #1]", texts: ["Reading.", "Done."] },
+    ]);
+    expect(last).toEqual({ t: "turn", at: expect.any(String), n: 1 });
+    // Its saved record, once the saver has every entry of it in.
+    memory.handed[0]!.record();
+    expect(savedLines(transcript).at(-1)).toEqual({ t: "saved", at: expect.any(String), n: 1 });
+    expect(read(transcript).unsaved).toEqual([]);
+  });
+
+  it("writes no boundary for a turn with no typed words, handing neither it nor one with no model text", async () => {
+    const waiting = ["Command t1 finished"];
+    const inbox = () => waiting.splice(0);
+    const { session, memory, transcript } = await setup([reply("About the command."), reply("")], { inbox });
+    await session.send("");
+    expect(savedLines(transcript).filter((l) => l.t === "turn")).toEqual([]);
+    await session.send("hi");
+    expect(memory.handed).toEqual([]);
+    expect(savedLines(transcript).filter((l) => l.t === "turn")).toEqual([{ t: "turn", at: expect.any(String), n: 1 }]);
+  });
+
+  it("saves nothing of a subagent's own session, and none of a subagent's words in the lead's turn", async () => {
+    const sub = await setup([reply("Sub words.")], { subagent: true, id: "t1" });
+    await sub.session.send("the brief");
+    expect(sub.memory.handed).toEqual([]);
+    expect(savedLines(sub.transcript).map((l) => l.t)).toEqual(["start", "message", "message"]);
+    const ctx = await tempContext();
+    const worker = () => new FakeProvider("w", [reply("The subagent's own words.")]);
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker, system: "sub", tools: [readFileTool], ctx });
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x" }), reply("The lead's words.")];
+    const { session, memory } = await setup(turns, { tools: [delegateTool(tasks, { headless: false })] });
+    await session.send("go");
+    expect(memory.handed.map(bare)).toEqual([{ session: "s1", n: 1, typed: "go", texts: ["The lead's words."] }]);
+  });
+
+  it("hands a loaded conversation's unsaved turns, recording them only while it is still the window's", async () => {
+    const a = saving("a1");
+    for (const message of [typed("one"), said("first")]) a.write({ t: "message", message });
+    a.write({ t: "turn", n: 1 });
+    for (const message of [typed("two"), said("second")]) a.write({ t: "message", message });
+    a.write({ t: "turn", n: 2 });
+    const memory = handing();
+    const session = await loading(memory);
+    session.load(conversation("a1", a, read(a)));
+    expect(memory.handed.map(bare)).toEqual([
+      { session: "a1", n: 1, typed: "one", texts: ["first"] },
+      { session: "a1", n: 2, typed: "two", texts: ["second"] },
+    ]);
+    memory.handed[0]!.record();
+    expect(read(a).unsaved.map((t) => t.n)).toEqual([2]);
+    // The window switches to another session: the first one's record is no longer written (Q6).
+    const b = saving("b1");
+    session.load(conversation("b1", b, read(b)));
+    memory.handed[1]!.record();
+    expect(read(a).unsaved.map((t) => t.n)).toEqual([2]);
+    expect(savedLines(b).map((l) => l.t)).toEqual(["start"]);
+  });
+
+  it("hands a resumed typed turn its own text only, after a background turn and a crash before its save", async () => {
+    const waiting: string[] = [];
+    const inbox = () => waiting.splice(0);
+    const { session, memory, transcript } = await setup([reply("Fixed."), reply("About the command.")], { inbox });
+    await session.send("fix it");
+    waiting.push("Command t1 finished");
+    await session.send("");
+    // Nothing was recorded saved: the window died first. A new window resumes the session.
+    const again = handing();
+    const resumed = await loading(again);
+    resumed.load(conversation("s1", transcript, read(transcript)));
+    expect(again.handed.map(bare)).toEqual([{ session: "s1", n: 1, typed: "fix it", texts: ["Fixed."] }]);
+    expect(again.handed.map(bare)).toEqual(memory.handed.map(bare));
+  });
+
+  it("hands nothing from a session saved before this release, which has no boundary lines", async () => {
+    const old = saving();
+    for (const message of [typed("one"), said("first")]) old.write({ t: "message", message });
+    const memory = handing();
+    const session = await loading(memory);
+    session.load(conversation("old", old, read(old)));
+    expect(memory.handed).toEqual([]);
+  });
+
+  // PR #26 review, finding 2: the whole prompts read back are fewer than the turns numbered live, and the next prompt's
+  // number would be a saved turn's label again.
+  it("numbers a resumed session's next prompt after its highest turn when a damaged line hid a prompt", async () => {
+    const { session, memory } = await setup([reply("Third.")]);
+    const a = saving("a2");
+    for (const message of [typed("one"), said("first")]) a.write({ t: "message", message });
+    a.write({ t: "turn", n: 1 });
+    a.write({ t: "saved", n: 1 });
+    for (const message of [typed("two"), said("second")]) a.write({ t: "message", message });
+    a.write({ t: "turn", n: 2 });
+    a.write({ t: "saved", n: 2 });
+    // The first prompt's line torn in half, as a crash or a full disk leaves one.
+    const rows = readFileSync(a.file, "utf8").split("\n");
+    rows[1] = rows[1]!.slice(0, rows[1]!.length / 2);
+    writeFileSync(a.file, rows.join("\n"));
+    const r = read(a);
+    expect(r.prompts).toEqual(["two"]);
+    session.load(conversation("a2", a, r));
+    await session.send("three");
+    expect(memory.handed.map(bare)).toEqual([{ session: "a2", n: 3, typed: "three", texts: ["Third."] }]);
+    expect(read(a).lastTurn).toBe(3); // its boundary line, under the same number
+  });
+
+  // The user's choice "Don't save it" (2026-11-22): a turn whose boundary line was not written could be numbered
+  // again by a resume, so it is not saved to memory.
+  it("hands no turn to the saver when its boundary line could not be written", async () => {
+    const blocker = path.join(top, "a file");
+    writeFileSync(blocker, "");
+    const broken = new Transcript(path.join(blocker, "s.jsonl"), path.join(blocker, "s", "pictures"),
+      { inherits: true });
+    const { session, memory } = await setup([reply("Done.")], { transcript: broken });
+    await session.send("hi");
+    expect(broken.failed).not.toBeNull();
+    expect(memory.handed).toEqual([]);
+  });
+
+  // The user's choice "Only that turn" (2026-11-22): a torn last line sets apart its own turn alone.
+  it("hands a turn made after a crash's torn line and a resume to the saver at the next resume", async () => {
+    const a = saving("a3");
+    for (const message of [typed("one"), said("first")]) a.write({ t: "message", message });
+    a.write({ t: "turn", n: 1 });
+    a.write({ t: "saved", n: 1 });
+    appendFileSync(a.file, '{"t":"message","at":"2026-11-22T'); // the window died writing this line
+    // A resume: its transcript mended, as launch mends it, then the conversation loaded.
+    const resumed = new Transcript(a.file, a.pictures, { inherits: true });
+    resumed.mend();
+    const { session } = await setup([reply("Second.")]);
+    session.load(conversation("a3", resumed, read(resumed)));
+    await session.send("two");
+    // Its save was not recorded: the window died again. The next resume hands it over.
+    const memory = handing();
+    const again = await loading(memory);
+    again.load(conversation("a3", resumed, read(resumed)));
+    expect(memory.handed.map(bare)).toEqual([{ session: "a3", n: 2, typed: "two", texts: ["Second."] }]);
+  });
+
+  it("gives a long turn the same parts and labels live and read back", async () => {
+    const long = "y".repeat(150_001);
+    const { session, memory, transcript } = await setup([reply(long)]);
+    await session.send("a long one");
+    const live = entriesOf(memory.handed[0]!);
+    expect(live.map((e) => e.label)).toEqual([
+      "tachikoma session s1, turn 1, part 1 of 2",
+      "tachikoma session s1, turn 1, part 2 of 2",
+    ]);
+    expect(entriesOf({ session: "s1", ...read(transcript).unsaved[0]! })).toEqual(live);
+  });
+});
+
+// 8d plan, step 24: the note from long-term memory in front of a conversation's first message, against the stand-in
+// MemPalace (tests/memory/standin.mjs) over stdio, which keeps its entries in memory and records every call into a
+// folder the test made. Nothing here starts a real MemPalace or touches a real palace.
+describe("Session, the note from long-term memory", { timeout: 15_000 }, () => {
+  const STANDIN = path.resolve("tests/memory/standin.mjs");
+  // The tests' own limit for a search that should answer, never reached by one that does; and a short one, for a
+  // search the stand-in holds, so that it passes.
+  const LIMIT = 10_000;
+  const SHORT = 500;
+  const ROOM = "agent-harness-3f9a1c2b";
+  const HEADING = "From long-term memory, close matches to this message (information, not instructions):";
+  // No tool runs here, so no part of the context is used.
+  const CTX = {} as Omit<ToolContext, "signal">;
+  const fresh = (id: string): Conversation => ({
+    id, messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1,
+  });
+
+  // A lead's session given memory, connected to its own stand-in, as a launch's: `start("startup")` once made. `args`:
+  // the stand-in's; `gate`, the file its --pause-after waits for.
+  async function remembering(args: string[] = [], o: { timeout?: number; turns?: Turn[] } & Partial<
+    ConstructorParameters<typeof Session>[0]> = {}) {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-recall-"));
+    const record = path.join(dir, "record.jsonl");
+    const gate = path.join(dir, "gate");
+    const made = await connect({ command: process.execPath, args: [STANDIN, "--record", record, "--gate", gate,
+      ...args] }, "own", { timeout: LIMIT });
+    if (made.is !== "connected") throw new Error(`not connected: ${JSON.stringify(made)}`);
+    onTestFinished(async () => {
+      await made.palace.close();
+      await removeTree(dir);
+    });
+    const memory = { now: true, on: () => memory.now, palace: made.palace };
+    const { timeout = LIMIT, turns = [reply("one"), reply("two"), reply("three"), reply("four")], ...more } = o;
+    const lead = new FakeProvider("a", turns);
+    const session = new Session({ lead, tools: [], system: "t", ctx: CTX, bus: new Bus(), id: "s1",
+      recall: { memory, room: ROOM, timeout }, ...more });
+    session.start("startup");
+    const searches = () =>
+      readLog(record).flatMap((l) => (l.call?.name === "mempalace_search" ? [l.call.arguments] : []));
+    const add = (room: string, label: string, text: string) => made.palace.add(room, label, text, LIMIT);
+    // The parts of the user's message the request `i` ended with.
+    const sent = (i: number) => lead.seen[i]!.at(-1)!.parts;
+    return { session, lead, memory, searches, add, sent, dir, gate };
+  }
+  const note = (...matches: [label: string, room: string, text: string][]) => ({
+    type: "text",
+    text: `${HEADING}\n${matches.map(([label, room, text]) => `${localDate()} · ${label} · ${room}\n${text}`)
+      .join("\n\n")}`,
+    from: "memory",
+  });
+  const words = (text: string) => ({ type: "text", text });
+
+  it("puts the close matches in front of the first message alone, under the heading, as memory's part", async () => {
+    const m = await remembering();
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await m.session.send("missing lock file");
+    expect(m.sent(0)).toEqual([note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]),
+      words("missing lock file")]);
+    await m.session.send("missing lock file again");
+    expect(m.sent(1)).toEqual([words("missing lock file again")]);
+    expect(m.searches()).toHaveLength(2);
+  });
+
+  it("searches the project's room and the lessons for 100 each, by the first 250 characters, sending all", async () => {
+    const m = await remembering();
+    const typed = "a".repeat(250) + "b".repeat(50);
+    await m.session.send(typed);
+    expect(m.searches()).toEqual([
+      { query: "a".repeat(250), limit: 100, wing: WING, room: ROOM },
+      { query: "a".repeat(250), limit: 100, wing: WING, room: LESSONS },
+    ]);
+    expect(m.sent(0)).toEqual([words(typed)]);
+  });
+
+  it("sends the two searches at once, not one after the other", async () => {
+    // Every call after the first add waits until the gate file exists.
+    const m = await remembering(["--pause-after", "mempalace_add_drawer=1"]);
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    const sending = m.session.send("missing lock file");
+    for (let i = 0; i < 250 && m.searches().length < 2; i++) await sleep(20);
+    expect(m.searches().map((s) => s.room)).toEqual([ROOM, LESSONS]);
+    expect(m.lead.seen).toEqual([]);
+    writeFileSync(m.gate, "");
+    await sending;
+    expect(m.sent(0)[0]).toEqual(note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]));
+  });
+
+  it("keeps the three closest of both rooms together, a nearer lesson before a farther project entry", async () => {
+    const m = await remembering();
+    // The stand-in's distance is 1 - shared words / all words: 0, 0.2, 0.3333 and 0.4286, all inside the cut-off.
+    await m.add(LESSONS, "tachikoma lesson, x-1, 2026-11-19", "missing lock file today");
+    await m.add(ROOM, "tachikoma session a, turn 1", "missing lock file today alpha");
+    await m.add(LESSONS, "tachikoma lesson, x-2, 2026-11-19", "missing lock file today beta gamma");
+    await m.add(ROOM, "tachikoma session a, turn 2", "missing lock file today delta epsilon zeta");
+    await m.session.send("missing lock file today");
+    expect(m.sent(0)[0]).toEqual(note(
+      ["tachikoma lesson, x-1, 2026-11-19", LESSONS, "missing lock file today"],
+      ["tachikoma session a, turn 1", ROOM, "missing lock file today alpha"],
+      ["tachikoma lesson, x-2, 2026-11-19", LESSONS, "missing lock file today beta gamma"],
+    ));
+  });
+
+  it("keeps a match at the cut-off, 0.4861, and leaves out one just past it", async () => {
+    const m = await remembering();
+    const q = Array.from({ length: 37 }, (_, i) => `q${i}`);
+    const at = [...q, ...Array.from({ length: 35 }, (_, i) => `a${i}`)].join(" "); // 1 - 37/72 = 0.4861
+    const past = q.slice(0, 19).join(" "); // 1 - 19/37 = 0.4865
+    await m.add(ROOM, "tachikoma session a, turn 1", at);
+    await m.add(LESSONS, "tachikoma lesson, x-1, 2026-11-19", past);
+    await m.session.send(q.join(" "));
+    expect(m.sent(0)).toEqual([note(["tachikoma session a, turn 1", ROOM, at]), words(q.join(" "))]);
+  });
+
+  it("sends no note when nothing is inside the cut-off", async () => {
+    const m = await remembering();
+    await m.add(ROOM, "tachikoma session a, turn 1", "missing lock"); // 1 - 2/5 = 0.6
+    await m.session.send("missing lock file today now");
+    expect(m.sent(0)).toEqual([words("missing lock file today now")]);
+  });
+
+  it("sends the message as it is when both searches pass the limit, or both fail", async () => {
+    const held = await remembering(["--hold-room", ROOM, "--hold-room", LESSONS], { timeout: SHORT });
+    await held.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await held.session.send("missing lock file");
+    expect(held.sent(0)).toEqual([words("missing lock file")]);
+    const failing = await remembering(["--lack", "mempalace_search"]);
+    await failing.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await failing.session.send("missing lock file");
+    expect(failing.sent(0)).toEqual([words("missing lock file")]);
+  });
+
+  it("makes the note from the project's matches alone when the lessons' search passes the limit", async () => {
+    const m = await remembering(["--hold-room", LESSONS], { timeout: SHORT });
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await m.add(LESSONS, "tachikoma lesson, x-1, 2026-11-19", "missing lock file");
+    await m.session.send("missing lock file");
+    expect(m.sent(0)[0]).toEqual(note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]));
+  });
+
+  it("sends the note again after /clear, and none after a resume or a fork", async () => {
+    const m = await remembering();
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    const close = note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]);
+    await m.session.send("missing lock file");
+    m.session.load(fresh("s2"));
+    m.session.start("clear");
+    await m.session.send("missing lock file");
+    expect([m.sent(0)[0], m.sent(1)[0]]).toEqual([close, close]);
+    m.session.load(fresh("s3"));
+    m.session.start("resume");
+    await m.session.send("missing lock file");
+    m.session.load(fresh("s4"));
+    m.session.start("fork");
+    await m.session.send("missing lock file");
+    expect([m.sent(2), m.sent(3)]).toEqual([[words("missing lock file")], [words("missing lock file")]]);
+    expect(m.searches()).toHaveLength(4);
+  });
+
+  it("sends the note again with the first message after a shortening", async () => {
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-recall-")), "sessions", "project");
+    onTestFinished(() => removeTree(path.dirname(path.dirname(dir))));
+    const transcript = new Transcript(path.join(dir, "s1.jsonl"), path.join(dir, "s1", "pictures"), { inherits: true });
+    const turns = [reply("one"), reply("two"), reply("A summary."), reply("three")];
+    const m = await remembering([], { turns, transcript });
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    const close = note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]);
+    await m.session.send("missing lock file");
+    await m.session.send("missing lock file");
+    expect(await m.session.compact("")).toBeUndefined();
+    await m.session.send("missing lock file");
+    expect([m.sent(0)[0], m.sent(1), m.sent(3).at(-2)]).toEqual([close, [words("missing lock file")], close]);
+  });
+
+  // Q9's recommended answer, on which the plan is written: a message sent before memory is on goes without a note, and
+  // the note goes with the next one.
+  it("sends none while memory is not on yet, and the note with the next message once it is", async () => {
+    const m = await remembering();
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    m.memory.now = false;
+    await m.session.send("missing lock file");
+    expect(m.searches()).toEqual([]);
+    m.memory.now = true;
+    await m.session.send("missing lock file");
+    await m.session.send("missing lock file");
+    expect([m.sent(0), m.sent(1)[0], m.sent(2)]).toEqual([
+      [words("missing lock file")],
+      note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]),
+      [words("missing lock file")],
+    ]);
+  });
+
+  it("keeps the note out of the prompts, the saver's turn and the typed words read back, as memory's", async () => {
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-recall-")), "sessions", "project");
+    onTestFinished(() => removeTree(path.dirname(path.dirname(dir))));
+    const transcript = new Transcript(path.join(dir, "s1.jsonl"), path.join(dir, "s1", "pictures"), { inherits: true });
+    transcript.write({ t: "start", v: 1, id: "s1", project: dir, lead: "fake:a", version: "0.8.0", print: false,
+      system: "t", tools: [] });
+    const memory = handing();
+    const m = await remembering([], { transcript, memory });
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await m.session.send("missing lock file");
+    expect(m.session.prompts).toEqual(["missing lock file"]);
+    expect(memory.handed.map(bare)).toEqual([{ session: "s1", n: 1, typed: "missing lock file", texts: ["one"] }]);
+    const r = readTranscript(transcript.file, transcript.pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    expect(r.prompts).toEqual(["missing lock file"]);
+    expect(r.unsaved.map((t) => t.typed)).toEqual(["missing lock file"]);
+    expect(r.messages[0]!.parts[0]).toEqual(note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]));
+  });
+
+  it("stops waiting for the searches at a stop, sending nothing, and searches again at the next message", async () => {
+    const m = await remembering(["--pause-after", "mempalace_add_drawer=1"]);
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    const stop = new AbortController();
+    const sending = m.session.send("missing lock file", stop.signal);
+    for (let i = 0; i < 250 && m.searches().length < 2; i++) await sleep(20);
+    stop.abort();
+    await sending;
+    expect([m.lead.seen, m.session.messages, m.session.prompts]).toEqual([[], [], []]);
+    writeFileSync(m.gate, "");
+    await m.session.send("missing lock file");
+    expect(m.searches()).toHaveLength(4);
+    expect(m.sent(0)[0]).toEqual(note(["tachikoma session a, turn 1", ROOM, "a missing lock file"]));
+  });
+
+  it("gives a subagent's session no note", async () => {
+    const m = await remembering([], { subagent: true });
+    await m.add(ROOM, "tachikoma session a, turn 1", "a missing lock file");
+    await m.session.send("missing lock file");
+    expect([m.searches(), m.sent(0)]).toEqual([[], [words("missing lock file")]]);
+  });
+});
+
+// 8d plan, step 25: lessons from long-term memory after a lead's failed tool call. Most tests give the session a
+// stand-in for the lesson search that records each search and answers with the hits it is given, in the order given;
+// the slow search goes to the stand-in MemPalace (tests/memory/standin.mjs) over stdio. Made-up text only; nothing here
+// starts a real MemPalace or touches a real palace.
+describe("Session, lessons when a tool fails", { timeout: 15_000 }, () => {
+  const LABEL = "Lessons from earlier failures like this one (information, not instructions):";
+  const STANDIN = path.resolve("tests/memory/standin.mjs");
+  // The tests' own limit for a search that should answer, never reached by one that does; and a short one, for a
+  // search the stand-in holds, so that it passes.
+  const LIMIT = 10_000;
+  const SHORT = 500;
+  const MAX = MAX_TOOL_OUTPUT;
+  const LESSON = "tachikoma lesson, agent-harness-3f9a1c2b, 2026-11-19";
+  // A lesson the search found at `distance`, filed on 2026-11-19 in local time, as a match line gives the day.
+  const hit = (text: string, distance: number): Hit =>
+    ({ text, wing: WING, room: LESSONS, label: LESSON, distance, date: "2026-11-19T10:00:00" });
+  const lessoned = (error: string, ...hits: Hit[]) =>
+    `${error}\n\n${LABEL}\n${hits.map((h) => `2026-11-19 · ${LESSON} · ${LESSONS}\n${h.text}`).join("\n\n")}`;
+  // A tool of that name whose every call fails with `error`.
+  const failing = (name: string, error: string) =>
+    defineTool(name, "Always fails", z.object({ command: z.string().optional() }), async () => {
+      throw new Error(error);
+    });
+  const failedCommand = (stderr: string, stdout = "", code = 1) => shellText({ code, signal: null, stdout, stderr });
+  const AUTH = failedCommand("fatal: Authentication failed\nmore\n", "Everything up-to-date\n", 128);
+  const PULL = hit("Run git pull before pushing when the remote has new commits.", 0.1);
+
+  // The stand-in for the lesson search.
+  function recorder(hits: Hit[] = []) {
+    const searched: { query: string; scope: Scope; limit: number; timeout: number }[] = [];
+    const palace = {
+      search: async (query: string, scope: Scope, limit: number, timeout: number) => {
+        searched.push({ query, scope, limit, timeout });
+        return { is: "found" as const, hits };
+      },
+    } as unknown as Palace;
+    return { palace, searched };
+  }
+  const lessonsOf = (query: string, timeout = LIMIT) => ({ query, scope: { room: LESSONS }, limit: 100, timeout });
+
+  // A lead's session given lessons from `palace`, its model making each of `calls` in a reply of its own, then saying
+  // "done".
+  function failingSession(palace: Palace, tools: Tool[], calls: [string, object][], more: Partial<
+    ConstructorParameters<typeof Session>[0]> = {}, timeout = LIMIT) {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const turns = [...calls.map(([name, input], i) => callTool(`c${i + 1}`, name, input)), reply("done")];
+    const memory = { now: true, on: () => memory.now, palace };
+    const ctx = { gate: new PermissionGate("never", async () => false) } as unknown as Omit<ToolContext, "signal">;
+    const session = new Session({ lead: new FakeProvider("a", turns), tools, system: "t", ctx, bus,
+      lessons: { memory, timeout }, ...more });
+    const outputs = () =>
+      session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [p.output] : [])));
+    return { session, memory, errors, outputs };
+  }
+  const once = (name: string, error: string, input: object = {}, hits: Hit[] = []) => {
+    const r = recorder(hits);
+    return { ...failingSession(r.palace, [failing(name, error)], [[name, input]]), searched: r.searched };
+  };
+
+  it("searches the lessons for a failed command by the tool's name, its first word and its message", async () => {
+    const s = once("shell", AUTH, { command: "git push origin main" });
+    await s.session.send("go");
+    expect(s.searched).toEqual([lessonsOf("shell git fatal: Authentication failed")]);
+    expect(s.searched[0]!.query).not.toContain("exit code");
+    expect(s.outputs()).toEqual([AUTH]);
+  });
+
+  it("takes the first word from the command a PreToolUse hook rewrote the call to", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "tachi-lessons-"));
+    onTestFinished(() => removeTree(root));
+    const script = path.join(root, "hook.cjs");
+    writeFileSync(script, 'process.stdin.resume().on("end", () => process.stdout.write(process.argv[2]));');
+    const answer = { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "npm run build" } } };
+    const hook: Hook = { event: "PreToolUse", matcher: { all: true }, command: process.execPath,
+      args: [script, JSON.stringify(answer)], async: false, where: '"PreToolUse"' };
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => "never",
+      effort: () => undefined, lead: () => "fake:a" };
+    const hooks = new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, new Bus());
+    const r = recorder();
+    const gate = new PermissionGate("never", async () => false);
+    const ctx = { root, gate } as unknown as Omit<ToolContext, "signal">;
+    const s = failingSession(r.palace, [failing("shell", failedCommand("boom\n"))], [["shell", { command: "make" }]],
+      { hooks, ctx });
+    await s.session.send("go");
+    expect(r.searched).toEqual([lessonsOf("shell npm boom")]);
+    expect(s.errors[0]!.attempted).toBe('shell {"command":"npm run build"}');
+  });
+
+  it("searches a failed command that printed nothing by its status line", async () => {
+    const s = once("shell", failedCommand(""), { command: "grep -rn TODO src" });
+    await s.session.send("go");
+    expect(s.searched).toEqual([lessonsOf("shell grep exit code: 1")]);
+  });
+
+  it("searches a timeout by the tool's name and its first line, with no first word", async () => {
+    const timeout = "Stopped: the command did not complete within its 30s timeout. A command that starts with " +
+      "sleep is stopped at its timeout, not moved to the background.";
+    const s = once("shell", timeout, { command: "sleep 45" });
+    await s.session.send("go");
+    expect(s.searched).toEqual([lessonsOf(`shell ${timeout}`)]);
+  });
+
+  it("searches another tool's failure by its name and its error's first line", async () => {
+    const s = once("read_file", "ENOENT: no such file or directory, open 'a.ts'\n    at open (node:fs)");
+    await s.session.send("go");
+    expect(s.searched).toEqual([lessonsOf("read_file ENOENT: no such file or directory, open 'a.ts'")]);
+  });
+
+  it("searches by the first 250 characters when the pieces come to 400", async () => {
+    const s = once("shell", failedCommand("x".repeat(400)), { command: "npm test" });
+    await s.session.send("go");
+    expect(s.searched).toEqual([lessonsOf(`shell npm ${"x".repeat(240)}`)]);
+  });
+
+  it("never searches with a lesson's text or the label, though the call before had them", async () => {
+    const r = recorder([PULL]);
+    const calls: [string, object][] = [["shell", { command: "git push" }], ["shell", { command: "git push" }]];
+    const s = failingSession(r.palace, [failing("shell", AUTH)], calls);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(AUTH, PULL), lessoned(AUTH, PULL)]);
+    expect(r.searched).toEqual([lessonsOf("shell git fatal: Authentication failed"),
+      lessonsOf("shell git fatal: Authentication failed")]);
+  });
+
+  it("adds a lesson at the cut-off, 0.4862, after the error under the label, within the cap", async () => {
+    const at = hit(PULL.text, 0.4862);
+    const s = once("shell", AUTH, { command: "git push" }, [at]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(AUTH, at)]);
+    expect(s.outputs()[0]!.length).toBeLessThanOrEqual(MAX);
+  });
+
+  it("adds the closest of hits given out of distance order, and that one alone", async () => {
+    const far = hit("Check the remote's address.", 0.4);
+    const s = once("shell", AUTH, { command: "git push" }, [far, PULL]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(AUTH, PULL)]);
+  });
+
+  it("leaves the result as today with no lesson inside the cut-off", async () => {
+    const s = once("shell", AUTH, { command: "git push" }, [hit(PULL.text, 0.4863)]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([AUTH]);
+  });
+
+  it("leaves the result as today when the search passes its limit", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-lessons-"));
+    const record = path.join(dir, "record.jsonl");
+    const made = await connect({ command: process.execPath, args: [STANDIN, "--record", record, "--hold-room",
+      LESSONS] }, "own", { timeout: LIMIT });
+    if (made.is !== "connected") throw new Error(`not connected: ${JSON.stringify(made)}`);
+    onTestFinished(async () => {
+      await made.palace.close();
+      await removeTree(dir);
+    });
+    expect((await made.palace.add(LESSONS, LESSON, "shell git fatal: Authentication failed", LIMIT)).is).toBe("added");
+    const s = failingSession(made.palace, [failing("shell", AUTH)], [["shell", { command: "git push" }]], {}, SHORT);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([AUTH]);
+    const searches = readLog(record).flatMap((l) => (l.call?.name === "mempalace_search" ? [l.call.arguments] : []));
+    expect(searches).toEqual([{ query: "shell git fatal: Authentication failed", limit: 100, wing: WING,
+      room: LESSONS }]);
+  });
+
+  it("leaves the result as today, searching nothing, with memory not on", async () => {
+    const s = once("shell", AUTH, { command: "git push" }, [PULL]);
+    s.memory.now = false;
+    await s.session.send("go");
+    expect([s.searched, s.outputs()]).toEqual([[], [AUTH]]);
+  });
+
+  it("never adds a lesson longer than the whole cap", async () => {
+    const s = once("shell", AUTH, { command: "git push" }, [hit("z".repeat(MAX + 1), 0.1)]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([AUTH]);
+  });
+
+  it("adds only the first of two lessons when only the first fits, the whole then exactly the cap", async () => {
+    const second = hit("y".repeat(100), 0.2);
+    const error = "e".repeat(MAX - lessoned("", PULL).length);
+    const s = once("boom", error, {}, [PULL, second]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(error, PULL)]);
+    expect(s.outputs()[0]!.length).toBe(MAX);
+  });
+
+  it("adds none to an error long enough to be cut, which stays today's, marker and length included", async () => {
+    const s = once("boom", "e".repeat(MAX + 10), {}, [PULL]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([`${"e".repeat(MAX)}\n[cut: 10 more characters]`]);
+    expect(s.outputs()[0]!.length).toBeGreaterThan(MAX);
+  });
+
+  it("adds none to an error that fills the cap exactly", async () => {
+    const s = once("boom", "e".repeat(MAX), {}, [PULL]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual(["e".repeat(MAX)]);
+  });
+
+  it("leaves a subagent's failure as it is, searching nothing", async () => {
+    const r = recorder([PULL]);
+    const s = failingSession(r.palace, [failing("shell", AUTH)], [["shell", { command: "git push" }]],
+      { subagent: true });
+    await s.session.send("go");
+    expect([r.searched, s.outputs()]).toEqual([[], [AUTH]]);
+  });
+
+  it("logs the plain error, for a failed command with a lesson added too", async () => {
+    const s = once("shell", AUTH, { command: "git push" }, [PULL]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(AUTH, PULL)]);
+    expect(s.errors).toEqual([
+      { kind: "tool", attempted: 'shell {"command":"git push"}', message: AUTH, lead: "fake:a" },
+    ]);
+  });
+
+  it("sends a PostToolUseFailure hook the plain error, for a failed command with a lesson added", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "tachi-lessons-"));
+    onTestFinished(() => removeTree(root));
+    const script = path.join(root, "hook.cjs");
+    const out = path.join(root, "inputs.jsonl");
+    writeFileSync(script, 'const fs = require("fs"); let t = ""; process.stdin.setEncoding("utf8")' +
+      '.on("data", (d) => (t += d)).on("end", () => fs.appendFileSync(process.argv[2], t + "\\n"));');
+    const hook: Hook = { event: "PostToolUseFailure", matcher: { all: true }, command: process.execPath,
+      args: [script, out], async: false, where: '"PostToolUseFailure"' };
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => "never",
+      effort: () => undefined, lead: () => "fake:a" };
+    const hooks = new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, new Bus());
+    const r = recorder([PULL]);
+    const gate = new PermissionGate("never", async () => false);
+    const ctx = { root, gate } as unknown as Omit<ToolContext, "signal">;
+    const s = failingSession(r.palace, [failing("shell", AUTH)], [["shell", { command: "git push" }]], { hooks, ctx });
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned(AUTH, PULL)]);
+    const inputs = readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { error: string });
+    expect(inputs.map((i) => i.error)).toEqual([AUTH]);
+    expect(inputs[0]!.error).not.toContain(LABEL);
+    expect(inputs[0]!.error).not.toContain(PULL.text);
+  });
+
+  it("adds no lesson to a memory tool's own failure, searching nothing", async () => {
+    const r = recorder([PULL]);
+    const NOT_READY = "Memory is not ready yet; try again shortly.";
+    const names = ["memory_search", "memory_save", "record_lesson"];
+    const s = failingSession(r.palace, names.map((n) => failing(n, NOT_READY)), names.map((n) => [n, {}]));
+    await s.session.send("go");
+    expect([r.searched, s.outputs()]).toEqual([[], [NOT_READY, NOT_READY, NOT_READY]]);
+  });
+
+  it("adds a lesson to an unknown tool's error, searched by the tool's name and that error", async () => {
+    const r = recorder([PULL]);
+    const s = failingSession(r.palace, [], [["nope", {}]]);
+    await s.session.send("go");
+    expect(s.outputs()).toEqual([lessoned("Unknown tool: nope", PULL)]);
+    expect(r.searched).toEqual([lessonsOf("nope Unknown tool: nope")]);
+  });
+});
+
+// The lesson ask (8d plan, step 26), with a stand-in for memory whose `on()` is Memory's own rule (true only in the
+// state on, src/memory/memory.ts) and whose lesson requests run at once; tests/memory/lessons.test.ts has the real
+// Memory. No real model is called.
+describe("Session, the lesson ask", { timeout: 15_000 }, () => {
+  const REQUEST = "A tool call failed earlier in this turn, and a later call doing the same job worked. If there is " +
+    "a lesson worth keeping for next time, write it in one line: what went wrong, what fixed it, and how to spot it. " +
+    "If there is none, answer: none.";
+  const ROOM = "agent-harness-3f9a1c2b";
+  const ADD_LIMIT = 7_000; // the tests' own, passed through to the store as it is
+  const AUTH = shellText({ code: 128, signal: null, stdout: "Everything up-to-date\n",
+    stderr: "fatal: Authentication failed\nmore\n" });
+  // The ask's one message: the three lines alone, the approved request being its system prompt (the user, 2026-11-20).
+  const asked = (failed: string, error: string, worked: string) =>
+    `Failed call: ${failed}\nIts error: ${error}\nThe call that worked: ${worked}`;
+  // A project folder by name only: nothing is read or written there.
+  const gate = () =>
+    ({ root: path.resolve("made-up-project"), gate: new PermissionGate("never", async () => false) }) as unknown as
+      Omit<ToolContext, "signal">;
+
+  // A tool of that name that fails or works as `outcomes` say, one call each, in order.
+  const scripted = (name: string, outcomes: (string | Error)[]) =>
+    defineTool(name, "Scripted", z.object({ command: z.string().optional(), path: z.string().optional(),
+      content: z.string().optional() }), async () => {
+      const o = outcomes.shift();
+      if (o instanceof Error) throw o;
+      return o ?? "done";
+    });
+
+  // A FakeProvider that keeps every request whole, but what cannot be copied.
+  class Recording extends FakeProvider {
+    readonly requests: Omit<CompletionRequest, "signal" | "shrunk" | "leftOut">[] = [];
+    override async complete(req: CompletionRequest): Promise<Turn> {
+      const { signal: _signal, shrunk: _shrunk, leftOut: _leftOut, ...kept } = req;
+      this.requests.push(structuredClone(kept));
+      return super.complete(req);
+    }
+  }
+  const isAsk = (r: { system: string }) => r.system === REQUEST;
+  const askText = (r: { messages: Message[] }) => (r.messages[0]!.parts[0] as { text: string }).text;
+
+  // Memory, in the state given: what is stored, and its lesson requests run at once.
+  function standIn(state: MemoryState) {
+    const stored: { room: string; label: string; text: string; timeout: number }[] = [];
+    const palace = {
+      add: async (room: string, label: string, text: string, timeout: number) => {
+        stored.push({ room, label, text, timeout });
+        return { is: "added" as const };
+      },
+    } as unknown as Palace;
+    const runs: Promise<void>[] = [];
+    const memory = {
+      state,
+      on: () => memory.state.is === "on",
+      lesson<T>(ask: (signal: AbortSignal) => Promise<T | undefined>,
+        store: (p: Palace, value: T) => Promise<unknown>) {
+        runs.push((async () => {
+          const value = await ask(new AbortController().signal);
+          if (value !== undefined) await store(palace, value);
+        })());
+      },
+    };
+    return { memory, stored, done: () => Promise.all(runs) };
+  }
+
+  // A lead's session given the lesson ask, its model making each of `calls` in a reply of its own, then saying "done",
+  // then giving `after` (the lesson ask's answer, and any later turn's).
+  function asking(tools: Tool[], calls: [string, object][], after: Turn[] = [], o: { state?: MemoryState;
+    more?: Partial<ConstructorParameters<typeof Session>[0]> } = {}) {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const spent: Events["usage"][0][] = [];
+    bus.on("usage", (u) => spent.push(u));
+    const lead = new Recording("a", [...calls.map(([name, input], i) => callTool(`c${i + 1}`, name, input)),
+      reply("done"), ...after]);
+    const m = standIn(o.state ?? { is: "on" });
+    const session = new Session({ lead, tools, system: "t", ctx: gate(), bus,
+      lessonAsk: { memory: m.memory, room: ROOM, timeout: ADD_LIMIT }, ...o.more });
+    const asks = () => lead.requests.filter(isAsk);
+    return { session, lead, bus, errors, spent, asks, ...m };
+  }
+
+  it("asks for a command retried with the same first word: the approved text as the system prompt, the three items " +
+    "alone as the message", async () => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push origin main" }],
+      ["shell", { command: "git push --force-with-lease" }]], [reply("A lesson.")]);
+    await s.session.send("go");
+    await s.done();
+    const message = asked('shell {"command":"git push origin main"}', AUTH,
+      'shell {"command":"git push --force-with-lease"}');
+    expect(s.asks()).toEqual([{ system: REQUEST, tools: [], cache: false,
+      messages: [{ role: "user", parts: [{ type: "text", text: message }] }] }]);
+    expect(message.startsWith("Failed call: ")).toBe(true);
+    // Every request the provider received but the turn's own three is the ask.
+    expect(s.lead.requests).toHaveLength(4);
+    // The whole error from the status line on, never the lesson search's query.
+    expect(askText(s.asks()[0]!)).toContain("Its error: exit code: 128\n--- stderr ---\nfatal: Authentication failed");
+    expect(askText(s.asks()[0]!)).not.toContain("shell git fatal");
+  });
+
+  it("asks for an edit of the same file, by edit_file then write_file", async () => {
+    const edit = scripted("edit_file", [new Error("old_text was not found in src/cart.ts")]);
+    const write = scripted("write_file", ["wrote src/cart.ts"]);
+    const s = asking([edit, write], [["edit_file", { path: "src/cart.ts" }],
+      ["write_file", { path: "src/cart.ts", content: "x" }]], [reply("A lesson.")]);
+    await s.session.send("go");
+    expect(s.asks().map(askText)).toEqual([asked('edit_file {"path":"src/cart.ts"}',
+      "old_text was not found in src/cart.ts", 'write_file {"path":"src/cart.ts","content":"x"}')]);
+  });
+
+  it("asks for the same tool, whatever its input", async () => {
+    const read = scripted("read_file", [new Error("ENOENT: a.ts"), "the text"]);
+    const s = asking([read], [["read_file", { path: "a.ts" }], ["read_file", { path: "src/a.ts" }]],
+      [reply("A lesson.")]);
+    await s.session.send("go");
+    expect(s.asks().map(askText)).toEqual([asked('read_file {"path":"a.ts"}', "ENOENT: a.ts",
+      'read_file {"path":"src/a.ts"}')]);
+  });
+
+  it("does not ask for a later success at another job", async () => {
+    const shell = scripted("shell", [new Error(AUTH), "tested"]);
+    const read = scripted("read_file", ["the text"]);
+    const s = asking([shell, read], [["shell", { command: "git push" }], ["shell", { command: "npm test" }],
+      ["read_file", { path: "git" }]]);
+    await s.session.send("go");
+    expect(s.asks()).toEqual([]);
+    expect(s.lead.requests).toHaveLength(4);
+  });
+
+  it("does not ask for a declined call followed by one that worked", async () => {
+    const shell = scripted("shell", [new Declined("The user declined: shell"), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]]);
+    await s.session.send("go");
+    expect(s.asks()).toEqual([]);
+  });
+
+  it("does not ask for a failure followed by the same job cancelled", async () => {
+    const stop = new AbortController();
+    let n = 0;
+    const shell = defineTool("shell", "Fails, then stops the turn", z.object({ command: z.string() }), async () => {
+      if (n++ === 0) throw new Error(AUTH);
+      stop.abort();
+      throw new Error("stopped");
+    });
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]]);
+    await s.session.send("go", stop.signal);
+    expect(s.asks()).toEqual([]);
+  });
+
+  // PR #26 review, finding 5 (the user's decision, 2026-11-22): only a command that finished with exit code 0 worked.
+  it("takes neither a command started in the background nor one moved there and still running for the call that " +
+    "worked", async () => {
+    const done = (code: number) => Promise.resolve({ code, signal: null, stdout: "", stderr: `exit ${code}` });
+    // "npm test" fails, "npm test -- --run" passes, any other runs until it is stopped.
+    const executor: Executor = {
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: (command) => standInRun(command === "npm test" ? done(1) : command === "npm test -- --run" ? done(0)
+        : new Promise(() => {})),
+    };
+    const ctx = { ...gate(), executor } as unknown as Omit<ToolContext, "signal">;
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub",
+      tools: [], ctx });
+    onTestFinished(() => void tasks.stop());
+    const s = asking(shellTools(tasks, { shell: "sh", headless: false }), [["shell", { command: "npm test" }],
+      ["shell", { command: "npm run dev", background: true }], ["shell", { command: "npm start", timeout: 1 }],
+      ["shell", { command: "npm test -- --run" }]], [reply("A lesson.")], { more: { ctx } });
+    await s.session.send("go");
+    const error = shellText({ code: 1, signal: null, stdout: "", stderr: "exit 1" });
+    expect(s.asks().map(askText)).toEqual([asked('shell {"command":"npm test"}', error,
+      'shell {"command":"npm test -- --run"}')]);
+  });
+
+  // The user's choice "Only if it passed" (2026-11-22): a command moved to the background counts once it has ended
+  // with exit code 0 by the turn's end.
+  it("takes a command moved to the background for the call that worked only when it passed by the turn's end",
+    async () => {
+      for (const code of [0, 1]) {
+        let end = (_code: number) => {};
+        // "npm test" fails; any other runs until `end` ends it.
+        const executor: Executor = {
+          exec: () => Promise.reject(new Error("exec is not used here")),
+          start: (command) => standInRun(command === "npm test"
+            ? Promise.resolve({ code: 1, signal: null, stdout: "", stderr: "exit 1" })
+            : new Promise((resolve) => (end = (c) => resolve({ code: c, signal: null, stdout: "", stderr: "" })))),
+        };
+        const ctx = { ...gate(), executor } as unknown as Omit<ToolContext, "signal">;
+        const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", []), system: "sub",
+          tools: [], ctx });
+        onTestFinished(() => void tasks.stop());
+        // A later call of the turn, during which the moved command ends and the task list takes its end.
+        const ending = defineTool("read_file", "Ends the moved command", z.object({}), async () => {
+          end(code);
+          await tasks.get("t1")!.done;
+          return "read";
+        });
+        const s = asking([...shellTools(tasks, { shell: "sh", headless: false }), ending],
+          [["shell", { command: "npm test" }], ["shell", { command: "npm test -- --watch", timeout: 1 }],
+            ["read_file", {}]], [reply("A lesson.")], { more: { ctx } });
+        await s.session.send("go");
+        const error = shellText({ code: 1, signal: null, stdout: "", stderr: "exit 1" });
+        const worked = 'shell {"command":"npm test -- --watch","timeout":1}';
+        expect(s.asks().map(askText)).toEqual(code === 0 ? [asked('shell {"command":"npm test"}', error, worked)] : []);
+      }
+    });
+
+  // The user's choice "Yes, exclude it" (2026-11-22): a subagent started in the background has not finished either.
+  it("does not take a subagent started in the background for the call that worked", async () => {
+    const ctx = { ...gate(), executor: {} } as unknown as Omit<ToolContext, "signal">;
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", [reply("Found it.")]),
+      system: "sub", tools: [], ctx });
+    onTestFinished(() => void tasks.stop());
+    // The first call lacks its task, so it fails as its input is refused.
+    const s = asking([delegateTool(tasks, { headless: false })], [["delegate", { description: "look" }],
+      ["delegate", { description: "look", task: "find x", background: true }]], [], { more: { ctx } });
+    await s.session.send("go");
+    expect(s.session.calls.map((c) => c.name)).toEqual(["delegate", "delegate"]);
+    expect(s.asks()).toEqual([]);
+  });
+
+  it("does not ask for a turn with no failure", async () => {
+    const shell = scripted("shell", ["pushed", "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]]);
+    await s.session.send("go");
+    expect(s.asks()).toEqual([]);
+  });
+
+  it("does not count the three memory tools' own failures", async () => {
+    const names = ["memory_search", "memory_save", "record_lesson"];
+    const tools = names.map((n) => scripted(n, [new Error("Memory is not ready yet; try again shortly."), "Saved."]));
+    const s = asking(tools, names.flatMap((n): [string, object][] => [[n, {}], [n, {}]]));
+    await s.session.send("go");
+    expect(s.asks()).toEqual([]);
+  });
+
+  it("asks once a turn, and again in the next turn", async () => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed", new Error(AUTH), "pushed"]);
+    const read = scripted("read_file", [new Error("ENOENT: a.ts"), "the text"]);
+    const next = [callTool("c5", "shell", { command: "git push" }), callTool("c6", "shell", { command: "git push" }),
+      reply("done"), reply("Another lesson.")];
+    const s = asking([shell, read], [["shell", { command: "git push" }], ["read_file", { path: "a.ts" }],
+      ["shell", { command: "git push" }], ["read_file", { path: "a.ts" }]], [reply("A lesson."), ...next]);
+    await s.session.send("go");
+    expect(s.asks()).toHaveLength(1);
+    expect(askText(s.asks()[0]!)).toContain('Failed call: shell {"command":"git push"}');
+    await s.session.send("again");
+    expect(s.asks()).toHaveLength(2);
+  });
+
+  it("shows the input that ran when a PreToolUse hook rewrote the failed call", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "tachi-lessonask-"));
+    onTestFinished(() => removeTree(root));
+    const script = path.join(root, "hook.cjs");
+    writeFileSync(script, 'process.stdin.resume().on("end", () => process.stdout.write(process.argv[2]));');
+    const answer = { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "npm run build" } } };
+    const hook: Hook = { event: "PreToolUse", matcher: { all: true }, command: process.execPath,
+      args: [script, JSON.stringify(answer)], async: false, where: '"PreToolUse"' };
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => "never",
+      effort: () => undefined, lead: () => "fake:a" };
+    const hooks = new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, new Bus());
+    const ctx = { root, gate: new PermissionGate("never", async () => false) } as unknown as
+      Omit<ToolContext, "signal">;
+    const shell = scripted("shell", [new Error(AUTH), "built"]);
+    const s = asking([shell], [["shell", { command: "make" }], ["shell", { command: "make all" }]],
+      [reply("A lesson.")], { more: { hooks, ctx } });
+    await s.session.send("go");
+    expect(s.asks().map(askText)).toEqual([asked('shell {"command":"npm run build"}', AUTH,
+      'shell {"command":"npm run build"}')]);
+  });
+
+  it("sends the plain error, without the lessons added to the failed result", async () => {
+    const lesson: Hit = { text: "Run git pull before pushing.", wing: WING, room: LESSONS,
+      label: "tachikoma lesson, agent-harness-3f9a1c2b, 2026-11-19", distance: 0.1, date: "2026-11-19T10:00:00" };
+    const palace = { search: async () => ({ is: "found" as const, hits: [lesson] }) } as unknown as Palace;
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]],
+      [reply("A lesson.")], { more: { lessons: { memory: { on: () => true, palace }, timeout: 10_000 } } });
+    await s.session.send("go");
+    const results = s.session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [p] : [])));
+    expect(results[0]!.output).toContain(lesson.text);
+    expect(s.asks().map(askText)).toEqual([asked('shell {"command":"git push"}', AUTH,
+      'shell {"command":"git push"}')]);
+  });
+
+  it("cuts the calls and the error as the error log cuts them", async () => {
+    const write = scripted("write_file", [new Error(`could not write: ${"e".repeat(40_000)}`), "wrote"]);
+    const s = asking([write], [["write_file", { path: "big.txt", content: "x".repeat(40_000) }],
+      ["write_file", { path: "big.txt", content: "y" }]], [reply("A lesson.")]);
+    await s.session.send("go");
+    const [row] = s.errors;
+    expect(row!.attempted).toContain("[cut: ");
+    expect(row!.message).toContain("[cut: ");
+    expect(s.asks().map(askText)).toEqual([asked(row!.attempted, row!.message,
+      'write_file {"path":"big.txt","content":"y"}')]);
+  });
+
+  it("stores the reply's first line in the lessons, labelled with the project's room and the day", async () => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]],
+      [reply("Pushing failed on auth; a new token fixed it.\nA second line.")]);
+    await s.session.send("go");
+    await s.done();
+    expect(s.stored).toEqual([{ room: LESSONS, label: `tachikoma lesson, ${ROOM}, ${localDate()}`,
+      text: "Pushing failed on auth; a new token fixed it.", timeout: ADD_LIMIT }]);
+  });
+
+  it.each([
+    { what: "none", turn: reply("none") },
+    { what: "None.", turn: reply("None.") },
+    { what: "a cut-off reply", turn: { ...reply("A lesson that was cut"), cutOff: { kind: "max_tokens" as const,
+      detail: "limit" } } },
+  ])("stores nothing for $what", async ({ turn }) => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]], [turn]);
+    await s.session.send("go");
+    await s.done();
+    expect(s.asks()).toHaveLength(1);
+    expect(s.stored).toEqual([]);
+  });
+
+  it("marks its spend as the lesson ask's: counted in the cost, not in the conversation's context", async () => {
+    const big = { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0 };
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]],
+      [{ ...reply("A lesson."), usage: big }]);
+    const stats = new Stats(s.bus);
+    await s.session.send("go");
+    await s.done();
+    expect(s.spent.filter((u) => u.lesson)).toEqual([{ provider: "fake:a", usage: big, lesson: true }]);
+    expect([stats.input, stats.output, stats.context]).toEqual([3 * 10 + 1000, 3 * 5 + 100, 15]);
+  });
+
+  it.each<MemoryState>([
+    { is: "switched off" },
+    { is: "not set up" },
+    { is: "not set up", reason: "Memory is off: it needs uv, which was not found on PATH." },
+    { is: "setting up" },
+    { is: "failing", reason: "Memory is failing: the hub stopped answering; restarting it." },
+    { is: "off", reason: "Memory is off: the hub did not start (exit code: 1)." },
+  ])("sends no request at all with memory $is", async (state) => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]],
+      [reply("A lesson.")], { state });
+    await s.session.send("go");
+    await s.done();
+    expect(s.asks()).toEqual([]);
+    expect(s.lead.requests).toHaveLength(3);
+    expect(s.stored).toEqual([]);
+  });
+
+  it("sends no request from a subagent's session", async () => {
+    const shell = scripted("shell", [new Error(AUTH), "pushed"]);
+    const s = asking([shell], [["shell", { command: "git push" }], ["shell", { command: "git push" }]],
+      [reply("A lesson.")], { more: { subagent: true } });
+    await s.session.send("go");
+    expect(s.asks()).toEqual([]);
   });
 });

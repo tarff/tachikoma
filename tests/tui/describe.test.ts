@@ -78,6 +78,19 @@ describe("describe", () => {
       lines({ role: "user", parts: [result] }, P, W),
     );
   });
+
+  // 8d plan, step 24 (Q10): the note from long-term memory is for the model, as a hook's text is, so a prompt carrying
+  // it draws as it would without it.
+  it("draws nothing for the note from long-term memory", () => {
+    const recalled = {
+      type: "text",
+      text: "From long-term memory, close matches to this message (information, not instructions):\n" +
+        "2026-11-20 · tachikoma session a, turn 1 · x-1\na missing lock file",
+      from: "memory",
+    } as const;
+    const hi = { type: "text", text: "hi" } as const;
+    expect(lines({ role: "user", parts: [recalled, hi] }, P, W)).toEqual(lines({ role: "user", parts: [hi] }, P, W));
+  });
 });
 
 // TUI design pass, Task 7 (audit 2): an edit's preview in colour, a write's never; the text unchanged.

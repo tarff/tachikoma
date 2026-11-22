@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs, styleText } from "node:util";
@@ -78,6 +78,11 @@ import type { McpSandbox } from "./mcp/place.js";
 import { Servers } from "./mcp/servers.js";
 import { approveOf, mcpTools } from "./mcp/tools.js";
 import { EFFORTS } from "./providers/anthropic.js";
+import { clearDontAsk, dontAsk, recordDontAsk } from "./memory/asked.js";
+import { readyFile, uvProgram } from "./memory/install.js";
+import { Memory, type MemoryState, NO_UV } from "./memory/memory.js";
+import { memoryPaths, roomName } from "./memory/paths.js";
+import { Saver } from "./memory/saver.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
 import { boxCheck, dropIfNothing, reviewCommand } from "./sandbox/copies.js";
@@ -94,9 +99,10 @@ import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "./tools/commands.js";
 import { delegateTool } from "./tools/delegate.js";
 import { editFileTool } from "./tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
+import { memoryTools } from "./tools/memory.js";
 import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
-import { NOT_GONE } from "./tui/app/constants.js";
+import { MEMORY_WORDS, NOT_GONE } from "./tui/app/constants.js";
 import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
 import { asBlock } from "./tui/describe.js";
@@ -145,6 +151,7 @@ sites allows only the settings' "allowedSites"
   --classic         use the terminal's own scrollback, not the full screen (or set TACHI_CLASSIC=1)
   --scroll-speed <n>  lines a wheel notch scrolls in full screen, above 0 and up to 20
                       (default: 3; or set TACHI_SCROLL_SPEED)
+  --no-memory       run this launch without long-term memory (to keep it off, set "memory": false)
   -p, --print <prompt>  run without the interface
   --json            with -p, print every event as one JSON line
   --raw             with -p, print the answer exactly as written, control codes and all
@@ -162,9 +169,11 @@ In a session: /lead <provider:model> switches the lead model, /lead or /model pi
 it, /compact [words] shortens it into a summary now, /autocompact <tokens> shortens it once it
 passes that many tokens (/autocompact off: only when a request would not fit), /tasks lists
 subagents and background commands (/tasks t1 shows one, /tasks stop stops them), /hooks lists
-the hooks in force, /mcp lists the MCP servers, /errors summarises the error log, /screen switches
-between full screen and classic, /settings opens the settings file in your editor, /keybindings
-opens the keys file in your editor, /vim switches vim mode in this window, /exit quits.
+the hooks in force, /mcp lists the MCP servers, /memory shows long-term memory's state
+(/memory setup sets it up), /lesson <text> records a lesson, /errors summarises the error log,
+/screen switches between full screen and classic, /settings opens the settings file in your
+editor, /keybindings opens the keys file in your editor, /vim switches vim mode in this
+window, /exit quits.
 Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty
 prompt quits. Ctrl+T hides or shows the to-do list. Esc and Ctrl+T can be moved in the keys file;
 Ctrl-C and Ctrl-D cannot. ? on an empty prompt lists every key.`;
@@ -202,6 +211,30 @@ function askAtStart(question: string): Promise<boolean> {
       const yes = key.toLowerCase() === "y";
       process.stdout.write(`${yes ? "y" : "n"}\n`);
       resolve(yes);
+    });
+    process.stdin.resume();
+  });
+}
+
+// Long-term memory's first-use question (8d plan, step 27; Q3): the design's question (approved 2026-11-19, N = 230,
+// step 7; kept with /memory setup's words, step 28) and its three keys (approved 2026-11-20), asked as askAtStart
+// asks, before the screen is drawn: y is Yes, d is "Don't ask again", any other key is "Not now", as any other key
+// leaves the instruction files out, and Ctrl-C quits.
+// The key pressed is said by its answer's name.
+type MemoryAnswer = "Yes" | "Not now" | "Don't ask again";
+function askMemory(): Promise<MemoryAnswer> {
+  process.stdout.write(`${MEMORY_WORDS.question} [y] Yes  [n] Not now  [d] Don't ask again `);
+  process.stdin.ref();
+  process.stdin.setRawMode(true);
+  return new Promise((resolve) => {
+    process.stdin.once("data", (data) => {
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+      const key = String(data);
+      if (key === "\u0003") process.exit(128 + constants.signals.SIGINT);
+      const answer = key.toLowerCase() === "y" ? "Yes" : key.toLowerCase() === "d" ? "Don't ask again" : "Not now";
+      process.stdout.write(`${answer}\n`);
+      resolve(answer);
     });
     process.stdin.resume();
   });
@@ -359,6 +392,7 @@ try {
       status: { type: "string" },
       classic: { type: "boolean" },
       "scroll-speed": { type: "string" },
+      "no-memory": { type: "boolean" }, // the one flag, not Node's allowNegative (release 8d plan, question Q13)
       print: { type: "string", short: "p" },
       json: { type: "boolean" },
       raw: { type: "boolean" },
@@ -514,7 +548,9 @@ let ready: Ready | undefined;
 // Once the MCP servers are made (below), a signal stops them first, as the window's and -p's exits do, waiting at most
 // choice 3's wait (stopSoon; release 8c plan, Task 9).
 let mcpServers: Servers | undefined;
-const stopServers = () => (mcpServers ? stopSoon(mcpServers) : Promise.resolve());
+// Then, of long-term memory, only this window's "in use" file is removed (8d plan, step 27), once it is made (below).
+let memoryKilled: (() => void) | undefined;
+const stopServers = () => (mcpServers ? stopSoon(mcpServers) : Promise.resolve()).finally(() => memoryKilled?.());
 for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning, stopServers));
 // Copy mode's copy is removed when the launch ends before the session starts, however it ends (clilib.ts, dropOnExit).
 // From the image's steps until the box has started, Ctrl-C, with raw mode off, ends the launch through process.exit, so
@@ -630,12 +666,96 @@ if (interactive) {
   };
   await askServers(mcpConfigs, mcpSandbox, answersNow, askAtStart, (line) => unsaved.push(line));
 }
+// Long-term memory (8d plan, step 27). Two things, kept apart. The service is given to the lead's session whenever
+// memory is not switched off, set up or not, and asked at each turn, so a set-up that ends during the conversation
+// saves its turns, gives its note and lessons and asks for lessons at once (Q1). Whether memory is on at the launch is
+// worked out once, here: set up already, a ready environment for the shipped lock file or the user's own MemPalace
+// (both "setting up" until joined), and it fixes only the three tools, the prompt's line and the subagents' line. Not
+// set up, unless "Don't ask again" was answered, the window says the design's line without uv, and otherwise asks;
+// -p never asks and says nothing. Set up already, memory joins with or without uv, which only the install needs.
+// Started, or set up on "Yes", once the bus's listeners are on (below).
+const memoryAt = memoryPaths(data);
+const memory = new Memory({ memory: options.memory, bus, lead: () => session.lead.id, paths: memoryAt });
+memoryKilled = () => memory.killed();
+const memoryOn = memory.state.is === "setting up";
+const room = roomName(root); // the host's folder, also in the sandbox (step 16)
+let settingUp = false;
+let noUv: string | undefined;
+// After "Don't ask again", nothing is said, the line without uv included (the user's choice after step 27's review).
+if (interactive && memory.state.is === "not set up" && !dontAsk(memoryAt)) {
+  if (!uvProgram()) noUv = NO_UV;
+  else {
+    const answer = await askMemory();
+    // The lines after the answer (approved 2026-11-20).
+    if (answer === "Yes") {
+      settingUp = true;
+      console.log(MEMORY_WORDS.settingUpNow);
+    } else if (answer === "Don't ask again") {
+      try {
+        recordDontAsk(memoryAt);
+      } catch {
+        // not kept: the next launch asks again
+      }
+      console.log("Long-term memory stays off. /memory setup sets it up later.");
+    }
+  }
+}
+// Each request's time limit (the user's choices): a search 3.4 s (M8, step 11; Q9), an add 13 s, 5 times the slowest
+// whole part's add, 2,565.4 ms (decided at step 22 for the saver, and before step 27 for the tools and a lesson's
+// store), and the exit's last save 14 s (M2, step 10).
+const SEARCH_LIMIT = 3_400;
+const ADD_LIMIT = 13_000;
+const LAST_SAVE = 14_000;
+// /memory's two counts (the user's choice at step 28): 5 times the slowest pair measured, 3,612.6 ms, sent behind a
+// 100,000-character save of the launch's catch-up (step 28's run 3; the record is build-step-28.md, section 10).
+const COUNT_LIMIT = 18_100;
+// One saver per palace in this process (step 22); its save lock in Tachikoma's memory folder, or in memory/use/ for the
+// user's own MemPalace, which two such palaces share and take turns on (decided at step 22).
+const saver =
+  options.memory === "off"
+    ? undefined
+    : new Saver({
+        memory,
+        bus,
+        room,
+        folder: options.memory === "own" ? memoryAt.root : path.join(memoryAt.root, "use"),
+        timeout: ADD_LIMIT,
+      });
+const saveLast = saver && { limit: LAST_SAVE, run: saver.run };
+// A set-up in the background, on the launch's "Yes" or on /memory setup's yes (step 28), and its line once memory is
+// on (approved 2026-11-20; Q1: its tools wait for the next launch). A set-up that fails says why as memory's own row.
+const setUpMemory = () => {
+  const done = (s: MemoryState) => {
+    if (s.is === "setting up") return;
+    bus.off("memory", done);
+    if (s.is === "on") bus.emit("note", MEMORY_WORDS.setUp);
+  };
+  bus.on("memory", done);
+  memory.setUp();
+};
+// The three tools, only when memory is on at the launch (step 23): "all" searches Tachikoma's wing, or the whole of the
+// user's own palace (the design's section 3).
+const remembering = memoryOn
+  ? memoryTools({
+      memory,
+      room,
+      everything: options.memory === "own" ? "wing" : "palace",
+      session: () => session.id,
+      timeouts: { search: SEARCH_LIMIT, add: ADD_LIMIT },
+    })
+  : undefined;
 // Then the box: leftover boxes removed, the box started and its node checked (sandboxStart). From here the model works in
 // it, on /work (choice 19). Its launch lines are grey in the interface, and on stderr with -p.
 let box: Started | undefined;
 if (ready) {
   console.error(styleText("gray", "Starting the sandbox...", { stream: process.stderr })); // the user's words: the start takes seconds
-  const startOpts = { network: options.network, sites, limits: loaded.settings.sandboxLimits, session: sessionId };
+  const startOpts = {
+    network: options.network,
+    sites,
+    limits: loaded.settings.sandboxLimits,
+    session: sessionId,
+    memory: memoryOn,
+  };
   const started = await sandboxStart(root, ready, startOpts, {
     err: (line) => console.error(line),
   });
@@ -652,7 +772,7 @@ const setupNow = () => setupOf(root, sandbox, options.network);
 const launchSetup = setupNow();
 const today = localDate();
 const leadPrompt = (date: string, setup: Setup, leadId: string) =>
-  systemPrompt({ root: where.root, date, setup, lead: leadId, sites });
+  systemPrompt({ root: where.root, date, setup, lead: leadId, sites, memory: memoryOn });
 const first = leadPrompt(today, launchSetup, lead.id);
 const system = [first, instructions.text].filter(Boolean).join("\n\n");
 // The MCP servers, made once the sandbox has started, and started once the bus has its listeners (release 8c plan, Task
@@ -728,8 +848,9 @@ const tasks = new Tasks({
   max: maxTasks,
   worker: () => worker ?? session.lead,
   ...(fallback ? { fallback } : {}),
-  system: [box?.subagentSystem ?? subagentPrompt(root), instructions.text].filter(Boolean).join("\n\n"), // the same instructions as the lead
-  tools: SUBAGENT_TOOLS,
+  // The same instructions as the lead.
+  system: [box?.subagentSystem ?? subagentPrompt(root, memoryOn), instructions.text].filter(Boolean).join("\n\n"),
+  tools: remembering ? [...SUBAGENT_TOOLS, remembering.search] : SUBAGENT_TOOLS, // memory_search too, on at launch
   ctx: { root: where.root, executor, workspace, gate },
   transcript: () => session.transcript, // each subagent saves beside the lead (release 8a plan, Task 5)
   hooks,
@@ -746,6 +867,7 @@ const tools = [
   ...TOOLS.flatMap((t) => (t === editFileTool ? [t, ...commandTools] : [t])),
   todoTool((items) => bus.emit("todo", items)),
   delegateTool(tasks, { headless: !interactive }),
+  ...(remembering ? [remembering.search, remembering.save, remembering.lesson] : []), // last, on at the launch (Q1)
 ];
 // The session's transcript (release 8a plan, Task 6): a new one's start line, with -p marked so, or the saved session
 // opened above, or its copy. Its lines are said before the conversation is loaded, and the error log's rows carry its id.
@@ -808,6 +930,14 @@ const { session, pictures } = leadSession({
   // The setup and date as found at each message, for the notes that tell the model of a change (system prompt plan,
   // Task 7); the host's folder and platform name its shell in the setup note.
   setup: { now: setupNow, today: () => localDate(), root, platform: process.platform },
+  // Memory, whenever it is not switched off (step 27): the saver of turns (step 22), the note on a first message (step
+  // 24), the lessons on a failed call (step 25) and the lesson ask (step 26), each going ahead only while memory is on.
+  ...(saver && {
+    memory: saver,
+    recall: { memory, room, timeout: SEARCH_LIMIT },
+    lessons: { memory, timeout: SEARCH_LIMIT },
+    lessonAsk: { memory, room, timeout: ADD_LIMIT },
+  }),
 });
 // SessionStart's source, by how the launch opened the conversation (release 8b plan, Task 10): a copy opened as another
 // window holds the session is still a resume, as -c or -r asked for one.
@@ -825,7 +955,8 @@ if (parsed.print !== undefined) {
     // does a transcript that cannot be saved (release 8a plan, Task 5), nor a shortening's line after which the request was
     // sent as it is (Task 13): a later line that ends the turn has no mark, and still fails it. Nor does a hook that failed
     // (release 8b design, "What the user sees"), nor an MCP server, nor the project's answers (release 8c plan, choice 26).
-    const harmless = ["tool", "fallback", "judge", "saving", "hook", "mcp"];
+    // Nor long-term memory: work never stops for memory (8d plan, Q15).
+    const harmless = ["tool", "fallback", "judge", "saving", "hook", "mcp", "memory"];
     if (!harmless.includes(e.kind) && !(e.kind === "shortening" && e.sent)) failed = true;
   });
   if (parsed.json) {
@@ -837,7 +968,9 @@ if (parsed.print !== undefined) {
   } else {
     bus.on("error", (e) => {
       if (e.kind === "fallback") console.error(prose(`note: ${e.message}`));
-      else if (e.kind === "saving" || e.kind === "shortening") console.error(prose(e.message)); // the line alone, as the window shows it
+      // The line alone, as the window shows a saving or shortening line; memory's alone too, as its line names memory
+      // already (the user's choice, 2026-11-20).
+      else if (e.kind === "saving" || e.kind === "shortening" || e.kind === "memory") console.error(prose(e.message));
       // A hook's line is escaped whole, as the window escapes it (App.tsx): it carries the hook's own words and its command.
       else if (e.kind === "hook") console.error(`hook: ${visible(e.message, { tabs: true })}`);
       else if (e.kind !== "tool") console.error(prose(`${e.kind}: ${e.message}`));
@@ -848,8 +981,10 @@ if (parsed.print !== undefined) {
     // An MCP grey line so too (choice 26); a failure is `mcp: <line>`, as every other kind's (above).
     bus.on("mcp-note", (line) => console.error(`note: ${visible(line, { tabs: true })}`));
   }
-  // Started once the listeners are on, before the prompt is sent, which waits for them (choice 25).
+  // Started once the listeners are on, before the prompt is sent, which waits for them (choice 25). Memory too, in the
+  // background, which the prompt never waits for (Q9).
   servers.startAll();
+  memory.start();
   for (const line of mcpLines(servers, { print: true })) bus.emit("mcp-note", line);
   // Loaded once the error listeners are on, so a start line or mend that failed is said now, not at the first write.
   for (const line of said) console.error(gray(line.text));
@@ -881,6 +1016,10 @@ if (parsed.print !== undefined) {
   // The waiting line only on a terminal, grey as the launch's lines.
   const waitingLine = process.stderr.isTTY ? { waitingLine: (line: string) => console.error(gray(line)) } : {};
   const ended = await waitForBackground(first, session, tasks, stop.signal, { bus, failed: () => failed, answer: printAnswer, ...waitingLine });
+  // Then memory closes (8d plan, step 27; Q16): the lesson requests still running are waited for, each storing its
+  // lesson; then the saver's last chance; then the hub is left. The first Ctrl-C ends the wait and cancels them, and
+  // the run is a stopped one; a second quits, as ever.
+  if (saveLast) await memory.close({ lessons: "wait", save: saveLast, signal: stop.signal });
   // Read now: a Ctrl-C during SessionEnd or copy mode's step below comes after the run's work, so it does not mark the run
   // stopped (Task 10's code review).
   const aborted = stop.signal.aborted;
@@ -1003,7 +1142,10 @@ if (parsed.print !== undefined) {
         // tool rows folded as they were live (release 8c plan, Task 15), with the live lines' marks (TUI design pass, Task 3).
         intro={[
           ...startLines,
-          ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "muted" as const }])),
+          // Memory's line without uv after the sandbox's (8d plan, step 27).
+          ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? []), ...(noUv ? [noUv] : [])].flatMap(
+            (text) => (text === null ? [] : [{ text, color: "muted" as const }]),
+          ),
           ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours, root: workspace.root }, width),
           ...asBlock(said.map((l) => ({ ...l, color: "muted" as const }))), // a block under the conversation (the whole PR's review)
         ]}
@@ -1037,6 +1179,24 @@ if (parsed.print !== undefined) {
         hooks={hooks}
         mcp={{ servers, project: projectServers }}
         shell={shell}
+        // Memory's closing as the window is left (8d plan, step 27; Q16): the lesson requests cancelled, the saver's
+        // last chance, then the hub left.
+        {...(saveLast ? { closeMemory: () => memory.close({ lessons: "cancel", save: saveLast }) } : {})}
+        // Long-term memory for /memory, /lesson and the status line (8d plan, step 28): which of the user's choices
+        // switched it off, read from the flag and the file, as resolve() gives "off" for both (step 15's duty).
+        memory={{
+          service: memory,
+          ...(saver ? { saver } : {}),
+          choice: options.memory,
+          ...(options.memory === "off" ? { off: parsed["no-memory"] ? ("flag" as const) : ("settings" as const) } : {}),
+          palace: memoryAt.palace,
+          room,
+          limits: { count: COUNT_LIMIT, add: ADD_LIMIT },
+          ready: () => existsSync(readyFile(memoryAt)),
+          uv: () => uvProgram() !== null,
+          setUp: setUpMemory,
+          clearDontAsk: () => clearDontAsk(memoryAt),
+        }}
       />
     </ThemeContext>,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
@@ -1049,6 +1209,8 @@ if (parsed.print !== undefined) {
   // lines (release 8b plan, Task 10), and the MCP servers' (release 8c plan, Task 9), started now, before a prompt can be
   // typed, which waits for them (choice 25).
   servers.startAll();
+  memory.start();
+  if (settingUp) setUpMemory(); // "Yes"
   for (const line of mcpLines(servers, { print: false })) bus.emit("mcp-note", line);
   for (const message of unsaved) bus.emit("error", { kind: "mcp", attempted: "MCP answers", message, lead: session.lead.id });
   session.load(opened.conversation);

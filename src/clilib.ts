@@ -8,7 +8,7 @@ import { privateDir } from "./auth/private.js";
 import type { Bus } from "./core/bus.js";
 import { type Instructions, type Reached, readInstructions, type Where } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
-import { subagentPrompt } from "./core/prompt.js";
+import { MEMORY_LINE, subagentPrompt } from "./core/prompt.js";
 import { type Conversation, type Ended, Session, type SessionOptions } from "./core/session.js";
 import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
 import { sameSetup } from "./core/setup.js";
@@ -166,6 +166,7 @@ export interface Flags {
   sandbox?: string;
   network?: string;
   judge?: string;
+  "no-memory"?: boolean;
 }
 
 // Where commands run, and whether the box reaches the internet (release 7 design, "Launching"): both off unless asked for.
@@ -196,6 +197,10 @@ export function resolve(flags: Flags, env: NodeJS.ProcessEnv, settings: Settings
     // though the file is still checked whole, so a bad one there stops -p. A bad --scroll-speed, typed for this run, still
     // stops it (the user's choice, 2026-10-27, at release 5's Task 7 review).
     speed: flags.print === undefined ? scrollSpeed(flags["scroll-speed"], env, settings.scrollSpeed) : scrollSpeed(flags["scroll-speed"], {}),
+    // Release 8d plan, step 15: off, Tachikoma's own palace, or the user's program; --no-memory wins, for this launch.
+    memory: flags["no-memory"] || settings.memory === false
+      ? ("off" as const)
+      : typeof settings.memory === "object" ? settings.memory : ("own" as const),
   };
 }
 
@@ -568,6 +573,8 @@ export async function sandboxStart(
     session: string;
     labels?: Record<string, string>;
     waits?: { setup: number; check: number };
+    // Whether memory is on at the launch, which names memory_search in the subagents' line (8d plan, steps 23, 27).
+    memory?: boolean;
   },
   io: Pick<SandboxIo, "err" | "run">,
 ): Promise<Started | { exit: number }> {
@@ -674,7 +681,7 @@ export async function sandboxStart(
     root: BOX_ROOT,
     executor: opts.network === "off" ? networkNoted(box) : net ? networkNoted(box, SITES_NOTE) : box,
     workspace: new BoxWorkspace(box.id, run, BOX_ROOT, box.state),
-    subagentSystem: subagentPrompt(BOX_ROOT),
+    subagentSystem: subagentPrompt(BOX_ROOT, opts.memory),
     gate: { root: BOX_ROOT, home: BOX_HOME, shell: shellOf("box") },
     protection: boxProtection(root, protectionOf(ready.git)),
     lines: [
@@ -1011,12 +1018,16 @@ export function resumed(
   if (o.name) transcript.write({ t: "name", name: o.name });
   if (o.lead !== read.lead) transcript.write({ t: "lead", lead: o.lead });
   const rebuilt = !sameSetup(read.setup, o.prompt.setup);
-  if (rebuilt) {
+  // The second cause, kept apart from the setup (8d plan, step 27; Q21): memory is on at this launch, its prompt
+  // holding the memory line, and the saved prompt does not hold it, or the other way round. The saved setup's format is
+  // unchanged, so a session saved before 8d counts as one without the line.
+  const remembered = read.system.includes(MEMORY_LINE) !== o.prompt.full.includes(MEMORY_LINE);
+  if (rebuilt || remembered) {
     const box = o.prompt.setup.sandbox !== "off";
     transcript.write({ t: "system", system: o.prompt.full, box, setup: o.prompt.setup });
   }
   if (o.interactive && read.print) transcript.write({ t: "interactive" });
-  const system = rebuilt ? o.prompt.full : read.system;
+  const system = rebuilt || remembered ? o.prompt.full : read.system;
   // Each in the subagents folder, as tasks.ts names a subagent's file, made inside the private sessions folder; an id
   // from the file is used only when it is one Tasks gives, so no line can lead the write elsewhere.
   // A command's ending goes into the session's own transcript, a fork's or a branch's copy included, as its command line
@@ -1056,9 +1067,11 @@ export function resumed(
     // Said at the resume that changed the setting, its thinking part only when a reply had the provider's own content to
     // leave out; a later resume leaves out the same replies' thinking without a word (user, 2026-11-07: "Only at the
     // change").
+    // Memory alone: the tools line, when the rebuild left thinking out (`dropped`), as the history has already lost the
+    // content the tools' check looks for (Q21).
     ...(rebuilt
       ? [{ text: why + (dropped ? ", and its earlier replies are sent without their thinking." : ".") }]
-      : otherTools
+      : (remembered ? dropped : otherTools)
         ? [{ text: "The tools have changed since this session was saved, so its earlier replies are sent without their thinking." }]
         : []),
   ];
@@ -1076,6 +1089,8 @@ export function resumed(
       asked: read.asked, // so its rows fold as they did live (Task 15)
       tools: read.tools, // the tools saved last, which its replies were made under (Task 6b's quality review; choice 46)
       told: read.told, // what the model was told, for the notes (system prompt plan, Task 6)
+      unsaved: read.unsaved, // the turns not yet saved, which the session hands to the saver (8d plan, step 22)
+      lastTurn: read.lastTurn, // so a typed turn is numbered after every turn it holds (PR #26 review, finding 2)
     },
     lines,
     // A command cut as every first line naming one cuts it (background commands plan, choice 24).

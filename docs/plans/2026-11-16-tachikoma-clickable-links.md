@@ -96,7 +96,7 @@ the user's say-so. Main takes changes only by pull request with CI's `test` chec
 
 ### Detection: the sources
 
-**Claude Code 2.1.323** (`C:\Users\timel\.local\share\claude\versions\2.1.323`, the file
+**Claude Code 2.1.323** (`C:\Users\<user>\.local\share\claude\versions\2.1.323`, the file
 `claude.exe` runs; read as text with a scratch Node script, around byte 322,486,728):
 - It bundles a copy of supports-hyperlinks whose checks, in order, are: `FORCE_HYPERLINK`; the
   `--no-hyperlink(s)` / `--hyperlink=…` command-line flags; `NETLIFY` → yes; no colour → no; not a

@@ -8,6 +8,7 @@ import { privateDir } from "../src/auth/private.js";
 import { Bus } from "../src/core/bus.js";
 import { projectFile } from "../src/core/datadir.js";
 import { readInstructions } from "../src/core/instructions.js";
+import { MEMORY_LINE } from "../src/core/prompt.js";
 import { PermissionGate, visible } from "../src/core/permissions.js";
 import { listSessions, openSession, sessionPaths, sessionsDir } from "../src/core/sessions.js";
 import { Tasks } from "../src/core/tasks.js";
@@ -776,7 +777,10 @@ describe("statusSegments", () => {
   });
 
   it("names --status when a segment is unknown", () => {
-    expect(() => statusSegments("lead,nope")).toThrow('--status must be one of: lead, context, tokens, cost, mode, errors, project, time, tasks, tools (got "nope")');
+    expect(() => statusSegments("lead,nope")).toThrow(
+      "--status must be one of: lead, context, tokens, cost, mode, errors, memory, project, time, tasks, tools " +
+        '(got "nope")',
+    );
   });
 });
 
@@ -1092,6 +1096,19 @@ describe("resolve", () => {
     expect(file.allowedSites).toEqual([{ name: "github.com", port: 443 }]);
   });
 
+  // Release 8d plan, step 15 and question Q13: one answer, off, Tachikoma's own palace or the user's program at a path;
+  // --no-memory wins over the file, for this launch.
+  it("takes memory as off, Tachikoma's own or the user's program, --no-memory winning over the file", () => {
+    const use = path.resolve("/tools/mempalace-mcp");
+    expect(resolve({}, {}, {}).memory).toBe("own");
+    expect(resolve({}, {}, { memory: true }).memory).toBe("own");
+    expect(resolve({}, {}, { memory: false }).memory).toBe("off");
+    expect(resolve({}, {}, { memory: { use } }).memory).toEqual({ use });
+    for (const memory of [undefined, true, false, { use }]) {
+      expect(resolve({ "no-memory": true }, {}, { memory }).memory).toBe("off");
+    }
+  });
+
   it("takes auto mode from the flag or the file", () => {
     expect(resolve({ mode: "auto" }, {}, { mode: "ask" }).mode).toBe("auto");
     expect(resolve({}, {}, { mode: "auto" }).mode).toBe("auto");
@@ -1130,7 +1147,8 @@ describe("resolve", () => {
     expect(() => resolve({ effort: "x" }, {}, {})).toThrow('--effort must be one of: low, medium, high, xhigh, max (got "x")');
     expect(() => resolve({ "max-tasks": "1e1" }, {}, { maxTasks: 2 })).toThrow('--max-tasks must be a whole number from 1 (got "1e1")');
     expect(() => resolve({ status: "nope" }, {}, { status: ["lead"] })).toThrow(
-      '--status must be one of: lead, context, tokens, cost, mode, errors, project, time, tasks, tools (got "nope")',
+      "--status must be one of: lead, context, tokens, cost, mode, errors, memory, project, time, tasks, tools " +
+        '(got "nope")',
     );
     expect(() => resolve({ "scroll-speed": "21" }, {}, { scrollSpeed: 2 })).toThrow('--scroll-speed must be a number above 0, up to 20 (got "21")');
   });
@@ -1482,6 +1500,79 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
         again.release();
         expect(lines(file).filter((l) => l.t === "system")).toHaveLength(1);
       }
+    });
+
+    // 8d plan, step 27 (Q21): memory on or off at this launch is a second cause of a rebuilt prompt, kept apart from
+    // the setup: whether the saved prompt holds the memory line. Memory alone says the tools line, and only when
+    // thinking was left out; with the setup too, the setup's own line alone.
+    describe("and memory", () => {
+      const withLine = `Saved prompt.\n\n${MEMORY_LINE}`;
+      const ON = { setup: OFF, full: withLine };
+      const CHANGED =
+        "The tools have changed since this session was saved, so its earlier replies are sent without their thinking.";
+      const search = { name: "memory_search", description: "Searches.", inputSchema: { type: "object" } };
+      const remembering: ToolSpec[] = [...tools, search];
+      const systems = (file: string) => lines(file).filter((l) => l.t === "system");
+
+      it("gives a session saved without the memory line, resumed with memory on, it and the tools line, once", () => {
+        const file = saved(dir, "mem-on", [start("mem-on"), message(prompt("hi")), message(said("Done.", native))]);
+        const o = open("mem-on", { prompt: ON, as: remembering });
+        expect(o.conversation.system).toBe(withLine);
+        expect(o.conversation.messages).toEqual([prompt("hi"), said("Done.")]);
+        expect(o.lines.map((l) => l.text)).toEqual(["Resumed: hi.", CHANGED]);
+        expect(lines(file).at(-1)).toMatchObject({ t: "system", system: withLine, box: false, setup: OFF });
+        o.release();
+        const again = open("mem-on", { prompt: ON, as: remembering });
+        expect(again.conversation.system).toBe(withLine);
+        expect(again.lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+        again.release();
+        expect(systems(file)).toHaveLength(1);
+      });
+
+      it("takes the line away with the tools from a session saved with it, resumed with memory off, once", () => {
+        const first = { ...start("mem-off", { tools: remembering }), system: withLine };
+        const file = saved(dir, "mem-off", [first, message(prompt("hi")), message(said("Done.", native))]);
+        const o = open("mem-off");
+        expect(o.conversation.system).toBe("Saved prompt.");
+        expect(o.conversation.messages).toEqual([prompt("hi"), said("Done.")]);
+        expect(o.lines.map((l) => l.text)).toEqual(["Resumed: hi.", CHANGED]);
+        o.release();
+        const again = open("mem-off");
+        expect(again.lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+        again.release();
+        expect(systems(file)).toEqual([expect.objectContaining({ system: "Saved prompt.", setup: OFF })]);
+      });
+
+      it("rebuilds the prompt of a session with no Anthropic reply when memory changed, saying nothing", () => {
+        const file = saved(dir, "mem-plain", chat(start("mem-plain")));
+        const o = open("mem-plain", { prompt: ON, as: remembering });
+        expect(o.conversation.system).toBe(withLine);
+        expect(o.lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+        o.release();
+        expect(systems(file)).toEqual([expect.objectContaining({ system: withLine })]);
+      });
+
+      it("says only the setup's own line when the setup and memory both changed", () => {
+        saved(dir, "mem-box", [start("mem-box"), message(prompt("hi")), message(said("Done.", native))]);
+        const box = { setup: LIVE_OFF, full: `Box prompt.\n\n${MEMORY_LINE}` };
+        const o = open("mem-box", { prompt: box, as: remembering });
+        expect(o.conversation.system).toBe(box.full);
+        expect(o.lines.map((l) => l.text)).toEqual([
+          "Resumed: hi.",
+          `${SANDBOX_CHANGED}, and its earlier replies are sent without their thinking.`,
+        ]);
+      });
+
+      it("keeps the saved prompt untouched and says nothing when memory is the way it was saved", () => {
+        const first = { ...start("mem-same", { tools: remembering }), system: withLine };
+        const file = saved(dir, "mem-same", [first, message(prompt("hi")), message(said("Done.", native))]);
+        const o = open("mem-same", { prompt: { setup: OFF, full: `Other words.\n\n${MEMORY_LINE}` }, as: remembering });
+        expect(o.conversation.system).toBe(withLine);
+        expect(o.conversation.messages).toEqual([prompt("hi"), said("Done.", native)]);
+        expect(o.lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+        o.release();
+        expect(systems(file)).toEqual([]);
+      });
     });
 
     it("rebuilds the prompt of a session saved in the sandbox before the setup was recorded, saying why", () => {

@@ -72,7 +72,11 @@ export type Line<M = SavedMessage> =
   // A background command as it joins the task list, and how it ended, `lost` by a resume that told the model it had not
   // ended (background commands plan, choice 15).
   | { t: "command"; at: string; id: string; command: string }
-  | { t: "command-ended"; at: string; id: string; state: "done" | "failed" | "stopped" | "lost" };
+  | { t: "command-ended"; at: string; id: string; state: "done" | "failed" | "stopped" | "lost" }
+  // The end of a typed turn, by its number among the prompts, and that turn's saved record, written once every entry of
+  // it is in the palace (8d plan, step 22; Q22). An older Tachikoma skips both, counting them as damaged lines (Q17).
+  | { t: "turn"; at: string; n: number }
+  | { t: "saved"; at: string; n: number };
 
 // Omit on a union keeps only the shared fields, so each variant is omitted on its own, as boxWorkspace.ts:106 does.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -185,6 +189,8 @@ export interface Read {
   told: Told; // what the model was told: the start or last shortened line's date and setup, then each note since
   loaded: string[]; // the MCP tools loaded through tool_search: the last loaded line's, kept by a shortening (release 8c plan, choice 41)
   asked: string[]; // the calls the user was asked about, from the whole file (release 8c plan, Task 15)
+  unsaved: Unsaved[]; // the turns not yet saved, for a resumed session's saver (8d plan, step 22)
+  lastTurn: number; // the highest number on a turn or saved line, 0 with none, so a resume never numbers one again
   // The history for a launch with these tools and system prompt: an Anthropic reply keeps its own content only when the
   // tools and system prompt it was saved under are these, as Anthropic refuses a thinking block once either changed
   // before it (release 8a design, "Before the build", check 2; plan, choice 4); other providers' replies keep theirs
@@ -215,7 +221,7 @@ function cutOff(reply: SavedMessage, next: SavedMessage | undefined): boolean {
 
 // A part of a user message as the user typed it: its text, or a picture's marker; never a result, waiting text or what a
 // server supplied, such as a tool answer's picture, a resource's text or a prompt command's messages (release 8c plan,
-// choice 34).
+// choice 34), nor the note from long-term memory (8d plan, step 24).
 const own = (p: SavedMessage["parts"][number]) =>
   p.type === "image" && p.from === undefined ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [];
 
@@ -307,6 +313,10 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       const kept = keepThinking(messages, (m) => savedUnder.get(m)?.under, madeUnder(nowSystem, now));
       return { messages: kept, dropped: kept.some((m, i) => m !== messages[i]) };
     };
+    // In a loop: a spread of every turn and saved line into one call can pass Node's limit on its arguments (PR #26
+    // Codex review 5).
+    let lastTurn = 0;
+    for (const l of lines) if ((l.t === "turn" || l.t === "saved") && l.n > lastTurn) lastTurn = l.n;
     return {
       start,
       messages,
@@ -331,6 +341,8 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       told,
       loaded,
       asked: [...asked],
+      unsaved: unsavedOf(rows),
+      lastTurn,
       withTools,
     };
   } catch (err) {
@@ -424,8 +436,52 @@ function valid(l: unknown): l is Line {
   if (r.t === "asked") return strings("id");
   if (r.t === "command") return strings("id", "command");
   if (r.t === "command-ended") return strings("id") && (r.state === "done" || r.state === "failed" || r.state === "stopped" || r.state === "lost");
+  if (r.t === "turn" || r.t === "saved") return Number.isInteger(r.n) && (r.n as number) >= 1;
   return false;
 }
+
+// A typed turn not yet saved (8d plan, step 22): its number among the prompts, its typed words, each picture as its
+// marker, and the model's text in it, in order (Q4, Q5).
+export interface Unsaved {
+  n: number;
+  typed: string;
+  texts: string[];
+}
+
+// The typed turns with a boundary line and no saved record, each with the model's text between its typed message and
+// its boundary line, from message lines alone, so a shortening's summary is never part of one. These are the texts the
+// live session gathered, letter for letter. A turn with no boundary line is never one of them: one a crash cut off,
+// and every turn of a session saved before release 8d; nor is a turn with no model text (Q4). Each turn's number is
+// its boundary line's, the one it had live, as a damaged line may have been a prompt; a turn with a damaged line in it
+// cannot be rebuilt and is set apart, the turns after it kept (design, "The rule for cutting old transcripts into
+// turns"; PR #26 review, finding 2; the user's choice "Only that turn", 2026-11-22).
+function unsavedOf(rows: (Line | undefined)[]): Unsaved[] {
+  const ended: Unsaved[] = [];
+  const saved = new Set<number>();
+  let now: Omit<Unsaved, "n"> | undefined;
+  for (const l of rows) {
+    if (l === undefined) {
+      now = undefined;
+      continue;
+    }
+    if (l.t === "message") {
+      const words = l.message.role === "user" ? l.message.parts.flatMap(own).join("") : "";
+      if (words) now = { typed: words, texts: [] };
+      else if (l.message.role === "assistant") {
+        for (const p of l.message.parts) if (p.type === "text" && p.text) now?.texts.push(p.text);
+      }
+    }
+    if (l.t === "turn" && now) {
+      ended.push({ n: l.n, ...now });
+      now = undefined;
+    }
+    if (l.t === "saved") saved.add(l.n);
+  }
+  return ended.filter((t) => t.texts.length && !saved.has(t.n));
+}
+
+// The same, from a transcript's text: what a copy marks saved (sessions.ts, copySession).
+export const unsavedIn = (text: string): Unsaved[] => unsavedOf(parse(text));
 
 // Each picture read back from its file, named from its number and format as #save names it, so a line cannot lead the
 // read elsewhere; one that cannot be read becomes a note in its place (choice 5).

@@ -65,6 +65,10 @@ export interface Settings {
   // The user's MCP servers, in Claude Code's shape, ${VAR} filled in (release 8c design, "The settings entry"); LIVE, applied
   // by the /mcp task (release 8c plan, Tasks 2 and 10).
   mcpServers?: ServerConfig[];
+  // Long-term memory (release 8d design, "Settings"): false is off; true, as no entry, Tachikoma's own palace; "use",
+  // the user's own MemPalace program by its full path. Read at the launch only, so a live edit says it waits for the
+  // next one.
+  memory?: boolean | { use: string };
 }
 
 // The box's limits as the user wrote them (release 7 plan, Task 12): memory in Docker's own units, g or m. Each one
@@ -129,6 +133,7 @@ export function readSettings(text: string, env: NodeJS.ProcessEnv = process.env)
         if (typeof value !== "boolean") throw wrongType(entry, "true or false, without quotes", value);
         settings.disableAllHooks = value;
       } else if (name === "mcpServers") settings.mcpServers = readServers(SETTINGS, value, env, warnings);
+      else if (name === "memory") settings.memory = memory(entry, value, warnings);
       else warnings.push(`${entry} is not a setting; it was left out`);
     }
   } catch (err) {
@@ -256,4 +261,23 @@ function sandboxLimits(entry: string, value: unknown, warnings: string[]): Sandb
     } else warnings.push(`${part} is not a setting; it was left out`);
   }
   return limits;
+}
+
+// Long-term memory (release 8d plan, step 15): true or false, or an object whose "use" is a full path, as
+// path.isAbsolute reads it on this system, as exec/env.ts takes a full path (lookForGitBash). Other names in it are
+// left out with a warning, as the file's own are.
+function memory(entry: string, value: unknown, warnings: string[]): boolean | { use: string } {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !("use" in value)) {
+    throw wrongType(entry, 'true, false, or an object such as {"use": "<full path to mempalace-mcp>"}', value);
+  }
+  for (const name of Object.keys(value)) {
+    if (name === "use") continue;
+    warnings.push(`${SETTINGS}: ${JSON.stringify(`memory.${name}`)} is not a setting; it was left out`);
+  }
+  const { use } = value;
+  if (typeof use !== "string" || !path.isAbsolute(use)) {
+    throw wrongType(`${entry}: "use"`, "the full path to your mempalace-mcp program", use);
+  }
+  return { use };
 }

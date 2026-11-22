@@ -1,0 +1,7 @@
+# Tachikoma's long-term memory: MemPalace and every package it needs, locked with hashes in uv.lock beside this file.
+# Not a package of its own: uv installs only its dependencies.
+[project]
+name = "tachikoma-memory"
+version = "0"
+requires-python = ">=3.10"
+dependencies = ["mempalace==3.12.0"]

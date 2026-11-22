@@ -4,7 +4,7 @@ import path from "node:path";
 import { tryLock } from "../auth/lock.js";
 import { privateDir } from "../auth/private.js";
 import { projectFile } from "./datadir.js";
-import { readOutline, sessionPaths, wholeLines } from "./transcript.js";
+import { readOutline, sessionPaths, unsavedIn, wholeLines } from "./transcript.js";
 import { errorText } from "./types.js";
 
 // The saved sessions of each project (release 8a design, "Saving sessions"): <data>/sessions/<project>/ holds each
@@ -100,7 +100,14 @@ export function copySession(dir: string, id: string, copy: string = randomUUID()
   } catch {
     throw new Unreadable("its first line is missing or damaged"); // readTranscript's reason (user, 2026-11-06)
   }
-  writeFileSync(to.file, `${JSON.stringify({ ...first, id: copy })}\n${text.slice(end)}`, { flag: "wx", mode: 0o600 });
+  // Its copied turns not yet saved are marked saved, so they are never saved a second time under the copy's id; they
+  // are the source's to save, in the window that holds it or when it is next resumed (8d plan, step 22; Q6).
+  const at = new Date().toISOString();
+  const marks = unsavedIn(text).map(({ n }) => `${JSON.stringify({ t: "saved", at, n })}\n`).join("");
+  writeFileSync(to.file, `${JSON.stringify({ ...first, id: copy })}\n${text.slice(end)}${marks}`, {
+    flag: "wx",
+    mode: 0o600,
+  });
   let made = false; // the copy's folder, once this made it
   try {
     if (entryOf(dir, id)?.isDirectory()) {

@@ -26,8 +26,10 @@ export function exportText(messages: Message[], lead: string): string {
     for (const p of m.parts) {
       // A tool's pictures are named by the line ending its answer, under its call (release 8c plan, choices 10 and 34). A
       // picked resource's text and a prompt command's messages are the server's, never the user's words (choice 34), and
-      // are left out, as the scrollback leaves them out (describe.ts).
+      // are left out, as the scrollback leaves them out (describe.ts). So is the note from long-term memory in front
+      // of a first message (8d plan, step 24; Q10).
       if (p.type === "tool_result" || ((p.type === "image" || p.type === "text") && p.from === "server")) continue;
+      if (p.type === "text" && p.from === "memory") continue;
       const note = p.type === "text" && p.from === "tasks";
       const told = p.type === "text" && p.from === "note";
       // A hook's text for the model is shown as those notes are, under its own first line, `<Event> hook:` (release 8b

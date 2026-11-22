@@ -1,22 +1,41 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { hostname, tmpdir } from "node:os";
+import { constants, hostname, tmpdir } from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { boxProtection, dropOnExit, keptForReview, type Network, sandboxReady, sandboxStart } from "../src/clilib.js";
 import { projectFile } from "../src/core/datadir.js";
+import { MEMORY_LINE } from "../src/core/prompt.js";
 import { openSession, sessionsDir } from "../src/core/sessions.js";
 import { localDate } from "../src/core/setup.js";
-import { readTranscript } from "../src/core/transcript.js";
+import { readTranscript, sessionPaths } from "../src/core/transcript.js";
 import { onPath } from "../src/exec/env.js";
 import { shellFor } from "../src/exec/local.js";
 import { answersFor } from "../src/mcp/answers.js";
 import { AuthStore, McpAuth } from "../src/mcp/auth.js";
 import { readProjectFile, readServers } from "../src/mcp/config.js";
+import { recordDontAsk } from "../src/memory/asked.js";
+import { readyFile } from "../src/memory/install.js";
+import { LESSON_REQUEST } from "../src/memory/lessons.js";
+import { NO_UV } from "../src/memory/memory.js";
+import { memoryPaths, roomName } from "../src/memory/paths.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
 import { removeTree } from "./helpers.js";
@@ -185,6 +204,15 @@ describe("tachi", { timeout: 15_000 }, () => {
     const help = tachi("--help").stdout;
     expect(help).toMatch(/^ {2}--classic /m);
     expect(help).toMatch(/\/screen\s+switches\s+between\s+full\s+screen\s+and\s+classic/);
+  });
+
+  // Release 8d plan, step 15 and question Q13: the one flag is declared, so it is no longer an unknown option.
+  it("takes --no-memory, and lists it in the help", () => {
+    const r = tachi("--lead", "ollama:none", "--no-memory");
+    expect(r.stderr).not.toContain("--no-memory");
+    expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+    const line = '  --no-memory       run this launch without long-term memory (to keep it off, set "memory": false)';
+    expect(tachi("--help").stdout).toContain(`\n${line}\n`);
   });
 
   it("lists tachi review in the help", () => {
@@ -1273,7 +1301,16 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // Background commands plan, Task 9: /tasks lists both kinds, in the plan's words.
   it("lists /hooks in the help, after /tasks, and /mcp after it", () => {
     expect(tachi("--help").stdout).toContain(
-      "/tasks lists\nsubagents and background commands (/tasks t1 shows one, /tasks stop stops them), /hooks lists\nthe hooks in force, /mcp lists the MCP servers, /errors summarises the error log,",
+      "/tasks lists\nsubagents and background commands (/tasks t1 shows one, /tasks stop stops them), /hooks lists\n" +
+        "the hooks in force, /mcp lists the MCP servers, /memory",
+    );
+  });
+
+  // 8d plan, step 28: /memory and /lesson before /errors, in the words the user approved on 2026-11-20.
+  it("lists /memory and /lesson in the help, before /errors", () => {
+    expect(tachi("--help").stdout).toContain(
+      "/mcp lists the MCP servers, /memory shows long-term memory's state\n(/memory setup sets it up), " +
+        "/lesson <text> records a lesson, /errors summarises the error log,\n/screen switches",
     );
   });
 });
@@ -1284,8 +1321,10 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 // run is told it is not in CI; it is in classic mode, and outside Windows Terminal, whose win32 input mode reads keys as
 // records (input.ts), so the keys written arrive as typed. A case waits on what the launch writes before the window, or
 // on what the window starts, as the window's frames are redrawn in place.
+// Long-term memory is off here (8d plan, step 27), so no case meets its first-use question; its own cases launch with
+// it (below).
 function windowLater(...args: (string | Record<string, string>)[]) {
-  const { argv, options } = launch(args);
+  const { argv, options } = launch([...args, "--no-memory"]);
   argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/terminal.mjs")).href); // after tsx's loader
   const terminal = { TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"), CI: "0", CONTINUOUS_INTEGRATION: "0", TACHI_CLASSIC: "1", WT_SESSION: "" };
   const child = spawn(process.execPath, argv, { ...options, env: { ...options.env, ...terminal } });
@@ -1971,7 +2010,9 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
     const env = { cwd: proj, PATH: empty, Path: empty, TACHI_DATA_DIR: data, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, TACHI_TEST_STANDIN_DOCKER: standin };
     Object.assign(env, more);
-    const { argv, options } = launch(["--lead", "openai:lead", "--sandbox", "copy", ...flags, "-p", "hi", env]);
+    // Memory off, as windowLater has it (8d plan, step 27).
+    const copyFlags = ["--lead", "openai:lead", "--sandbox", "copy", "--no-memory", ...flags];
+    const { argv, options } = launch([...copyFlags, "-p", "hi", env]);
     argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/register.mjs")).href); // after tsx's loader
     const child = spawn(process.execPath, argv, options);
     onTestFinished(() => void child.kill());
@@ -2145,7 +2186,9 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
       const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
       const settings = homeWith(JSON.stringify({ network: "sites", allowedSites: ["github.com"] }));
       const env = { cwd: proj, TACHI_DATA_DIR: path.join(top, "data"), OPENAI_API_KEY: "x", OPENAI_BASE_URL: url };
-      const { argv, options } = launch(["--lead", "openai:lead", "--sandbox", "copy", { ...env, ...settings }]);
+      // Memory off, as windowLater has it (8d plan, step 27).
+      const flags = ["--lead", "openai:lead", "--sandbox", "copy", "--no-memory"];
+      const { argv, options } = launch([...flags, { ...env, ...settings }]);
       // Both after tsx's loader; the terminal's variables as windowLater gives them.
       for (const hook of ["terminal", "register"]) {
         argv.splice(2, 0, "--import", pathToFileURL(path.resolve(`tests/standin/${hook}.mjs`)).href);
@@ -2276,5 +2319,640 @@ describe("boxProtection", () => {
     const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-prot-")));
     const p = { hooks: [path.join(root, ".husky", "_"), path.join(tmpdir(), "elsewhere-hooks")], files: [path.join(root, "team.gitconfig")] };
     expect(boxProtection(root, p)).toEqual({ hooks: ["/work/.husky/_"], files: ["/work/team.gitconfig"] });
+  });
+});
+
+// 8d plan, step 27: long-term memory at the launch, the resume and the exit, in whole launches against the stand-ins
+// only (tests/standin/memory.mjs, through register.mjs): the stand-in uv, the stand-in Python and MemPalace as the hub
+// (tests/memory/standin.mjs), a model served here, and the lead a stand-in for OpenAI's chat completions served here.
+// Every home, AppData folder, data folder and PATH is in the case's own folder; PATH holds only an empty file named as
+// uv, which nothing runs, so the launch finds uv there. No real hub, uv, Python, MemPalace or model is reached.
+describe("tachi's long-term memory", { timeout: 90_000 }, () => {
+  const WAIT = { timeout: 30_000, interval: 50 };
+  const STANDIN = path.resolve("tests/memory/standin.mjs");
+  const UV = path.resolve("tests/standin/uv.mjs");
+  const QUESTION =
+    "Long-term memory: Tachikoma can remember your conversations and lessons using MemPalace. Setting it up " +
+    "downloads MemPalace 3.12.0 and its packages (about 230 MB) into Tachikoma's own folder. Set it up now? " +
+    "[y] Yes  [n] Not now  [d] Don't ask again ";
+  const SETTING_UP = "Setting up long-term memory in the background.";
+  const SET_UP = "Long-term memory is set up. Its tools join at the next launch.";
+  const STAYS_OFF = "Long-term memory stays off. /memory setup sets it up later.";
+  const MODEL_BYTES = Buffer.from("a made-up model archive, for the launch's tests\n".repeat(1_000));
+  const VERSION: string = JSON.parse(readFileSync(path.resolve("package.json"), "utf8")).version;
+  const TOOLS = ["memory_search", "memory_save", "record_lesson"];
+  // As tests/memory/memory.test.ts's stand-in Python: the hub (`-m mempalace.mcp_server`) and the supervisor's helper,
+  // told by control.json in TACHI_TEST_HUB's folder, else step 19's stand-in Python. The hub records each call it
+  // receives in calls-<its pid>.jsonl in the control's `calls` folder, each with its time, as its start's line has,
+  // and takes the control's `args` too.
+  const PYTHON = String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+const [file, ...rest] = process.argv.slice(2);
+process.argv = [process.argv[0], file, ...rest];
+const helper = rest[1] === "-c" && (rest[3] === "start" || rest[3] === "stop");
+if (!helper && !rest.includes("mempalace.mcp_server")) {
+  import(pathToFileURL(process.env.TACHI_TEST_UV_SCRIPT).href);
+} else {
+  const dir = process.env.TACHI_TEST_HUB;
+  const controlFile = path.join(dir, "control.json");
+  const c = JSON.parse(fs.readFileSync(controlFile, "utf8"));
+  const startOf = (pid) => path.join(dir, "start-" + pid);
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return e.code === "EPERM";
+    }
+  };
+  const startTime = (pid) => (!alive(pid) ? null : fs.existsSync(startOf(pid)) ? fs.readFileSync(startOf(pid), "utf8") :
+    "another program's");
+  if (helper) {
+    const [op, p, want, ms] = rest.slice(3);
+    const pid = Number(p);
+    const say = (t) => process.stdout.write(t + "\n");
+    const st = startTime(pid);
+    if (op === "start") say(st ?? "gone");
+    else if (st === null) say("gone");
+    else if (st !== want) say("differs");
+    else {
+      process.kill(pid);
+      const began = Date.now();
+      const wait = () => {
+        if (!alive(pid)) say("stopped " + (Date.now() - began) + " " + pid);
+        else if (Date.now() - began > Number(ms)) say("running " + (Date.now() - began) + " " + pid);
+        else setTimeout(wait, 10);
+      };
+      wait();
+    }
+  } else {
+    fs.appendFileSync(c.record, JSON.stringify({ hub: { args: rest, pid: process.pid }, at: Date.now() }) + "\n");
+    fs.writeFileSync(startOf(process.pid), String(Date.now()) + "-" + String(process.hrtime.bigint()));
+    setInterval(() => {
+      if (!fs.existsSync(controlFile)) process.exit(0);
+      fs.writeFileSync(path.join(dir, "alive-" + process.pid), String(Date.now())); // the last time it was alive
+    }, 100);
+    (async () => {
+      while (c.hold && !fs.existsSync(c.hold)) await new Promise((r) => setTimeout(r, 20));
+      if (c.exit !== undefined) process.exit(c.exit);
+      // Each line of the stand-in's own record is given the time it was written, for when this hub served.
+      const calls = path.join(c.calls, "calls-" + process.pid + ".jsonl");
+      const append = fs.appendFileSync;
+      fs.appendFileSync = (f, d, ...more) =>
+        append(f, f === calls ? d.replace(/}\n$/, ',"at":' + Date.now() + "}\n") : d, ...more);
+      process.argv.push("--record", calls, ...(c.args ?? []));
+      await import(pathToFileURL(c.standin).href);
+    })();
+  }
+}
+`;
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === "EPERM";
+    }
+  };
+  const jsonLines = (file: string) =>
+    existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+  type Call = { name: string; arguments: Record<string, string> };
+
+  // A case: its folders, the hub's control, the model and lead stand-ins, and its launches. `ready`: Tachikoma's own
+  // environment is set up already; `uv`: false for none on PATH; `holdUv`: the stand-in uv waits for a file the case
+  // makes with `releaseUv`; `holdLesson`: the lesson requests wait for `releaseLessons`; `memory`: more for
+  // TACHI_TEST_MEMORY.
+  async function memoryCase(o: {
+    ready?: boolean;
+    uv?: boolean;
+    settings?: object;
+    control?: object;
+    holdUv?: boolean;
+    holdLesson?: boolean;
+    memory?: object;
+    upFirst?: "connected";
+  } = {}) {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-memory-")));
+    const proj = path.join(top, "proj");
+    const home = path.join(top, "home");
+    const bin = path.join(top, "bin");
+    const hub = path.join(top, "hub");
+    const calls = path.join(top, "calls");
+    for (const dir of [proj, path.join(home, ".tachikoma"), bin, hub, calls]) mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    if (o.settings) writeFileSync(path.join(home, ".tachikoma", "settings.json"), JSON.stringify(o.settings));
+    const uvName = process.platform === "win32" ? "uv.exe" : "uv";
+    if (o.uv !== false) writeFileSync(path.join(bin, uvName), "", { mode: 0o755 });
+    const data = path.join(top, "data", "tachikoma");
+    const paths = memoryPaths(data);
+    if (o.ready) {
+      mkdirSync(paths.env, { recursive: true });
+      writeFileSync(readyFile(paths), JSON.stringify({ mempalace: "3.12.0" }));
+    }
+    const record = path.join(hub, "record.jsonl");
+    const controlFile = path.join(hub, "control.json");
+    const control = (c: object = {}) =>
+      writeFileSync(controlFile, JSON.stringify({ record, standin: STANDIN, calls, ...c }));
+    control(o.control);
+    const python = path.join(top, "python.cjs");
+    writeFileSync(python, PYTHON);
+    const uvRecord = path.join(top, "uv.jsonl");
+    const uvHold = path.join(top, "uv-go");
+    const model = http.createServer((_req, res) =>
+      res.writeHead(200, { "content-length": MODEL_BYTES.length }).end(MODEL_BYTES),
+    );
+    // The lead: a turn whose prompt holds FUMBLE reads a file that is not there, then one that is, then says "done";
+    // any other turn says "done" at once. A lesson request is counted, and answered at once or once released.
+    const sent: { tools?: { function: { name: string } }[]; messages: { role: string; content: unknown }[] }[] = [];
+    let lessonAsks = 0;
+    const heldLessons: (() => void)[] = [];
+    let lessonsGo = !o.holdLesson;
+    const answer = (res: http.ServerResponse, message: object) => {
+      const finish = "tool_calls" in message ? "tool_calls" : "stop";
+      const choice = { index: 0, finish_reason: finish, message: { role: "assistant", ...message } };
+      const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+      const body = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+    };
+    const call = (id: string, file: string) => {
+      const fn = { name: "read_file", arguments: JSON.stringify({ path: file }) };
+      return { content: null, tool_calls: [{ id, type: "function", function: fn }] };
+    };
+    const lead = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const asked = JSON.parse(body);
+        if (JSON.stringify(asked.messages).includes(LESSON_REQUEST.slice(0, 40))) {
+          lessonAsks++;
+          const go = () => answer(res, { content: "A made-up lesson: read notes.txt, not missing.txt." });
+          if (lessonsGo) go();
+          else heldLessons.push(go);
+          return;
+        }
+        sent.push(asked);
+        if (o.upFirst && !up) return void waiting.push(() => reply(asked, res));
+        reply(asked, res);
+      });
+    });
+    // With `upFirst`, the lead answers nothing until the hub has said which storage it uses, and a second more, so the
+    // run's turn ends with memory on: for the lesson ask, which goes only while memory is on.
+    let up = false;
+    const waiting: (() => void)[] = [];
+    const poll = setInterval(() => {
+      if (!o.upFirst) return void clearInterval(poll);
+      if (!callsMade().some((c) => c.name === "mempalace_status")) return;
+      clearInterval(poll);
+      setTimeout(() => {
+        up = true;
+        for (const go of waiting.splice(0)) go();
+      }, 1_000);
+    }, 50);
+    onTestFinished(() => clearInterval(poll));
+    const reply = (asked: { messages: { role: string; content: unknown }[] }, res: http.ServerResponse) => {
+      const at = asked.messages.findLastIndex((m) => m.role === "user");
+      const results = asked.messages.slice(at + 1).filter((m) => m.role === "tool").length;
+      const fumble = JSON.stringify(asked.messages[at]?.content ?? "").includes("FUMBLE");
+      if (fumble && results === 0) answer(res, call("c1", "missing.txt"));
+      else if (fumble && results === 1) answer(res, call("c2", "notes.txt"));
+      else answer(res, { content: "done" });
+    };
+    for (const s of [model, lead]) {
+      await new Promise<void>((resolve) => s.listen(0, "127.0.0.1", resolve));
+      onTestFinished(() => {
+        s.close();
+        s.closeAllConnections();
+      });
+    }
+    const port = (s: http.Server) => (s.address() as AddressInfo).port;
+    const sha256 = createHash("sha256").update(MODEL_BYTES).digest("hex");
+    const given = {
+      uv: UV,
+      python,
+      model: { url: `http://127.0.0.1:${port(model)}/onnx.tar.gz`, sha256 },
+      figures: { readBack: 10_000, startRead: 10_000, stop: 10_000 },
+      ...o.memory,
+    };
+    const env = {
+      cwd: proj,
+      PATH: bin,
+      Path: bin,
+      USERPROFILE: home,
+      HOME: home,
+      APPDATA: path.join(home, "AppData", "Roaming"),
+      LOCALAPPDATA: path.join(home, "AppData", "Local"),
+      TACHI_DATA_DIR: data,
+      OPENAI_API_KEY: "x",
+      OPENAI_BASE_URL: `http://127.0.0.1:${port(lead)}/v1`,
+      TACHI_TEST_HUB: hub,
+      TACHI_TEST_UV_SCRIPT: UV,
+      TACHI_TEST_UV_RECORD: uvRecord,
+      ...(o.holdUv ? { TACHI_TEST_UV_HOLD: uvHold } : {}),
+      TACHI_TEST_MEMORY: JSON.stringify(given),
+    };
+    // A launch, in the window (with the stand-in terminal) or with -p; its pid, its output and its exit code.
+    const run = (window: boolean, ...args: string[]) => {
+      const { argv, options } = launch(["--lead", "openai:lead", ...args, env]);
+      const imports = ["tests/standin/register.mjs", ...(window ? ["tests/standin/terminal.mjs"] : [])];
+      argv.splice(2, 0, ...imports.flatMap((f) => ["--import", pathToFileURL(path.resolve(f)).href])); // after tsx's
+      const terminal = {
+        TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
+        CI: "0",
+        CONTINUOUS_INTEGRATION: "0",
+        TACHI_CLASSIC: "1",
+        WT_SESSION: "",
+      };
+      const child = spawn(process.execPath, argv, { ...options, env: { ...options.env, ...(window ? terminal : {}) } });
+      onTestFinished(() => void child.kill());
+      let stdout = "";
+      let stderr = "";
+      // When the answer's line came, as it came, for the cases that time what follows it.
+      let answered: number | undefined;
+      child.stdout.setEncoding("utf8").on("data", (d: string) => {
+        stdout += d;
+        if (answered === undefined && stdout.endsWith("done\n")) answered = Date.now();
+      });
+      child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+      if (!window) child.stdin.end();
+      const closed = new Promise<number | null>((resolve, reject) => {
+        child.on("error", reject);
+        child.on("close", resolve);
+      });
+      const write = (keys: string) => void child.stdin.write(keys);
+      // The window is drawn once its start-up box is.
+      const opened = () =>
+        vi.waitFor(() => expect(stripVTControlCharacters(stdout)).toContain(`Tachikoma ${VERSION}`), WAIT);
+      // Words, then Enter as a key of its own, as typed (windowLater's exit).
+      const type = async (words: string) => {
+        if (window) await opened();
+        write(words);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        write("\r");
+      };
+      const plain = () => stripVTControlCharacters(stdout);
+      const exit = async () => {
+        await type("/exit");
+        return closed;
+      };
+      const answeredAt = () => answered;
+      return { child, write, type, exit, closed, stdout: () => stdout, plain, stderr: () => stderr, answeredAt };
+    };
+    const callsMade = (): Call[] =>
+      readdirSync(calls).flatMap((f) => jsonLines(path.join(calls, f)).flatMap((l) => (l.call ? [l.call] : [])));
+    const added = (room?: string) =>
+      callsMade().filter((c) => c.name === "mempalace_add_drawer" && (room === undefined || c.arguments.room === room));
+    // When each hub that served calls was running: from its start to the later of its last call and the last time it
+    // was seen alive (its stand-in Python's 100 ms check), so a hub left running after its last call still counts.
+    const serving = () =>
+      readdirSync(calls).flatMap((f) => {
+        const lines = jsonLines(path.join(calls, f)).filter((l) => l.call);
+        const pid = Number(/^calls-(\d+)\.jsonl$/.exec(f)?.[1]);
+        const start = jsonLines(record).find((l) => l.hub?.pid === pid);
+        const beat = path.join(hub, `alive-${pid}`);
+        const seen = existsSync(beat) ? Number(readFileSync(beat, "utf8")) : 0;
+        return lines.length && start ? [{ pid, from: start.at as number, to: Math.max(lines.at(-1).at, seen) }] : [];
+      });
+    // The calls whose connection closed before they were answered, with when.
+    const dropped = () =>
+      readdirSync(calls).flatMap((f) =>
+        jsonLines(path.join(calls, f)).flatMap((l) =>
+          l.dropped ? [{ name: String(l.dropped.name), at: Number(l.at) }] : [],
+        ),
+      );
+    const hubPids = () => jsonLines(record).flatMap((l) => (l.hub ? [l.hub.pid as number] : []));
+    const uvPids = () => jsonLines(uvRecord).flatMap((l) => (l.as === "uv" ? [l.pid as number] : []));
+    // The stand-in hubs end once their control file is gone; the case's folder goes once they and uv have ended.
+    onTestFinished(async () => {
+      clearInterval(poll);
+      rmSync(controlFile, { force: true });
+      const began = Date.now();
+      while ([...hubPids(), ...uvPids()].some(alive) && Date.now() - began < 15_000) await sleep(50);
+      // A hub the stand-in helper stopped (TerminateProcess) is reported gone before Windows lets go of memory/home,
+      // its working folder: refused at once 100 times in 100, then held 2.8 to 8.1 ms after "gone" in 50 more (measured
+      // 2026-11-22, recorded in ~/.claude/orch/Agent Harness/2026-11-19-memory-and-lessons/build-ci-fix.md), and about
+      // 170 ms for a killed program in tests/hooks/run.test.ts (2026-10-31). So the removal is tried again every 50 ms
+      // until the wait's 15 s, though vitest ends this hook first, at its default hook limit of 10 s, as it is given no
+      // limit of its own.
+      for (;;) {
+        try {
+          return await removeTree(top);
+        } catch (err) {
+          if (Date.now() - began >= 15_000) throw err;
+          await sleep(50);
+        }
+      }
+    });
+    return {
+      top, proj, data, paths, env, run, sent, control, added, calls: callsMade, dropped, serving, hubPids, uvPids,
+      lessonAsks: () => lessonAsks,
+      releaseLessons: () => {
+        lessonsGo = true;
+        for (const go of heldLessons.splice(0)) go();
+      },
+      releaseUv: () => writeFileSync(uvHold, ""),
+      sessions: () => sessionsDir(proj, data),
+    };
+  }
+  type Case = Awaited<ReturnType<typeof memoryCase>>;
+  const toolsOf = (s: Case["sent"][number]) => (s.tools ?? []).map((t) => t.function.name);
+  const systemOf = (s: Case["sent"][number]) => String(s.messages[0]!.content);
+  // The window's question, answered with `key`.
+  const answered = async (w: ReturnType<Case["run"]>, key: string) => {
+    await vi.waitFor(() => expect(w.stdout()).toContain(QUESTION), WAIT);
+    w.write(key);
+  };
+
+  it("asks nothing and gives no tools and no prompt line with --no-memory or \"memory\": false", async () => {
+    for (const how of [{ flag: true }, { settings: { memory: false } }]) {
+      const c = await memoryCase({ ready: true, ...("settings" in how ? { settings: how.settings } : {}) });
+      const w = c.run(true, ...("flag" in how ? ["--no-memory"] : []));
+      await w.type("hi");
+      await vi.waitFor(() => expect(c.sent).toHaveLength(1), WAIT);
+      expect(await w.exit()).toBe(0);
+      expect(w.stdout()).not.toContain("Long-term memory");
+      expect(toolsOf(c.sent[0]!).filter((t) => TOOLS.includes(t))).toEqual([]);
+      expect(systemOf(c.sent[0]!)).not.toContain(MEMORY_LINE);
+      expect(c.hubPids()).toEqual([]);
+    }
+  });
+
+  it("asks nothing and says nothing of memory with -p when it is not set up", async () => {
+    const c = await memoryCase();
+    const p = c.run(false, "-p", "hi");
+    expect(await p.closed).toBe(0);
+    expect({ stdout: p.stdout(), stderr: p.stderr() }).toEqual({ stdout: "done\n", stderr: "" });
+    expect(toolsOf(c.sent[0]!).filter((t) => TOOLS.includes(t))).toEqual([]);
+    expect(systemOf(c.sent[0]!)).not.toContain(MEMORY_LINE);
+    expect(c.uvPids()).toEqual([]);
+  });
+
+  it("saves -p's turn before it exits when memory is set up, with the tools and the prompt line", async () => {
+    const c = await memoryCase({ ready: true });
+    const p = c.run(false, "-p", "hi");
+    expect(await p.closed).toBe(0);
+    expect({ stdout: p.stdout(), stderr: p.stderr() }).toEqual({ stdout: "done\n", stderr: "" });
+    expect(c.added(roomName(c.proj)).map((a) => a.arguments.content)).toEqual(["hi\n\ndone"]);
+    expect(toolsOf(c.sent[0]!).filter((t) => TOOLS.includes(t))).toEqual(TOOLS);
+    expect(systemOf(c.sent[0]!)).toContain(MEMORY_LINE);
+    await vi.waitFor(() => expect(c.hubPids().filter(alive)).toEqual([]), WAIT); // the only window left the hub
+  });
+
+  it("says the line without uv once, in the window, and asks nothing", async () => {
+    const c = await memoryCase({ uv: false });
+    const w = c.run(true);
+    await w.type("hi");
+    await vi.waitFor(() => expect(c.sent).toHaveLength(1), WAIT);
+    expect(await w.exit()).toBe(0);
+    expect(w.stdout()).not.toContain("Long-term memory:");
+    expect(w.plain().split("it needs uv, which was not found on PATH.")).toHaveLength(2);
+    expect(NO_UV).toContain("it needs uv, which was not found on PATH.");
+    expect(c.uvPids()).toEqual([]);
+  });
+
+  it("asks again at the next launch after \"Not now\", and leaves memory off meanwhile", async () => {
+    const c = await memoryCase();
+    const w = c.run(true);
+    await answered(w, "n");
+    await w.type("hi");
+    await vi.waitFor(() => expect(c.sent).toHaveLength(1), WAIT);
+    expect(await w.exit()).toBe(0);
+    expect(w.stdout()).toContain(`${QUESTION}Not now\n`);
+    expect(w.stdout()).not.toContain(SETTING_UP);
+    expect(c.uvPids()).toEqual([]);
+    const again = c.run(true);
+    await answered(again, "n");
+    expect(await again.exit()).toBe(0);
+  });
+
+  it("is not asked again after \"Don't ask again\", which says how to set it up later", async () => {
+    const c = await memoryCase();
+    const w = c.run(true);
+    await answered(w, "d");
+    await vi.waitFor(() => expect(w.stdout()).toContain(`${QUESTION}Don't ask again\n${STAYS_OFF}\n`), WAIT);
+    expect(await w.exit()).toBe(0);
+    const again = c.run(true);
+    await again.type("hi");
+    await vi.waitFor(() => expect(c.sent).toHaveLength(1), WAIT);
+    expect(await again.exit()).toBe(0);
+    expect(again.stdout()).not.toContain("Long-term memory");
+    expect(c.uvPids()).toEqual([]);
+  });
+
+  // Q1: a set-up that ends during a conversation saves its turns at once, and gives lessons and asks for them, with the
+  // tools and prompt line left for the next launch; while it is held, a turn that would ask asks nothing.
+  it("sets memory up on \"Yes\" in the background, then saves the turns and asks for lessons", async () => {
+    const c = await memoryCase({ holdUv: true });
+    const w = c.run(true);
+    await answered(w, "y");
+    await vi.waitFor(() => expect(w.stdout()).toContain(`${QUESTION}Yes\n${SETTING_UP}\n`), WAIT);
+    await vi.waitFor(() => expect(c.uvPids()).toHaveLength(1), WAIT);
+    await w.type("please FUMBLE once");
+    await vi.waitFor(() => expect(c.sent).toHaveLength(3), WAIT);
+    await vi.waitFor(() => expect(w.plain()).toContain("done"), WAIT);
+    expect(c.lessonAsks()).toBe(0);
+    expect(existsSync(readyFile(c.paths))).toBe(false);
+    c.releaseUv();
+    await vi.waitFor(() => expect(w.plain()).toContain(SET_UP), WAIT);
+    expect(existsSync(readyFile(c.paths))).toBe(true);
+    await vi.waitFor(() => expect(c.added(roomName(c.proj))).toHaveLength(1), WAIT); // the first turn, saved at once
+    await w.type("now FUMBLE twice");
+    await vi.waitFor(() => expect(c.lessonAsks()).toBe(1), WAIT);
+    await vi.waitFor(() => expect(c.added("lessons").map((a) => a.arguments.content)).toEqual([
+      "A made-up lesson: read notes.txt, not missing.txt.",
+    ]), WAIT);
+    await vi.waitFor(() => expect(c.added(roomName(c.proj))).toHaveLength(2), WAIT);
+    expect(await w.exit()).toBe(0);
+    for (const s of c.sent) {
+      expect(toolsOf(s).filter((t) => TOOLS.includes(t))).toEqual([]);
+      expect(systemOf(s)).not.toContain(MEMORY_LINE);
+    }
+  });
+
+  it("sends no lesson request after \"Not now\", nor in -p without memory set up", async () => {
+    const c = await memoryCase();
+    const w = c.run(true);
+    await answered(w, "n");
+    await w.type("please FUMBLE");
+    await vi.waitFor(() => expect(c.sent).toHaveLength(3), WAIT);
+    await vi.waitFor(() => expect(w.plain()).toContain("done"), WAIT);
+    expect(await w.exit()).toBe(0);
+    const p = c.run(false, "-p", "please FUMBLE");
+    expect(await p.closed).toBe(0);
+    expect(c.sent).toHaveLength(6);
+    expect(c.lessonAsks()).toBe(0);
+  });
+
+  // The hub's start fails only once the run has answered, while its exit waits for the start (option A).
+  it("keeps -p's exit code when memory fails after the answer, saying the line alone", async () => {
+    const hold = path.join(tmpdir(), `tachi-cli-memory-hold-${process.pid}-${Date.now()}`);
+    onTestFinished(() => rmSync(hold, { force: true }));
+    const c = await memoryCase({ ready: true, control: { hold, exit: 1 } });
+    const p = c.run(false, "-p", "hi");
+    await vi.waitFor(() => expect(p.stdout()).toBe("done\n"), WAIT);
+    await vi.waitFor(() => expect(c.hubPids()).toHaveLength(1), WAIT);
+    writeFileSync(hold, "");
+    expect(await p.closed).toBe(0);
+    expect(p.stderr()).toBe("Memory is off: the hub did not start (exit code: 1).\n");
+  });
+
+  // The stand-in hub refuses a second copy for one palace while one serves (exit code 2, as MemPalace does), so two
+  // never serve at once; one serves both, or, when the first run leaves before the second has joined, each in turn.
+  it("has two launches at once on one data folder use one hub at a time, both with memory on", async () => {
+    const c = await memoryCase({ ready: true });
+    const [a, b] = [c.run(false, "-p", "first"), c.run(false, "-p", "second")];
+    expect([await a.closed, await b.closed]).toEqual([0, 0]);
+    // Each hub that served began after the one before it had stopped running.
+    const served = c.serving().sort((x, y) => x.from - y.from);
+    expect(served.length).toBeGreaterThan(0);
+    for (const [i, hub] of served.entries()) if (i) expect(hub.from).toBeGreaterThan(served[i - 1]!.to);
+    const turns = c.added(roomName(c.proj)).map((x) => x.arguments.content);
+    expect(turns.sort()).toEqual(["first\n\ndone", "second\n\ndone"]);
+    await vi.waitFor(() => expect(c.hubPids().filter(alive)).toEqual([]), WAIT);
+  });
+
+  it("waits in -p for a lesson request still running at the exit, which stores its lesson once", async () => {
+    const c = await memoryCase({ ready: true, holdLesson: true, upFirst: "connected" });
+    const p = c.run(false, "-p", "please FUMBLE");
+    await vi.waitFor(() => expect(c.lessonAsks()).toBe(1), WAIT);
+    await vi.waitFor(() => expect(p.stdout()).toBe("done\n"), WAIT);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(p.child.exitCode).toBe(null);
+    c.releaseLessons();
+    expect(await p.closed).toBe(0);
+    expect(c.added("lessons")).toHaveLength(1);
+  });
+
+  it("ends -p's wait for a lesson at the first Ctrl-C, storing none, as a stopped run", async () => {
+    const sigint = path.join(tmpdir(), `tachi-cli-memory-sigint-${process.pid}-${Date.now()}`);
+    onTestFinished(() => rmSync(sigint, { force: true }));
+    const signal = { file: sigint, name: "SIGINT" };
+    const c = await memoryCase({ ready: true, holdLesson: true, memory: { signal }, upFirst: "connected" });
+    const p = c.run(false, "-p", "please FUMBLE");
+    await vi.waitFor(() => expect(c.lessonAsks()).toBe(1), WAIT);
+    await vi.waitFor(() => expect(p.stdout()).toBe("done\n"), WAIT);
+    writeFileSync(sigint, "");
+    expect(await p.closed).toBe(128 + constants.signals.SIGINT);
+    c.releaseLessons();
+    expect(c.added("lessons")).toEqual([]);
+  });
+
+  it("leaves the window without waiting for a lesson request, storing none", async () => {
+    const c = await memoryCase({ ready: true, holdLesson: true, upFirst: "connected" });
+    const w = c.run(true);
+    await w.type("please FUMBLE");
+    await vi.waitFor(() => expect(c.lessonAsks()).toBe(1), WAIT);
+    expect(await w.exit()).toBe(0);
+    c.releaseLessons();
+    expect(c.added("lessons")).toEqual([]);
+    await vi.waitFor(() => expect(c.hubPids().filter(alive)).toEqual([]), WAIT);
+  });
+
+  it("stops an install still running when the window is left, writing no ready file", async () => {
+    const c = await memoryCase({ holdUv: true });
+    const w = c.run(true);
+    await answered(w, "y");
+    await vi.waitFor(() => expect(c.uvPids()).toHaveLength(1), WAIT);
+    expect(await w.exit()).toBe(0);
+    expect(existsSync(readyFile(c.paths))).toBe(false);
+    await vi.waitFor(() => expect(c.uvPids().filter(alive)).toEqual([]), WAIT);
+  });
+
+  it("leaves no hub running when the only window is left while the hub starts", async () => {
+    const hold = path.join(tmpdir(), `tachi-cli-memory-hold-${process.pid}-${Date.now()}`);
+    onTestFinished(() => rmSync(hold, { force: true }));
+    const c = await memoryCase({ ready: true, control: { hold } });
+    const w = c.run(true);
+    await vi.waitFor(() => expect(c.hubPids()).toHaveLength(1), WAIT);
+    expect(await w.exit()).toBe(0);
+    expect(c.hubPids().filter(alive)).toEqual([]);
+  });
+
+  it("ends when the last save's limit passes with the palace not answering, leaving the turn to a resume", async () => {
+    const gate = path.join(tmpdir(), `tachi-cli-memory-gate-${process.pid}-${Date.now()}`);
+    onTestFinished(() => rmSync(gate, { force: true }));
+    const c = await memoryCase({
+      ready: true,
+      control: { args: ["--pause-after", "mempalace_status=1", "--gate", gate] },
+      memory: { lastSave: 1_000 },
+      upFirst: "connected",
+    });
+    const p = c.run(false, "-p", "hi");
+    expect(await p.closed).toBe(0);
+    expect(p.stdout()).toBe("done\n");
+    const done = p.answeredAt()!;
+    // The palace connected and was asked for the turn's label, the look-up that is not answered.
+    const lookUp = c.calls().filter((x) => x.arguments.dry_run);
+    expect(lookUp).toHaveLength(1);
+    // The look-up was dropped as the last save gave up and the palace was closed, before the hub's stop.
+    const dropped = c.dropped().filter((d) => d.name === lookUp[0]!.name);
+    expect(dropped).toHaveLength(1);
+    // Ended by the test's own last-save limit (`lastSave`, 1 s), the hub's stop after it not timed. From the answer's
+    // line to the look-up dropped, this PC took 1,003, 1,009, 1,001, 1,015, 1,005 and 1,009 ms over 6 runs of this case
+    // alone (2026-11-20, step 27's fixes round 3), so the bound is 5 times the slowest whole span, 1,015 ms (the user's
+    // choice after round 3, "5x the slowest run"). With the limit removed, the look-up's own 13 s limit ends it instead
+    // (13,014 ms, fixes round 3).
+    expect(dropped[0]!.at - done).toBeLessThan(5 * 1_015);
+    expect(c.added()).toEqual([]);
+    const [file] = readdirSync(c.sessions()).filter((f) => f.endsWith(".jsonl"));
+    const id = file!.replace(/.jsonl$/, "");
+    const read = readTranscript(sessionPaths(c.sessions(), id).file, sessionPaths(c.sessions(), id).pictures);
+    expect("problem" in read ? read : read.unsaved.map((u) => u.n)).toEqual([1]);
+  });
+
+  // The user's choices after step 27's review: set up already, memory joins without uv ("Start memory anyway"), and
+  // after "Don't ask again" nothing is said ("Stay silent").
+  it("joins a set-up memory with no uv on PATH, saying nothing of uv", async () => {
+    const c = await memoryCase({ ready: true, uv: false });
+    const w = c.run(true);
+    await w.type("hi");
+    await vi.waitFor(() => expect(c.sent).toHaveLength(1), WAIT);
+    await vi.waitFor(() => expect(c.calls().some((x) => x.name === "mempalace_status")).toBe(true), WAIT);
+    expect(await w.exit()).toBe(0);
+    expect(w.plain()).not.toContain("it needs uv");
+    expect(w.stdout()).not.toContain("Long-term memory:");
+    expect(toolsOf(c.sent[0]!).filter((t) => TOOLS.includes(t))).toEqual(TOOLS);
+  });
+
+  it("says nothing of uv after \"Don't ask again\"", async () => {
+    const c = await memoryCase({ uv: false });
+    recordDontAsk(c.paths);
+    const w = c.run(true);
+    await w.type("hi");
+    await vi.waitFor(() => expect(c.sent).toHaveLength(1), WAIT);
+    expect(await w.exit()).toBe(0);
+    expect(w.plain()).not.toContain("it needs uv");
+    expect(w.stdout()).not.toContain("Long-term memory:");
+  });
+
+  // A kill signal: only this window's "in use" file goes, at once; the hub is left as it is (8d plan, step 27).
+  it("removes only this window's \"in use\" file on a kill signal", async () => {
+    const kill = path.join(tmpdir(), `tachi-cli-memory-kill-${process.pid}-${Date.now()}`);
+    onTestFinished(() => rmSync(kill, { force: true }));
+    const c = await memoryCase({ ready: true, memory: { signal: { file: kill, name: "SIGTERM" } } });
+    const w = c.run(true);
+    const inUse = () => readdirSync(c.paths.home).filter((f) => f.startsWith(`in-use-${w.child.pid}-`));
+    await vi.waitFor(() => expect(c.calls().some((x) => x.name === "mempalace_status")).toBe(true), WAIT);
+    await vi.waitFor(() => expect(inUse()).toHaveLength(1), WAIT);
+    writeFileSync(kill, "");
+    expect(await w.closed).toBe(128 + constants.signals.SIGTERM);
+    expect(inUse()).toEqual([]);
+    expect(c.hubPids().filter(alive)).toHaveLength(1);
+  });
+
+  // Q21 at the launch: a -p run saved with memory not set up, resumed with -c once it is: the prompt is rebuilt with
+  // the line and no line is said, as the reply has no Anthropic thinking to leave out.
+  it("rebuilds a resumed session's prompt with the memory line, silent when no thinking is left out", async () => {
+    const c = await memoryCase();
+    expect(await c.run(false, "-p", "hi").closed).toBe(0);
+    mkdirSync(c.paths.env, { recursive: true });
+    writeFileSync(readyFile(c.paths), JSON.stringify({ mempalace: "3.12.0" }));
+    const p = c.run(false, "-c", "-p", "again");
+    expect(await p.closed).toBe(0);
+    expect(stripVTControlCharacters(p.stderr())).toBe("Resumed: hi.\n");
+    expect(systemOf(c.sent[0]!)).not.toContain(MEMORY_LINE);
+    expect(systemOf(c.sent[1]!)).toContain(MEMORY_LINE);
   });
 });
