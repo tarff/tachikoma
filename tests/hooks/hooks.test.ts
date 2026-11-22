@@ -413,6 +413,67 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(errors.map((e) => e.message)).toEqual(["PreToolUse hook failed: check.sh exited with code 1: bad thing"]);
   });
 
+  // Release 8e design: at the five events whose hooks decide, an async hook's allow, deny, ask, rewrite, retry or block
+  // decides nothing and gets 8b's line.
+  it("says an async hook that tries to decide at PermissionRequest, PermissionDenied, PreModelSwitch, PostToolBatch and ConfigChange asked to block, and it decides nothing (release 8e plan, step 3)", async () => {
+    const p = await place();
+    const said = (event: Event, fields: object, top: object = {}) => JSON.stringify({ ...top, hookSpecificOutput: { hookEventName: event, ...fields } });
+    const tries: [Event, Hook][] = [
+      ["PermissionRequest", p.hook("allow", { event: "PermissionRequest", async: true }, { stdout: said("PermissionRequest", { decision: { behavior: "allow" } }) })],
+      ["PermissionRequest", p.hook("rewrite", { event: "PermissionRequest", async: true }, {
+        stdout: said("PermissionRequest", { decision: { behavior: "allow", updatedInput: { command: "ls" } } }) })],
+      ["PermissionRequest", p.hook("deny", { event: "PermissionRequest", async: true }, {
+        stdout: said("PermissionRequest", { decision: { behavior: "deny", message: "No", interrupt: true } }) })],
+      ["PermissionDenied", p.hook("retry", { event: "PermissionDenied", async: true }, { stdout: said("PermissionDenied", { retry: true }) })],
+      ["PreModelSwitch", p.hook("switch-allow", { event: "PreModelSwitch", async: true }, { stdout: said("PreModelSwitch", { permissionDecision: "allow" }) })],
+      ["PreModelSwitch", p.hook("switch-ask", { event: "PreModelSwitch", async: true }, { stdout: said("PreModelSwitch", { permissionDecision: "ask" }) })],
+      ["PreModelSwitch", p.hook("switch-exit2", { event: "PreModelSwitch", async: true }, { stderr: "no", code: 2 })],
+      ["PostToolBatch", p.hook("batch", { event: "PostToolBatch", async: true }, { stdout: JSON.stringify({ decision: "block", reason: "no" }) })],
+      ["ConfigChange", p.hook("config", { event: "ConfigChange", async: true }, { stderr: "no", code: 2 })],
+    ];
+    const { hooks, errors } = setup(p, tries.map(([, h]) => h));
+    for (const event of [...new Set(tries.map(([e]) => e))]) expect(await hooks.fire(event, {}), event).toEqual(empty(event));
+    while (hooks.runs.length < tries.length) await pause(20);
+    expect(errors.map((e) => e.message).sort()).toEqual(
+      tries.map(([event, h]) => `${event} hook failed: ${commandOf(h)} asked to block, but an "async" hook cannot block`).sort());
+  });
+
+  it("blocks nothing for an async hook with onFailure block that cannot start at the five events whose hooks decide, saying its failure alone (release 8e plan, step 3)", async () => {
+    const p = await place();
+    const events: Event[] = ["PermissionRequest", "PermissionDenied", "PreModelSwitch", "PostToolBatch", "ConfigChange"];
+    const missing = path.join(p.root, "no-such-program");
+    const { hooks, errors } = setup(p, events.map((event) => ({ ...p.hook(event, { event, async: true, onFailure: "block" }), command: missing, args: [] })));
+    for (const event of events) expect(await hooks.fire(event, {}), event).toEqual(empty(event));
+    while (hooks.runs.length < events.length) await pause(20);
+    expect(errors.map((e) => e.message.replace(/ \(.*\)$/, "")).sort()).toEqual(events.map((e) => `${e} hook failed: ${missing} could not start`).sort());
+  });
+
+  // Q13's cancel is a sync hook's: an async PreModelSwitch hook that runs out of time is a failure alone. The run stands in
+  // for the time-out, so nothing waits 30 s.
+  it("says an async PreModelSwitch hook's time-out as a failure alone, with no line that it asked to block (release 8e plan, step 3)", async () => {
+    const p = await place();
+    const realRun = vi.mocked(runHook).getMockImplementation()!;
+    onTestFinished(() => void vi.mocked(runHook).mockReset().mockImplementation(realRun));
+    vi.mocked(runHook).mockResolvedValueOnce({ code: null, stdout: "", stderr: "", ms: 30_000, failed: "time", limit: 30 });
+    const hook = p.hook("slow", { event: "PreModelSwitch", async: true });
+    const { hooks, errors } = setup(p, [hook]);
+    expect(await hooks.fire("PreModelSwitch", {})).toEqual(empty("PreModelSwitch"));
+    while (hooks.runs.length < 1) await pause(20);
+    expect(errors.map((e) => e.message)).toEqual([`PreModelSwitch hook failed: ${commandOf(hook)} ran out of time after 30 s`]);
+  });
+
+  it("hands back no text from an async PostModelSwitch hook, plain or additionalContext, and says nothing for it (release 8e plan, step 3)", async () => {
+    const p = await place();
+    const context = JSON.stringify({ hookSpecificOutput: { hookEventName: "PostModelSwitch", additionalContext: "ctx" } });
+    const { hooks, errors } = setup(p, [
+      p.hook("plain", { event: "PostModelSwitch", async: true }, { stdout: "Now on haiku" }),
+      p.hook("context", { event: "PostModelSwitch", async: true }, { stdout: context }),
+    ]);
+    expect(await hooks.fire("PostModelSwitch", {})).toEqual(empty("PostModelSwitch"));
+    while (hooks.runs.length < 2) await pause(20);
+    expect(errors).toEqual([]);
+  });
+
   // Claude Code's hooks reference, "Common fields".
   it("gives a hook without a timeout 30 s at UserPromptSubmit and 600 s elsewhere", async () => {
     const p = await place();

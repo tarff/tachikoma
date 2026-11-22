@@ -265,4 +265,52 @@ describe("MCP calls in hooks", { timeout: 15_000 }, () => {
       [], ["fake echo could not be called: fake is not running"], ["fake echo ran out of time after 0.2 s"]]);
     expect(t.calls()).toEqual([["echo", { text: "pre" }]]);
   });
+
+  // Release 8e plan, step 3: the wait is its own rule. It holds at the four new events whose hooks decide, and not at the
+  // other five, where a server not ready is not running.
+  it("waits for a starting server at PermissionRequest, PreModelSwitch, PostToolBatch and ConfigChange, its answer then counting, and not at the other five new events (release 8e plan, step 3)", async () => {
+    const t = await setup({ start: "const t = Date.now(); while (Date.now() - t < 1000) {}" }, false);
+    expect(t.servers.server("fake")!.state.is).toBe("starting");
+    const say = (event: Event, fields: object, top: object = {}) =>
+      mcpHook(event, "echo", { text: JSON.stringify({ ...top, hookSpecificOutput: { hookEventName: event, ...fields } }) });
+    const waited = t.hooksOf([
+      say("PermissionRequest", { decision: { behavior: "allow" } }), say("PreModelSwitch", { permissionDecision: "deny", permissionDecisionReason: "No" }),
+      say("PostToolBatch", {}, { decision: "block", reason: "Lint" }), say("ConfigChange", {}, { decision: "block", reason: "Kept out" }),
+    ]);
+    const others = ["PostModelSwitch", "Notification", "StopFailure", "InstructionsLoaded", "PermissionDenied"] as const;
+    const notWaited = t.hooksOf(others.map((event) => mcpHook(event, "echo", { text: "x" })));
+    const [request, pre, batch, config, ...rest] = await Promise.all([
+      waited.fire("PermissionRequest", {}), waited.fire("PreModelSwitch", {}), waited.fire("PostToolBatch", {}), waited.fire("ConfigChange", {}),
+      ...others.map((event) => notWaited.fire(event, {})),
+    ]);
+    expect([request.decision, pre.block, batch.block, config.block]).toEqual(["allow", "No", "Lint", "Kept out"]);
+    expect([request, pre, batch, config].map((c) => c.failures)).toEqual([[], [], [], []]);
+    expect(rest.map((c) => c.failures)).toEqual(others.map(() => ["fake echo could not be called: fake is not running"]));
+  });
+
+  // Release 8e plan, step 3: the deciding rules read from an mcp_tool hook's answer through fire, a server it cannot call
+  // blocking with onFailure "block", and its error answer blocking nothing, at the switch events, PostToolBatch and
+  // ConfigChange.
+  it("reads an mcp_tool hook's switch, batch and settings answers, blocks for a server it cannot call only with onFailure block, and never for an error answer (release 8e plan, step 3)", async () => {
+    const t = await setup();
+    const say = (event: Event, fields: object, top: object = {}) =>
+      mcpHook(event, "echo", { text: JSON.stringify({ ...top, hookSpecificOutput: { hookEventName: event, ...fields } }) });
+    const fire = (hook: Hook) => t.hooksOf([hook]).fire(hook.event, {});
+    expect(await fire(say("PreModelSwitch", { permissionDecision: "ask", permissionDecisionReason: "Warm cache" }))).toMatchObject({ decision: "ask", reason: "Warm cache" });
+    expect(await fire(say("PostModelSwitch", { additionalContext: "Now on haiku" }))).toMatchObject({ context: [{ event: "PostModelSwitch", text: "Now on haiku" }] });
+    expect(await fire(say("PostToolBatch", {}, { continue: false, stopReason: "Enough" }))).toMatchObject({ stop: "Enough" });
+    expect((await fire(say("ConfigChange", {}, { decision: "block" }))).block).toBe("");
+    const gone = (event: Event, onFailure?: "block") => mcpHook(event, "echo", {}, { mcp: { server: "gone", tool: "echo", input: {} }, ...(onFailure ? { onFailure } : {}) });
+    for (const event of ["PreModelSwitch", "PostToolBatch", "ConfigChange"] as const) {
+      expect([(await fire(gone(event, "block"))).block, (await fire(gone(event))).block], event).toEqual(["gone is not running", undefined]);
+    }
+    expect((await fire(gone("PostModelSwitch", "block"))).failures).toEqual(["gone echo could not be called: gone is not running"]);
+    for (const event of ["PreModelSwitch", "PostModelSwitch", "PostToolBatch", "ConfigChange"] as const) {
+      const c = await fire(mcpHook(event, "error", {}, { onFailure: "block" }));
+      expect([c.block, c.decision, c.failures], event).toEqual([undefined, undefined, ["fake error answered an error: it went wrong"]]);
+    }
+    // A time-out at PreModelSwitch cancels as well as failing (Q13).
+    const slow = await fire(mcpHook("PreModelSwitch", "slow", {}, { timeout: 0.5 }));
+    expect([slow.failures, slow.decision, slow.block]).toEqual([["fake slow ran out of time after 0.5 s"], "deny", "fake slow ran out of time after 0.5 s"]);
+  });
 });

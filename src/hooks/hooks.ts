@@ -3,7 +3,7 @@ import type { Bus } from "../core/bus.js";
 import type { Mode } from "../core/permissions.js";
 import type { Servers } from "../mcp/servers.js";
 import type { Effort } from "../providers/anthropic.js";
-import { type Combined, canBlock, combine, commandOf, type Outcome, outcomeOf } from "./answer.js";
+import { type Combined, canBlock, combine, commandOf, decides, type Outcome, outcomeOf } from "./answer.js";
 import { type Event, type Hook, type HooksConfig, matches } from "./config.js";
 import { callHook, type Ran, runHook } from "./run.js";
 
@@ -199,6 +199,8 @@ export class Hooks {
     // lost (Task 10's code review, following the user's choices for the window's exit); being waited for, they are stopped
     // with the rest, as a switch's Esc stops them (the user's choice, 2026-11-09: "Esc stops it"). The others are
     // stopped as Tachikoma exits (stopAsync), their Cancelled heard here, never an unhandled rejection.
+    // At the new events whose hooks decide, an allow, deny, ask, rewrite or retry is said in the block's line too
+    // (release 8e design).
     const end = event === "SessionEnd";
     const exiting = this.#shared.left.signal;
     const left: Promise<void>[] = [];
@@ -208,7 +210,7 @@ export class Hooks {
         const c = combine(event, [r]);
         const command = commandOf(hook);
         const asked = c.stop !== undefined ? [`${command} asked to stop, but an "async" hook cannot stop`]
-          : c.block !== undefined ? [`${command} asked to block, but an "async" hook cannot block`] : [];
+          : decides(event, c) ? [`${command} asked to block, but an "async" hook cannot block`] : [];
         // Its lines may be said after the turn, and a listener that throws then must not become an unhandled rejection,
         // which would end Tachikoma. A bug before them still surfaces as one (Task 4's re-check).
         try {
