@@ -291,8 +291,8 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
       p.then(resolve, reject).finally(() => clearTimeout(timer));
     });
   // A join, as the supervisor bounds its steps: the start limit (M3; health checks and serverinfo.json inside it), the
-  // start-time read after it, and the read-back's connect and status (step 20's run 3); and Memory's own connect to
-  // the hub after it, within the read-back's limit too (step 21).
+  // start-time read after it (PR #26 Codex review, round 3), and the read-back's connect and status (step 20's run 3);
+  // and Memory's own connect to the hub after it, within the read-back's limit too (step 21).
   const JOIN = FIGURES.startLimit + FIGURES.startRead + 2 * FIGURES.readBack;
   // The first state a Memory reaches after setting up: on, or why not, within a join's bound.
   const settled = (bus: Bus) =>
