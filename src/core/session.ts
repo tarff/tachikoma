@@ -668,9 +668,10 @@ export class Session {
     // conversation's first turn begins it with SessionStart's runs that have answered, which Ctrl+O listed before the
     // first prompt; an async one that answers later goes to the list before it, a known limit. A prompt that starts no
     // turn, one a UserPromptSubmit hook blocks or leaves unsent, or the user stops while its hooks run, puts back the
-    // list Ctrl+O listed before, so it always shows one whole turn (the user's choices, 2026-11-10; final review).
+    // list Ctrl+O listed before, so it always shows one whole turn (the user's choices, 2026-11-10; final review). The runs
+    // fired outside a turn since begin it, and go back apart with that list (release 8e plan, step 4).
     const before = this.opts.subagent ? undefined : hooks?.runs;
-    if (before) hooks!.newTurn(this.messages.length ? [] : before.filter((r) => r.event === "SessionStart"));
+    if (before) hooks!.beginTurn(this.messages.length ? [] : before.filter((r) => r.event === "SessionStart"));
     // The user's own prompt only: a subagent's brief is the lead's (release 8b design, "The events"). Before anything is
     // kept, pushed or taken, so a block or a stop sends and saves nothing, and the waiting text stays for the next prompt.
     const prompted = words && !this.opts.subagent && hooks ? await this.#userPromptSubmit(hooks, words, signal) : [];

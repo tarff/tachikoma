@@ -3401,6 +3401,57 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(s.given.runs).toBe(last);
   });
 
+  // Release 8e plan, step 4 (design: runs outside a turn "are listed with the next turn"): a prompt a UserPromptSubmit hook
+  // blocks starts no turn, so the runs fired outside a turn before it are listed with the next real turn, one answering
+  // after the blocked prompt too; Ctrl+O lists the last turn's runs meanwhile, as before.
+  it("lists runs fired outside a turn with the next real turn, not a prompt a UserPromptSubmit hook blocked, a late one too", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const says: Says[] = [
+      { event: "UserPromptSubmit", stdout: "", seq: ["", block("no"), ""] },
+      { event: "Notification", stdout: "", names: ["idle_prompt"] },
+      { event: "Notification", stdout: "", names: ["auth_success"], go },
+    ];
+    const s = await setup({ mode: "never", root, says, turns: [reply("one"), reply("two")] });
+    const events = () => s.given.runs.map((r) => [r.event, ...(r.match ? [r.match] : [])]);
+    await s.session.send("go");
+    const last = s.given.runs;
+    await s.given.fire("Notification", {}, { match: "idle_prompt", outside: true });
+    const late = s.given.fireAndLeave("Notification", {}, { match: "auth_success", outside: true });
+    await until(() => s.inputs().length === 3);
+    expect(events()).toEqual([["UserPromptSubmit"]]);
+    expect(await s.session.send("again")).toEqual({ blocked: "no" });
+    expect(s.given.runs).toBe(last);
+    writeFileSync(go, "");
+    await late;
+    expect(events()).toEqual([["UserPromptSubmit"]]);
+    await s.session.send("third");
+    expect(events()).toEqual([["Notification", "idle_prompt"], ["Notification", "auth_success"], ["UserPromptSubmit"]]);
+  });
+
+  // /branch keeps the list Ctrl+O shows (the user's choice, 2026-11-10); a run fired outside a turn that answers after it
+  // stays out of that list and joins the next turn's (Codex round 2, point 11), a load in between too.
+  it("keeps a run fired outside a turn out of the list a /branch keeps, and lists it with the next turn, after a load too", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const says: Says[] = [{ event: "UserPromptSubmit", stdout: "" }, { event: "Notification", stdout: "", go }];
+    const s = await setup({ mode: "never", root, says, turns: [reply("one"), reply("two")] });
+    const events = () => s.given.runs.map((r) => r.event);
+    await s.session.send("go");
+    const last = s.given.runs;
+    const late = s.given.fireAndLeave("Notification", {}, { outside: true });
+    await until(() => s.inputs().length === 2);
+    s.session.load(fresh("s2", [...s.session.messages]), { keepRuns: true });
+    writeFileSync(go, "");
+    await late;
+    expect(s.given.runs).toBe(last);
+    expect(events()).toEqual(["UserPromptSubmit"]);
+    s.session.load(fresh("s3", [...s.session.messages]));
+    expect(events()).toEqual([]);
+    await s.session.send("more");
+    expect(events()).toEqual(["Notification", "UserPromptSubmit"]);
+  });
+
   // A switch's SessionEnd is sent the last prompt's id, as its conversation's, and the SessionStart after the load
   // none, as a launch's before any prompt.
   it.each(["clear", "resume"] as const)("sends the SessionEnd of a /%s the last prompt's id, and the SessionStart after it none", async (how) => {

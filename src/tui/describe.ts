@@ -2,7 +2,7 @@ import path from "node:path";
 import { visible } from "../core/permissions.js";
 import { FEEDBACK } from "../core/session.js";
 import type { Message, ToolCall, ToolResult } from "../core/types.js";
-import { combine, hookName } from "../hooks/answer.js";
+import { type Combined, combine, hookName } from "../hooks/answer.js";
 import type { Event } from "../hooks/config.js";
 import type { Run } from "../hooks/hooks.js";
 import type { Ran } from "../hooks/run.js";
@@ -303,7 +303,25 @@ export function lastTurn(messages: Message[], runs: readonly Run[] = [], names?:
 }
 
 // The events a run of which names its tool on Ctrl+O, as each fires for one call.
-const TOOL_EVENTS: readonly Event[] = ["PreToolUse", "PostToolUse", "PostToolUseFailure"];
+const TOOL_EVENTS: readonly Event[] = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionDenied"];
+// Release 8e's events (config.ts), at which an async run shows nothing under it: it decided nothing, its red line saying
+// so, and handed the model no text (release 8e plan, step 4).
+const NEW_EVENTS: readonly Event[] = ["PermissionRequest", "PermissionDenied", "StopFailure", "Notification", "PreModelSwitch", "PostModelSwitch",
+  "PostToolBatch", "InstructionsLoaded", "ConfigChange"];
+// A decision row's words with its reason, the reason left off with its colon when there is none, as W1, W6 and W7 leave
+// it off (release 8e plan, W8).
+const withReason = (words: string, reason: string | undefined) => (reason ? `${words}: ${reason}` : words);
+// What a run at one of release 8e's deciding events decided, in the approved words (release 8e plan, W8).
+function decided(event: Event, c: Combined): string[] {
+  if (event === "PermissionRequest" && c.decision === "allow") return ["allowed the call"];
+  if (event === "PermissionRequest" && c.decision === "deny") return [withReason("refused the call", c.reason)];
+  if (event === "PermissionDenied" && c.retry) return ["said the model may try again"];
+  if (event === "PreModelSwitch" && c.decision === "deny") return [withReason("stopped the switch", c.reason)];
+  if (event === "PreModelSwitch" && c.decision === "ask") return [withReason("asked", c.reason)];
+  if (event === "PostToolBatch" && (c.stop ?? c.block) !== undefined) return [withReason("ended the turn", c.stop ?? c.block)];
+  if (event === "ConfigChange" && c.block !== undefined) return [withReason("stopped the settings change", c.block)];
+  return [];
+}
 
 // One hook run, in the approved words (release 8b plan, "Lines this plan adds", Ctrl+O): its event and the hook's name as
 // /hooks gives it (answer.ts, hookName; the user's choice, 2026-11-10, terminal checklist), escaped as the question
@@ -322,7 +340,8 @@ function runLine(r: Run): Line {
   const c = combine(r.event, [r]);
   const tool = tachikomaName(r.match ?? "");
   const forTool = TOOL_EVENTS.includes(r.event) && r.match !== undefined ? ` for ${visible(tool)}` : "";
-  const under = [
+  const under = r.hook.async && NEW_EVENTS.includes(r.event) ? [] : [
+    ...decided(r.event, c),
     ...(c.block && (r.event === "Stop" || r.event === "SubagentStop") ? [c.block] : []),
     ...c.context.map((x) => x.text),
     // As combine reads them, which drops both beside a continue: false, as a stop ends the turn (Task 12's code review).

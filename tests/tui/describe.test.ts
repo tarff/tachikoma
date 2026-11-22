@@ -302,6 +302,88 @@ describe("lastTurn", () => {
     expect(callLines(messages)[0]!.text).toBe("● my_tv foo_bar\n  x: 1\n  ⎿ set"); // without the window's names
     expect(exportText(messages, "fake:a")).toContain('● mcp__my_tv__foo_bar {\n  "x": 1\n}\n  ⎿ set');
   });
+
+  // Release 8e plan, step 4 (W8): under a run at the new deciding events, what it decided; a PermissionRequest or
+  // PermissionDenied run names its tool, as a tool event's run does.
+  const run8e = (event: Event, json: Record<string, unknown>, more: { match?: string; async?: boolean } = {}): Run => ({
+    event,
+    hook: { event, matcher: { all: true }, command: "check.sh", async: more.async ?? false, where: JSON.stringify(event) },
+    ran: { code: 0, stdout: "", stderr: "", ms: 12 },
+    outcome: { kind: "ok", json },
+    ...(more.match === undefined ? {} : { match: more.match }),
+  });
+  const own = (event: Event, fields: object) => ({ hookSpecificOutput: { hookEventName: event, ...fields } });
+  const deciding: [Event, Record<string, unknown>, string?][] = [
+    ["PermissionRequest", own("PermissionRequest", { decision: { behavior: "allow" } }), "Bash"],
+    ["PermissionRequest", own("PermissionRequest", { decision: { behavior: "allow", updatedInput: { command: "ls -a" } } }), "Bash"],
+    ["PermissionRequest", own("PermissionRequest", { decision: { behavior: "deny", message: "not here" } }), "Write"],
+    ["PermissionDenied", own("PermissionDenied", { retry: true }), "Bash"],
+    ["PreModelSwitch", own("PreModelSwitch", { permissionDecision: "deny", permissionDecisionReason: "too costly" })],
+    ["PreModelSwitch", own("PreModelSwitch", { permissionDecision: "ask", permissionDecisionReason: "check the cost" })],
+    ["PostToolBatch", { decision: "block", reason: "tests fail" }],
+    ["PostToolBatch", { continue: false, stopReason: "halt" }],
+    ["ConfigChange", { decision: "block", reason: "not allowed" }],
+  ];
+
+  it("shows under each run at the new deciding events what it decided, in the approved words", () => {
+    const runs = deciding.map(([event, json, match]) => run8e(event, json, match === undefined ? {} : { match }));
+    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "go" }] }], runs).slice(1).map((l) => l.text)).toEqual([
+      "◆ PermissionRequest hook check.sh for shell · exit 0 · 12 ms\n  ⎿ allowed the call",
+      '◆ PermissionRequest hook check.sh for shell · exit 0 · 12 ms\n  ⎿ allowed the call\n  ⎿ {\n  "command": "ls -a"\n}',
+      "◆ PermissionRequest hook check.sh for write_file · exit 0 · 12 ms\n  ⎿ refused the call: not here",
+      "◆ PermissionDenied hook check.sh for shell · exit 0 · 12 ms\n  ⎿ said the model may try again",
+      "◆ PreModelSwitch hook check.sh · exit 0 · 12 ms\n  ⎿ stopped the switch: too costly",
+      "◆ PreModelSwitch hook check.sh · exit 0 · 12 ms\n  ⎿ asked: check the cost",
+      "◆ PostToolBatch hook check.sh · exit 0 · 12 ms\n  ⎿ ended the turn: tests fail",
+      "◆ PostToolBatch hook check.sh · exit 0 · 12 ms\n  ⎿ ended the turn: halt",
+      "◆ ConfigChange hook check.sh · exit 0 · 12 ms\n  ⎿ stopped the settings change: not allowed",
+    ]);
+  });
+
+  // With no reason, the reason is left off with its colon, as the approved lines W1, W6 and W7 leave it off.
+  it("leaves the reason off a decision row with its colon when the hook gave none", () => {
+    const runs = [
+      run8e("PermissionRequest", own("PermissionRequest", { decision: { behavior: "deny" } }), { match: "Bash" }),
+      run8e("PreModelSwitch", own("PreModelSwitch", { permissionDecision: "deny" })),
+      run8e("PreModelSwitch", own("PreModelSwitch", { permissionDecision: "ask" })),
+      run8e("PostToolBatch", { decision: "block" }),
+      run8e("PostToolBatch", { continue: false }),
+      run8e("ConfigChange", { decision: "block" }),
+    ];
+    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "go" }] }], runs).slice(1).map((l) => l.text)).toEqual([
+      "◆ PermissionRequest hook check.sh for shell · exit 0 · 12 ms\n  ⎿ refused the call",
+      "◆ PreModelSwitch hook check.sh · exit 0 · 12 ms\n  ⎿ stopped the switch",
+      "◆ PreModelSwitch hook check.sh · exit 0 · 12 ms\n  ⎿ asked",
+      "◆ PostToolBatch hook check.sh · exit 0 · 12 ms\n  ⎿ ended the turn",
+      "◆ PostToolBatch hook check.sh · exit 0 · 12 ms\n  ⎿ ended the turn",
+      "◆ ConfigChange hook check.sh · exit 0 · 12 ms\n  ⎿ stopped the settings change",
+    ]);
+  });
+
+  it("shows a PreModelSwitch allow as nothing under its run, and its exit code 2 as a stopped switch", () => {
+    const allow = run8e("PreModelSwitch", own("PreModelSwitch", { permissionDecision: "allow" }));
+    const blocked: Run = { ...run8e("PreModelSwitch", {}), ran: { code: 2, stdout: "", stderr: "on a budget\n", ms: 12 }, outcome: { kind: "block", reason: "on a budget" } };
+    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "go" }] }], [allow, blocked]).slice(1).map((l) => l.text)).toEqual([
+      "◆ PreModelSwitch hook check.sh · exit 0 · 12 ms",
+      "◆ PreModelSwitch hook check.sh · exit 2 · 12 ms\n  ⎿ stopped the switch: on a budget",
+    ]);
+  });
+
+  // An async hook decides nothing, its red line already says so, so no decision row is shown under it; nor the text of an
+  // async PostModelSwitch hook, which is not handed to the model.
+  it("shows no decision row under an async run at the new deciding events, and no text under an async PostModelSwitch run", () => {
+    const runs = [
+      ...deciding.map(([event, json, match]) => run8e(event, json, { async: true, ...(match === undefined ? {} : { match }) })),
+      run8e("PostModelSwitch", own("PostModelSwitch", { additionalContext: "now on haiku" }), { async: true }),
+    ];
+    const tool = (match?: string) => (match === "Bash" ? " for shell" : match === "Write" ? " for write_file" : "");
+    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "go" }] }], runs).slice(1).map((l) => l.text)).toEqual([
+      ...deciding.map(([event, , match]) => `◆ ${event} hook check.sh${tool(match)} · exit 0 · 12 ms`),
+      "◆ PostModelSwitch hook check.sh · exit 0 · 12 ms",
+    ]);
+    const sync = run8e("PostModelSwitch", own("PostModelSwitch", { additionalContext: "now on haiku" }));
+    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "go" }] }], [sync])[1]!.text).toBe("◆ PostModelSwitch hook check.sh · exit 0 · 12 ms\n  ⎿ now on haiku");
+  });
 });
 
 // TUI design pass, Task 12 (audit 10; the user's layout, 2026-11-15, "As shown"): Ctrl+O's and /tasks t3's full record

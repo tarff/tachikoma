@@ -8,7 +8,7 @@ import type { Mode } from "../../src/core/permissions.js";
 import { gitBash } from "../../src/exec/env.js";
 import { combine } from "../../src/hooks/answer.js";
 import type { Event, Hook, HooksConfig } from "../../src/hooks/config.js";
-import { Hooks, MODE_NAMES, type Where } from "../../src/hooks/hooks.js";
+import { Hooks, MODE_NAMES, type Run, type Where } from "../../src/hooks/hooks.js";
 import { runHook } from "../../src/hooks/run.js";
 import type { Effort } from "../../src/providers/anthropic.js";
 import { Bus, collectErrors, removeTree } from "../helpers.js";
@@ -626,6 +626,142 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(await Promise.allSettled(vi.mocked(runHook).mock.results.map((r) => r.value))).toEqual([
       { status: "rejected", reason: new Error("Cancelled") },
     ]);
+  });
+
+  // Release 8e plan, step 4 (Codex round 1, point 7): a fire the caller does not wait for, its hooks under the stop that
+  // ends async hooks as Tachikoma exits, so none keeps a -p run or the window's exit waiting.
+  it("fires an event without the caller waiting, its handle answering with the combined answer once its hook ends", async () => {
+    const p = await place();
+    const go = path.join(p.root, "go");
+    const said = JSON.stringify({ hookSpecificOutput: { hookEventName: "PostModelSwitch", additionalContext: "now on haiku" } });
+    const { hooks, errors } = setup(p, [p.hook("h", { event: "PostModelSwitch" }, { go, stdout: said })]);
+    let done = false;
+    const handle = hooks.fireAndLeave("PostModelSwitch", {});
+    void handle.then(() => (done = true));
+    while (p.inputs("h").length < 1) await pause(20);
+    await pause(50);
+    expect([done, hooks.runs]).toEqual([false, []]);
+    writeFileSync(go, "");
+    expect((await handle).context).toEqual([{ event: "PostModelSwitch", text: "now on haiku" }]);
+    expect([hooks.runs.length, errors]).toEqual([1, []]);
+  });
+
+  it("ends a fire not waited for at stopAsync, saying nothing, its handle answering with no answer, no rejection unhandled", async () => {
+    const p = await place();
+    const never = path.join(p.root, "never");
+    const { hooks, errors, notes } = setup(p, [p.hook("h", { event: "PostModelSwitch" }, { go: never })]);
+    const unhandled: unknown[] = [];
+    const listen = (err: unknown) => void unhandled.push(err);
+    process.on("unhandledRejection", listen);
+    onTestFinished(() => void process.off("unhandledRejection", listen));
+    vi.mocked(runHook).mockClear();
+    const handle = hooks.fireAndLeave("PostModelSwitch", {});
+    while (p.inputs("h").length < 1) await pause(20);
+    hooks.stopAsync();
+    expect(await handle).toEqual(empty("PostModelSwitch"));
+    // One fired after the exit is never started.
+    expect(await hooks.fireAndLeave("PostModelSwitch", {})).toEqual(empty("PostModelSwitch"));
+    await pause(50);
+    expect([errors, notes, hooks.runs, unhandled, p.inputs("h").length]).toEqual([[], [], [], [], 1]);
+    expect(await Promise.allSettled(vi.mocked(runHook).mock.results.map((r) => r.value))).toEqual([
+      { status: "rejected", reason: new Error("Cancelled") },
+    ]);
+  });
+
+  it("says a failure in a fire not waited for as its red line, and catches a listener that throws", async () => {
+    const p = await place();
+    const failing = p.hook("h", { event: "PostModelSwitch" }, { stderr: "it broke", code: 1 });
+    const { hooks, bus, errors } = setup(p, [failing]);
+    const unhandled: unknown[] = [];
+    const listen = (err: unknown) => void unhandled.push(err);
+    process.on("unhandledRejection", listen);
+    onTestFinished(() => void process.off("unhandledRejection", listen));
+    await hooks.fireAndLeave("PostModelSwitch", {});
+    expect(errors.map((e) => e.message)).toEqual([`PostModelSwitch hook failed: ${commandOf(failing)} exited with code 1: it broke`]);
+    bus.on("error", () => {
+      throw new Error("a listener broke");
+    });
+    expect(await hooks.fireAndLeave("PostModelSwitch", {})).toEqual(empty("PostModelSwitch"));
+    await pause(50);
+    expect([errors.length, unhandled]).toEqual([2, []]);
+  });
+
+  // Release 8e plan, step 4 (design: runs outside a turn "are listed with the next turn"): a fire marked outside a turn
+  // keeps its runs apart, and the next lead turn's list begins with them; a load in between drops none of them.
+  it("lists a run fired outside a turn with the next turn, not the one before, through a load too, and a run inside with its own", async () => {
+    const p = await place();
+    const { hooks } = setup(p, [p.hook("note", { event: "Notification" }), p.hook("pre")]);
+    const events = () => hooks.runs.map((r) => r.event);
+    hooks.beginTurn();
+    await hooks.fire("PreToolUse", {});
+    await hooks.fire("Notification", {}, { outside: true });
+    await hooks.fireAndLeave("Notification", {}, { outside: true });
+    expect(events()).toEqual(["PreToolUse"]);
+    hooks.newTurn(); // a load
+    expect(events()).toEqual([]);
+    hooks.beginTurn();
+    expect(events()).toEqual(["Notification", "Notification"]);
+    await hooks.fire("PreToolUse", {});
+    expect(events()).toEqual(["Notification", "Notification", "PreToolUse"]);
+    const start: Run = { ...hooks.runs[2]!, event: "SessionStart" };
+    hooks.beginTurn();
+    expect(events()).toEqual([]);
+    // A fresh conversation's first turn: the runs fired outside it first, then SessionStart's it carries.
+    await hooks.fire("Notification", {}, { outside: true });
+    hooks.beginTurn([start]);
+    expect(events()).toEqual(["Notification", "SessionStart"]);
+  });
+
+  // A prompt that starts no turn puts the earlier list back (session.ts), and the runs the new list began with go back
+  // apart, a run fired outside a turn that answers after that too; one that answers during the next turn joins its list.
+  it("puts a turn's runs from outside it back apart when its prompt starts no turn, and lists a later answer with the next turn", async () => {
+    const p = await place();
+    const [go1, go2] = [path.join(p.root, "go1"), path.join(p.root, "go2")];
+    const note = (name: string, type: string, go?: string) => p.hook(name, { event: "Notification", matcher: { names: [type] } }, go ? { go } : {});
+    const { hooks } = setup(p, [note("idle", "idle_prompt"), note("slow", "auth_success", go1), note("slower", "permission_prompt", go2), p.hook("pre")]);
+    const events = () => hooks.runs.map((r) => [r.event, ...(r.match ? [r.match] : [])]);
+    hooks.beginTurn();
+    await hooks.fire("PreToolUse", {});
+    const before = hooks.runs;
+    await hooks.fire("Notification", {}, { match: "idle_prompt", outside: true });
+    const slow = hooks.fireAndLeave("Notification", {}, { match: "auth_success", outside: true });
+    const slower = hooks.fireAndLeave("Notification", {}, { match: "permission_prompt", outside: true });
+    while (p.inputs("slow").length < 1 || p.inputs("slower").length < 1) await pause(20);
+    hooks.beginTurn(); // a prompt a UserPromptSubmit hook then blocks
+    expect(events()).toEqual([["Notification", "idle_prompt"]]);
+    hooks.restoreRuns(before);
+    expect(hooks.runs).toBe(before);
+    writeFileSync(go1, "");
+    await slow;
+    expect(events()).toEqual([["PreToolUse"]]);
+    hooks.beginTurn(); // the next real turn
+    expect(events()).toEqual([["Notification", "idle_prompt"], ["Notification", "auth_success"]]);
+    writeFileSync(go2, "");
+    await slower;
+    await hooks.fire("PreToolUse", {});
+    expect(events()).toEqual([["Notification", "idle_prompt"], ["Notification", "auth_success"], ["Notification", "permission_prompt"], ["PreToolUse"]]);
+    expect(before.map((r) => r.event)).toEqual(["PreToolUse"]);
+  });
+
+  // Step 4's review: a run fired outside a turn that is still answering when a second turn begins lands in the turn it
+  // answers in, never the earlier turn's list, which Ctrl+O no longer shows.
+  it("lists a run fired outside a turn that answers two turns later with the turn it answers in, not the earlier one", async () => {
+    const p = await place();
+    const go = path.join(p.root, "go");
+    const { hooks } = setup(p, [p.hook("slow", { event: "Notification" }, { go })]);
+    const late = hooks.fireAndLeave("Notification", {}, { outside: true });
+    while (p.inputs("slow").length < 1) await pause(20);
+    hooks.beginTurn();
+    const first = hooks.runs;
+    hooks.beginTurn();
+    writeFileSync(go, "");
+    await late;
+    expect([first, hooks.runs.map((r) => r.event)]).toEqual([[], ["Notification"]]);
+    // A prompt that then starts no turn puts it back apart, for the next real turn.
+    hooks.restoreRuns(first);
+    expect(hooks.runs).toBe(first);
+    hooks.beginTurn();
+    expect([first, hooks.runs.map((r) => r.event)]).toEqual([[], ["Notification"]]);
   });
 
   // Release 8b plan, Task 12 (design, "What the user sees"): the waiting line shows a running hook's statusMessage, so the
