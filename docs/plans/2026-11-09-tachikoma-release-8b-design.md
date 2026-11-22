@@ -293,7 +293,7 @@ Option chosen: "Yes that looks fine", for these homes:
 | UserPromptExpansion | Release 10, with skills |
 | Setup | Release 14, with `tachi setup` |
 | Importing Claude Code's hooks, the user's and plugins', into Tachikoma's file | Release 14's first-run import |
-| PermissionRequest, PermissionDenied (auto mode's judge refuses), StopFailure, Notification, PreModelSwitch and PostModelSwitch (`/lead`), PostToolBatch, InstructionsLoaded, ConfigChange, FileChanged, CwdChanged | 8e, a new small part after 8d: each has its place in Tachikoma already |
+| PermissionRequest, PermissionDenied (auto mode's judge refuses), StopFailure, Notification, PreModelSwitch and PostModelSwitch (`/lead`), PostToolBatch, InstructionsLoaded, ConfigChange, FileChanged, CwdChanged | 8e, a new small part after 8d: each has its place in Tachikoma already. (2026-11-23: true for 8 of them; the [release 8e design](2026-11-23-tachikoma-release-8e-design.md) takes nine, Notification with new moments, and leaves FileChanged and CwdChanged out) |
 | The `http`, `prompt` and `agent` hook kinds; `if`; `asyncRewake`; `CLAUDE_ENV_FILE` | Not planned: nothing in the user's setup uses them |
 | TaskCreated, TaskCompleted, TeammateIdle, WorktreeCreate, WorktreeRemove, MessageDisplay | Probably never: they belong to Claude Code features Tachikoma has not got |
 | Hooks from a project's files, and the folder-trust question | Never (user, 2026-11-06: "Your settings file only"); with only the user's file read, no trust question is needed |
