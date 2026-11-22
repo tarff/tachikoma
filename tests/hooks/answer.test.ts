@@ -290,6 +290,179 @@ describe("outcomeOf: the events that cannot block (the design's table row)", () 
   });
 });
 
+// Release 8e plan, step 2: the three events whose whole answer is ignored, and the two permission events.
+describe("outcomeOf and combine: Notification, StopFailure, InstructionsLoaded, PermissionDenied and PermissionRequest", () => {
+  const IGNORED = ["Notification", "StopFailure", "InstructionsLoaded"] as const;
+  const FIVE = [...IGNORED, "PermissionDenied", "PermissionRequest"] as const;
+  const specific = (event: Event, fields: object, top: object = {}) => JSON.stringify({ ...top, hookSpecificOutput: { hookEventName: event, ...fields } });
+  const allow = specific("PermissionRequest", { decision: { behavior: "allow" } });
+  const retry = specific("PermissionDenied", { retry: true });
+  const unreadable = (event: Event) =>
+    event === "PermissionRequest" ? specific(event, { decision: { behavior: "maybe" } })
+      : event === "PermissionDenied" ? specific(event, { retry: "yes" }) : '{"hookSpecificOutput":';
+  const badLine = (event: Event) =>
+    `node check.js printed JSON that could not be read (${event === "PermissionRequest" ? '"behavior" must be "allow" or "deny"' : '"retry" must be true or false'})`;
+  const readable = (event: Event) =>
+    event === "PermissionRequest" ? allow : event === "PermissionDenied" ? retry
+      : specific(event, { additionalContext: "ctx" }, { systemMessage: "hi", continue: false });
+
+  // For each event, each exit code with plain text, readable JSON and unreadable JSON: what it gives.
+  const expected = (event: Event, code: number, kind: "plain" | "readable" | "unreadable"): Outcome => {
+    if ((IGNORED as readonly Event[]).includes(event)) return { kind: "ok" };
+    if (event === "PermissionRequest" && code === 2) return { kind: "ok" };
+    if (kind === "unreadable") return { kind: "failed", line: badLine(event) };
+    if (kind === "readable") return { kind: "ok", json: JSON.parse(readable(event)) };
+    if (event === "PermissionRequest" && code === 1) return { kind: "failed", line: "node check.js exited with code 1: warn" };
+    return { kind: "ok" };
+  };
+  const cells = FIVE.flatMap((event) => [0, 1, 2].flatMap((code) => (["plain", "readable", "unreadable"] as const).map((kind) => [event, code, kind] as const)));
+  it.each(cells)("at %s, exit code %i with %s output gives what release 8e plan, step 2 says, and no line where the code is ignored", (event, code, kind) => {
+    const stdout = kind === "plain" ? "hello\n" : kind === "readable" ? readable(event) : unreadable(event);
+    const outcome = answer(event, ranOf({ code, stdout, stderr: "warn\n" }));
+    expect(outcome).toEqual(expected(event, code, kind));
+    // onFailure "block" changes nothing at these five.
+    expect(answer(event, ranOf({ code, stdout, stderr: "warn\n" }), hookOf({ onFailure: "block" }))).toEqual(outcome);
+  });
+
+  it("gives no line at Notification, StopFailure, InstructionsLoaded and PermissionDenied for a hook ended by a signal, nor for any other exit code (release 8e plan, step 2)", () => {
+    for (const event of [...IGNORED, "PermissionDenied"] as const) {
+      expect(answer(event, ranOf({ code: null, signal: "SIGKILL", stderr: "dying\n" })), event).toEqual({ kind: "ok" });
+      expect(answer(event, ranOf({ code: 3, stderr: "x\n" })), event).toEqual({ kind: "ok" });
+    }
+  });
+
+  it("keeps the runner's own failures as failures with their lines at all five, deciding nothing, onFailure \"block\" or not (release 8e plan, step 2)", () => {
+    const mcp = (fields: Partial<Hook> = {}) => hookOf({ command: "", args: undefined, mcp: { server: "memory", tool: "search", input: {} }, ...fields });
+    const cases: [Hook, Partial<Ran>, string][] = [
+      [hookOf(), { failed: "start", startError: "spawn x ENOENT" }, "node check.js could not start (spawn x ENOENT)"],
+      [hookOf(), { failed: "time", limit: 600 }, "node check.js ran out of time after 600 s"],
+      [mcp(), { failed: "call", reason: "memory is not running" }, "memory search could not be called: memory is not running"],
+      [mcp(), { failed: "error", reason: "boom\nmore" }, "memory search answered an error: boom"],
+      [mcp(), { failed: "time", limit: 600 }, "memory search ran out of time after 600 s"],
+    ];
+    for (const event of FIVE) {
+      for (const [hook, ran, line] of cases) {
+        for (const h of [hook, { ...hook, onFailure: "block" as const }]) {
+          const outcome = answer(event, ranOf({ code: null, ...ran }), h);
+          expect(outcome, `${event} ${line}`).toEqual({ kind: "failed", line });
+          expect(combine(event, [{ hook: h, outcome }]), `${event} ${line}`).toEqual({
+            context: [], messages: [], instructions: [], deferred: false, failures: [line] });
+        }
+      }
+    }
+  });
+
+  it("reads an mcp_tool hook's text as a command hook's printed output on exit 0: an allow, a deny, a retry (release 8e plan, step 2)", () => {
+    const mcp = hookOf({ command: "", args: undefined, mcp: { server: "memory", tool: "search", input: {} } });
+    const deny = specific("PermissionRequest", { decision: { behavior: "deny", message: "Not here" } });
+    expect(one("PermissionRequest", ranOf({ stdout: allow }), mcp)).toMatchObject({ decision: "allow" });
+    expect(one("PermissionRequest", ranOf({ stdout: deny }), mcp)).toMatchObject({ decision: "deny", reason: "Not here" });
+    expect(one("PermissionDenied", ranOf({ stdout: retry }), mcp)).toMatchObject({ retry: true });
+  });
+
+  it("takes PermissionRequest's allow, and a deny with its message or none, with interrupt, and sets no block (release 8e plan, step 2)", () => {
+    const decide = (decision: object, code = 0) => one("PermissionRequest", ranOf({ code, stdout: specific("PermissionRequest", { decision }) }));
+    expect(decide({ behavior: "allow" })).toEqual({ decision: "allow", reason: "", context: [], messages: [], instructions: [], deferred: false, failures: [] });
+    const denied = decide({ behavior: "deny", message: "Not in src" });
+    expect(denied).toMatchObject({ decision: "deny", reason: "Not in src" });
+    expect([denied.block, denied.interrupt, denied.stop]).toEqual([undefined, undefined, undefined]);
+    expect(decide({ behavior: "deny" })).toMatchObject({ decision: "deny", reason: "" });
+    expect(decide({ behavior: "deny", message: "Stop now", interrupt: true })).toMatchObject({ decision: "deny", reason: "Stop now", interrupt: true });
+    expect(decide({ behavior: "deny", interrupt: false }).interrupt).toBeUndefined();
+    // Readable JSON on exit 1 counts, as 8b reads it; on exit 2 it decides nothing.
+    expect(decide({ behavior: "deny", message: "x" }, 1)).toMatchObject({ decision: "deny", reason: "x" });
+    expect(decide({ behavior: "allow" }, 2)).toEqual({ context: [], messages: [], instructions: [], deferred: false, failures: [] });
+    // No behavior decides nothing.
+    expect(decide({ message: "x" }).decision).toBeUndefined();
+  });
+
+  it("takes an allow's updatedInput as the rewrite, notes updatedPermissions, and drops a rewrite beside a deny (release 8e plan, step 2)", () => {
+    const decide = (decision: object) => one("PermissionRequest", ranOf({ stdout: specific("PermissionRequest", { decision }) }));
+    const hook = hookOf();
+    const rewritten = combine("PermissionRequest", [{
+      hook, outcome: answer("PermissionRequest", ranOf({ stdout: specific("PermissionRequest", { decision: { behavior: "allow", updatedInput: { command: "ls" } } }) })),
+    }]);
+    expect(rewritten).toMatchObject({ decision: "allow", rewrite: { input: { command: "ls" }, from: hook, ignored: [] } });
+    expect(decide({ behavior: "allow", updatedPermissions: [{ type: "addRules" }] })).toMatchObject({ decision: "allow", updatedPermissions: true });
+    expect(decide({ behavior: "deny", updatedPermissions: [] }).updatedPermissions).toBe(true);
+    expect(decide({ behavior: "allow" }).updatedPermissions).toBeUndefined();
+    expect(decide({ behavior: "deny", updatedInput: { command: "ls" } }).rewrite).toBeUndefined();
+  });
+
+  describe("several PermissionRequest hooks", () => {
+    const hookAt = (decision: object, name: string) => {
+      const hook = hookOf({ args: [name] });
+      return { hook, outcome: answer("PermissionRequest", ranOf({ stdout: specific("PermissionRequest", { decision }) }), hook) };
+    };
+
+    it("deny over allow, in both orders, the deny's message and interrupt kept (release 8e plan, step 2)", () => {
+      const two = [hookAt({ behavior: "allow" }, "a"), hookAt({ behavior: "deny", message: "No", interrupt: true }, "b")];
+      expect(combine("PermissionRequest", two)).toMatchObject({ decision: "deny", reason: "No", interrupt: true });
+      expect(combine("PermissionRequest", [...two].reverse())).toMatchObject({ decision: "deny", reason: "No", interrupt: true });
+    });
+
+    it("of two rewrites, takes the first in the file and names the other, and drops both beside a deny (release 8e plan, step 2)", () => {
+      const first = hookAt({ behavior: "allow", updatedInput: { command: "sfw npm i" } }, "first");
+      const second = hookAt({ behavior: "allow", updatedInput: { command: "npm i --dry-run" } }, "second");
+      expect(combine("PermissionRequest", [first, second]).rewrite).toEqual({ input: { command: "sfw npm i" }, from: first.hook, ignored: [second.hook] });
+      const denied = combine("PermissionRequest", [first, second, hookAt({ behavior: "deny" }, "deny")]);
+      expect(denied).toMatchObject({ decision: "deny", reason: "" });
+      expect(denied.rewrite).toBeUndefined();
+    });
+  });
+
+  it("takes PermissionDenied's retry: true, at any exit code, and nothing else as a retry (release 8e plan, step 2)", () => {
+    for (const code of [0, 1, 2]) expect(one("PermissionDenied", ranOf({ code, stdout: retry })).retry, `exit ${code}`).toBe(true);
+    expect(one("PermissionDenied", ranOf({ stdout: specific("PermissionDenied", { retry: false }) })).retry).toBeUndefined();
+    expect(one("PermissionDenied", ranOf({ stdout: JSON.stringify({ retry: true }) })).retry).toBeUndefined();
+    expect(one("PermissionDenied", ranOf({ stdout: "retry" })).retry).toBeUndefined();
+  });
+
+  it("reads neither continue: false nor additionalContext at the two permission events (release 8e plan, step 2)", () => {
+    for (const event of ["PermissionRequest", "PermissionDenied"] as const) {
+      const c = one(event, ranOf({ stdout: specific(event, { additionalContext: "ctx" }, { continue: false, stopReason: "Halt" }) }));
+      expect(c, event).toEqual({ context: [], messages: [], instructions: [], deferred: false, failures: [] });
+    }
+    // continue: false does not undo a deny there.
+    const denied = one("PermissionRequest", ranOf({ stdout: specific("PermissionRequest", { decision: { behavior: "deny", message: "No" } }, { continue: false }) }));
+    expect(denied).toMatchObject({ decision: "deny", reason: "No" });
+    expect(denied.stop).toBeUndefined();
+  });
+
+  it("keeps a systemMessage at the two permission events and drops it at Notification, StopFailure and InstructionsLoaded (release 8e plan, step 2)", () => {
+    for (const event of ["PermissionRequest", "PermissionDenied"] as const) {
+      expect(one(event, ranOf({ stdout: JSON.stringify({ systemMessage: "Checked" }) })).messages, event).toEqual(["Checked"]);
+    }
+    for (const event of IGNORED) expect(one(event, ranOf({ stdout: JSON.stringify({ systemMessage: "Checked" }) })).messages, event).toEqual([]);
+  });
+
+  it("does not turn a PermissionRequest hook that cannot start into a refusal with onFailure \"block\" (release 8e plan, step 2, Q28)", () => {
+    const hook = hookOf({ onFailure: "block" });
+    const outcome = answer("PermissionRequest", ranOf({ code: null, failed: "start", startError: "spawn x ENOENT" }), hook);
+    const c = combine("PermissionRequest", [{ hook, outcome }]);
+    expect(c).toEqual({ context: [], messages: [], instructions: [], deferred: false, failures: ["node check.js could not start (spawn x ENOENT)"] });
+  });
+
+  it("takes a hookSpecificOutput naming another event, or a field of the wrong type, as JSON that could not be read at the two permission events (release 8e plan, step 2)", () => {
+    const failed = (reason: string) => ({ kind: "failed", line: `node check.js printed JSON that could not be read (${reason})` });
+    expect(answer("PermissionRequest", ranOf({ stdout: specific("PreToolUse", { permissionDecision: "allow" }) }))).toEqual(
+      failed('"hookSpecificOutput" names PreToolUse'));
+    expect(answer("PermissionDenied", ranOf({ stdout: specific("PermissionRequest", { decision: { behavior: "allow" } }) }))).toEqual(
+      failed('"hookSpecificOutput" names PermissionRequest'));
+    const cases: [Event, object, string][] = [
+      ["PermissionRequest", { decision: "allow" }, '"decision" must be an object'],
+      ["PermissionRequest", { decision: { behavior: "ask" } }, '"behavior" must be "allow" or "deny"'],
+      ["PermissionRequest", { decision: { behavior: "deny", message: 1 } }, '"message" must be text in quotes'],
+      ["PermissionRequest", { decision: { behavior: "deny", interrupt: "yes" } }, '"interrupt" must be true or false'],
+      ["PermissionRequest", { decision: { behavior: "allow", updatedInput: "ls" } }, '"updatedInput" must be an object'],
+      ["PermissionDenied", { retry: 1 }, '"retry" must be true or false'],
+    ];
+    for (const [event, fields, reason] of cases) expect(answer(event, ranOf({ stdout: specific(event, fields) })), reason).toEqual(failed(reason));
+    // A field these events do not read is not looked at.
+    expect(answer("PermissionRequest", ranOf({ stdout: JSON.stringify({ continue: "no", decision: "stop" }) })).kind).toBe("ok");
+  });
+});
+
 describe("combine", () => {
   const decide = (permissionDecision: string, reason: string) => ({
     hook: hookOf({ args: [reason] }),

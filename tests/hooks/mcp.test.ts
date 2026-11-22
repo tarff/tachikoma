@@ -232,6 +232,26 @@ describe("MCP calls in hooks", { timeout: 15_000 }, () => {
     await vi.waitFor(() => expect(t.cancelled()).toHaveLength(2), WAIT);
   });
 
+  // Release 8e plan, step 2: at the two permission events an mcp_tool hook's answer is read as a command hook's printed
+  // output; at those and the three whose answer is ignored, its own failures are failures with their lines.
+  it("reads an mcp_tool hook's allow, deny and retry at the permission events, and says its failures at the five events release 8e plan, step 2 covers", async () => {
+    const t = await setup();
+    const say = (event: Event, fields: object) => mcpHook(event, "echo", { text: answer(event, fields) });
+    const allowed = await t.hooksOf([say("PermissionRequest", { decision: { behavior: "allow" } })]).fire("PermissionRequest", {});
+    expect(allowed).toMatchObject({ decision: "allow", failures: [] });
+    const denied = await t.hooksOf([say("PermissionRequest", { decision: { behavior: "deny", message: "Not here", interrupt: true } })]).fire("PermissionRequest", {});
+    expect(denied).toMatchObject({ decision: "deny", reason: "Not here", interrupt: true, failures: [] });
+    expect(await t.hooksOf([say("PermissionDenied", { retry: true })]).fire("PermissionDenied", {})).toMatchObject({ retry: true, failures: [] });
+    const lines = ["fake error answered an error: it went wrong", "gone echo could not be called: gone is not running"];
+    const five = ["Notification", "StopFailure", "InstructionsLoaded", "PermissionDenied", "PermissionRequest"] as const;
+    for (const event of five) {
+      const gone = mcpHook(event, "echo", {}, { mcp: { server: "gone", tool: "echo", input: {} }, onFailure: "block" });
+      const c = await t.hooksOf([mcpHook(event, "error", {}, { onFailure: "block" }), gone]).fire(event, {});
+      expect([c.failures, c.decision, c.retry, c.block], event).toEqual([lines, undefined, undefined, undefined]);
+    }
+    expect(t.hookErrors()).toEqual(five.flatMap((e) => lines.map((l) => `${e} hook failed: ${l}`)));
+  });
+
   // Choice 21: on the events that can block, a hook waits for a server still starting, within its own limit; on the
   // others it fails at once. The fake holds its start for a second before it reads anything.
   it("waits for a starting server at an event that can block, within its limit, and fails at once at one that cannot", async () => {
