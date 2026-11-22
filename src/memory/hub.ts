@@ -420,9 +420,8 @@ export class Hub {
   // the hub is checked, and a hub found gone or stopping means joining again (Q25: with the idle exit off, this is
   // what brings back one that went away). The timer runs from a join's first touch, so a start that holds the join
   // lock keeps the file fresh (PR #26 review 3); while a join is under way it only refreshes, as the join checks the
-  // hub itself. Once closing it does nothing, so the file the leave removes is not written again.
+  // hub itself.
   private tick(): void {
-    if (this.closing.signal.aborted) return;
     try {
       this.touch();
     } catch {
