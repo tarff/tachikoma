@@ -457,7 +457,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
       "the timer's join");
     expect(eventsA).toEqual([{ is: "failing" }, { is: "on", url, token }]);
     expect(existsSync(stoppingFile(p1))).toBe(false);
-    expect(recordOf(p1)).toEqual({ ...rec, env: null, token: false });
+    expect(recordOf(p1)).toEqual({ ...rec, env: null, token: true });
   });
 
   let hubB: Hub;
@@ -468,7 +468,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     hubB = new Hub({ paths: p1, env: hubBase });
     hubs.push(hubB);
     expect(await within(hubB.join(), JOIN, "hub B's join")).toEqual({ is: "on", url, token });
-    expect(recordOf(p1)).toEqual({ ...rec, env: null, token: false });
+    expect(recordOf(p1)).toEqual({ ...rec, env: null, token: true });
     // Only the first hub runs: this process's own Pythons are its launcher alone.
     const mine = list([process.pid]).filter((p) => p.ppid === process.pid && p.running && /^python/i.test(p.name));
     expect(mine.map((p) => p.pid)).toEqual([hubTrees[0]!.find((p) => p.ppid === process.pid)!.pid]);
@@ -504,7 +504,7 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     writeRecord(p3, { env: p1.env, port: 0, pid: 4, start: "1", stopping: false, token: true });
     const unopened = new Hub({ paths: p3, env: hubBase });
     expect(await unopened.close()).toEqual({ is: "not stopped", why: "the process could not be opened" });
-    expect(recordOf(p3)).toEqual({ env: p1.env, port: 0, pid: 4, start: "1", stopping: true });
+    expect(recordOf(p3)).toEqual({ env: p1.env, port: 0, pid: 4, start: "1", stopping: true, token: true });
   });
 
   it("turns memory on with Tachikoma's own palace", async () => {
