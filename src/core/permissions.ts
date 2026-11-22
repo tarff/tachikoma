@@ -74,8 +74,20 @@ export function visible(text: string, opts: { tabs?: boolean } = {}): string {
   );
 }
 
-// Thrown when the user says no. The model is told; it is not logged as an error.
-export class Declined extends Error {}
+// Thrown when the user says no. The model is told; it is not logged as an error. `judged`: set only on auto mode's judge's
+// refusal, its no as the judge gave it, which says which of three it was and holds the reason unescaped, apart from the
+// sentence the model reads (release 8e plan, step 5). Kept in a private field, so a refusal still compares as before by
+// its words alone.
+export class Declined extends Error {
+  readonly #judged: Extract<Verdict, { allow: false }> | undefined;
+  constructor(message?: string, judged?: Extract<Verdict, { allow: false }>) {
+    super(message);
+    this.#judged = judged;
+  }
+  get judged(): Extract<Verdict, { allow: false }> | undefined {
+    return this.#judged;
+  }
+}
 
 // Thrown for a yes given after the turn was stopped, or a stop while the judge decides, so the session tells the model
 // the call was not run, not stopped while it ran (release 8b plan, Task 7's re-check).
@@ -350,6 +362,6 @@ export class PermissionGate {
       if (top.#pause) top.#pause.count = count;
       else top.#pause = { count };
     }
-    throw new Declined(`The judge refused: ${visible(verdict.reason)}`);
+    throw new Declined(`The judge refused: ${visible(verdict.reason)}`, verdict);
   }
 }

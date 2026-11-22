@@ -121,6 +121,50 @@ describe("a subagent's gate", () => {
   });
 });
 
+// Release 8e plan, step 5 (design, "The permission events"): the judge's refusal that reaches the session says which of
+// three it was, with the judge's reason as it gave it, apart from the escaped sentence the model reads. The sentence and
+// auto mode's pause are as before.
+describe("the judge's refusal", () => {
+  const ESC = String.fromCharCode(0x1b);
+  const verdicts = [
+    { allow: false, reason: `It pushes${ESC}[8m.` },
+    { allow: false, reason: "the judge could not be reached: offline", noVerdict: "unreachable" },
+    { allow: false, reason: "the judge's answer could not be read", noVerdict: "unreadable" },
+  ] as const;
+
+  it.each(verdicts)("carries which of three the judge's no was, with its reason as given, and words the refusal as before (%o)", async (verdict) => {
+    const gate = new PermissionGate("auto", async () => false, undefined, { judge: async () => verdict });
+    const err = await gate.require(act("read", true)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Declined);
+    expect((err as Declined).message).toBe(`The judge refused: ${visible(verdict.reason)}`);
+    expect((err as Declined).judged).toStrictEqual(verdict);
+  });
+
+  it("escapes only the sentence the model reads, not the reason it carries", async () => {
+    const gate = new PermissionGate("auto", async () => false, undefined, { judge: async () => verdicts[0] });
+    const err = (await gate.require(act("read", true)).catch((e: unknown) => e)) as Declined;
+    expect(err.message).toBe("The judge refused: It pushes\\u001b[8m.");
+    expect(err.judged?.reason).toBe(`It pushes${ESC}[8m.`);
+  });
+
+  it("counts a no with no verdict toward the pause as before, and a user's no carries no judge's result", async () => {
+    const notes: (string | undefined)[] = [];
+    let n = 0;
+    const gate = new PermissionGate("auto", async (_s, _d, _o, _p, _w, note) => (notes.push(note), false), undefined, {
+      judge: async () => verdicts[n++ % verdicts.length]!,
+    });
+    for (const verdict of verdicts) {
+      const err = (await gate.require(act("read", true)).catch((e: unknown) => e)) as Declined;
+      expect(err.judged).toStrictEqual(verdict);
+    }
+    const err = (await gate.require(act("read", true)).catch((e: unknown) => e)) as Declined;
+    expect(err).toBeInstanceOf(Declined);
+    expect(err.message).toBe("The user declined: read outside");
+    expect(err.judged).toBeUndefined();
+    expect([n, notes]).toEqual([3, ["Auto mode paused after 3 refusals; approving this resumes it."]]);
+  });
+});
+
 describe("visible", () => {
   it.each([
     ["an escape code", "echo \u001b[8mhidden", "echo \\u001b[8mhidden"],
