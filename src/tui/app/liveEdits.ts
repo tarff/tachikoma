@@ -46,10 +46,17 @@ export const configChanges = (ui: UI, fns: () => Pick<Fns, "note" | "onSettings"
   let first = true;
   let deciding = false;
   let waiting: { read: Loaded; first: boolean } | undefined;
+  // The dangerous-command check counts only where the read tightens the rules in force, a rule added or a kind switched
+  // back on, as a loosening waits for the next launch (applyEntry; step 16's review, the user).
+  const tightens = (s: Settings) => {
+    const [r, after] = [ui.rules.current, s.dangerousCommands ?? NO_RULES];
+    return after.add.some((rule) => !r.add.includes(rule)) || r.off.some((kind) => !after.off.includes(kind));
+  };
   const inForce = (read: Exclude<Loaded, { problem: string }>) =>
     !same(read.warnings, ui.warned.current) ||
     !same(read.hooksLeftOut ?? [], ui.hooks?.config.leftOut ?? []) ||
-    LIVE.some((key) => !NEXT_LAUNCH.includes(key) && !fixedBy(ui, key) && !same(compared(ui.fileNow.current, key), compared(read.settings, key)));
+    LIVE.some((key) => !NEXT_LAUNCH.includes(key) && !fixedBy(ui, key) &&
+      (key === "dangerousCommands" ? tightens(read.settings) : !same(compared(ui.fileNow.current, key), compared(read.settings, key))));
   const decide = async (read: Loaded) => {
     const c = await ui.hooks!.fire("ConfigChange", { source: "user_settings", file_path: file }, { match: "user_settings", outside: true, signal: stopped.signal });
     if (stopped.signal.aborted) return;
@@ -78,6 +85,9 @@ export const configChanges = (ui: UI, fns: () => Pick<Fns, "note" | "onSettings"
     const isFirst = first;
     first = false;
     if (stopped.signal.aborted) return;
+    // A broken read applies nothing, so its red line is said at once, never held behind a decision nor replaced (step
+    // 16's review, the user).
+    if ("problem" in read) return fns().onSettings(read);
     if (deciding) waiting = { read, first: isFirst };
     else take(read, isFirst);
   };

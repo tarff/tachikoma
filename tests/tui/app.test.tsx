@@ -15193,16 +15193,44 @@ describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_00
     ["exit code 2", ran("", 2, "Not now"), `${STOPPED}: Not now.`],
     ['"decision": "block" with no reason (W7)', ran(json({ decision: "block" })), `${STOPPED}.`],
   ])("keeps a whole change a ConfigChange hook's %s blocks out: the settings, hooks, warnings and left-out rows in force stay, with its line", async (_how, answer, line) => {
-    const runs = configRuns(() => answer);
-    const { app, session, hooks, hand } = await launch("{}");
+    // The launch's warnings and left-out row in force; the blocked save drops them, so had it applied, the next save,
+    // which brings them back, would say them again (step 16's review, the user).
+    const runs = configRuns(() => (runs.length === 1 ? answer : ran()));
+    const launched = { leed: 1, hooks: hookEntry("FileChanged", "x") };
+    const { app, session, hooks, hand } = await launch(json(launched));
     const before = structuredClone(hooks.config);
-    hand(json({ autoCompactWindow: 200000, leed: 1, hooks: { ...hookEntry("FileChanged", "x"), ...hookEntry("Stop", "y") } }));
+    expect(before.leftOut).toHaveLength(1);
+    hand(json({ autoCompactWindow: 200000, hooks: hookEntry("Stop", "y") }));
     await sees(app, line);
     await tick();
     expect(runs).toHaveLength(1);
     expect(session.autoCompact).toBeNull();
     expect(hooks.config).toEqual(before);
-    for (const said of ["autoCompactWindow is now", LEED, LEFT_OUT, "Hooks changed"]) expect(flat(app)).not.toContain(said);
+    for (const said of ["autoCompactWindow is now", "Hooks changed"]) expect(flat(app)).not.toContain(said);
+    hand(json({ ...launched, autoCompactWindow: 300000 }));
+    await sees(app, SIZE("300,000"));
+    expect(runs).toHaveLength(2);
+    expect(hooks.config.leftOut).toEqual(before.leftOut);
+    for (const said of [LEED, LEFT_OUT]) expect(flat(app)).not.toContain(said);
+  });
+
+  // Step 16's review (the user): a broken read is never held behind a decision nor replaced by a newer save.
+  it("says a broken read's red line at once while a ConfigChange hook decides another save, then decides the good save after", async () => {
+    let go!: () => void;
+    const runs = configRuns(() => (runs.length === 1 ? new Promise<Ran>((resolve) => (go = () => resolve(ran()))) : ran()));
+    const { app, session, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    hand('{"mode": ');
+    await sees(app, "settings.json is not valid JSON");
+    expect(flat(app)).toContain("the last good settings still apply");
+    hand(json({ autoCompactWindow: 200000 }));
+    await tick();
+    expect([runs.length, session.autoCompact]).toEqual([1, null]);
+    go();
+    await sees(app, SIZE("200,000"));
+    expect(flat(app).indexOf(SIZE("100,000"))).toBeLessThan(flat(app).indexOf(SIZE("200,000")));
+    expect([runs.length, session.autoCompact]).toEqual([2, 200_000]);
   });
 
   it("compares the next save after a blocked one with the settings in force, not with the blocked one", async () => {
@@ -15418,6 +15446,21 @@ describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_00
     if (line) await sees(app, line);
     await tick();
     expect(runs).toEqual([]);
+  });
+
+  // Step 16's review (the user): a first read's dangerousCommands counts only where it tightens the check in force, as a
+  // loosening waits for the next launch (applyEntry).
+  it.each([
+    ["adds a rule, fires once", "{}", { add: ["make deploy"] }, 'rule "make deploy" added; it applies now.', 1],
+    ["switches a kind back on, fires once", json({ dangerousCommands: { off: ["installing software"] } }), {}, '"installing software" switched back on; it applies now.', 1],
+    ["only switches a kind off, fires nothing", "{}", { off: ["installing software"] }, '"installing software" switched off;', 0],
+    ["only removes a rule, fires nothing", json({ dangerousCommands: { add: ["make deploy"] } }), {}, 'your rule "make deploy" removed;', 0],
+  ])("for an edit made before the watch started whose dangerousCommands %s (Q27)", async (_how, launched, rules, line, n) => {
+    const runs = configRuns();
+    const { app } = await launch(json({ dangerousCommands: rules }), { launched });
+    await sees(app, `settings.json: dangerous-command check: ${line}`);
+    await tick();
+    expect(runs).toHaveLength(n);
   });
 
   it.each([
