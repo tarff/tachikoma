@@ -45,12 +45,30 @@ import {
 } from "./constants.js";
 import type { UI } from "./state.js";
 
+// How long the window waits after the lead's turn ends before Notification's idle_prompt: the design's figure, Claude
+// Code's, not measured for Tachikoma (release 8e plan, step 18).
+const IDLE_MS = 60_000;
+
 export const queue = (ui: UI, fns: Fns) => {
   // Called without await, so nothing may escape: an unhandled rejection ends the program. The queue
   // goes on after a turn, however it ended, and after `/model` once the list is closed. `answers`: a
   // turn with nothing typed, to read the background answers waiting.
   const submit = async (raw: Draft, answers = false) => {
     if (!(await fns.perform(raw, answers))) fns.next();
+  };
+  // Notification's idle_prompt (release 8e plan, step 18; Q18), from the end of a turn handed to the lead (perform),
+  // however it ended: 60 s on, unless a key (state.ts, keyed), a new turn (perform) or the window's closing (leave,
+  // App.tsx) ended the wait first, and unless a background subagent is running or waiting then; a background command
+  // holds nothing back. Once for the wait, the lead's hooks running it, not waited for, as a run outside a turn.
+  const idle = () => {
+    clearTimeout(ui.idleWait.current);
+    const hooks = ui.hooks;
+    if (!hooks) return;
+    ui.idleWait.current = setTimeout(() => {
+      if (ui.tasks.all.some((t) => t.kind === "subagent" && (t.state === "running" || t.state === "waiting"))) return;
+      const fields = { message: "Tachikoma is waiting for your input", title: "Tachikoma", notification_type: "idle_prompt" };
+      void hooks.fireAndLeave("Notification", fields, { match: "idle_prompt", outside: true });
+    }, IDLE_MS);
   };
 
   // Background answers waiting go first, in a turn of their own (release 4 design, "Background
@@ -214,6 +232,7 @@ export const queue = (ui: UI, fns: Fns) => {
       if (turn) {
         ui.calls.current = [];
         ui.summary.current = null; // Ctrl+O shows this turn's calls (App.tsx, onShortened)
+        clearTimeout(ui.idleWait.current); // a new turn ends the idle wait (idle, above)
       }
       ui.setNow(ui.doing.current.at);
       ui.setBusy(true);
@@ -256,7 +275,8 @@ export const queue = (ui: UI, fns: Fns) => {
             if (!signal.aborted) refused = supplied;
             return null;
           };
-          const ended = await ui.session.send(read.parts, signal, ui.mcp ? got : undefined, sent);
+          // The turn's end, whatever came back, starts the idle wait (idle, above).
+          const ended = await ui.session.send(read.parts, signal, ui.mcp ? got : undefined, sent).finally(idle);
           if (ended && "unsupplied" in ended) {
             if (refused) fns.say({ text: refused.line, color: "error", block: true }); // the words-back line goes under it
             fns.giveBack(read.draft, before, refused?.said ?? false);
@@ -815,6 +835,7 @@ export const queue = (ui: UI, fns: Fns) => {
   const leave = () => {
     if (ui.leaving.current) return;
     ui.leaving.current = true;
+    clearTimeout(ui.idleWait.current); // the window is closing: no idle_prompt (idle, above)
     ui.tasks.close(); // commands too, unrecorded, so a resume reports them (background commands plan, choice 29, the user's)
     ui.rerender((n) => n + 1);
     const c = ui.copy;

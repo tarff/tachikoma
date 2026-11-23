@@ -15966,4 +15966,267 @@ describe("App's Notification hooks (release 8e plan, step 17)", { timeout: 60_00
       expect(w.app.lastFrame()).not.toContain("Heard you");
     });
   });
+
+  // Release 8e plan, step 18: idle_prompt, about 60 s after the lead's turn ends, however it ended (Q18), unless a key, a
+  // new turn or the window's closing ended the wait first, or a background subagent is at work then. The turns and
+  // commands run under the faked clock, so a wait any of them started is the faked clock's.
+  describe("idle_prompt (release 8e plan, step 18)", () => {
+    const idle = { message: "Tachikoma is waiting for your input", title: "Tachikoma", notification_type: "idle_prompt" };
+    const gate: Hook = { event: "UserPromptSubmit", matcher: { all: true }, command: "gate", async: false, where: "" };
+    const BLOCK = JSON.stringify({ decision: "block", reason: "not yet" });
+    // Until the working line is gone: the turn has ended.
+    async function ended(app: ReturnType<typeof render>) {
+      for (let i = 0; i < 100 && app.lastFrame()!.includes("Working"); i++) await wait();
+      expect(app.lastFrame()).not.toContain("Working");
+    }
+    // A background command whose stand-in run never ends.
+    const never: Executor = {
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: () => standInRun(new Promise<ExecResult>(() => {})),
+    };
+
+    it("fires once 60 s after a turn's end, nothing just before and nothing again at 120 s", async () => {
+      const w = await notifying({ mount: { lead: new FakeProvider("a", [reply("done")]) } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "done");
+        await ended(w.app);
+        await wait(59_999);
+        expect(fired(w.runs)).toEqual([]);
+        await wait(1);
+        expect(fired(w.runs)).toEqual([idle]);
+        expect(w.runs[0]!.input).toMatchObject({ hook_event_name: "Notification" });
+        await wait(60_000);
+        expect(fired(w.runs)).toEqual([idle]);
+      });
+    });
+
+    it.each<[string, Parameters<typeof notifying>[0], (w: Awaited<ReturnType<typeof notifying>>) => Promise<void>]>([
+      ["a turn that ended normally", { mount: { lead: new FakeProvider("a", [reply("done")]) } }, (w) => shows(w.app, "done")],
+      [
+        "a turn the user stopped",
+        { mount: { lead: hanging() } },
+        async (w) => {
+          await shows(w.app, "Working");
+          await keys(w.app, "\u001b");
+        },
+      ],
+      ["a turn a provider's error ended", { mount: { lead: new FakeProvider("a", [new Error("overloaded")]) } }, (w) => shows(w.app, "overloaded")],
+      [
+        "a prompt a UserPromptSubmit hook blocked",
+        { hooks: [notifyHook(), gate], events: ["UserPromptSubmit"], answer: (r) => (r.event === "UserPromptSubmit" ? ran(BLOCK) : ran()) },
+        (w) => shows(w.app, "A UserPromptSubmit hook blocked the prompt: not yet"),
+      ],
+    ])("starts the wait after %s", async (_how, o, end) => {
+      const w = await notifying(o);
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await end(w);
+        await ended(w.app);
+        await wait(59_999);
+        expect(fired(w.runs)).toEqual([]);
+        await wait(1);
+        expect(fired(w.runs)).toEqual([idle]);
+      });
+    });
+
+    // The turn of background answers starts at 30 s, with no key, and runs past the first wait's 60 s.
+    it("starts the wait again after a turn that only reads background answers, the first wait ended by that turn's start", async () => {
+      const worker = new Held("fake:w");
+      const lead = new Held("fake:a");
+      const answer = async (n: number, turn: Turn | string) => {
+        for (let i = 0; i < 100 && lead.asked.length < n; i++) await wait();
+        lead.answer(turn);
+      };
+      const w = await notifying({ mount: { lead, worker } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await answer(1, callTool("c1", "delegate", { description: "find x", task: "find x", background: true }));
+        await answer(2, "started it");
+        await shows(w.app, "started it");
+        await ended(w.app);
+        await wait(30_000);
+        worker.answer("found");
+        for (let i = 0; i < 100 && lead.asked.length < 3; i++) await wait();
+        await wait(60_000);
+        expect(fired(w.runs)).toEqual([]);
+        await answer(3, "t1 says found");
+        await shows(w.app, "t1 says found");
+        await ended(w.app);
+        await wait(59_999);
+        expect(fired(w.runs)).toEqual([]);
+        await wait(1);
+        expect(fired(w.runs)).toEqual([idle]);
+      });
+    });
+
+    it("fires nothing when a key comes 30 s after the turn's end", async () => {
+      const w = await notifying({ mount: { lead: new FakeProvider("a", [reply("done")]) } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "done");
+        await ended(w.app);
+        await wait(30_000);
+        await keys(w.app, "x");
+        await wait(120_000);
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
+
+    it("fires nothing from the first wait for a new prompt sent at 30 s, and starts a new wait after the second turn", async () => {
+      const w = await notifying({ mount: { lead: new FakeProvider("a", [reply("one"), reply("two")]) } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "one");
+        await ended(w.app);
+        await wait(30_000);
+        await keys(w.app, "again", "\r");
+        await shows(w.app, "two");
+        await ended(w.app);
+        await wait(59_999);
+        expect(fired(w.runs)).toEqual([]);
+        await wait(1);
+        expect(fired(w.runs)).toEqual([idle]);
+      });
+    });
+
+    // From a fresh window with no turn yet: each command sends the lead nothing, so starts no wait.
+    it.each<[string, Parameters<typeof notifying>[0], (w: Awaited<ReturnType<typeof notifying>>) => Promise<void>]>([
+      ["/hooks", {}, (w) => shows(w.app, "Notification")],
+      [
+        "the model list, read and closed",
+        { mount: { models: [{ provider: "fake", models: ["a", "b"] }] } },
+        async (w) => {
+          await shows(w.app, "● fake:a");
+          await wait(); // the picker starts reading keys just after it first appears
+          await keys(w.app, "\u001b");
+          await wait();
+          expect(w.app.lastFrame()).not.toContain("● fake:a");
+        },
+      ],
+      ["a sign-in command", { mount: { login: async (_a, _w, say) => say("Signed in (stood in)") } }, (w) => shows(w.app, "Signed in (stood in)")],
+      ["/compact", {}, (w) => shows(w.app, "Nothing to shorten")],
+      ["/lead", {}, (w) => shows(w.app, "lead is now fake:b")],
+    ])("fires nothing after %s in a window with no turn yet", async (what, o, done) => {
+      const w = await notifying(o);
+      const typed = { "/hooks": "/hooks", "the model list, read and closed": "/model", "a sign-in command": "/login", "/compact": "/compact", "/lead": "/lead fake:b" }[what]!;
+      await clocked(async () => {
+        await keys(w.app, typed, "\r");
+        await done(w);
+        await wait(120_000);
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
+
+    it("fires nothing while a background subagent is running at 60 s", async () => {
+      const lead = new FakeProvider("a", [callTool("c1", "delegate", { description: "find x", task: "find x", background: true }), reply("started it")]);
+      const w = await notifying({ mount: { lead, worker: new Held("fake:w") } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "started it");
+        await ended(w.app);
+        await wait(120_000);
+        expect(w.tasks.all[0]!.state).toBe("running");
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
+
+    it("fires all the same while a background command is running", async () => {
+      const lead = new FakeProvider("a", [callTool("c1", "shell", { command: "npm run dev", background: true }), reply("started")]);
+      const w = await notifying({ mount: { lead, executor: never, mode: "never" } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "started");
+        await ended(w.app);
+        await wait(60_000);
+        expect(w.tasks.all[0]!.state).toBe("running");
+        expect(fired(w.runs)).toEqual([idle]);
+      });
+    });
+
+    it("fires nothing before the first turn", async () => {
+      const w = await notifying();
+      await clocked(async () => {
+        await wait(120_000);
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
+
+    it("lists the run on Ctrl+O with the next turn", async () => {
+      const w = await notifying({ mount: { lead: new FakeProvider("a", [reply("one"), reply("two")]) } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "one");
+        await ended(w.app);
+        await wait(60_000);
+        expect(fired(w.runs)).toEqual([idle]);
+        await keys(w.app, "again", "\r");
+        await shows(w.app, "two");
+        await ended(w.app);
+        await keys(w.app, "\u000f");
+        await shows(w.app, "Last turn:");
+        const frame = stripVTControlCharacters(w.app.lastFrame()!).replace(/\s/g, "");
+        expect(frame.slice(frame.lastIndexOf("Lastturn:"))).toContain("◆Notificationhook");
+      });
+    });
+
+    it("fires nothing once the window has closed 30 s after the turn's end, leaving no timer", async () => {
+      const w = await notifying({ mount: { lead: new FakeProvider("a", [reply("done")]) } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "done");
+        await ended(w.app);
+        await wait(30_000);
+        w.app.unmount();
+        expect(vi.getTimerCount()).toBe(0);
+        await wait(60_000);
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
+
+    it("stops an idle_prompt hook still running as the window closes, with no line", async () => {
+      const w = await notifying({ answer: () => new Promise<Ran>(() => {}), mount: { lead: new FakeProvider("a", [reply("done")]) } });
+      const said: string[] = [];
+      w.bus.on("error", (e) => void said.push(e.message));
+      w.bus.on("hook-note", (line) => void said.push(line));
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "done");
+        await ended(w.app);
+        await wait(60_000);
+        expect(fired(w.runs)).toEqual([idle]);
+        expect(w.runs[0]!.stopped).toBe(false);
+        w.app.unmount();
+        w.hooks!.stopAsync(); // as cli.tsx does once Ink has ended
+        await wait();
+        expect(w.runs[0]!.stopped).toBe(true);
+        expect(said).toEqual([]);
+      });
+    });
+
+    // Leaving is the window closing: /exit, typed during a turn, runs as it ends, and copy mode's leaving line stays up
+    // while the box's stop never ends.
+    it("fires nothing while copy mode's leaving line is up after an /exit that waited for the turn", async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-idle-copy-"));
+      onTestFinished(() => removeTree(dir));
+      const manifest: Manifest = { session: "s1", pid: process.pid, root: dir, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
+      const copy: NonNullable<AppProps["copy"]> = {
+        copy: { session: "s1", folder: path.join(dir, "s1"), manifest },
+        stop: () => new Promise(() => {}),
+        protection: async () => ({ hooks: [], files: [] }),
+        ended: () => {},
+      };
+      const lead = new Held("fake:a");
+      const w = await notifying({ mount: { lead, copy } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "Working");
+        await keys(w.app, "/exit", "\r");
+        lead.answer("done");
+        await shows(w.app, "Stopping the box...");
+        await wait(120_000);
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
+  });
 });

@@ -262,8 +262,12 @@ export function useAppState({
     const fire = () => void hooks.fireAndLeave("Notification", fields, { match: shown.type, outside: true });
     notifyWait.current = { on: shown.on, fire, timer: setTimeout(fire, NOTIFY_MS) };
   };
+  // Notification's idle_prompt wait (release 8e plan, step 18): its timer, from the end of the lead's turn (queue.ts, idle)
+  // until it fires, or a key or paste (keyed), a new turn or the window's closing ends it.
+  const idleWait = useRef<NodeJS.Timeout | undefined>(undefined);
   const keyed = () => {
     lastKey.current = Date.now();
+    clearTimeout(idleWait.current);
     const w = notifyWait.current;
     if (!w) return;
     clearTimeout(w.timer);
@@ -366,7 +370,7 @@ export function useAppState({
     happening, late, toolLine, answered, run, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
     editingBack, leftLines, closeMemory, memory,
     hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm, palette, lastSaid, command,
-    formOpen, notifyWait, lastKey, waitOn, keyed,
+    formOpen, notifyWait, lastKey, waitOn, keyed, idleWait,
   } as const;
 }
 

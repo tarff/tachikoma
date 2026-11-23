@@ -580,6 +580,7 @@ export function App(props: AppProps) {
       clearTimeout(ui.first.current?.timer);
       clearTimeout(ui.chordTimer.current);
       clearTimeout(ui.notifyWait.current?.timer); // no Notification after the window has closed (release 8e plan, step 17)
+      clearTimeout(ui.idleWait.current); // nor its idle_prompt (step 18)
       ui.bus.off("message", onMessage);
       ui.bus.off("error", onError);
       ui.bus.off("usage", onUsage);
