@@ -973,12 +973,14 @@ export class Session {
       }
       if (signal?.aborted) return;
       // A PostToolBatch block or continue: false ends the turn before the next request, with its line (W5), a subagent as
-      // 8b's hook stops end it (tasks.ts). Its reason waits for the next request, the lead's prompt's or a background
-      // answer's, as SessionStart's text does (Q29); a subagent's session is sent none.
+      // 8b's hook stops end it (tasks.ts). The lead's reason, or with none the line the user saw (step 11's review, the
+      // user's choice), waits for the next request, its prompt's or a background answer's, as SessionStart's text does
+      // (Q29); a subagent keeps nothing.
       const ended = batch && (batch.stop ?? batch.block);
       if (ended !== undefined) {
-        bus.emit("hook-note", stoppedTurn("PostToolBatch", ended));
-        if (ended) this.#nextText.push({ event: "PostToolBatch", text: ended });
+        const line = stoppedTurn("PostToolBatch", ended);
+        bus.emit("hook-note", line);
+        if (!this.opts.subagent) this.#nextText.push({ event: "PostToolBatch", text: ended || line });
         return { stopped: ended };
       }
       when = "during";
@@ -1484,12 +1486,12 @@ export class Session {
     results: ToolResult[],
     signal?: AbortSignal,
   ): Promise<Combined | undefined> {
-    const paths = this.#hookPaths();
-    const tool_calls = calls.map((call, i) => {
-      const { tool_name, tool_input } = toClaude(entries[i]!, paths);
-      return { tool_name, tool_input, tool_use_id: call.id, tool_response: results[i]!.output };
-    });
     try {
+      const paths = this.#hookPaths();
+      const tool_calls = calls.map((call, i) => {
+        const { tool_name, tool_input } = toClaude(entries[i]!, paths);
+        return { tool_name, tool_input, tool_use_id: call.id, tool_response: results[i]!.output };
+      });
       const c = await hooks.fire("PostToolBatch", { tool_calls }, { signal });
       return signal?.aborted ? undefined : c;
     } catch (err) {

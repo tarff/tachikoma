@@ -4389,7 +4389,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(await s.session.send("again")).toBeUndefined();
     expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([
       { type: "tool_result", callId: "c1", output: "ran echo hi", isError: false },
-      ...(reason ? [hookText("PostToolBatch", reason)] : []),
+      // With no reason, the line the user saw (step 11's review, the user's choice).
+      hookText("PostToolBatch", reason || "A PostToolBatch hook stopped the turn."),
       { type: "text", text: "again" },
     ]);
   });
