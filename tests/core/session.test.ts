@@ -38,7 +38,7 @@ import { delegateTool } from "../../src/tools/delegate.js";
 import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files.js";
 import { shellText } from "../../src/tools/shell.js";
 import { defineTool, type Tool, type ToolContext } from "../../src/tools/tool.js";
-import { screen } from "../../src/tui/describe.js";
+import { screen, withoutTrailingRows } from "../../src/tui/describe.js";
 import { Pictures } from "../../src/tui/pictures.js";
 import { connect, type Hit, type Palace, type Scope } from "../../src/memory/client.js";
 import type { MemoryState } from "../../src/memory/memory.js";
@@ -2103,6 +2103,16 @@ process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => {
       await session.send("go");
       expect(fired(inputs)).toEqual(once("server_error", words, "provider: bad\\u001b[31m red\tx\nnext"));
       expect(screen({ text: `provider: ${words}` }).text).toBe("provider: bad\\u001b[31m red\tx\nnext"); // the window's own escape
+    });
+
+    // Step 10's re-check (the user's choice, 2026-11-23): the window drops a line's ending white space when it holds a line
+    // break (tui/describe.ts, withoutTrailingRows), so the hook does too; error_details keeps it.
+    it("sends last_assistant_message without the ending line break the window drops, and error_details with it", async () => {
+      const words = "rate limited \r\n\n";
+      const { session, inputs } = await setup(new Lead("fake:a", [failure(429, words)]), {}, both);
+      await session.send("go");
+      expect(fired(inputs)).toEqual(once("rate_limit", words, "provider: rate limited"));
+      expect(screen(withoutTrailingRows({ text: `provider: ${words}` })).text).toBe("provider: rate limited"); // the window's own
     });
 
     it("runs only the StopFailure hooks whose matcher names the error", async () => {

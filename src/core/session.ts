@@ -83,8 +83,14 @@ function failureKind(status: number | undefined): string {
 // last_assistant_message (release 8e plan, step 10; Q9).
 const lineOf = (e: ErrorEvent) => (e.kind === "shortening" ? e.message : `${e.kind}: ${e.message}`);
 // A line escaped as the window and -p show it, as tui/describe.ts's screen() escapes a line of prose: each line's control
-// characters as escapes, its tabs and line breaks kept (step 10's review, the user's choice, 2026-11-23).
-const asShown = (line: string) => line.split(/\r?\n/).map((p) => visible(p, { tabs: true })).join("\n");
+// characters as escapes, its tabs and line breaks kept (step 10's review, the user's choice, 2026-11-23). First its ending
+// white space is dropped when that holds a line break, as the window drops it (tui/describe.ts, withoutTrailingRows;
+// step 10's re-check, the user's choice).
+const asShown = (line: string) => {
+  const trimmed = line.trimEnd();
+  const text = line.slice(trimmed.length).includes("\n") ? trimmed : line;
+  return text.split(/\r?\n/).map((p) => visible(p, { tabs: true })).join("\n");
+};
 // Claude Code's hooks reference, "Stop input": Stop or SubagentStop blocks in a row, with no tool call between, before the
 // turn ends anyway (release 8b plan, "Numbers in this plan").
 const MAX_BLOCKS = 8;
