@@ -1257,6 +1257,7 @@ export class Session {
     let text: string;
     let ms: number;
     let pictures: Image[] = []; // this call's in the round, which a hook's replaced output drops (release 8c plan, choice 20)
+    const handed: { event: Event; text: string }[] = []; // this pass's PreToolUse text for the model, dropped on a restart
     try {
       // A stop while a PreToolUse hook runs kills it and rejects, so the call is cancelled below, as any stop (run.ts). The
       // call's own gate marks it asked when a question about it opens (Task 15); not once a stop came, as the window then
@@ -1265,7 +1266,7 @@ export class Session {
         if (!signal.aborted) this.#asked(call.id);
       });
       const own = again ? noted.deciding(null) : noted;
-      const pre = hooks ? await this.#preToolUse(call, entry, hooks, own, round) : { input: call.input, gate: own };
+      const pre = hooks ? await this.#preToolUse(call, entry, hooks, own, round, handed) : { input: call.input, gate: own };
       if ("stop" in pre) {
         round.stop("PreToolUse", pre.stop);
         return stopped(NOT_RUN);
@@ -1291,8 +1292,11 @@ export class Session {
       // A PermissionRequest hook's rewrite, from a PreToolUse hook's ask or the tool's own question, before anything ran:
       // not a failure nor a refusal, and no result. The call starts again from the beginning with the new input, the
       // record taking it first, saved before anything runs, as a PreToolUse rewrite's is; nothing of this pass is kept
-      // (release 8e plan, step 9).
+      // (release 8e plan, step 9), its PreToolUse text for the model included, the reply's other calls' text staying (the
+      // user's choice at step 9's review). Its grey lines were already said.
       if (err instanceof StartAgain) {
+        const kept = this.#hookText.filter((t) => !handed.includes(t));
+        this.#hookText.splice(0, this.#hookText.length, ...kept);
         entry.input = err.input;
         this.#transcript?.write({ t: "rewritten", id: call.id, input: err.input });
         this.#saving();
@@ -1461,19 +1465,22 @@ export class Session {
 
   // PreToolUse before a call (release 8b plan, Task 6; design, "Tool hooks"), matched on the tool's Claude Code name, under
   // the turn's signal. The input to run and the gate to run it with, or what the model is told of a refusal. The lines
-  // name the tool as the rest of the window does (choice 10).
+  // name the tool as the rest of the window does (choice 10). `handed` gets the text for the model it adds, which a
+  // PermissionRequest restart takes back (release 8e plan, step 9).
   async #preToolUse(
     call: ToolCall,
     entry: { name: string; input: unknown },
     hooks: Hooks,
     given: PermissionGate,
     round: Round,
+    handed: { event: Event; text: string }[],
   ): Promise<{ input: unknown; gate: PermissionGate } | { refused: string } | { stop: string }> {
     const { signal } = round;
     const paths = this.#hookPaths();
     const { tool_name, tool_input } = toClaude(call, paths);
     const c = await hooks.fire("PreToolUse", { tool_name, tool_input, tool_use_id: call.id }, { match: tool_name, signal });
     this.#hookText.push(...c.context);
+    handed.push(...c.context);
     // A continue: false stops the turn before the call runs; combine has dropped the rest of the answer (Task 6's build).
     if (c.stop !== undefined) return { stop: c.stop };
     const say = (line: string) => this.opts.bus.emit("hook-note", line);

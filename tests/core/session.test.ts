@@ -4012,6 +4012,75 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     await none.session.send("go");
     expect([none.results(), none.outcomes, requested(none).length]).toEqual([[{ output: "     1\tB", isError: false }], ["ok"], 1]);
   });
+
+  // Fix round 1 (the user's choice at step 9's review): nothing of the first pass is kept, its PreToolUse hook's text for
+  // the model included; another call's text in the same reply stays, and the restart's own is sent once.
+  it("drops the first pass's PreToolUse text for the model on a PermissionRequest restart, keeping another call's and the restart's own", async () => {
+    const context = (text: string) => answer({ additionalContext: text });
+    const says: Says[] = [
+      { stdout: "", seq: [context("other call"), context("first pass"), context("restart")] },
+      { event: "PermissionRequest", stdout: "", seq: ["", rewriting({ command: "echo two" })] },
+    ];
+    const turns = [many(["c1", "shell", { command: "echo other" }], ["c2", "shell", { command: "echo one" }]), reply("ok")];
+    const s = await setup({ mode: "ask", says, turns, answers: [true, true] });
+    await s.session.send("go");
+    expect(s.ran).toEqual(["echo other", "echo two"]);
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([
+      { type: "tool_result", callId: "c1", output: "ran echo other", isError: false },
+      { type: "tool_result", callId: "c2", output: "ran echo two", isError: false },
+      hookText("PreToolUse", "other call"),
+      hookText("PreToolUse", "restart"),
+    ]);
+  });
+
+  it("ends a call stopped during its PermissionRequest restart as cancelled, with no second restart", async () => {
+    let answerIt: (yes: boolean) => void = () => {};
+    const open = new Promise<boolean>((r) => (answerIt = r));
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ command: "echo two" }) }];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo one"), answers: [open] });
+    const abort = new AbortController();
+    const sent = s.session.send("go", abort.signal);
+    while (!s.asked.length) await pause(20);
+    abort.abort();
+    answerIt(false); // the window closes an open question as a no when the user stops
+    await sent;
+    // As any question a stop closes: the no's words, the call cancelled (#execute).
+    expect([s.results(), s.outcomes, s.ran, s.errors]).toEqual([[{ output: "The user declined: run: echo two", isError: true }], ["cancelled"], [], []]);
+    expect([s.asked, requested(s).length]).toEqual([[{ summary: "run: echo two" }], 1]);
+  });
+
+  it("starts a subagent's call again on a PermissionRequest rewrite in its own session, the lead's call unaffected", async () => {
+    const root = await folder();
+    const b = path.join(root, "b.txt");
+    writeFileSync(b, "B\n");
+    const elsewhere = path.join(await folder(), "a.txt");
+    const worker = new FakeProvider("w", [callTool("c1", "read_file", { path: elsewhere }), reply("found it")]);
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ file_path: b }) }];
+    const s = await setup({ mode: "ask", root, says, turns: [callTool("c1", "delegate", { description: "look", task: "find x" }), reply("ok")], worker });
+    await s.session.send("go");
+    const told = worker.seen[1]!.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [p.output] : [])));
+    expect(told).toEqual(["     1\tB"]);
+    expect(requested(s)).toEqual([expect.objectContaining({ agent_id: "t1", tool_name: "Read", tool_input: { file_path: elsewhere } })]);
+    expect([s.asked, s.errors]).toEqual([[], []]);
+    expect(s.session.calls).toEqual([{ name: "delegate", input: { description: "look", task: "find x" } }]);
+    expect(s.results()).toEqual([{ output: expect.stringContaining("found it"), isError: false }]);
+  });
+
+  it("gives a call started again from a PreToolUse hook's ask one start and one end, with no error line and no PostToolUseFailure run", async () => {
+    const says: Says[] = [
+      { stdout: decide("ask") },
+      { event: "PermissionRequest", stdout: rewriting({ command: "echo two" }) },
+      { event: "PostToolUseFailure", stdout: "" },
+      { event: "PostToolUse", stdout: "" },
+    ];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo one"), answers: [true] });
+    const starts: string[] = [];
+    s.bus.on("tool-start", (e) => starts.push(e.id));
+    await s.session.send("go");
+    expect([starts, s.outcomes, s.errors, s.ran, s.asked]).toEqual([["c1"], ["ok"], [], ["echo two"], [{ summary: 'shell {"command":"echo two"}', note: "A hook asks." }]]);
+    const after = s.inputs().filter((i) => i.hook_event_name === "PostToolUse" || i.hook_event_name === "PostToolUseFailure");
+    expect(after).toEqual([expect.objectContaining({ hook_event_name: "PostToolUse", tool_input: { command: "echo two" } })]);
+  });
 });
 
 // System prompt plan, Task 7 (decisions 6 and 7): a lead session given a setup tells the model of a new date or setup
