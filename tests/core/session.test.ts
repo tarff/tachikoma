@@ -3617,8 +3617,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   // Release 8e plan, step 8 (design, "The permission events"): PermissionRequest runs just before a question about a tool
   // call, and in -p where the call would be refused, sent the input that would run; its allow runs the call unasked, its
-  // deny refuses it with W1, and its interrupt also ends the turn with W2. A rewrite is step 9's: until then it is a plain
-  // allow.
+  // deny refuses it with W1, and its interrupt also ends the turn with W2. A rewrite is step 9's (below).
   const permission = (decision: object) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision } });
   const ALLOW = permission({ behavior: "allow" });
   const requested = (s: { inputs: () => Record<string, unknown>[] }) => s.inputs().filter((i) => i.hook_event_name === "PermissionRequest");
@@ -3856,6 +3855,162 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     await session.send([{ type: "text", text: "look " }, { type: "image", id: 1, ...png }]);
     expect(asked).toEqual(["Send again without the pictures"]);
     expect(existsSync(out)).toBe(false);
+  });
+
+  // Release 8e plan, step 9 (design, "The permission events"): a PermissionRequest allow with updatedInput starts the call
+  // again from the beginning with the new input, which its PreToolUse hooks run on and the tool resolves, checks and asks
+  // about as if the model had sent it; PermissionRequest is not run a second time, and nothing of the first pass is kept.
+  const rewriting = (updatedInput: object) => permission({ behavior: "allow", updatedInput });
+  const preInputs = (s: { inputs: () => Record<string, unknown>[] }) => s.inputs().filter((i) => i.hook_event_name === "PreToolUse");
+  async function recorded() {
+    const top = await folder();
+    const dir = path.join(top, "sessions", "project");
+    privateDir(dir);
+    const file = path.join(dir, "s1.jsonl");
+    return { file, transcript: new Transcript(file, path.join(dir, "s1", "pictures")) };
+  }
+  const rewrittenLines = (file: string) =>
+    readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => {
+      const line = JSON.parse(l) as Line;
+      return line.t === "rewritten" ? [line] : [];
+    });
+
+  it("starts the call again from the gate's own question on a PermissionRequest rewrite to another file: the PreToolUse hook sees the new input, the new path is written, the old one untouched, the record holding it", async () => {
+    const root = await folder();
+    const a = path.join(root, "a.txt");
+    const b = path.join(root, "b.txt");
+    const { file, transcript } = await recorded();
+    const says: Says[] = [{ stdout: "" }, { event: "PermissionRequest", stdout: rewriting({ file_path: b, content: "x" }) }];
+    const s = await setup({ mode: "ask", root, says, turns: oneCall("write_file", { path: "a.txt", content: "x" }), answers: [true], transcript });
+    await s.session.send("go");
+    expect(preInputs(s).map((i) => i.tool_input)).toEqual([{ file_path: a, content: "x" }, { file_path: b, content: "x" }]);
+    expect([existsSync(a), readFileSync(b, "utf8")]).toEqual([false, "x"]);
+    expect([s.asked, requested(s).length, s.results().length, s.outcomes, s.errors]).toEqual([[{ summary: `write ${b}` }], 1, 1, ["ok"], []]);
+    expect(s.session.calls).toEqual([{ name: "write_file", input: { path: b, content: "x" } }]);
+    expect(rewrittenLines(file)).toEqual([{ t: "rewritten", at: expect.any(String), id: "c1", input: { path: b, content: "x" } }]);
+  });
+
+  // The original file does not exist, so a read of it would have failed the call.
+  it("starts the call again from a PreToolUse hook's ask: one result, the original path never read, the PreToolUse hook run again on the new input, the record holding it", async () => {
+    const root = await folder();
+    const b = path.join(root, "b.txt");
+    writeFileSync(b, "B\n");
+    const { file, transcript } = await recorded();
+    const says: Says[] = [{ stdout: decide("ask", "Sure?") }, { event: "PermissionRequest", stdout: rewriting({ file_path: b }) }];
+    const s = await setup({ mode: "ask", root, says, turns: oneCall("read_file", { path: "a.txt" }), answers: [true], transcript });
+    await s.session.send("go");
+    expect([s.results(), s.outcomes, s.errors]).toEqual([[{ output: "     1\tB", isError: false }], ["ok"], []]);
+    expect(preInputs(s).map((i) => i.tool_input)).toEqual([{ file_path: path.join(root, "a.txt") }, { file_path: b }]);
+    expect(s.asked).toEqual([{ summary: `read_file ${JSON.stringify({ path: b })}`, note: "A hook asks: Sure?" }]);
+    expect(requested(s)).toHaveLength(1);
+    expect(s.session.calls).toEqual([{ name: "read_file", input: { path: b } }]);
+    expect(rewrittenLines(file)).toEqual([{ t: "rewritten", at: expect.any(String), id: "c1", input: { path: b } }]);
+  });
+
+  it("leaves no error line, no PostToolUseFailure run and no second start or end for a call a PermissionRequest rewrite started again", async () => {
+    const says: Says[] = [
+      { event: "PermissionRequest", stdout: rewriting({ command: "echo two" }) },
+      { event: "PostToolUseFailure", stdout: "" },
+      { event: "PostToolUse", stdout: "" },
+    ];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo one"), answers: [true] });
+    const starts: string[] = [];
+    s.bus.on("tool-start", (e) => starts.push(e.id));
+    await s.session.send("go");
+    expect([starts, s.outcomes, s.errors, s.ran, s.asked]).toEqual([["c1"], ["ok"], [], ["echo two"], [{ summary: "run: echo two" }]]);
+    expect(s.results()).toEqual([{ output: "ran echo two", isError: false }]);
+    const after = s.inputs().filter((i) => i.hook_event_name === "PostToolUse" || i.hook_event_name === "PostToolUseFailure");
+    expect(after).toEqual([expect.objectContaining({ hook_event_name: "PostToolUse", tool_input: { command: "echo two" } })]);
+  });
+
+  it("asks the user about a PermissionRequest rewrite to a protected path, not firing PermissionRequest a second time", async () => {
+    const root = await folder();
+    const npmrc = path.join(root, ".npmrc");
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ file_path: npmrc, content: "x" }) }];
+    const s = await setup({ mode: "ask", root, says, turns: oneCall("write_file", { path: "a.txt", content: "x" }), answers: [true] });
+    await s.session.send("go");
+    expect([s.asked, requested(s).length]).toEqual([[{ summary: `write ${npmrc}` }], 1]);
+    expect([readFileSync(npmrc, "utf8"), existsSync(path.join(root, "a.txt"))]).toEqual(["x", false]);
+  });
+
+  it("does not carry the first pass's PreToolUse allow into a call a PermissionRequest rewrite started again", async () => {
+    const says: Says[] = [{ stdout: "", seq: [decide("allow")] }, { event: "PermissionRequest", stdout: rewriting({ command: "echo hi" }) }];
+    const s = await setup({ mode: "ask", says, turns: shellCall(push), answers: [true] });
+    await s.session.send("go");
+    expect([s.asked, s.ran, preInputs(s).length, requested(s).length]).toEqual([[{ summary: "run: echo hi" }], ["echo hi"], 2, 1]);
+  });
+
+  it("keeps the last input in the record when the restart's PreToolUse hook rewrites a PermissionRequest rewrite again", async () => {
+    const { file, transcript } = await recorded();
+    const says: Says[] = [{ stdout: "", seq: ["", rewrite({ command: "echo three" })] }, { event: "PermissionRequest", stdout: rewriting({ command: "echo two" }) }];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo one"), answers: [true], transcript });
+    await s.session.send("go");
+    expect([s.ran, s.asked]).toEqual([["echo three"], [{ summary: "run: echo three" }]]);
+    expect(s.session.calls).toEqual([{ name: "shell", input: { command: "echo three" } }]);
+    expect(rewrittenLines(file).map((l) => l.input)).toEqual([{ command: "echo two" }, { command: "echo three" }]);
+  });
+
+  it.each(["ask", "-p"] as const)("in %s, refuses the call with W3 when a PermissionRequest rewrite cannot be used, counted as a refusal", async (mode) => {
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ command: "echo two", shell: "zsh" }) }];
+    const s = await setup({ mode, says, turns: shellCall("echo one") });
+    await s.session.send("go");
+    const line = `A PermissionRequest hook's rewrite of shell could not be used ("shell" is not a field Tachikoma can take): ${s.command(s.hooks[0]!)}`;
+    expect([s.results(), s.notes, s.outcomes, s.refusals, s.asked, s.ran]).toEqual([[{ output: line, isError: true }], [line], ["declined"], [1], [], []]);
+    expect(s.session.calls).toEqual([{ name: "shell", input: { command: "echo one" } }]);
+  });
+
+  it("uses the first of several PermissionRequest rewrites in the file, saying W4 for each one ignored", async () => {
+    const says: Says[] = ["first", "second", "third"].map((n) => ({ event: "PermissionRequest", stdout: rewriting({ command: `echo ${n}` }) }));
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo hi"), answers: [true] });
+    await s.session.send("go");
+    expect([s.ran, s.asked]).toEqual([["echo first"], [{ summary: "run: echo first" }]]);
+    const W4 = (h: Hook) => `Two PermissionRequest hooks rewrote shell's input; the first in the settings file was used, and ${s.command(h)} was ignored.`;
+    expect(s.notes).toEqual([W4(s.hooks[1]!), W4(s.hooks[2]!)]);
+    expect(requested(s)).toHaveLength(3); // each of the three hooks once: PermissionRequest fired once
+  });
+
+  it.each(["ask", "project"] as const)("in %s, a PermissionRequest rewrite of a write is asked about again, and the user's yes runs it", async (mode) => {
+    const elsewhere = await folder();
+    const a = path.join(elsewhere, "a.txt");
+    const b = path.join(elsewhere, "b.txt");
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ file_path: b, content: "x" }) }];
+    const s = await setup({ mode, says, turns: oneCall("write_file", { path: a, content: "x" }), answers: [true] });
+    await s.session.send("go");
+    expect(s.asked.map((q) => q.summary)).toEqual([expect.stringContaining(`write ${b}`)]);
+    expect([existsSync(a), readFileSync(b, "utf8"), requested(s).length, s.outcomes]).toEqual([false, "x", 1, ["ok"]]);
+  });
+
+  it("in auto, a PermissionRequest rewrite to another dangerous command is asked about, and one to an ordinary command goes to the judge", async () => {
+    const other = "git push --force origin main";
+    const danger = await setup({ mode: "auto", says: [{ event: "PermissionRequest", stdout: rewriting({ command: other }) }], turns: shellCall(push), answers: [true] });
+    await danger.session.send("go");
+    expect(danger.asked).toEqual([{ summary: `run: ${other}`, warnings: [`Danger: rewriting or deleting git history: ${other}`] }]);
+    expect([danger.ran, danger.judged, requested(danger).length]).toEqual([[other], [], 1]);
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ command: "echo hi" }) }];
+    const plain = await setup({ mode: "auto", says, turns: shellCall(push), judge: async () => ({ allow: true }) });
+    await plain.session.send("go");
+    expect([plain.judged, plain.asked, plain.ran, requested(plain).length]).toEqual([["run: echo hi"], [], ["echo hi"], 1]);
+  });
+
+  it("in never, a PermissionRequest rewrite of an MCP call is asked about again", async () => {
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ word: "bye" }) }];
+    const s = await setup({ mode: "never", says, turns: oneCall("mcp__docs__lookup", { word: "hi" }), mcp: docs, answers: [true] });
+    await s.session.send("go");
+    expect(s.asked.map((q) => q.summary)).toEqual(['docs: lookup {"word":"bye"}']);
+    expect([s.results(), requested(s).length]).toEqual([[{ output: "found", isError: false }], 1]);
+  });
+
+  it("in -p, refuses a PermissionRequest rewrite whose new input needs a question, and runs one that needs none", async () => {
+    const asks = await setup({ mode: "-p", says: [{ event: "PermissionRequest", stdout: rewriting({ command: "echo two" }) }], turns: shellCall("echo one") });
+    await asks.session.send("go");
+    expect([asks.results(), asks.ran, requested(asks).length]).toEqual([[{ output: `${P}: run: echo two`, isError: true }], [], 1]);
+    const root = await folder();
+    const b = path.join(root, "b.txt");
+    writeFileSync(b, "B\n");
+    const elsewhere = path.join(await folder(), "a.txt");
+    const none = await setup({ mode: "-p", root, says: [{ event: "PermissionRequest", stdout: rewriting({ file_path: b }) }], turns: oneCall("read_file", { path: elsewhere }) });
+    await none.session.send("go");
+    expect([none.results(), none.outcomes, requested(none).length]).toEqual([[{ output: "     1\tB", isError: false }], ["ok"], 1]);
   });
 });
 

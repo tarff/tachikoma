@@ -17,7 +17,7 @@ import { lessonLabel, matchText } from "../tools/memory.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
-import { type Ask, type Decision, Declined, type PermissionGate, StoppedFirst, visible } from "./permissions.js";
+import { type Ask, type Decision, Declined, type PermissionGate, StartAgain, StoppedFirst, visible } from "./permissions.js";
 import { dueNotes, isSetupNote, localDate, type Told, toldAfter } from "./setup.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
@@ -1230,7 +1230,9 @@ export class Session {
     return res;
   }
 
-  async #execute(call: ToolCall, entry: { name: string; input: unknown }, round: Round, called: Called):
+  // `again`: the call starting again with a PermissionRequest hook's rewrite, whose gate has that event's record already
+  // asked, with no decision, so it is not fired a second time (release 8e plan, step 9).
+  async #execute(call: ToolCall, entry: { name: string; input: unknown }, round: Round, called: Called, again = false):
     Promise<[ToolResult, ToolOutcome]> {
     const { signal } = round;
     // A call a stop came before or during: the user's, or a hook's continue: false, in its own words (release 8b plan,
@@ -1259,9 +1261,10 @@ export class Session {
       // A stop while a PreToolUse hook runs kills it and rejects, so the call is cancelled below, as any stop (run.ts). The
       // call's own gate marks it asked when a question about it opens (Task 15); not once a stop came, as the window then
       // drops the question unshown (App.tsx, bindAsk).
-      const own = this.opts.ctx.gate.noting(() => {
+      const noted = this.opts.ctx.gate.noting(() => {
         if (!signal.aborted) this.#asked(call.id);
       });
+      const own = again ? noted.deciding(null) : noted;
       const pre = hooks ? await this.#preToolUse(call, entry, hooks, own, round) : { input: call.input, gate: own };
       if ("stop" in pre) {
         round.stop("PreToolUse", pre.stop);
@@ -1285,6 +1288,16 @@ export class Session {
       pictures = round.pictures.slice(before);
       ms = Date.now() - started;
     } catch (err) {
+      // A PermissionRequest hook's rewrite, from a PreToolUse hook's ask or the tool's own question, before anything ran:
+      // not a failure nor a refusal, and no result. The call starts again from the beginning with the new input, the
+      // record taking it first, saved before anything runs, as a PreToolUse rewrite's is; nothing of this pass is kept
+      // (release 8e plan, step 9).
+      if (err instanceof StartAgain) {
+        entry.input = err.input;
+        this.#transcript?.write({ t: "rewritten", id: call.id, input: err.input });
+        this.#saving();
+        return this.#execute({ ...call, input: err.input }, entry, round, called, true);
+      }
       // Ctrl-C at a question declines it and stops the turn: the call was cancelled, not declined.
       // Cut as a failure's is: a hook's question names the call with its whole input, a write's content included. The
       // judge's refusal first goes to the PermissionDenied hooks, and a retry's sentence is kept whole after the cut.
@@ -1520,8 +1533,8 @@ export class Session {
   // design, "The permission events"), sent the input that would run in Claude Code's names and an MCP tool's server,
   // matched on the tool's Claude Code name, under the reply's signal, so a stop kills it and cancels the call (the gate).
   // An allow is silent; a deny is said with W1, told to the gate for -p's exit code, and its interrupt ends the turn as a
-  // hook's continue: false does (W2, said as the round ends). A rewrite is step 9's: until then an allow carrying one runs
-  // the input as it stands. A throw that is not a stop decides nothing, said as #permissionDenied says it.
+  // hook's continue: false does (W2, said as the round ends). An allow carrying a rewrite gives the new input, so the call
+  // starts again (step 9). A throw that is not a stop decides nothing, said as #permissionDenied says it.
   async #permissionRequest(
     hooks: Hooks,
     call: ToolCall,
@@ -1548,7 +1561,22 @@ export class Session {
       if (c.interrupt) round.stop("PermissionRequest", c.reason ?? "");
       return { deny: c.reason || line };
     }
-    return c.decision === "allow" ? { allow: true } : undefined;
+    if (c.decision !== "allow") return undefined;
+    if (!c.rewrite) return { allow: true };
+    // A rewrite is turned back into the tool's fields by 8b's rules, and the call starts again with it (#execute); one that
+    // cannot be used refuses the call, said and told as at PreToolUse (W3), and a later hook's is ignored (W4) (release 8e
+    // plan, step 9).
+    const back = fromClaude(call.name, c.rewrite.input, this.#hookPaths());
+    if ("problem" in back) {
+      const line = `A PermissionRequest hook's rewrite of ${call.name} could not be used (${back.problem}): ${commandOf(c.rewrite.from)}`;
+      say(line);
+      this.opts.ctx.gate.hookRefused();
+      return { deny: line };
+    }
+    for (const h of c.rewrite.ignored) {
+      say(`Two PermissionRequest hooks rewrote ${call.name}'s input; the first in the settings file was used, and ${commandOf(h)} was ignored.`);
+    }
+    return { input: back.input };
   }
 
   // A call the user is shown a question for, saved once (Task 15).
