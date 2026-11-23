@@ -247,10 +247,9 @@ export function useAppState({
   // The server's form open now, as the forms code reports it (release 8e plan, step 17): one at a time (forms.ts).
   const formOpen = useRef<OpenForm | null>(null);
   // Notification's 6 s wait (release 8e plan, step 17; Q25): for the prompt drawn in the prompt's place that notifies, its
-  // timer and its firing; and the time of the last key or paste, each of which starts a running wait again (keyed). One
-  // that has fired waits for a key to start again, so it fires once for a quiet stretch.
+  // timer and its firing. Each key or paste starts a running wait again (keyed). One that has fired waits for a key to
+  // start again, so it fires once for a quiet stretch.
   const notifyWait = useRef<{ on: object; timer: NodeJS.Timeout; fire: () => void } | null>(null);
-  const lastKey = useRef(0);
   // The wait for `shown`, the prompt drawn now (App.tsx): kept while it is the same prompt, ended and started again for
   // another, and none for one that notifies nothing. The lead's hooks run it, not waited for, as a run outside a turn.
   const waitOn = (shown: Notice | null) => {
@@ -266,7 +265,6 @@ export function useAppState({
   // until it fires, or a key or paste (keyed), a new turn or the window's closing ends it.
   const idleWait = useRef<NodeJS.Timeout | undefined>(undefined);
   const keyed = () => {
-    lastKey.current = Date.now();
     clearTimeout(idleWait.current);
     const w = notifyWait.current;
     if (!w) return;
@@ -370,7 +368,7 @@ export function useAppState({
     happening, late, toolLine, answered, run, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
     editingBack, leftLines, closeMemory, memory,
     hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm, palette, lastSaid, command,
-    formOpen, notifyWait, lastKey, waitOn, keyed, idleWait,
+    formOpen, notifyWait, waitOn, keyed, idleWait,
   } as const;
 }
 

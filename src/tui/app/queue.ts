@@ -63,7 +63,7 @@ export const queue = (ui: UI, fns: Fns) => {
   const idle = () => {
     clearTimeout(ui.idleWait.current);
     const hooks = ui.hooks;
-    if (!hooks) return;
+    if (!hooks || ui.leaving.current) return; // none once the window is closing (leave, below)
     ui.idleWait.current = setTimeout(() => {
       if (ui.tasks.all.some((t) => t.kind === "subagent" && (t.state === "running" || t.state === "waiting"))) return;
       const fields = { message: "Tachikoma is waiting for your input", title: "Tachikoma", notification_type: "idle_prompt" };
