@@ -1473,6 +1473,11 @@ Event by event:
   copy mode their lines are also written to the terminal once the window has closed, so none is
   lost. In `-p` they run after the answer is printed, and after a Ctrl-C too. A signal runs none
   ([below](#hooks-limits)).
+
+At the five events where hooks decide, PermissionRequest, PermissionDenied, PreModelSwitch,
+PostToolBatch and ConfigChange, only a hook that is not `async` decides: an `async` hook's answer
+there decides nothing, and one that tries is reported as asking to block or stop.
+
 - **PermissionRequest** runs where a question about a tool call would be put: in `ask` and
   `project`, the mode's question; in `auto`, the question for a dangerous command, and the
   questions while the judge's refusals have paused it, never where the judge decides; in `never`,
@@ -1504,8 +1509,9 @@ Event by event:
     call goes to you; in `-p` the call is refused as before. `updatedPermissions` is ignored, with
     `A PermissionRequest hook's updatedPermissions was ignored: Tachikoma has no permission rules.`
 - **PermissionDenied** runs before auto mode's refusal goes back to the model. With `"retry":
-  true` from any hook, the refusal the model reads ends with one more sentence: `A hook says you
-  may try this again.` As in Claude Code, `retry` counts only when the judge gave a verdict, not
+  true` from any hook that is not `async`, the refusal the model reads ends with one more sentence:
+  `A hook says you may try this again.`
+  As in Claude Code, `retry` counts only when the judge gave a verdict, not
   when it could not be reached or its answer could not be read. The refusal still counts toward
   auto mode's pause.
 - **StopFailure** runs once the error's red line is shown, and the turn's end waits for it. A turn
