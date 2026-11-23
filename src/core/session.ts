@@ -948,6 +948,14 @@ export class Session {
       } finally {
         signal?.removeEventListener("abort", join);
       }
+      // PostToolBatch once every call has its result, before they are stored, unless the turn was already stopped (release
+      // 8e plan, step 11): under the turn's stop, as the reply's own is let go of above, and a stop that ends its hooks keeps
+      // nothing of them, the results stored all the same. Only when a hook would run, so the results are otherwise stored
+      // at once, as before.
+      const batch = hooks?.has("PostToolBatch", "") && !round.stopped && !signal?.aborted
+        ? await this.#postToolBatch(hooks, calls, entries, results, signal)
+        : undefined;
+      if (batch) this.#hookText.push(...batch.context);
       this.#push({
         role: "user",
         parts: [...results, ...round.pictures, ...this.#hookParts(), ...this.#waiting(), ...this.#notes()],
@@ -964,6 +972,15 @@ export class Session {
         return { stopped: reason };
       }
       if (signal?.aborted) return;
+      // A PostToolBatch block or continue: false ends the turn before the next request, with its line (W5), a subagent as
+      // 8b's hook stops end it (tasks.ts). Its reason waits for the next request, the lead's prompt's or a background
+      // answer's, as SessionStart's text does (Q29); a subagent's session is sent none.
+      const ended = batch && (batch.stop ?? batch.block);
+      if (ended !== undefined) {
+        bus.emit("hook-note", stoppedTurn("PostToolBatch", ended));
+        if (ended) this.#nextText.push({ event: "PostToolBatch", text: ended });
+        return { stopped: ended };
+      }
       when = "during";
       shortened = false;
     }
@@ -1454,6 +1471,33 @@ export class Session {
       return false;
     }
     return c.retry === true && judged.noVerdict === undefined;
+  }
+
+  // PostToolBatch once a reply's calls all have results (release 8e plan, step 11; design, "The turn ending, and tool
+  // batches"), with no matcher, sent each call in Claude Code's names with the input that ran, its id, and the result
+  // the model reads as Tachikoma made it, the same whatever model leads (Q30), under the turn's signal. Undefined when a
+  // stop came, which keeps nothing of its hooks, or anything else threw, said as #postToolUse says it.
+  async #postToolBatch(
+    hooks: Hooks,
+    calls: ToolCall[],
+    entries: { name: string; input: unknown }[],
+    results: ToolResult[],
+    signal?: AbortSignal,
+  ): Promise<Combined | undefined> {
+    const paths = this.#hookPaths();
+    const tool_calls = calls.map((call, i) => {
+      const { tool_name, tool_input } = toClaude(entries[i]!, paths);
+      return { tool_name, tool_input, tool_use_id: call.id, tool_response: results[i]!.output };
+    });
+    try {
+      const c = await hooks.fire("PostToolBatch", { tool_calls }, { signal });
+      return signal?.aborted ? undefined : c;
+    } catch (err) {
+      if (signal?.aborted) return undefined;
+      const message = `PostToolBatch hook failed: ${errorText(err)}`;
+      this.opts.bus.emit("error", { kind: "hook", attempted: "PostToolBatch hook", message, lead: this.#lead.id });
+      return undefined;
+    }
   }
 
   // The paths hooks are sent: the launch's, or without them ctx.root's on the host (SessionOptions.paths).

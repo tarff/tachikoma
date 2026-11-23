@@ -27,7 +27,7 @@ import {
 } from "../../src/core/types.js";
 import { type Executor, MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
-import type { Event, Hook } from "../../src/hooks/config.js";
+import { type Event, type Hook, readHooks } from "../../src/hooks/config.js";
 import { Hooks, type Where } from "../../src/hooks/hooks.js";
 import type { Offered } from "../../src/mcp/servers.js";
 import type { McpTools } from "../../src/mcp/tools.js";
@@ -4304,6 +4304,229 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect([starts, s.outcomes, s.errors, s.ran, s.asked]).toEqual([["c1"], ["ok"], [], ["echo two"], [{ summary: 'shell {"command":"echo two"}', note: "A hook asks." }]]);
     const after = s.inputs().filter((i) => i.hook_event_name === "PostToolUse" || i.hook_event_name === "PostToolUseFailure");
     expect(after).toEqual([expect.objectContaining({ hook_event_name: "PostToolUse", tool_input: { command: "echo two" } })]);
+  });
+
+  // Release 8e plan, step 11 (design, "The turn ending, and tool batches"): PostToolBatch once every call of a reply has its
+  // result, before the results are stored; its block ends the turn, the reason going with the next request.
+  const batches = (s: Awaited<ReturnType<typeof setup>>) => s.inputs().filter((i) => i.hook_event_name === "PostToolBatch");
+  const batchSays = (stdout: string, more: Partial<Says> = {}): Says => ({ event: "PostToolBatch", stdout, ...more });
+
+  it("fires PostToolBatch with each call's Claude Code name, the input that ran, its id and the result the model reads", async () => {
+    const root = await folder();
+    const a = path.join(root, "a.txt");
+    const turns = [many(["c1", "shell", { command: "echo hi" }], ["c2", "write_file", { path: "a.txt", content: "one" }]), reply("ok")];
+    const says: Says[] = [{ names: ["Bash"], stdout: rewrite({ command: "echo rewritten" }) }, batchSays("")];
+    const s = await setup({ mode: "never", root, says, turns });
+    await s.session.send("go");
+    const [, wrote] = s.results();
+    expect(batches(s)).toEqual([expect.objectContaining({
+      tool_calls: [
+        { tool_name: "Bash", tool_input: { command: "echo rewritten" }, tool_use_id: "c1", tool_response: "ran echo rewritten" },
+        { tool_name: "Write", tool_input: { file_path: a, content: "one" }, tool_use_id: "c2", tool_response: wrote!.output },
+      ],
+    })]);
+    expect(batches(s)[0]).not.toHaveProperty("agent_id");
+  });
+
+  // Q30: Tachikoma's own result text, nothing put in front, whatever model leads.
+  it("sends a failed call's tool_response as its error text with nothing in front, the same for an Anthropic and an OpenAI lead", async () => {
+    const failed = shellText({ code: 1, signal: null, stdout: "", stderr: "it failed" });
+    const sent: unknown[] = [];
+    for (const id of ["anthropic:claude-sonnet-4-5", "openai:gpt-5"]) {
+      const s = await setup({ mode: "never", says: [batchSays("")], turns: [] });
+      const turns = [many(["c1", "shell", { command: "echo hi" }], ["c2", "shell", { command: "fail" }]), reply("ok")];
+      s.session.setLead(Object.defineProperty(new FakeProvider("x", turns), "id", { value: id }));
+      await s.session.send("go");
+      sent.push(batches(s)[0]!.tool_calls);
+    }
+    const calls = [
+      { tool_name: "Bash", tool_input: { command: "echo hi" }, tool_use_id: "c1", tool_response: "ran echo hi" },
+      { tool_name: "Bash", tool_input: { command: "fail" }, tool_use_id: "c2", tool_response: failed },
+    ];
+    expect(sent).toEqual([calls, calls]);
+  });
+
+  it("sends a refused call's tool_response as its refusal", async () => {
+    const s = await setup({ mode: "ask", says: [batchSays("")], turns: shellCall("echo no"), answers: [false] });
+    await s.session.send("go");
+    expect(batches(s).map((i) => i.tool_calls)).toEqual([[
+      { tool_name: "Bash", tool_input: { command: "echo no" }, tool_use_id: "c1", tool_response: "The user declined: run: echo no" },
+    ]]);
+  });
+
+  it("fires PostToolBatch once per reply with calls, after the reply's last PostToolUse", async () => {
+    const turns = [many(["c1", "shell", { command: "echo one" }], ["c2", "shell", { command: "echo two" }]), callTool("c3", "shell", { command: "echo three" }), reply("ok")];
+    const s = await setup({ mode: "never", says: [{ event: "PostToolUse", stdout: "" }, batchSays("")], turns });
+    await s.session.send("go");
+    expect(s.inputs().map((i) => i.hook_event_name)).toEqual(["PostToolUse", "PostToolUse", "PostToolBatch", "PostToolUse", "PostToolBatch"]);
+    expect(batches(s).map((i) => (i.tool_calls as { tool_use_id: string }[]).map((c) => c.tool_use_id))).toEqual([["c1", "c2"], ["c3"]]);
+  });
+
+  it("puts a PostToolBatch hook's additionalContext in the results' message, headed, after the tool hooks' text", async () => {
+    const says: Says[] = [
+      { event: "PostToolUse", stdout: after("PostToolUse", { additionalContext: "after it ran" }) },
+      batchSays(after("PostToolBatch", { additionalContext: "batch checked" })),
+    ];
+    const s = await setup({ mode: "never", says, turns: shellCall("echo hi") });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([
+      { type: "tool_result", callId: "c1", output: "ran echo hi", isError: false },
+      hookText("PostToolUse", "after it ran"),
+      hookText("PostToolBatch", "batch checked"),
+    ]);
+    expect([s.notes, s.errors]).toEqual([[], []]);
+  });
+
+  it.each<[string, Says, string]>([
+    ["a decision block", batchSays(block("Lint first")), "Lint first"],
+    ["a continue: false", batchSays(stops("Enough")), "Enough"],
+    ["an exit code 2 with no error output", batchSays("", { code: 2 }), ""],
+  ])("ends the turn at a PostToolBatch hook's %s, the results stored, its reason going with the next prompt's request", async (_name, says, reason) => {
+    const s = await setup({ mode: "never", says: [says], turns: [callTool("c1", "shell", { command: "echo hi" }), reply("ok")] });
+    expect(await s.session.send("go")).toEqual({ stopped: reason });
+    expect(s.notes).toEqual([reason ? `A PostToolBatch hook stopped the turn: ${reason}` : "A PostToolBatch hook stopped the turn."]);
+    expect([s.results(), s.session.messages.length, s.lead.seen.length]).toEqual([[{ output: "ran echo hi", isError: false }], 3, 1]);
+    expect(await s.session.send("again")).toBeUndefined();
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([
+      { type: "tool_result", callId: "c1", output: "ran echo hi", isError: false },
+      ...(reason ? [hookText("PostToolBatch", reason)] : []),
+      { type: "text", text: "again" },
+    ]);
+  });
+
+  // Q29: the reason goes with whichever request is next, a turn a background answer starts included, once; the
+  // background subagent keeps running past the turn's end.
+  it("sends a PostToolBatch block's reason with the turn a background subagent's answer starts, and not again with the typed prompt after", async () => {
+    const worker = new Held("fake:w");
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background: true }), reply("noted"), reply("ok")];
+    const s = await setup({ mode: "never", says: [batchSays(block("wait for it"))], turns, worker });
+    expect(await s.session.send("go")).toEqual({ stopped: "wait for it" });
+    expect([s.notes, s.lead.seen.length, s.tasks!.all.map((t) => t.state)]).toEqual([["A PostToolBatch hook stopped the turn: wait for it"], 1, ["running"]]);
+    while (!worker.asked.length) await pause(20);
+    worker.answer("found it");
+    await s.tasks!.all[0]!.done;
+    await s.session.send("");
+    const woke = s.lead.seen[1]!.at(-1)!.parts;
+    expect(woke.slice(1)).toEqual([hookText("PostToolBatch", "wait for it"), { type: "text", text: "Background task t1 (look) finished:\nfound it", from: "tasks" }]);
+    await s.session.send("next");
+    expect(s.lead.seen[2]!.at(-1)!.parts).toEqual([{ type: "text", text: "next" }]);
+  });
+
+  it("drops a PostToolBatch block's reason at a /clear", async () => {
+    const s = await setup({ mode: "never", says: [batchSays(block("Lint first"))], turns: shellCall("echo hi") });
+    expect(await s.session.send("go")).toEqual({ stopped: "Lint first" });
+    s.session.load(fresh("s2"));
+    await s.session.send("next");
+    expect(s.lead.seen[1]).toEqual([{ role: "user", parts: [{ type: "text", text: "next" }] }]);
+  });
+
+  // Q28: with onFailure "block" a failure is a block; without it, the red line alone and the turn goes on.
+  it.each([true, false])("ends the turn at a PostToolBatch hook that cannot start only with onFailure block (%s)", async (strict) => {
+    const root = await folder();
+    const s = await setup({ mode: "never", root, says: [], turns: shellCall("echo hi") });
+    const missing: Hook = {
+      // With args, so it is started with no shell, as SCRIPT's hooks are, and cannot start.
+      event: "PostToolBatch", matcher: { all: true }, command: path.join(root, "no-such-program"), args: [], async: false, where: '"PostToolBatch"',
+      ...(strict ? { onFailure: "block" as const } : {}),
+    };
+    s.given.set({ hooks: [missing], off: false, leftOut: [] });
+    const ended = await s.session.send("go");
+    const words = /^.*no-such-program could not start \(.+\)$/;
+    if (strict) {
+      expect(ended).toEqual({ stopped: expect.stringMatching(words) });
+      expect([s.notes, s.errors, s.lead.seen.length]).toEqual([[expect.stringMatching(/^A PostToolBatch hook stopped the turn: .*no-such-program could not start/)], [], 1]);
+    } else {
+      expect(ended).toBeUndefined();
+      expect([s.notes, s.lead.seen.length]).toEqual([[], 2]);
+      expect(s.errors.map((e) => e.message)).toEqual([expect.stringMatching(/^PostToolBatch hook failed: .*no-such-program could not start \(.+\)$/)]);
+    }
+  });
+
+  it("runs a PostToolBatch hook whose settings entry names a matcher, the matcher ignored", async () => {
+    const s = await setup({ mode: "never", says: [batchSays("")], turns: shellCall("echo hi") });
+    const h = s.hooks[0]!;
+    const read = readHooks('settings.json: "hooks"', { PostToolBatch: [{ matcher: "NoSuchTool", hooks: [{ type: "command", command: h.command, args: h.args }] }] }, []);
+    s.given.set({ hooks: read, off: false, leftOut: [] });
+    await s.session.send("go");
+    expect(batches(s)).toHaveLength(1);
+  });
+
+  it("fires no PostToolBatch after a PreToolUse hook's continue: false, nor after the user's stop", async () => {
+    const halted = await setup({ mode: "never", says: [{ stdout: stops("halt") }, batchSays("")], turns: shellCall("echo hi") });
+    expect(await halted.session.send("go")).toEqual({ stopped: "halt" });
+    expect(halted.inputs().map((i) => i.hook_event_name)).toEqual(["PreToolUse"]);
+    const stop = new AbortController();
+    const stopping = defineTool("stopping", "Stops the turn while it runs", z.object({}), (_input, c) =>
+      new Promise((_ok, no) => {
+        c.signal?.addEventListener("abort", () => no(new Error("killed")));
+        stop.abort();
+      }));
+    const cancelled = await setup({ mode: "never", says: [batchSays("")], turns: [callTool("c1", "stopping", {})], tools: [stopping] });
+    await cancelled.session.send("go", stop.signal);
+    expect([cancelled.results(), cancelled.inputs()]).toEqual([[{ output: "Cancelled by the user.", isError: true }], []]);
+  });
+
+  // Codex round 1, point 3: a stop while the batch hook runs ends it, and the results are stored all the same.
+  it("stores every call's one result when the user stops the turn while a PostToolBatch hook runs, saying nothing, the next request pairing them", async () => {
+    const root = await folder();
+    const says = [batchSays(block("late"), { go: path.join(root, "never-made") })];
+    const turns = [many(["c1", "shell", { command: "echo one" }], ["c2", "shell", { command: "echo two" }]), reply("again")];
+    const s = await setup({ mode: "never", root, says, turns });
+    const abort = new AbortController();
+    const sent = s.session.send("go", abort.signal);
+    for (let i = 0; !batches(s).length; i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
+    abort.abort();
+    expect(await sent).toBeUndefined();
+    const answered = [
+      { type: "tool_result", callId: "c1", output: "ran echo one", isError: false },
+      { type: "tool_result", callId: "c2", output: "ran echo two", isError: false },
+    ];
+    expect([s.session.messages.length, s.session.messages[2]!.parts, s.notes, s.errors, s.lead.seen.length]).toEqual([3, answered, [], [], 1]);
+    await s.session.send("next");
+    expect(s.lead.seen[1]!.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(s.lead.seen[1]![1]!.parts.map((p) => (p.type === "tool_call" ? p.id : p.type))).toEqual(["c1", "c2"]);
+    expect(s.lead.seen[1]![2]!.parts).toEqual([...answered, { type: "text", text: "next" }]);
+  });
+
+  it("ends a subagent at its PostToolBatch hook's block while the lead's delegate call waits, the lead going on", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const worker = new FakeProvider("w", [callTool("w1", "read_file", { path: "a.txt" }), reply("found it")]);
+    const s = await setup({ mode: "never", root, says: [batchSays("", { seq: [block("enough"), ""] })], turns: [look, reply("ok")], worker });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect(s.results()).toEqual([{ output: "t1 was stopped by a hook: enough", isError: false }]);
+    expect([s.tasks!.all.map((t) => t.state), worker.seen.length, s.lead.seen.length, s.errors]).toEqual([["stopped"], 1, 2, []]);
+    expect(s.notes).toEqual(["t1: A PostToolBatch hook stopped the turn: enough"]);
+    expect(batches(s)).toEqual([
+      expect.objectContaining({ agent_id: "t1", tool_calls: [expect.objectContaining({ tool_name: "Read", tool_use_id: "w1" })] }),
+      expect.objectContaining({ tool_calls: [expect.objectContaining({ tool_name: "Agent", tool_use_id: "c1" })] }),
+    ]);
+    // Nothing of the subagent's stop waits for the lead's next request.
+    expect(s.lead.seen[1]!.at(-1)!.parts.filter((p) => p.type !== "tool_result")).toEqual([]);
+  });
+
+  it("decides nothing for an async PostToolBatch hook's block, saying it cannot block", async () => {
+    const s = await setup({ mode: "never", says: [batchSays(block("no"))], turns: shellCall("echo hi") });
+    const hook = { ...s.hooks[0]!, async: true };
+    s.given.set({ hooks: [hook], off: false, leftOut: [] });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect([s.notes, s.lead.seen.length]).toEqual([[], 2]);
+    await until(() => s.errors.length > 0);
+    expect(s.errors.map((e) => e.message)).toEqual([`PostToolBatch hook failed: ${s.command(hook)} asked to block, but an "async" hook cannot block`]);
+  });
+
+  // Not in the plan's list: a throw from the hooks that is not a stop, as #postToolUse takes one.
+  it("stores the results and goes on, with a red line, when a listener of the hooks' lines throws at PostToolBatch", async () => {
+    const s = await setup({ mode: "never", says: [batchSays(JSON.stringify({ systemMessage: "checking", decision: "block", reason: "x" }))], turns: shellCall("echo hi") });
+    s.bus.on("hook-note", (line) => {
+      if (line === "PostToolBatch hook: checking") throw new Error("listener broke");
+    });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect([s.results(), s.lead.seen.length]).toEqual([[{ output: "ran echo hi", isError: false }], 2]);
+    expect(s.errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([["hook", "PostToolBatch hook", "PostToolBatch hook failed: listener broke"]]);
   });
 });
 
