@@ -28,7 +28,13 @@ import { ThemeContext } from "../theme.js";
 import type { Call } from "../ToolLine.js";
 import { FOLLOWING, type Pos, Rows, type View } from "../view.js";
 import { type Vim, start as vimStart } from "../vim.js";
-import type { Held, Printed, Question } from "./constants.js";
+import type { Held, OpenForm, Printed, Question } from "./constants.js";
+
+// How long a question, a server's form or its page request waits on screen with no key before Notification fires: the
+// design's figure, Claude Code's, not measured for Tachikoma (release 8e plan, step 17).
+const NOTIFY_MS = 6_000;
+// What a Notification wait is for (App.tsx): the prompt on screen, `on`, and its kind and message.
+type Notice ={ on: object; type: string; message: string };
 
 export function useAppState({
   session,
@@ -238,6 +244,31 @@ export function useAppState({
   // The field of a server's form being asked, in the prompt's place: the picker phase too, as it takes Select's keys and
   // typed text, drawn over the lists (release 8c plan, Task 12; choice 29).
   const [form, setForm] = useState<Asked | null>(null);
+  // The server's form open now, as the forms code reports it (release 8e plan, step 17): one at a time (forms.ts).
+  const formOpen = useRef<OpenForm | null>(null);
+  // Notification's 6 s wait (release 8e plan, step 17; Q25): for the prompt drawn in the prompt's place that notifies, its
+  // timer and its firing; and the time of the last key or paste, each of which starts a running wait again (keyed). One
+  // that has fired waits for a key to start again, so it fires once for a quiet stretch.
+  const notifyWait = useRef<{ on: object; timer: NodeJS.Timeout; fire: () => void } | null>(null);
+  const lastKey = useRef(0);
+  // The wait for `shown`, the prompt drawn now (App.tsx): kept while it is the same prompt, ended and started again for
+  // another, and none for one that notifies nothing. The lead's hooks run it, not waited for, as a run outside a turn.
+  const waitOn = (shown: Notice | null) => {
+    if ((notifyWait.current?.on ?? null) === (shown?.on ?? null)) return;
+    clearTimeout(notifyWait.current?.timer);
+    notifyWait.current = null;
+    if (!shown || !hooks) return;
+    const fields = { message: shown.message, title: "Tachikoma", notification_type: shown.type };
+    const fire = () => void hooks.fireAndLeave("Notification", fields, { match: shown.type, outside: true });
+    notifyWait.current = { on: shown.on, fire, timer: setTimeout(fire, NOTIFY_MS) };
+  };
+  const keyed = () => {
+    lastKey.current = Date.now();
+    const w = notifyWait.current;
+    if (!w) return;
+    clearTimeout(w.timer);
+    w.timer = setTimeout(w.fire, NOTIFY_MS);
+  };
   const listOpen = useRef(false); // the picker or the sessions' list, for keys and answers read before the screen is drawn again
   const announced = useRef(new Set<string>()); // background subagents whose ending has been shown
   const [, rerender] = useState(0);
@@ -335,6 +366,7 @@ export function useAppState({
     happening, late, toolLine, answered, run, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
     editingBack, leftLines, closeMemory, memory,
     hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm, palette, lastSaid, command,
+    formOpen, notifyWait, lastKey, waitOn, keyed,
   } as const;
 }
 

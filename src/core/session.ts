@@ -1434,10 +1434,11 @@ export class Session {
     try {
       // A stop while a PreToolUse hook runs kills it and rejects, so the call is cancelled below, as any stop (run.ts). The
       // call's own gate marks it asked when a question about it opens (Task 15); not once a stop came, as the window then
-      // drops the question unshown (App.tsx, bindAsk).
+      // drops the question unshown (App.tsx, bindAsk). Its questions carry the tool's Claude Code name, for the window's
+      // Notification (release 8e plan, step 17).
       const noted = this.opts.ctx.gate.noting(() => {
         if (!signal.aborted) this.#asked(call.id);
-      });
+      }, toClaude(entry, this.#hookPaths()).tool_name);
       const own = again ? noted.deciding(null) : noted;
       const pre = hooks ? await this.#preToolUse(call, entry, hooks, own, round, handed) : { input: call.input, gate: own };
       if ("stop" in pre) {

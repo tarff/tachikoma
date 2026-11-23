@@ -30,8 +30,13 @@ export type Question = {
   note?: string; // a grey row, auto mode's pause, drawn above any red lines, which the gate never sends with it (permissions.ts, Ask; Task 10)
   oneRow?: true; // the note is cut to one screen row in every view, an MCP call's (permissions.ts, Ask; release 8c plan, choice 47)
   call?: string; // the lead's call that asks it, from its tool-start, so its answer can go under its tool line (choice 66)
+  tool?: string; // a question about a tool call: its tool's name as hooks see it, for Notification (permissions.ts, Ask; release 8e plan, step 17)
+  page?: OpenForm; // a server's page request's question: its form, open or closed (step 17)
   answer: (ok: boolean, how: string) => void;
 };
+// A server's form as the forms code reports it open (forms.ts, FormUI.opened): its server's name, its kind, and whether it
+// has closed since, which a page's question outlives (release 8e plan, step 17).
+export type OpenForm = { server: string; kind: "form" | "page"; closed: boolean };
 // While the left button is held after a press in the conversation: what the press took (the pressed character, or a
 // double or triple click's word or line); `copy`: a drag, or a double or triple click, made a selection to copy on release;
 // `top`: the press was on the conversation's top row.

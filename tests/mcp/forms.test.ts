@@ -9,7 +9,7 @@ import type { Hook } from "../../src/hooks/config.js";
 import { Hooks } from "../../src/hooks/hooks.js";
 import { launchAnswers } from "../../src/mcp/answers.js";
 import type { ServerConfig } from "../../src/mcp/config.js";
-import { check, type Field, type FormUI, fieldsOf } from "../../src/mcp/forms.js";
+import { check, type Field, Forms, type FormUI, fieldsOf } from "../../src/mcp/forms.js";
 import { Servers } from "../../src/mcp/servers.js";
 import { mcpTools } from "../../src/mcp/tools.js";
 import { Bus, collectErrors, removeTree } from "../helpers.js";
@@ -423,5 +423,69 @@ describe("a visit request", LIMIT, () => {
     expect(visited).toEqual(["t1: fake asks you to open https://example.com/ in your browser: Sign the form there. Open it"]);
     await t.askAs(owner, visit("file:///x"));
     expect(t.errors.at(-1)!.message).toBe("t1: MCP server fake asked to open file:///x, which is not an http or https address, so it was declined.");
+  });
+});
+
+// Release 8e plan, step 17 (Codex round 1, point 8; round 2, point 7; round 3, point 6): the forms code tells the window
+// when a server's form opens and when it closes, with the server's name and its kind, for Notification's 6 s wait. Forms
+// is driven as a Server drives it, its request's stop the server's cancel, with no server running.
+describe("a form's opening and closing", () => {
+  // The window's questions, each waiting until `answer`; a field is taken away by its form's stop, as App.tsx's is, and a
+  // visit's question is not, as the window's yes or no is not given that stop. Each report is kept, in order.
+  function reported() {
+    const said: string[] = [];
+    let answer: (a: string | null | boolean) => void = () => {};
+    const ui: FormUI = {
+      field: (_f, _given, signal) =>
+        new Promise((resolve) => {
+          answer = resolve as typeof answer;
+          signal.addEventListener("abort", () => resolve(null), { once: true });
+        }),
+      visit: () => new Promise((resolve) => (answer = resolve as typeof answer)),
+      opened: (server, kind) => {
+        said.push(`open ${server} ${kind}`);
+        return () => void said.push(`close ${server} ${kind}`);
+      },
+    };
+    const forms = new Forms({ bus: new Bus(), headless: false, openBrowser: () => {}, lead: () => "fake:a" });
+    forms.bind(ui);
+    return { forms, said, answer: (a: string | null | boolean) => answer(a) };
+  }
+  const one = form({ type: "object", properties: { name: { type: "string" } } });
+  const page = { mode: "url", message: "Sign there", elicitationId: "e1", url: "https://example.com/x" } as const;
+  const until = (check: () => boolean) => vi.waitFor(() => expect(check()).toBe(true), { timeout: 2_000 });
+
+  // How a row's form ends: the window's answer, its subagent's stop, or the server's cancel.
+  type End = (t: ReturnType<typeof reported>, stop: AbortController, server: AbortController) => void;
+  it.each<[string, object, boolean, End, string, string]>([
+    ["a form answered", one, false, (t) => t.answer("Ada"), "accept", "form"],
+    ["a page answered", page, false, (t) => t.answer(true), "accept", "page"],
+    ["a declined form", one, false, (t) => t.answer(null), "decline", "form"],
+    // Ctrl-C at the question answers no and stops its subagent (keyRouting.ts).
+    ["a user's cancel", page, true, (t, stop) => (t.answer(false), stop.abort()), "cancel", "page"],
+    ["a server's cancel", one, false, (_t, _stop, server) => server.abort(), "cancel", "form"],
+  ])("reports %s's opening and closing once each, with the server's name and kind", async (_how, asked, subagent, end, action, kind) => {
+    const t = reported();
+    const stop = new AbortController();
+    const server = new AbortController();
+    const owner: Owner = { name: "t1 (look around)", signal: stop.signal, stop: () => stop.abort() };
+    const answer = t.forms.answer("s", asked as Parameters<Forms["answer"]>[1], { signal: server.signal, ...(subagent ? { owner } : {}) });
+    await until(() => t.said.length === 1);
+    expect(t.said).toEqual([`open s ${kind}`]);
+    end(t, stop, server);
+    expect((await answer).action).toBe(action);
+    expect(t.said).toEqual([`open s ${kind}`, `close s ${kind}`]);
+  });
+
+  it("reports a server's cancel of a page request at once, while its question is unanswered, and not again when it is answered", async () => {
+    const t = reported();
+    const server = new AbortController();
+    const answer = t.forms.answer("s", page, { signal: server.signal });
+    await until(() => t.said.length === 1);
+    server.abort();
+    expect(t.said).toEqual(["open s page", "close s page"]);
+    t.answer(true);
+    expect(await answer).toEqual({ action: "cancel" });
+    expect(t.said).toEqual(["open s page", "close s page"]);
   });
 });

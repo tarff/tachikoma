@@ -15524,3 +15524,421 @@ describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_00
     expect(session.autoCompact).toBeNull();
   });
 });
+
+// Release 8e plan, step 17: Notification once a question, a server's form or its page request has waited 6 s on screen
+// (Q25), the clock faked from before it comes up and the hooks' runs stood in (configRuns). A tool question is put as the
+// gate puts one, with its tool's Claude Code name (permissions.ts, Ask), or comes from a real call; a form and a page
+// request come through the forms code, as their Server hands them to it, with no server running.
+describe("App's Notification hooks (release 8e plan, step 17)", { timeout: 60_000 }, () => {
+  const notifyHook = (over: Partial<Hook> = {}): Hook => ({ event: "Notification", matcher: { all: true }, command: "notify", async: false, where: "", ...over });
+  // The fields each Notification run was sent beyond the common ones, in the order they ran.
+  const fired = (runs: HookRun[]) =>
+    runs.filter((r) => r.event === "Notification").map((r) => ({ message: r.input.message, title: r.input.title, notification_type: r.input.notification_type }));
+  const tool = (name: string) => ({ message: `Tachikoma needs your permission to use ${name}`, title: "Tachikoma", notification_type: "permission_prompt" });
+  const formIn = (server: string) => ({ message: `${server} asks you to fill in a form`, title: "Tachikoma", notification_type: "elicitation_dialog" });
+  const pageIn = (server: string) => ({ message: `${server} asks you to open a page in your browser`, title: "Tachikoma", notification_type: "elicitation_url_dialog" });
+  const ONE = { type: "object", properties: { name: { type: "string", title: "Name" } } };
+  const formOf = (requestedSchema: object = ONE) => ({ mode: "form" as const, message: "About you", requestedSchema }) as Parameters<Servers["forms"]["answer"]>[1];
+  const PAGE = { mode: "url" as const, message: "Sign there", elicitationId: "e1", url: "https://example.com/x" };
+  const PAGE_ASKED = "Open it? [y/n]";
+  const BASH_ASKED = "Allow run: echo hi? [y/n]";
+
+  // The clock faked while `body` runs: `wait` moves it on by `ms`, then lets one turn of the event loop draw the screen
+  // (setImmediate is not faked); `keys` writes each key so, a lone Esc after the 20 ms Ink waits to tell it from the start
+  // of a longer key (Ink's App.js); `shows` waits so for `text`.
+  async function clocked(body: () => Promise<void>) {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await body();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+  const wait = async (ms = 0) => {
+    await vi.advanceTimersByTimeAsync(ms);
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+  async function keys(app: ReturnType<typeof render>, ...ks: string[]) {
+    for (const k of ks) {
+      app.stdin.write(k);
+      await wait(k === "\u001b" ? 20 : 0);
+    }
+  }
+  async function shows(app: ReturnType<typeof render>, text: string) {
+    for (let i = 0; i < 100 && !app.lastFrame()!.includes(text); i++) await wait();
+    expect(app.lastFrame()).toContain(text);
+  }
+
+  // A window with `hooks` (one Notification hook matching every kind unless given), the runs at Notification and `events`
+  // stood in, each answered by `answer`, and MCP servers' forms: none started, or one fake server with `server`. `bash`
+  // puts the lead's tool question for `echo hi`, as the gate puts it; `request`, a server's form or page request, and
+  // `cancel` is its server's cancel of it.
+  async function notifying(
+    o: { hooks?: Hook[]; events?: string[]; answer?: (run: HookRun) => Ran | Promise<Ran>; server?: boolean; mount?: Parameters<typeof mount>[1] } = {},
+  ) {
+    const runs = configRuns(o.answer ?? (() => ran()), ["Notification", ...(o.events ?? [])]);
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-notify-"));
+    const configs: ServerConfig[] = [];
+    if (o.server) {
+      const entry = { kind: "stdio" as const, command: process.execPath, args: [await fakeServer(dir)], env: {} };
+      configs.push({ name: "s", safe: "s", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "", entry, asWritten: entry });
+    }
+    let made: Servers | undefined;
+    onTestFinished(async () => {
+      await made?.stopAll();
+      await removeTree(dir);
+    });
+    const mcp = (bus: Bus) => {
+      made = new Servers(configs, { root: dir, env: process.env, bus, answers: launchAnswers, network: "none", lead: () => "fake:a", openBrowser: () => {} });
+      return { servers: made };
+    };
+    const m = await mount([], { ...o.mount, hooks: o.hooks ?? [notifyHook()], mcp });
+    const bash = (owner?: Owner) => m.ask("run: echo hi", undefined, owner, undefined, [], undefined, undefined, "Bash");
+    const request = (form: Parameters<Servers["forms"]["answer"]>[1]) => {
+      const server = new AbortController();
+      return { answer: m.mcp!.servers.forms.answer("s", form, { signal: server.signal }), cancel: () => server.abort() };
+    };
+    return { ...m, runs, bash, request };
+  }
+
+  it.each([
+    ["the lead's tool question", (w: Awaited<ReturnType<typeof notifying>>) => void w.bash(), BASH_ASKED, tool("Bash")],
+    ["a server's form", (w: Awaited<ReturnType<typeof notifying>>) => void w.request(formOf()), "Name (optional):", formIn("s")],
+    ["a server's page request", (w: Awaited<ReturnType<typeof notifying>>) => void w.request(PAGE), PAGE_ASKED, pageIn("s")],
+  ])("fires Notification once for %s that has waited 6 s on screen, with its fields, and nothing just before", async (_what, put, asked, fields) => {
+    const w = await notifying();
+    await clocked(async () => {
+      put(w);
+      await shows(w.app, asked);
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([fields]);
+      expect(w.runs[0]!.input).toMatchObject({ hook_event_name: "Notification" });
+      await wait(60_000); // once for the quiet stretch
+      expect(fired(w.runs)).toHaveLength(1);
+    });
+  });
+
+  it("names Bash in the message for the lead's shell call, Claude Code's name for the shell tool (Q17)", async () => {
+    const lead = new FakeProvider("a", [callTool("c1", "shell", { command: "echo hi" }), reply("done")]);
+    const w = await notifying({ mount: { lead } });
+    await clocked(async () => {
+      await keys(w.app, "go", "\r");
+      await shows(w.app, BASH_ASKED);
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await keys(w.app, "n");
+      await shows(w.app, "done");
+    });
+  });
+
+  it("fires for a subagent's question too, naming its tool", async () => {
+    const elsewhere = path.join(tmpdir(), "tachi-notify-elsewhere.txt"); // never read: the question is declined
+    const lead = new FakeProvider("a", [callTool("c1", "delegate", { description: "look", task: "look" }), reply("done")]);
+    const worker = new FakeProvider("w", [callTool("w1", "read_file", { path: elsewhere }), reply("found")]);
+    const w = await notifying({ mount: { lead, worker } });
+    await clocked(async () => {
+      await keys(w.app, "go", "\r");
+      await shows(w.app, "Allow t1 (look) to read");
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([tool("Read")]);
+      await keys(w.app, "n");
+      await shows(w.app, "done");
+    });
+  });
+
+  it("starts the wait again at a key: a key at 5 s moves the firing to 11 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      void w.bash();
+      await shows(w.app, BASH_ASKED);
+      await wait(5_000);
+      await keys(w.app, "x"); // a key that answers nothing
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+    });
+  });
+
+  it("fires nothing for a question answered at 5 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      const answer = w.bash();
+      await shows(w.app, BASH_ASKED);
+      await wait(5_000);
+      await keys(w.app, "y");
+      expect(await answer).toBe(true);
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+    });
+  });
+
+  it("fires for a subagent's question queued behind the lead's 6 s after it comes up, not 6 s after it was asked (Q25)", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      void w.bash();
+      void w.ask("read /c", undefined, asker("t1 (look)").owner, undefined, [], undefined, undefined, "Read");
+      await shows(w.app, BASH_ASKED);
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await wait(2_000);
+      await keys(w.app, "y");
+      await shows(w.app, "Allow t1 (look) to read /c? [y/n]");
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([tool("Bash"), tool("Read")]);
+    });
+  });
+
+  it("fires only permission_prompt for a tool question with a page request queued behind it, then elicitation_url_dialog 6 s after the page request comes up", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      void w.bash();
+      const page = w.request(PAGE);
+      await shows(w.app, BASH_ASKED);
+      await wait(10_000);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await keys(w.app, "y");
+      await shows(w.app, PAGE_ASKED);
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([tool("Bash"), pageIn("s")]);
+      await keys(w.app, "n");
+      expect(await page.answer).toEqual({ action: "decline" });
+    });
+  });
+
+  it("fires elicitation_dialog, and no permission_prompt, for a form's field drawn over a waiting tool question, which then gets a fresh 6 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      void w.bash();
+      const form = w.request(formOf());
+      await shows(w.app, "Name (optional):");
+      await wait(8_000);
+      expect(fired(w.runs)).toEqual([formIn("s")]);
+      await keys(w.app, "Ada\r");
+      expect(await form.answer).toEqual({ action: "accept", content: { name: "Ada" } });
+      await shows(w.app, BASH_ASKED);
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([formIn("s")]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([formIn("s"), tool("Bash")]);
+    });
+  });
+
+  // Each list drawn in the prompt's place, open before the question comes and closed with Esc.
+  const lists: [string, () => Promise<Awaited<ReturnType<typeof notifying>>>, string][] = [
+    [
+      "the model list",
+      async () => {
+        const w = await notifying({ mount: { models: [{ provider: "fake", models: ["a", "b"] }] } });
+        await type(w.app, "/model");
+        await until(w.app, "● fake:a");
+        await tick(); // the picker starts reading keys just after it first appears
+        return w;
+      },
+      "● fake:a",
+    ],
+    [
+      "/resume's list",
+      async () => {
+        const sessions = path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "sessions");
+        const earlier = await mount([reply("noted")], { save: true, sessions });
+        await type(earlier.app, "remember apple");
+        await until(earlier.app, "noted");
+        earlier.app.unmount();
+        const w = await notifying({ mount: { save: true, sessions } });
+        await type(w.app, "/resume");
+        await until(w.app, "Saved sessions in this folder, newest first:");
+        return w;
+      },
+      "Saved sessions in this folder, newest first:",
+    ],
+    [
+      "/mcp's list",
+      async () => {
+        const w = await notifying({ server: true });
+        await type(w.app, "/mcp");
+        await until(w.app, "MCP servers, from");
+        return w;
+      },
+      "MCP servers, from",
+    ],
+  ];
+
+  it.each(lists)("fires nothing for a tool question under %s, however long it is open, and gives it a fresh 6 s once it closes", async (_list, open, heading) => {
+    const w = await open();
+    await clocked(async () => {
+      void w.bash();
+      await wait();
+      expect(w.app.lastFrame()).toContain(heading);
+      expect(w.app.lastFrame()).not.toContain(BASH_ASKED);
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+      await keys(w.app, "\u001b");
+      await shows(w.app, BASH_ASKED);
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+    });
+  });
+
+  it("fires nothing for a page request under the model list, and gives it a fresh 6 s once the list closes", async () => {
+    const w = await lists[0]![1]();
+    await clocked(async () => {
+      const page = w.request(PAGE);
+      await wait();
+      expect(w.app.lastFrame()).toContain("● fake:a");
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+      await keys(w.app, "\u001b");
+      await shows(w.app, PAGE_ASKED);
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([pageIn("s")]);
+      await keys(w.app, "n");
+      expect(await page.answer).toEqual({ action: "decline" });
+    });
+  });
+
+  it("fires once for a form of three fields, with the server's name, for one quiet stretch: moving to the next field fires nothing by itself", async () => {
+    const w = await notifying();
+    const schema = { type: "object", properties: { a: { type: "string", title: "A" }, b: { type: "string", title: "B" }, c: { type: "string", title: "C" } } };
+    await clocked(async () => {
+      const form = w.request(formOf(schema));
+      await shows(w.app, "A (optional):");
+      await wait(3_000);
+      await keys(w.app, "1\r");
+      await shows(w.app, "B (optional):");
+      await wait(3_000);
+      await keys(w.app, "2\r");
+      await shows(w.app, "C (optional):");
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([formIn("s")]);
+      await keys(w.app, "3\r");
+      expect(await form.answer).toEqual({ action: "accept", content: { a: "1", b: "2", c: "3" } });
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([formIn("s")]);
+    });
+  });
+
+  it("starts the wait again at a paste into a form's field: a paste at 5 s moves the firing to 11 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      const form = w.request(formOf());
+      await shows(w.app, "Name (optional):");
+      await wait(5_000);
+      await keys(w.app, "\u001b[200~Ada\u001b[201~");
+      await shows(w.app, "Name (optional): Ada");
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([formIn("s")]);
+      await keys(w.app, "\r");
+      expect(await form.answer).toEqual({ action: "accept", content: { name: "Ada" } });
+    });
+  });
+
+  it("fires nothing for a page request the user declines at 5 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      const page = w.request(PAGE);
+      await shows(w.app, PAGE_ASKED);
+      await wait(5_000);
+      await keys(w.app, "\u001b");
+      expect(await page.answer).toEqual({ action: "decline" });
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+    });
+  });
+
+  // Codex round 2, point 7; round 3, point 6: the page request's question is not taken away by its server's cancel, so
+  // it stays up until answered, as before this step; from the cancel on it is a question of no notifying kind.
+  it("fires nothing for a page request its server cancels at 3 s, its question left unanswered on screen past 6 s and 12 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      const page = w.request(PAGE);
+      await shows(w.app, PAGE_ASKED);
+      await wait(3_000);
+      page.cancel();
+      await wait(); // the screen is drawn again for the closing, in the next turn of the event loop
+      await wait(3_500);
+      expect(fired(w.runs)).toEqual([]);
+      expect(w.app.lastFrame()).toContain(PAGE_ASKED);
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([]);
+      expect(w.app.lastFrame()).toContain(PAGE_ASKED);
+      await keys(w.app, "y");
+      expect(await page.answer).toEqual({ action: "cancel" });
+    });
+  });
+
+  it("fires nothing for a form an Elicitation hook answers, as it never opens", async () => {
+    const accept = { hookSpecificOutput: { hookEventName: "Elicitation", action: "accept", content: { name: "Hook" } } };
+    const fill: Hook = { event: "Elicitation", matcher: { all: true }, command: "fill", async: false, where: "" };
+    const w = await notifying({ hooks: [notifyHook(), fill], events: ["Elicitation"], answer: (r) => (r.event === "Elicitation" ? ran(JSON.stringify(accept)) : ran()) });
+    await clocked(async () => {
+      expect(await w.request(formOf()).answer).toEqual({ action: "accept", content: { name: "Hook" } });
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+      expect(w.app.lastFrame()).not.toContain("Name (optional):");
+    });
+  });
+
+  it("fires nothing for \"Send again without the pictures\" nor for PreModelSwitch's question", async () => {
+    const w = await notifying({
+      hooks: [notifyHook(), switchHook()],
+      events: ["PreModelSwitch"],
+      answer: (r) => (r.event === "PreModelSwitch" ? decided("ask", "Sure") : ran()),
+    });
+    await clocked(async () => {
+      const again = w.ask("Send again without the pictures", undefined, undefined, true); // as the session asks it
+      await shows(w.app, "Send again without the pictures? [y/n]");
+      await wait(60_000);
+      await keys(w.app, "n");
+      expect(await again).toBe(false);
+      await keys(w.app, "/lead fake:b", "\r");
+      await shows(w.app, "A hook asks: Sure. Switch to fake:b? [y/n]");
+      await wait(60_000);
+      await keys(w.app, "n");
+      expect(fired(w.runs)).toEqual([]);
+    });
+  });
+
+  it("runs only the hooks whose matcher names the kind; auth_success, which Tachikoma never sends, matches nothing and warns nothing", async () => {
+    const w = await notifying({
+      hooks: [
+        notifyHook({ matcher: { names: ["elicitation_dialog"] }, command: "forms" }),
+        notifyHook({ matcher: { names: ["permission_prompt"] }, command: "tools" }),
+        notifyHook({ matcher: { names: ["auth_success"] }, command: "signed-in" }),
+      ],
+    });
+    await clocked(async () => {
+      void w.bash();
+      await shows(w.app, BASH_ASKED);
+      await wait(6_000);
+      expect(w.runs.map((r) => r.command)).toEqual(["tools"]);
+      await wait();
+      expect(w.app.lastFrame()).not.toContain("auth_success");
+      expect(w.app.lastFrame()).not.toContain("✗");
+    });
+  });
+
+  it("shows no line for a systemMessage in a Notification hook's answer, which is ignored", async () => {
+    const w = await notifying({ answer: () => ran(JSON.stringify({ systemMessage: "Heard you" })) });
+    await clocked(async () => {
+      void w.bash();
+      await shows(w.app, BASH_ASKED);
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await wait();
+      expect(w.app.lastFrame()).not.toContain("Heard you");
+    });
+  });
+});

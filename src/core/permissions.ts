@@ -130,8 +130,9 @@ export interface Owner {
 // pictures" (release 6 plan, Task 18), so it is asked without "Allow" before it. `warnings`: the red lines above it, one
 // per danger the dangerous-command check found, escaped (release 7 plan, Task 8). `note`: a grey line said with it, auto
 // mode's pause (Task 10). `oneRow`: the note is cut to one screen row in every view, as an MCP call's description is
-// (release 8c plan, choice 47); another wraps outside full screen, as before.
-export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean, warnings?: string[], note?: string, oneRow?: boolean) => Promise<boolean>;
+// (release 8c plan, choice 47); another wraps outside full screen, as before. `tool`: a question about a tool call, its
+// tool's name as hooks see it, Claude Code's (Bash), for the window's Notification (release 8e plan, step 17; Q17).
+export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean, warnings?: string[], note?: string, oneRow?: boolean, tool?: string) => Promise<boolean>;
 
 // Auto mode's judge, which cli.tsx gives the gate (release 7 plan, Task 10; safety/judge.ts, judgeOf). `own` is what a
 // subagent's gate adds: its own session's calls, which follow the lead's, and its bus, so the judge's spend and errors
@@ -247,7 +248,7 @@ export class PermissionGate {
   // A subagent's gate: the lead's mode, rules, protection and auto mode's counts, questions that name the subagent, and
   // what it adds for the judge (Own).
   for(owner: Owner, own?: Own): PermissionGate {
-    const ask: Ask = (summary, detail, _owner, plain, warnings, note, oneRow) => this.ask(summary, detail, owner, plain, warnings, note, oneRow);
+    const ask: Ask = (summary, detail, _owner, plain, warnings, note, oneRow, tool) => this.ask(summary, detail, owner, plain, warnings, note, oneRow, tool);
     const gate = new PermissionGate(this.#mode, ask, this.refusal, this.options);
     gate.#parent = this;
     gate.#owner = owner;
@@ -275,10 +276,11 @@ export class PermissionGate {
 
   // A gate for one call, which tells `asked` as it puts the user a question for it, its own or a PreToolUse hook's, and
   // otherwise this gate (release 8c plan, Task 15). Not in -p, where the ask only reports a refusal and nobody is asked.
-  noting(asked: () => void): PermissionGate {
-    const ask: Ask = (...a) => {
+  // Each of its questions carries `tool`, the call's tool's name as hooks see it (Ask; release 8e plan, step 17).
+  noting(asked: () => void, tool?: string): PermissionGate {
+    const ask: Ask = (summary, detail, owner, plain, warnings, note, oneRow) => {
       if (!this.options.headless) asked();
-      return this.ask(...a);
+      return this.ask(summary, detail, owner, plain, warnings, note, oneRow, tool);
     };
     const gate = new PermissionGate(this.#mode, ask, this.refusal, this.options);
     gate.#parent = this.#parent ?? this;
