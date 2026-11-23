@@ -1367,22 +1367,41 @@ setInterval(() => {}, 1000);`,
 
   // Release 8e plan, step 15 (Q26): a launch into a saved session fires InstructionsLoaded only when the session gets the
   // prompt just built: saved under another setup it does, under the same one it keeps its saved prompt and fires nothing.
-  // The hook names a program not on PATH, so a fire says its red line at once, before the request goes, and no process
-  // is left to tell apart from one that never started.
+  // Both events' hook names a program not on PATH, so each fire says its red line as it is made, with no process started.
+  // The launch fires InstructionsLoaded before SessionStart, both through the same steps of Hooks.fire, so an
+  // InstructionsLoaded line is always written before SessionStart's (step 15's review: the user's choice, no timed wait).
+  // The stand-in model holds its answer until the run's error output, read as it comes, holds SessionStart's line, so
+  // neither run can end before then, and whether InstructionsLoaded's line is there is known.
   it("with -p -r, fires InstructionsLoaded into a session saved under another setup, and not into one saved under the same", { timeout: 30_000 }, async () => {
     const { proj, data, dir } = place();
     writeFileSync(path.join(proj, "CLAUDE.md"), "Be brief.\n");
     write(dir, "same", [start("same"), message("user", "first"), message("assistant", "one")]);
     write(dir, "boxed", [{ ...start("boxed"), box: true, setup: { sandbox: "live", network: "off", git: "none" } }, message("user", "first"), message("assistant", "one")]);
-    const { url } = await standIn();
-    const hooks = { InstructionsLoaded: [{ hooks: [{ type: "command", command: "tachi-no-such-program", args: [] }] }] };
-    const env = { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) };
-    const line = "hook: InstructionsLoaded hook failed: tachi-no-such-program could not start (not found on PATH)\n";
-    const boxed = await tachiLater("-p", "next", "-r", "boxed", env);
+    const failed = (event: string) => `hook: ${event} hook failed: tachi-no-such-program could not start (not found on PATH)\n`;
+    let stderr = "";
+    const url = await answersWhen(() => stderr.includes(failed("SessionStart")));
+    const missing = [{ hooks: [{ type: "command", command: "tachi-no-such-program", args: [] }] }];
+    const env = { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks: { InstructionsLoaded: missing, SessionStart: missing } })) };
+    // tachiLater, with the error output kept where the stand-in model reads it.
+    const run = (id: string) => {
+      stderr = "";
+      const { argv, options } = launch(["-p", "next", "-r", id, env]);
+      const child = spawn(process.execPath, argv, options);
+      onTestFinished(() => void child.kill());
+      let stdout = "";
+      child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+      child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+      child.stdin.end("x\n");
+      return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+        child.on("error", reject);
+        child.on("close", (code) => resolve({ code, stdout, stderr }));
+      });
+    };
+    const boxed = await run("boxed");
     expect(boxed).toMatchObject({ code: 0, stdout: "done\n" });
-    expect(boxed.stderr).toContain(line);
-    const same = await tachiLater("-p", "next", "-r", "same", env);
-    expect(same).toMatchObject({ code: 0, stdout: "done\n", stderr: "Resumed: first.\n" });
+    expect(boxed.stderr.endsWith(`${failed("InstructionsLoaded")}${failed("SessionStart")}`)).toBe(true);
+    const same = await run("same");
+    expect(same).toEqual({ code: 0, stdout: "done\n", stderr: `Resumed: first.\n${failed("SessionStart")}` });
   });
 
   // Task 6's quality review: a window cannot start without a terminal, so it is refused before a held session is copied.
