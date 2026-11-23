@@ -6,8 +6,13 @@
 // `tachikoma: not found` and exits 127, as the inner script does; an input that ends inside the block exits 2.
 // Elsewhere than Windows the child leads a process group of its own, as setsid makes in the box, so the stand-in's
 // kill (tests/mcp/fake.ts) ends it with everything it started.
+// The child works in the system's temp folder, not in the folder this stand-in was started in, the test's own: a server
+// in the box never works in the host's folder. The child is killed by its process id (fake.ts, killGroup), and nothing
+// waits until Windows lets go of a killed process's working folder, so a clean-up removing the test's folder at once
+// could fail with EBUSY (release 8e plan, step 20).
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const [record, ...args] = process.argv.slice(2);
 const note = (entry) => appendFileSync(record, `${JSON.stringify({ self: process.pid, ...entry })}\n`);
@@ -36,7 +41,7 @@ const notFound = () => process.stderr.write("tachikoma: not found\n", () => proc
 
 function start() {
   try {
-    child = spawn(command, rest, { env, stdio: "pipe", windowsHide: true, detached: process.platform !== "win32" });
+    child = spawn(command, rest, { cwd: tmpdir(), env, stdio: "pipe", windowsHide: true, detached: process.platform !== "win32" });
   } catch {
     return notFound();
   }
