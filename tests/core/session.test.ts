@@ -38,6 +38,7 @@ import { delegateTool } from "../../src/tools/delegate.js";
 import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files.js";
 import { shellText } from "../../src/tools/shell.js";
 import { defineTool, type Tool, type ToolContext } from "../../src/tools/tool.js";
+import { screen } from "../../src/tui/describe.js";
 import { Pictures } from "../../src/tui/pictures.js";
 import { connect, type Hit, type Palace, type Scope } from "../../src/memory/client.js";
 import type { MemoryState } from "../../src/memory/memory.js";
@@ -2094,6 +2095,16 @@ process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => {
       expect(fired(inputs)).toEqual(once(error, words, `provider: ${words}`));
     });
 
+    // Step 10's review (the user's choice, 2026-11-23): last_assistant_message is the line as the window shows it, escaped as
+    // tui/describe.ts's screen() escapes a line of prose; error_details is the provider's message as it came.
+    it("sends last_assistant_message escaped as the window shows it, and error_details as the provider gave it", async () => {
+      const words = "bad\u001b[31m red\tx\r\nnext";
+      const { session, inputs } = await setup(new Lead("fake:a", [failure(500, words)]), {}, both);
+      await session.send("go");
+      expect(fired(inputs)).toEqual(once("server_error", words, "provider: bad\\u001b[31m red\tx\nnext"));
+      expect(screen({ text: `provider: ${words}` }).text).toBe("provider: bad\\u001b[31m red\tx\nnext"); // the window's own escape
+    });
+
     it("runs only the StopFailure hooks whose matcher names the error", async () => {
       const lead = new Lead("fake:a", [failure(429), failure(404)]);
       const { session, inputs } = await setup(lead, {}, [{ event: "StopFailure", names: ["rate_limit", "server_error"] }]);
@@ -2208,6 +2219,19 @@ process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => {
       await failed.session.send("now this");
       expect(failed.errors.map((e) => e.kind)).toEqual(["shortening"]);
       expect(failures(failed.inputs)).toEqual([]);
+    });
+
+    it("fires nothing when a PreCompact hook blocks the summary for a request the provider answers too long", async () => {
+      const block = JSON.stringify({ decision: "block", reason: "not now" });
+      const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long")], 1_000_000);
+      const { session, errors, inputs } = await setup(lead, {}, [{ event: "PreCompact", stdout: block }, { event: "StopFailure" }]);
+      await session.send(big);
+      await session.send("now this");
+      expect(lead.seen).toHaveLength(2); // no summary request
+      expect(errors.map((e) => [e.kind, e.message])).toEqual([
+        ["shortening", "The conversation could not be shortened (a PreCompact hook blocked it: not now); it is unchanged."],
+      ]);
+      expect(inputs().map((i) => i.hook_event_name)).toEqual(["PreCompact"]);
     });
 
     const windowLine = "max_tokens: The conversation filled the context window";

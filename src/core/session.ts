@@ -82,6 +82,9 @@ function failureKind(status: number | undefined): string {
 // The window's line for an error that ends the turn, without its `✗ ` mark (tui/App.tsx, onError), for StopFailure's
 // last_assistant_message (release 8e plan, step 10; Q9).
 const lineOf = (e: ErrorEvent) => (e.kind === "shortening" ? e.message : `${e.kind}: ${e.message}`);
+// A line escaped as the window and -p show it, as tui/describe.ts's screen() escapes a line of prose: each line's control
+// characters as escapes, its tabs and line breaks kept (step 10's review, the user's choice, 2026-11-23).
+const asShown = (line: string) => line.split(/\r?\n/).map((p) => visible(p, { tabs: true })).join("\n");
 // Claude Code's hooks reference, "Stop input": Stop or SubagentStop blocks in a row, with no tool call between, before the
 // turn ends anyway (release 8b plan, "Numbers in this plan").
 const MAX_BLOCKS = 8;
@@ -1030,14 +1033,14 @@ export class Session {
   }
 
   // StopFailure in place of Stop when a provider's error ends the lead's turn (release 8e plan, step 10; design, "The
-  // turn ending, and tool batches"), matched on `error`, sent the provider's message and `last`, the window's line for
-  // that end without its mark, the same in -p (Q9). Waited for, as Stop is, its answer ignored (answer.ts). Not for a
-  // subagent, and nothing once the user has stopped the turn, wherever the stop came.
+  // turn ending, and tool batches"), matched on `error`, sent the provider's message as it came and `last`, the window's
+  // line for that end without its mark, escaped as it is shown, the same in -p (Q9). Waited for, as Stop is, its answer
+  // ignored (answer.ts). Not for a subagent, and nothing once the user has stopped the turn, wherever the stop came.
   async #stopFailure(error: string, last: string, details: string, signal?: AbortSignal): Promise<void> {
     const { hooks } = this.opts;
     if (!hooks || this.opts.subagent || signal?.aborted) return;
     try {
-      await hooks.fire("StopFailure", { error, error_details: details, last_assistant_message: last }, { match: error, signal });
+      await hooks.fire("StopFailure", { error, error_details: details, last_assistant_message: asShown(last) }, { match: error, signal });
     } catch (err) {
       if (!signal?.aborted) throw err;
     }
