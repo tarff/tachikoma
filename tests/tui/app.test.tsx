@@ -15930,6 +15930,31 @@ describe("App's Notification hooks (release 8e plan, step 17)", { timeout: 60_00
     });
   });
 
+  // Step 17's review: copy mode's leaving line, and its review after it, are drawn in place of everything, so a question
+  // under them is not on screen. Ctrl-D twice leaves from a question while no lead turn runs (keyRouting.ts, twice), as at
+  // a background subagent's; the box's stop never ends here, so the leaving line stays up.
+  it("fires nothing for a question hidden by copy mode's leaving line, left from with Ctrl-D twice", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-notify-copy-"));
+    onTestFinished(() => removeTree(dir));
+    const manifest: Manifest = { session: "s1", pid: process.pid, root: dir, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
+    const copy: NonNullable<AppProps["copy"]> = {
+      copy: { session: "s1", folder: path.join(dir, "s1"), manifest },
+      stop: () => new Promise(() => {}),
+      protection: async () => ({ hooks: [], files: [] }),
+      ended: () => {},
+    };
+    const w = await notifying({ mount: { copy } });
+    await clocked(async () => {
+      void w.bash(asker("t1 (look)").owner);
+      await shows(w.app, "Allow t1 (look) to run: echo hi? [y/n]");
+      await wait(1_000);
+      await keys(w.app, "\u0004", "\u0004");
+      await shows(w.app, "Stopping the box...");
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+    });
+  });
+
   it("shows no line for a systemMessage in a Notification hook's answer, which is ignored", async () => {
     const w = await notifying({ answer: () => ran(JSON.stringify({ systemMessage: "Heard you" })) });
     await clocked(async () => {

@@ -657,6 +657,9 @@ export function App(props: AppProps) {
 
   // Copy mode's leaving (queue.ts, leave): its line while the box stops, or a copy with nothing to review is removed
   // (choice 121), then the review in place of everything else, with the live table of keys (release 7 plan, Task 21).
+  // Either hides any question, form or page request still waiting, so Notification's wait for it ends (release 8e plan,
+  // step 17's review; Q25).
+  if ((ui.reviewing || ui.leaving.current) && ui.copy) ui.waitOn(null);
   if (ui.reviewing && ui.copy) {
     const { protection, onEnd, read } = ui.reviewing;
     return <Review copy={ui.copy.copy} bindings={ui.table} protection={protection} onEnd={onEnd} read={read} />;
