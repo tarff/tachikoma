@@ -1354,7 +1354,7 @@ Claude Code's table:
   counts as left out.
 - **A failure blocks nothing,** and nor does a hook that cannot start or runs out of time, which is
   a failure too. There are two exceptions, at the events that can block (below), and a third: a
-  PreModelSwitch hook that runs out of time always stops the switch. A hook with
+  PreModelSwitch hook that is not `async` and runs out of time always stops the switch. A hook with
   `"onFailure": "block"` blocks whenever it fails, and for it any exit code but 0 and 2 is a
   failure, even with JSON that can be read. So does a PreToolUse hook run by a shell on Windows
   without Git Bash, unless it sets `onFailure` (Claude Code's rule; `"onFailure": "continue"` turns
@@ -1370,9 +1370,10 @@ Claude Code's table:
 - **The fields read:** `systemMessage`, on every event but StopFailure, Notification,
   InstructionsLoaded and ConfigChange, shown to you as a grey line; `continue` and `stopReason`
   (below); `decision: "block"` and `reason`; `additionalContext` in `hookSpecificOutput`, text for
-  the model, on every event but SessionEnd, PreCompact, PostCompact, PermissionRequest,
-  PermissionDenied, StopFailure, Notification, PreModelSwitch, InstructionsLoaded and
-  ConfigChange; PreToolUse's `permissionDecision`, `permissionDecisionReason` and `updatedInput`,
+  the model, on every event but SessionEnd, PreCompact, PostCompact, Elicitation,
+  ElicitationResult, PermissionRequest, PermissionDenied, StopFailure, Notification,
+  PreModelSwitch, InstructionsLoaded and ConfigChange; PreToolUse's `permissionDecision`,
+  `permissionDecisionReason` and `updatedInput`,
   and its old `decision` values `approve` and `block`, read as allow and deny; PreModelSwitch's
   `permissionDecision` (`allow`, `deny` or `ask`) and `permissionDecisionReason`;
   PermissionRequest's `decision`, in `hookSpecificOutput`, with its `behavior` (`allow` or `deny`),
@@ -1453,9 +1454,9 @@ Event by event:
     was stopped by a hook: <stopReason>`, or, after an answer, with `Background task t1
     (<description>) finished:`, the answer, and `t1 was stopped by a hook: <stopReason>` on the
     next line;
-  - at SessionStart, SessionEnd, SubagentStart, PreCompact, PostCompact, PermissionRequest,
-    PermissionDenied, StopFailure, Notification, PreModelSwitch, PostModelSwitch,
-    InstructionsLoaded and ConfigChange it is ignored.
+  - at SessionStart, SessionEnd, SubagentStart, PreCompact, PostCompact, Elicitation,
+    ElicitationResult, PermissionRequest, PermissionDenied, StopFailure, Notification,
+    PreModelSwitch, PostModelSwitch, InstructionsLoaded and ConfigChange it is ignored.
 - **PreCompact:** a block means no shortening: `The conversation could not be shortened (a
   PreCompact hook blocked it: <reason>); it is unchanged.` Plain text on exit code 0 joins what the
   summary should focus on, after `/compact`'s words. Once the summary is made, **PostCompact** runs,
@@ -1573,8 +1574,9 @@ Event by event:
 
   A key or a paste starts a 6 s wait again; each fires once, then again only after a key and
   another quiet 6 s. A question counts only while the prompt area shows it: one queued behind
-  another, or hidden by the model list, `/resume`'s list, `/mcp`'s list or copy mode's leaving line
-  and review, waits, and gets a fresh 6 s when it shows. A subagent's question counts too. Nothing
+  another, or hidden by a server's form, the model list, `/resume`'s list, `/mcp`'s list or copy
+  mode's leaving line and review, waits, and gets a fresh 6 s when it shows.
+  A subagent's question counts too. Nothing
   fires in `-p`, where nothing waits on you. A matcher naming a kind Tachikoma never sends, such
   as `auth_success`, gets no warning; it never matches, as in Claude Code.
 - **InstructionsLoaded** runs for each instruction file whose text becomes the conversation's
