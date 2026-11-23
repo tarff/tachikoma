@@ -55,15 +55,20 @@ function tachi(...args: (string | Record<string, string>)[]) {
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
-// tachi(), without blocking: for a case whose model is a stand-in served by this test (release 7 plan, Task 10).
-function tachiLater(...args: (string | Record<string, string>)[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const { argv, options } = launch(args);
+// tachi(), without blocking: for a case whose model is a stand-in served by this test (release 7 plan, Task 10). A function
+// among the arguments is handed the error output so far each time more comes (release 8e plan, step 15's re-check).
+function tachiLater(...args: (string | Record<string, string> | ((stderr: string) => void))[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const watch = args.find((a) => typeof a === "function");
+  const { argv, options } = launch(args.filter((a): a is string | Record<string, string> => typeof a !== "function"));
   const child = spawn(process.execPath, argv, options);
   onTestFinished(() => void child.kill()); // a run still going when the test ends, as a failing one can leave it
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
-  child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+  child.stderr.setEncoding("utf8").on("data", (d: string) => {
+    stderr += d;
+    watch?.(stderr);
+  });
   child.stdin.end("x\n");
   return new Promise((resolve, reject) => {
     child.on("error", reject);
@@ -1382,20 +1387,10 @@ setInterval(() => {}, 1000);`,
     const url = await answersWhen(() => stderr.includes(failed("SessionStart")));
     const missing = [{ hooks: [{ type: "command", command: "tachi-no-such-program", args: [] }] }];
     const env = { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks: { InstructionsLoaded: missing, SessionStart: missing } })) };
-    // tachiLater, with the error output kept where the stand-in model reads it.
+    // The error output kept where the stand-in model reads it, as it comes.
     const run = (id: string) => {
       stderr = "";
-      const { argv, options } = launch(["-p", "next", "-r", id, env]);
-      const child = spawn(process.execPath, argv, options);
-      onTestFinished(() => void child.kill());
-      let stdout = "";
-      child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
-      child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
-      child.stdin.end("x\n");
-      return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-        child.on("error", reject);
-        child.on("close", (code) => resolve({ code, stdout, stderr }));
-      });
+      return tachiLater("-p", "next", "-r", id, env, (so: string) => (stderr = so));
     };
     const boxed = await run("boxed");
     expect(boxed).toMatchObject({ code: 0, stdout: "done\n" });
