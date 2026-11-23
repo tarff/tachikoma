@@ -628,7 +628,12 @@ export const queue = (ui: UI, fns: Fns) => {
       return room ? ui.session.makeRoom(provider, signal) : undefined;
     });
     if (signal.aborted || problem === null) return;
-    if (problem === undefined) return ui.session.setLead(provider, switched(provider, source, spec));
+    if (problem === undefined) {
+      // After a cut the status line's number is 0 until the next reply: the kept request's size instead, null with no
+      // rate to work it out by (release 8e plan, step 14's review; the user's choice).
+      const kept = room ? ui.session.keptSize : undefined;
+      return ui.session.setLead(provider, switched(provider, source, spec, kept === undefined ? ui.stats.context : kept));
+    }
     fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "error" });
   };
   // Whether PreModelSwitch's hooks decide a switch to `to` (release 8e plan, step 13): it is another model than the one
@@ -643,11 +648,12 @@ export const queue = (ui: UI, fns: Fns) => {
   };
   // PostModelSwitch's fields for the switch to `to` about to be made, worked out now with step 12's functions, the status
   // line's context number among them, for the session to fire it with (release 8e plan, step 14); none when `to` is the
-  // model leading already, told by the ids as switchHooked tells it (Q31), so nothing fires.
-  const switched = (to: Provider, source: SwitchSource, requested: string | null) =>
+  // model leading already, told by the ids as switchHooked tells it (Q31), so nothing fires. `size`: the conversation's,
+  // when the status line's number is not it, as after a cut (leadTo).
+  const switched = (to: Provider, source: SwitchSource, requested: string | null, size: number | null = ui.stats.context) =>
     to.id === ui.session.lead.id
       ? undefined
-      : switchFields({ from: ui.session.lead.id, to: to.id, source, requested, contextTokens: ui.stats.context, lastReply: ui.session.lastReply });
+      : switchFields({ from: ui.session.lead.id, to: to.id, source, requested, contextTokens: size, lastReply: ui.session.lastReply });
   // PreModelSwitch before a switch the user asked for (release 8e plan, step 13; design, "Switching the lead model"): sent
   // step 12's fields, the status line's context number now among them (Q10), and matched on the new model's canonical name,
   // every hook running for a model with none (Q12). True when the switch goes ahead. A deny, a time-out's and an

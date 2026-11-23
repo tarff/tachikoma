@@ -14874,30 +14874,51 @@ describe("App's PostModelSwitch hooks (release 8e plan, step 14)", { timeout: 60
     expect(session.lead.id).toBe("fake:b");
   });
 
-  it("sends PostModelSwitch, after a /lead that shortened the conversation to fit, the status line's number then: 0", async () => {
+  // Step 14's review (the user): after a cut, the size is the estimate the fit check works out for the kept request, its
+  // characters times the old lead's tokens per character, and the cache write is priced from it; with no rate yet for the
+  // old lead, there is none, and no cache write either. The new lead is claude-opus-5-5, 5 USD a million for a cache write.
+  // `rate`: the old lead's reply reports this many tokens a character of its request, 0 reporting none, so it gives no
+  // rate, and the old lead counts exactly instead, as Anthropic does, so the conversation is still shortened.
+  it.each([
+    ["a rate of 2 tokens a character: the kept request's estimate", 2],
+    ["no rate yet: no size and no cache write", 0],
+  ])("sends PostModelSwitch, after a /lead that shortened the conversation to fit, %s", async (_how, rate) => {
     const runs = switchRuns();
     let window = 0;
     let size = 0;
+    let tools: CompletionRequest["tools"] = [];
     const turns: ((req: CompletionRequest) => Promise<Turn>)[] = [
       async (req) => {
-        window = characters(req.system, [], req.tools) + 1000; // the prompt does not fit the new lead's window, a summary does
+        // The prompt does not fit the new lead's window, a summary does, at the rate it is measured by.
+        window = (rate || 1) * characters(req.system, [], req.tools) + 1000;
         size = characters(req.system, req.messages, req.tools);
-        return { ...reply("noted"), usage: { ...usage, input: size } };
+        tools = req.tools;
+        return { ...reply("noted"), usage: { ...usage, input: rate * size } };
       },
       async () => reply("the summary"),
     ];
-    const lead: Provider = { id: "fake:a", complete: (req) => turns.shift()!(req) };
-    const newLead: Provider = { id: "fake:b", complete: async () => reply("hi"), contextWindow: async () => window };
+    const lead: Provider = {
+      id: "fake:a",
+      complete: (req) => turns.shift()!(req),
+      ...(rate ? {} : { countTokens: async (req: CompletionRequest) => characters(req.system, req.messages, req.tools) }),
+    };
+    const newLead: Provider = { id: "anthropic:claude-opus-5-5", complete: async () => reply("hi"), contextWindow: async () => window };
     const { app, session } = await mount([], { lead, newLead, save: true, hooks: [switchHook(), postHook()] });
     await session.send("x".repeat(2000));
-    await type(app, "/lead fake:b");
-    await until(app, "lead is now fake:b");
+    await type(app, "/lead anthropic:claude-opus-5-5");
+    await until(app, "lead is now anthropic:claude-opus-5-5");
     await waitFor(() => runs.length === 2);
-    expect(runs.map((r) => [r.event, switchFieldsOf(r.input)])).toEqual([
-      ["PreModelSwitch", toB({ context_tokens: size + usage.output })],
-      ["PostModelSwitch", toB()],
-    ]);
     expect(turns).toEqual([]); // the summary was asked for
+    expect(session.messages).toHaveLength(1); // the kept request's one message
+    const opus = (tokens: number | null) => toB({
+      to_model: "claude-opus-5-5", requested_model: "anthropic:claude-opus-5-5", context_tokens: tokens,
+      ...(tokens === null ? {} : { estimated_cache_write_usd: (tokens * 5) / 1_000_000, pricing: "catalog" }),
+    });
+    const kept = rate ? rate * characters(session.system, session.messages, tools) : null;
+    expect(runs.map((r) => [r.event, switchFieldsOf(r.input)])).toEqual([
+      ["PreModelSwitch", opus(rate * size + usage.output)],
+      ["PostModelSwitch", opus(kept)],
+    ]);
   });
 
   // The status line's number reflects the fallback's reply, which rescued the turn; the cache's warmth is timed from the

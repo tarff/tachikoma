@@ -27,19 +27,21 @@ export function canonicalName(id: string): string | undefined {
 
 // The fields both switch events are sent, from the provider ids of the lead before and after. `requested`: the words
 // typed or the settings file's value, null for a pick from the list and for "resume" whatever is handed in.
-// `contextTokens`: the status line's context number, handed in by the caller (Q10). Warm when the lead before is an
-// `anthropic` model whose own last conversation request got its reply under 5 minutes ago (Q11). The cache write is
-// priced at the new model's cache-write price per million tokens, from the price list; null, with no `pricing`, when
-// the list has no price for it.
+// `contextTokens`: the status line's context number, handed in by the caller (Q10); null when the caller has none, as
+// after a cut for /lead with no tokens-per-character rate yet (release 8e plan, step 14's review). Warm when the lead
+// before is an `anthropic` model whose own last conversation request got its reply under 5 minutes ago (Q11). The cache
+// write is priced at the new model's cache-write price per million tokens, from the price list; null, with no
+// `pricing`, when the list has no price for it or there is no size to price.
 export function switchFields(s: {
   from: string;
   to: string;
   source: SwitchSource;
   requested: string | null;
-  contextTokens: number;
+  contextTokens: number | null;
   lastReply: LastReply | undefined;
 }) {
   const rates = PRICES[s.to];
+  const cost = rates && s.contextTokens !== null ? (s.contextTokens * rates.cacheWrite) / 1_000_000 : null;
   const last = s.lastReply;
   // How long ago the reply came: below 0 when the clock was set back since, which is never warm (step 12's review).
   const ago = last ? Date.now() - last.at : -1;
@@ -51,7 +53,7 @@ export function switchFields(s: {
     context_tokens: s.contextTokens,
     prompt_cache_warm: parseLead(s.from).kind === "anthropic" && last?.lead === s.from && ago >= 0 && ago < WARM_MS,
     cache_ttl: "5m" as const,
-    estimated_cache_write_usd: rates ? (s.contextTokens * rates.cacheWrite) / 1_000_000 : null,
-    ...(rates && { pricing: "catalog" as const }),
+    estimated_cache_write_usd: cost,
+    ...(cost !== null && { pricing: "catalog" as const }),
   };
 }

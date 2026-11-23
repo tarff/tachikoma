@@ -367,6 +367,10 @@ export class Session {
   // The latest lead switch's PostModelSwitch hooks (release 8e plan, step 14). A later switch, or a load of another
   // conversation, replaces or drops it, so an older switch's text, or one finishing after that, is never sent.
   #switched: Switched | undefined;
+  // The size of the request the last makeRoom's shortening left, its characters times the lead's tokens per character,
+  // null with no rate yet; undefined when that makeRoom shortened nothing. /lead's PostModelSwitch context_tokens after a
+  // cut (release 8e plan, step 14's review; the user's choice).
+  #keptSize: number | null | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -403,6 +407,10 @@ export class Session {
 
   get lastReply(): LastReply | undefined {
     return this.#lastReply;
+  }
+
+  get keptSize(): number | null | undefined {
+    return this.#keptSize;
   }
 
   // `switched`: the switch's fields, which a caller that switched the lead hands in, worked out before the change, so
@@ -590,6 +598,7 @@ export class Session {
     // A turn running would go on with the history shortened under it, and one sent meanwhile likewise.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
+    this.#keptSize = undefined;
     try {
       if (!this.messages.length) return;
       this.#offer();
@@ -603,6 +612,9 @@ export class Session {
       if (!over) return;
       // SessionStart compact's model is `next`, the lead that reads its text once the switch is made (Task 11's code review).
       const r = await this.#shorten(lead, "between", then, signal, undefined, undefined, next.id);
+      // The kept request's size as its fit check worked it out (fit.ts, fits): the same request, the new prompt, the one
+      // kept message and this offer's tools, by the same lead's tokens per character (release 8e plan, step 14's review).
+      if (r === "done") this.#keptSize = this.#sizes.estimate(lead.id, characters(this.system, this.messages, this.#specs()));
       return r === "done" ? undefined : r === "unsaved" ? UNSAVED : r.problem;
     } finally {
       this.#running = false;
