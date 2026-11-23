@@ -13,6 +13,7 @@ import type { Memory } from "../memory/memory.js";
 import { LESSONS } from "../memory/paths.js";
 import type { Turn as SavedTurn } from "../memory/saver.js";
 import type { Cache } from "../providers/pictures.js";
+import type { LastReply } from "../providers/switching.js";
 import { lessonLabel, matchText } from "../tools/memory.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ErrorEvent, ToolOutcome } from "./bus.js";
@@ -349,6 +350,10 @@ export class Session {
   #recallDue = false;
   // The turn's calls in the order of its replies, for the lesson ask at its end (8d plan, step 26); none without it.
   #called: Called[] | undefined;
+  // When the lead's own last conversation request got its reply, a refusal included, and which lead it was, for a
+  // switch's prompt_cache_warm (release 8e plan, step 12; Q11); never a judge's, a summary's or a fallback rescue's. A
+  // subagent's are its own session's. None before the first reply.
+  #lastReply: LastReply | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -381,6 +386,10 @@ export class Session {
 
   get transcript(): Transcript | undefined {
     return this.#transcript;
+  }
+
+  get lastReply(): LastReply | undefined {
+    return this.#lastReply;
   }
 
   setLead(provider: Provider): void {
@@ -786,6 +795,7 @@ export class Session {
       let answeredBy = lead;
       let turn = await this.#request(lead, signal);
       if (!turn) return;
+      if (!("failed" in turn) && !("tooLong" in turn)) this.#lastReply = { lead: lead.id, at: Date.now() };
       // The lead's request failed: StopFailure by its HTTP status (release 8e plan, step 10).
       if ("failed" in turn) return this.#stopFailure(failureKind(turn.failed.status), lineOf(turn.failed), turn.failed.message, signal);
       // A "too long" answer, or a reply that filled the window, is never stored: the history is shortened and the request

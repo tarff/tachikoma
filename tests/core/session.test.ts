@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
 import { privateDir } from "../../src/auth/private.js";
 import type { Events } from "../../src/core/bus.js";
@@ -2277,6 +2277,76 @@ process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => {
       await other.session.send("go");
       expect(other.errors.map((e) => [e.kind, e.message])).toEqual([["max_tokens", detail]]);
       expect(fired(other.inputs)).toEqual([]);
+    });
+  });
+
+  // Release 8e plan, step 12 (Q11): the time the lead's own conversation request got its reply, kept for a switch's
+  // prompt_cache_warm; never moved by a judge's, a summary's or a fallback rescue's request. `Date` alone is faked.
+  describe("the time of the lead's last reply (release 8e plan, step 12)", () => {
+    const T1 = Date.UTC(2026, 10, 23, 12);
+    const T2 = T1 + 60_000;
+    const T3 = T1 + 120_000;
+    const clock = (at: number) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      onTestFinished(() => void vi.useRealTimers());
+      vi.setSystemTime(at);
+    };
+    // A reply that comes at `at`: the provider takes that long to answer.
+    const replyAt = (at: number, turn: Turn) => () => {
+      vi.setSystemTime(at);
+      return turn;
+    };
+
+    it("is the lead's reply's time, with the lead, and none before the first reply", async () => {
+      clock(T1);
+      const { session } = await setup(new Lead("fake:a", [reply("one"), replyAt(T3, reply("two"))]));
+      expect(session.lastReply).toBeUndefined();
+      await session.send("hi");
+      expect(session.lastReply).toEqual({ lead: "fake:a", at: T1 });
+      await session.send("again");
+      expect(session.lastReply).toEqual({ lead: "fake:a", at: T3 });
+    });
+
+    it("is the lead's own refused reply's time when a fallback rescues it, the fallback's reply not moving it", async () => {
+      clock(T1);
+      const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+      const { session } = await setup(new Lead("fake:a", [refused]), { fallback: new Lead("fake:b", [replyAt(T2, reply("answered by b"))]) });
+      await session.send("go");
+      expect(texts(session.messages.at(-1)!)).toEqual(["answered by b"]);
+      expect(session.lastReply).toEqual({ lead: "fake:a", at: T1 });
+    });
+
+    it("is not moved by a summary's request", async () => {
+      clock(T1);
+      const { session, summaries } = await setup(new Lead("fake:a", [measured("noted"), replyAt(T2, summaryOf("Compacted."))], 1_000_000));
+      await session.send(big);
+      expect(await session.compact("")).toBeUndefined();
+      expect(summaries).toEqual(["Compacted."]);
+      expect(session.lastReply).toEqual({ lead: "fake:a", at: T1 });
+    });
+
+    it("is not moved by auto mode's judge's request", async () => {
+      clock(T1);
+      const judge: Provider = {
+        id: "fake:judge",
+        complete: async () => replyAt(T2, reply(JSON.stringify({ allow: false, reason: "It was not asked for." })))(),
+      };
+      const ctx = await tempContext();
+      let session: Session | undefined;
+      const gate = new PermissionGate("auto", async () => false, undefined, { root: ctx.root, headless: false, judge: judgeOf(judge, () => session!, "", new Bus()) });
+      let atSecond: unknown;
+      const lead = new Lead("fake:a", [
+        callTool("c1", "write_file", { path: path.join(top, "elsewhere", "a.txt"), content: "x" }),
+        () => {
+          atSecond = structuredClone(session!.lastReply);
+          return replyAt(T3, reply("done"))();
+        },
+      ]);
+      session = (await setup(lead, { tools: [writeFileTool], ctx: { ...ctx, gate } })).session;
+      await session.send("write it");
+      expect(session.messages[2]!.parts[0]).toMatchObject({ type: "tool_result", isError: true, output: expect.stringContaining("It was not asked for.") });
+      expect(atSecond).toEqual({ lead: "fake:a", at: T1 });
+      expect(session.lastReply).toEqual({ lead: "fake:a", at: T3 });
     });
   });
 });
