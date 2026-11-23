@@ -192,7 +192,9 @@ export const liveEdits = (ui: UI, fns: Fns) => {
   // The lead the file names, as /lead sets it, its line saying where it came from (onLead, App.tsx). When PreModelSwitch's
   // hooks decide it (queue.ts, switchHooked), they do first, between turns as /lead's shortening runs, the queue held
   // meanwhile, and the lead is set before that ends; true then, and next() runs again once it is decided, sending what
-  // waited (release 8e plan, step 13). A switch they stop is not tried again until the file's lead changes again.
+  // waited (release 8e plan, step 13). A switch they stop is not tried again until the file's lead changes again; one
+  // they allow is made only while the file still names it, so a lead line removed or changed meanwhile wins, its own
+  // line said already (step 13's review, the user).
   const fileLead = (spec: string): boolean => {
     let provider: Provider;
     try {
@@ -212,7 +214,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     }
     void fns
       .between(async (signal) => {
-        if ((await fns.switchAllowed(provider, "command", spec, signal, true)) && !signal.aborted) set();
+        if ((await fns.switchAllowed(provider, "command", spec, signal, true)) && !signal.aborted && ui.fileNow.current.lead === spec) set();
       })
       .catch((err) => fns.note({ text: errorText(err), color: "error" }))
       .finally(fns.next);

@@ -629,10 +629,14 @@ export const queue = (ui: UI, fns: Fns) => {
     fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "error" });
   };
   // Whether PreModelSwitch's hooks decide a switch to `to` (release 8e plan, step 13): it is another model than the one
-  // leading, told by the ids alone, so a dated and an undated name are two (Q31), and a hook is in force at the event.
+  // leading, told by the ids alone, so a dated and an undated name are two (Q31), and a hook would run for it, as fire
+  // picks them (switchAllowed): matched on the canonical name, or every hook of the event for a model with none (Q12;
+  // has() takes no `every`, so it is asked only with a name).
   const switchHooked = (to: Provider) => {
-    const c = ui.hooks?.config;
-    return to.id !== ui.session.lead.id && !!c && !c.off && c.hooks.some((h) => h.event === "PreModelSwitch");
+    const hooks = ui.hooks;
+    if (to.id === ui.session.lead.id || !hooks || hooks.config.off) return false;
+    const match = canonicalName(to.id);
+    return match === undefined ? hooks.config.hooks.some((h) => h.event === "PreModelSwitch") : hooks.has("PreModelSwitch", match);
   };
   // PreModelSwitch before a switch the user asked for (release 8e plan, step 13; design, "Switching the lead model"): sent
   // step 12's fields, the status line's context number now among them (Q10), and matched on the new model's canonical name,
@@ -653,15 +657,16 @@ export const queue = (ui: UI, fns: Fns) => {
       throw err;
     }
     if (signal.aborted) return false;
-    const reason = c.reason ? `: ${c.reason}` : ""; // W6: none given, none said
+    // W6: none given, none said. A full stop after it unless it ends in one, or in ! or ? (step 13's review, the user).
+    const reason = c.reason ? `: ${c.reason}${/[.!?]$/.test(c.reason) ? "" : "."}` : ".";
     if (c.decision === "deny" || (c.decision === "ask" && file)) {
-      const line = gray(visible(`The switch to ${to.id} was stopped by a hook${reason}.${file ? ` ${SETTINGS} still names it.` : ""}`, { tabs: true }));
+      const line = gray(visible(`The switch to ${to.id} was stopped by a hook${reason}${file ? ` ${SETTINGS} still names it.` : ""}`, { tabs: true }));
       if (file) fns.note(line);
       else fns.say(line);
       return false;
     }
     if (c.decision !== "ask") return true;
-    return (await ui.asking.current?.(visible(`A hook asks${reason}. Switch to ${to.id}`, { tabs: true }), undefined, undefined, true)) ?? false;
+    return (await ui.asking.current?.(visible(`A hook asks${reason} Switch to ${to.id}`, { tabs: true }), undefined, undefined, true)) ?? false;
   };
   // /compact [words]: the whole conversation shortened now, the words its summary's focus (release 8a plan, Task 13). It
   // works as leadTo does: what is typed waits in the queue, and Ctrl-C stops it. A failure's red line comes from the

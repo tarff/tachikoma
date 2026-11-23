@@ -10682,9 +10682,11 @@ describe("App's live settings", () => {
     expect(lead.seen.length + b.seen.length).toBe(1);
   });
 
+  // Step 13's review (the user): the first, allowed once the file names another, is not applied; the newest is decided
+  // from the lead as it was.
   it.each([
     ["allowed", "fake:d", ran(), `lead is now fake:d ${FROM}`],
-    ["stopped", "fake:b", decided("deny", "No"), "The switch to fake:d was stopped by a hook: No. settings.json still names it."],
+    ["stopped", "fake:a", decided("deny", "No"), "The switch to fake:d was stopped by a hook: No. settings.json still names it."],
   ])("decides a lead the file names twice during a slow decision after that one, the newest alone (release 8e plan, step 13), %s: the lead ends %s", async (_how, id, last, line) => {
     let go!: () => void;
     const runs = switchRuns(() => (runs.length === 1 ? new Promise<Ran>((resolve) => (go = () => resolve(ran()))) : last));
@@ -10696,10 +10698,26 @@ describe("App's live settings", () => {
     await read(() => write({ lead: "ollama:d" }));
     go();
     await sees(app, line);
-    expect(preRuns(runs).map((r) => r.input.requested_model)).toEqual(["ollama:b", "ollama:d"]);
+    expect(preRuns(runs).map((r) => [r.input.requested_model, r.input.from_model])).toEqual([["ollama:b", "a"], ["ollama:d", "a"]]);
     expect(session.lead.id).toBe(id);
-    expect(flat(app)).toContain(`lead is now fake:b ${FROM}`);
+    expect(flat(app)).not.toContain("lead is now fake:b");
     expect(flat(app)).not.toContain("fake:c");
+  });
+
+  // Step 13's review (the user): a hook's allow applies the file's lead only while the file still names it.
+  it("keeps the lead when the file's lead line is removed while a hook decides it, and the hook then allows (release 8e plan, step 13)", async () => {
+    let allow!: () => void;
+    const runs = switchRuns(() => new Promise<Ran>((resolve) => (allow = () => resolve(ran()))));
+    const { app, session, where, write } = await watching([], {}, { hooks: [switchHook()] });
+    write({ lead: "ollama:b" });
+    await vi.waitFor(() => expect(runs).toHaveLength(1), WATCHED);
+    await readsOf(where)(() => write({}));
+    await sees(app, '"lead" was removed from settings.json; the lead stays fake:a');
+    allow();
+    await tick();
+    await tick();
+    expect(session.lead.id).toBe("fake:a");
+    expect(flat(app)).not.toContain(`lead is now fake:b ${FROM}`);
   });
 });
 
@@ -14517,6 +14535,47 @@ describe("App's PreModelSwitch hooks (release 8e plan, step 13)", { timeout: 60_
     await tick();
     expect(session.lead.id).toBe(id);
     expect(app.lastFrame()!.includes("lead is now fake:b")).toBe(id === "fake:b");
+  });
+
+  // Step 13's review (the user): as Esc answers no, Ctrl-C cancels the question and the switch.
+  it("cancels the hook's question and keeps the lead on Ctrl-C", async () => {
+    switchRuns(() => decided("ask", "Costly"));
+    const lead = new FakeProvider("a", [reply("still a")]);
+    const { app, session } = await mount([], { lead, hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, "A hook asks: Costly. Switch to fake:b? [y/n]");
+    await press(app, "\u0003"); // Ctrl-C
+    await until(app, "A hook asks: Costly. Switch to fake:b: no (cancelled)");
+    await gone(app, "Esc to stop");
+    await type(app, "again");
+    await until(app, "still a");
+    expect(session.lead.id).toBe("fake:a");
+    expect(app.lastFrame()).not.toContain("lead is now");
+  });
+
+  // Step 13's review (the user): a reason with its own full stop, or ! or ?, gets none added.
+  it.each([
+    ["the stop line", decided("deny", "Too costly."), `${STOPPED}: Too costly.`],
+    ["the question", decided("ask", "Costly!"), "A hook asks: Costly! Switch to fake:b? [y/n]"],
+  ])("adds no full stop after a hook's reason that ends in one, in %s", async (_where, answer, line) => {
+    switchRuns(() => answer);
+    const { app } = await mount([], { hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, line);
+    expect(app.lastFrame()).not.toMatch(/[.!?]\./);
+  });
+
+  // Step 13's review (the user): a hook counts only if it would run for this switch, as fire picks (Q12), so a switch no
+  // hook decides is made at once, with no working line.
+  it.each([
+    ["an Anthropic model it does not match: no working line", "anthropic:claude-opus-5-5", false],
+    ["another provider's model, which runs every hook: the working line", "openai:gpt-5.5", true],
+  ])("counts a hook whose matcher names claude-haiku-4-5 on a /lead to %s", async (_to, id, counted) => {
+    const runs = switchRuns(() => new Promise<Ran>((resolve) => setTimeout(() => resolve(ran()), 300)));
+    const { app } = await mount([], { newLead: named(id), hooks: [switchHook({ matcher: { names: ["claude-haiku-4-5"] } })] });
+    await type(app, "/lead x");
+    await until(app, `lead is now ${id}`);
+    expect([runs.length, app.frames.some((f) => f.includes("Esc to stop"))]).toEqual([counted ? 1 : 0, counted]);
   });
 
   it("fires nothing when /lead or a pick names the model already leading, and still says the lead is now that model (Q31)", async () => {

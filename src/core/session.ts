@@ -799,8 +799,11 @@ export class Session {
       let turn = await this.#request(lead, signal);
       if (!turn) return;
       if (!("failed" in turn) && !("tooLong" in turn)) this.#lastReply = { lead: lead.id, at: Date.now() };
-      // The lead's request failed: StopFailure by its HTTP status (release 8e plan, step 10).
-      if ("failed" in turn) return this.#stopFailure(failureKind(turn.failed.status), lineOf(turn.failed), turn.failed.message, signal);
+      // The lead's request failed: StopFailure by its HTTP status (release 8e plan, step 10). A subagent fires none, and at
+      // each of StopFailure's places here it does not call #stopFailure at all, so its ending keeps the timing it had
+      // before StopFailure (see the test-timing note above; step 13's review, the user).
+      const sub = this.opts.subagent;
+      if ("failed" in turn) return sub ? undefined : this.#stopFailure(failureKind(turn.failed.status), lineOf(turn.failed), turn.failed.message, signal);
       // A "too long" answer, or a reply that filled the window, is never stored: the history is shortened and the request
       // sent once more (plan, choices 20 and 21). Too long again, or not saved so not shortened, the turn ends: a "too long"
       // answer with the line, or as it came when the request's size or the window is not known; a reply that filled the
@@ -820,13 +823,13 @@ export class Session {
         if (!("tooLong" in turn)) {
           const shown = { kind: "max_tokens", attempted: `response from ${lead.id}`, message: turn.cutOff!.detail, lead: lead.id } as const;
           bus.emit("error", shown);
-          return this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
+          return sub ? undefined : this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
         }
         const line = await this.#tooLong(lead, window, signal);
         if (signal?.aborted) return;
         if (line) this.#say(lead, line);
         const last = line || lineOf(this.#failed(lead, turn.tooLong));
-        if (shortened) await this.#stopFailure("invalid_request", last, errorText(turn.tooLong), signal);
+        if (shortened && !sub) await this.#stopFailure("invalid_request", last, errorText(turn.tooLong), signal);
         return;
       }
       const rescue = this.#fallback;
@@ -844,7 +847,7 @@ export class Session {
         if (!turn || turn.cutOff?.kind === "refusal") bus.emit("error", refused);
         else bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
         // The fallback's request failed or was too long: StopFailure with the lead's refusal (Q21); a stop fires nothing.
-        if (!turn) return this.#stopFailure("unknown", lineOf(refused), refused.message, signal);
+        if (!turn) return sub ? undefined : this.#stopFailure("unknown", lineOf(refused), refused.message, signal);
         first = refused;
       }
       if (turn.cutOff?.kind === "refusal") {
@@ -853,13 +856,13 @@ export class Session {
         const shown = { kind: "refusal", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
         bus.emit("error", shown);
         const refusal = first ?? shown;
-        return this.#stopFailure("unknown", lineOf(refusal), refusal.message, signal);
+        return sub ? undefined : this.#stopFailure("unknown", lineOf(refusal), refusal.message, signal);
       }
       if (turn.cutOff?.kind === "window") {
         // Only the rescue's comes here, the lead's having been shortened for above: never stored either, it ends the turn.
         const shown = { kind: "max_tokens", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
         bus.emit("error", shown);
-        return this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
+        return sub ? undefined : this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
       }
       // Reported only now, so a model that still refused is never shown as having answered.
       for (const f of turn.fallbacks ?? []) {
@@ -886,7 +889,7 @@ export class Session {
         }
         // StopFailure for a true output limit alone, by the provider's mark; another early stop is in none of the
         // design's rows and fires nothing (release 8e plan, step 10; Q8; "Early stop").
-        if (turn.cutOff.limit) await this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
+        if (turn.cutOff.limit && !sub) await this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
         return;
       }
       if (calls.length === 0) {
