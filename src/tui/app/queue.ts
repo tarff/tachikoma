@@ -940,7 +940,8 @@ export const queue = (ui: UI, fns: Fns) => {
     }
     ui.session.start(how.start);
   };
-  // /clear: a new session, with the same lead and mode, its system prompt built afresh (design, "Resuming").
+  // /clear: a new session, with the same lead and mode, its system prompt built afresh (design, "Resuming"). Its files fire
+  // InstructionsLoaded as session_start once the new conversation is loaded (release 8e plan, step 15).
   const startFresh = async () => {
     const fresh = await ui.session.freshSystem();
     await switchTo(
@@ -948,6 +949,7 @@ export const queue = (ui: UI, fns: Fns) => {
       [gray("Started a new session; the last one is kept (tachi --resume lists it).")],
       { end: "clear", start: "clear" },
     );
+    ui.session.instructionsLoaded(fresh.files, "session_start");
   };
   // /resume: the folder's other saved sessions, in the list `tachi -r` shows (choice 14). True when it opened, holding the
   // queue until a pick or Esc, as the model list does.

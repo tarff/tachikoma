@@ -21,9 +21,19 @@ export interface Reached {
   how: string;
 }
 
+// A file put into the text, as InstructionsLoaded is sent it (release 8e plan, step 15): its type, Claude Code's
+// memory_type (User for the user's two files, Local for CLAUDE.local.md, Project for the rest, an import its parent's,
+// Q15), and its parent, the file whose text brought it in, none for a file the walk found itself.
+export interface InstructionFile {
+  path: string;
+  size: number;
+  type: "User" | "Project" | "Local";
+  parent?: string;
+}
+
 export interface Instructions {
   text: string; // for the system prompt; empty with no files
-  read: { path: string; size: number }[]; // in the order they appear, imports included
+  read: InstructionFile[]; // in the order they appear, imports included
   left: { path: string; why: string }[]; // files left out, and why
 }
 
@@ -182,15 +192,18 @@ export async function readInstructions(where: Where, approve: (reached: Reached[
     return pieces;
   }
 
-  const found: Loaded[] = [];
-  const add = async (abs: string, opts: Parameters<typeof load>[1]) => {
+  // Each with its type (release 8e plan, step 15).
+  const found: { f: Loaded; type: InstructionFile["type"] }[] = [];
+  const add = async (abs: string, type: InstructionFile["type"], opts: Parameters<typeof load>[1]) => {
     const f = await load(abs, opts);
-    if (f) found.push(f);
+    if (f) found.push({ f, type });
   };
-  await add(path.join(home, ".claude", "CLAUDE.md"), { trusted: true, hops: 0 });
-  await add(path.join(where.codexHome ?? path.join(home, ".codex"), "AGENTS.md"), { trusted: true, hops: 0 });
+  await add(path.join(home, ".claude", "CLAUDE.md"), "User", { trusted: true, hops: 0 });
+  await add(path.join(where.codexHome ?? path.join(home, ".codex"), "AGENTS.md"), "User", { trusted: true, hops: 0 });
   for (const folder of folders(where.top ?? path.parse(where.root).root, where.root)) {
-    for (const name of NAMES) await add(path.join(folder, name), { trusted: false, hops: 0, foundIn: folder });
+    for (const name of NAMES) {
+      await add(path.join(folder, name), name === "CLAUDE.local.md" ? "Local" : "Project", { trusted: false, hops: 0, foundIn: folder });
+    }
   }
 
   // Each round asks about the files reached since the last, each reached twice asked about once.
@@ -206,15 +219,16 @@ export async function readInstructions(where: Where, approve: (reached: Reached[
   const out = (f: Loaded) => f.shut === true;
 
   // Each file goes in once, at its first place that is allowed: a project file that a declined file
-  // imports still goes in where the walk found it.
+  // imports still goes in where the walk found it. An import is listed with the file it is composed in as its parent,
+  // taking that one's type; such a project file, put in where the walk found it, has none (release 8e plan, step 15).
   const read: Instructions["read"] = [];
   const done = new Set<Loaded>();
-  const compose = (f: Loaded): string => {
+  const compose = (f: Loaded, type: InstructionFile["type"], parent?: string): string => {
     done.add(f);
-    read.push({ path: f.path, size: f.size });
-    const body = f.pieces.map((p) => (typeof p === "string" ? p : out(p.file) || done.has(p.file) ? p.token : compose(p.file))).join("");
+    read.push({ path: f.path, size: f.size, type, ...(parent !== undefined ? { parent } : {}) });
+    const body = f.pieces.map((p) => (typeof p === "string" ? p : out(p.file) || done.has(p.file) ? p.token : compose(p.file, type, f.path))).join("");
     return `<file path="${f.path}">\n${body.trimEnd()}\n</file>`;
   };
-  const files = found.flatMap((f) => (out(f) || done.has(f) ? [] : [compose(f)]));
+  const files = found.flatMap(({ f, type }) => (out(f) || done.has(f) ? [] : [compose(f, type)]));
   return { text: files.length ? [NOTE, ...files].join("\n\n") : "", read, left };
 }

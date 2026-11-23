@@ -18,6 +18,7 @@ import { lessonLabel, matchText } from "../tools/memory.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ErrorEvent, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
+import type { InstructionFile } from "./instructions.js";
 import { type Ask, type Decision, Declined, type PermissionGate, StartAgain, StoppedFirst, visible } from "./permissions.js";
 import { dueNotes, isSetupNote, localDate, type Told, toldAfter } from "./setup.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
@@ -192,8 +193,9 @@ export interface SessionOptions {
   tools: Tool[];
   system: string; // the starting value: Session.system is the conversation's (release 8a plan, choice 3)
   // The system prompt built afresh, the instruction files read again, for a shortening (release 8a plan, choice 3),
-  // with the date and setup it is built under (system prompt plan, Task 8).
-  systemNow?: (date: string, setup?: Setup) => Promise<string>;
+  // with the date and setup it is built under (system prompt plan, Task 8), and the files it put in (release 8e plan,
+  // step 15).
+  systemNow?: (date: string, setup?: Setup) => Promise<{ system: string; files: InstructionFile[] }>;
   id?: string; // the session's, as its transcript is named: a subagent's is its own, t1 and so on
   // Where each message is saved as it joins the history (release 8a design, "Saving sessions"); none, nothing is saved.
   transcript?: Transcript;
@@ -489,12 +491,30 @@ export class Session {
 
   // The system prompt built afresh, for /clear and a shortening (release 8a plan, Task 7; system prompt plan, Task 8):
   // with today's date and the setup as found now, the instruction files read again, or without systemNow the starting
-  // one. Its date and setup go on the line that begins the new conversation.
-  async freshSystem(): Promise<{ system: string; date: string; setup?: Setup }> {
+  // one. Its date and setup go on the line that begins the new conversation. `files`: those the read put in, for
+  // InstructionsLoaded once the prompt is the conversation's; none without systemNow, which reads none (release 8e plan,
+  // step 15).
+  async freshSystem(): Promise<{ system: string; date: string; setup?: Setup; files: InstructionFile[] }> {
     const date = this.opts.setup?.today() ?? localDate();
     const setup = this.opts.setup?.now();
-    const system = this.opts.systemNow ? await this.opts.systemNow(date, setup) : this.opts.system;
-    return setup ? { system, date, setup } : { system, date };
+    const { system, files } = this.opts.systemNow ? await this.opts.systemNow(date, setup) : { system: this.opts.system, files: [] };
+    return setup ? { system, date, setup, files } : { system, date, files };
+  }
+
+  // InstructionsLoaded for each instruction file a fresh read put into the conversation's system prompt, once it is the
+  // conversation's (release 8e plan, step 15; Q26): at the launch and /clear `session_start`, after a shortening
+  // `compact`, an import `include` with its parent in place of either. Not waited for, so a slow hook cannot keep -p
+  // running, its answer ignored (step 4); `outside` a turn, as at the launch, /clear, /compact and /lead's shortening,
+  // its runs listed with the next turn. A subagent reads no files, so fires none (design). Before the window's first
+  // SessionStart, the launch's, its mcp_tool hooks are skipped without a line (Q14; hooks.ts).
+  instructionsLoaded(files: readonly InstructionFile[], reason: "session_start" | "compact", outside = true): void {
+    const { hooks } = this.opts;
+    if (!hooks || this.opts.subagent) return;
+    for (const f of files) {
+      const load_reason = f.parent === undefined ? reason : "include";
+      const fields = { file_path: f.path, memory_type: f.type, load_reason, ...(f.parent === undefined ? {} : { parent_file_path: f.parent }) };
+      void hooks.fireAndLeave("InstructionsLoaded", fields, { match: load_reason, outside });
+    }
   }
 
   // Hooks' text for the model to go with the next request, at the start of the next user message: SessionStart's (release
@@ -1332,6 +1352,9 @@ export class Session {
     // the model was told"), as a resume reads it from the line (transcript.ts).
     if (this.#told && fresh.setup) this.#told = toldAfter({ date: fresh.date, setup: fresh.setup }, message.parts);
     if (leftOut) bus.emit("hook-note", LEFT_OUT);
+    // The files read for the new prompt, now it is in force, saved (release 8e plan, step 15): in the turn that shortened,
+    // or outside one for /compact's and /lead's, made between turns.
+    this.instructionsLoaded(fresh.files, "compact", when === "between");
     // The next typed message gets the note from long-term memory (8d plan, step 24).
     this.#recallDue = true;
     bus.emit("shortened", r.summary);

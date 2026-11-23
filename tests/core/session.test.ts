@@ -9,6 +9,7 @@ import { privateDir } from "../../src/auth/private.js";
 import type { Events } from "../../src/core/bus.js";
 import { callText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
+import type { InstructionFile } from "../../src/core/instructions.js";
 import { type Ask, Declined, type Judge, PermissionGate } from "../../src/core/permissions.js";
 import { type Conversation, Session, truncateLeaving, UNSAVED } from "../../src/core/session.js";
 import { localDate, setupNote, type Told } from "../../src/core/setup.js";
@@ -1153,7 +1154,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       lead,
       tools: [echo],
       system: "t",
-      systemNow: async () => "t, read again",
+      systemNow: async () => ({ system: "t, read again", files: [] }),
       ctx,
       bus,
       transcript,
@@ -1577,7 +1578,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
     const systemNow = async () => {
       stop.abort();
-      return "t, read again";
+      return { system: "t, read again", files: [] };
     };
     const { session, summaries, transcript } = await setup(lead, { systemNow });
     await session.send(big);
@@ -1725,7 +1726,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     // The instruction files are read again after PreCompact (system prompt plan, Task 9, decision 9), so once for a
     // stop at a hook after it; the shortening ends at the stop all the same.
     let reread = 0;
-    const systemNow = async () => (reread++, "t, read again");
+    const systemNow = async () => (reread++, { system: "t, read again", files: [] });
     const { session, errors, notes, summaries, transcript, inputs } = await setup(lead, { systemNow }, [{ event, code: "never" }]);
     await session.send(big);
     const stop = new AbortController();
@@ -1952,7 +1953,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   it("builds a shortening's prompt with today's date after a date change, sending no date note", async () => {
     const built: string[] = [];
-    const systemNow = async (date: string) => (built.push(date), "t, read again");
+    const systemNow = async (date: string) => (built.push(date), { system: "t, read again", files: [] });
     const lead = new Lead("fake:a", [summaryOf("S."), reply("ok")], 1_000_000);
     const { session, transcript } = await resumed(lead, told17, OFF, "2026-11-18", { systemNow });
     expect(await session.compact("")).toBeUndefined();
@@ -1981,7 +1982,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const control = await resumed(counts(new Lead("fake:a", [summaryOf("S.")], 2_000)), told17, LIVE_ON, "2026-11-17");
     expect(await control.session.compact("")).toBeUndefined();
     const lead = counts(new Lead("fake:a", [summaryOf("S."), reply("ok")], 2_000));
-    const systemNow = async () => `t${"y".repeat(2_000)}`;
+    const systemNow = async () => ({ system: `t${"y".repeat(2_000)}`, files: [] });
     const { session, transcript } = await resumed(lead, told17, LIVE_ON, "2026-11-17", { systemNow });
     // The summary's message with the note fits under the old prompt.
     const summary = "This conversation was shortened. A summary of everything before this point:\n\nS.";
@@ -2370,6 +2371,178 @@ process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => {
       const conversation: Conversation = { id: "s2", messages: messages(session), system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 };
       session.load(conversation, keepRuns ? { keepRuns } : {});
       expect(session.lastReply).toEqual(how === "/branch" ? { lead: "fake:a", at: T1 } : undefined);
+    });
+  });
+
+  // Release 8e plan, step 15: InstructionsLoaded for each instruction file a fresh read put into the conversation's prompt,
+  // fired and not waited for (step 4). Its hooks' runs are stood in for, as step 14's are (runHook, mocked above); an
+  // mcp_tool hook's call is real.
+  describe("InstructionsLoaded (release 8e plan, step 15)", () => {
+    interface Stood { command: string; input: Record<string, unknown>; saved: boolean }
+    const ran = (stdout = "", code = 0, stderr = ""): Ran => ({ code, stdout, stderr, ms: 1 });
+    // Each run answers `answer` at once; `saved` is whether `transcript` then held a shortening's line.
+    function standIn(transcript?: Transcript, answer: Ran = ran()): Stood[] {
+      const runs: Stood[] = [];
+      const real = vi.mocked(runHook).getMockImplementation()!;
+      onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+      vi.mocked(runHook).mockImplementation(async (hook, input, opts) => {
+        const fields = input as Record<string, unknown>;
+        if (fields.hook_event_name !== "InstructionsLoaded") return real(hook, input, opts);
+        runs.push({ command: hook.command, input: fields, saved: transcript ? savedLines(transcript).some((l) => l.t === "shortened") : false });
+        return answer;
+      });
+      return runs;
+    }
+    const hook = (over: Partial<Hook> = {}): Hook => ({ event: "InstructionsLoaded", matcher: { all: true }, command: "loaded", async: false, where: "", ...over });
+    // The files a read put in: the user's CLAUDE.md, the project's, and an import of the project's.
+    const files = (): InstructionFile[] => {
+      const project = path.join(top, "proj", "CLAUDE.md");
+      return [
+        { path: path.join(top, "home", ".claude", "CLAUDE.md"), size: 4, type: "User" },
+        { path: project, size: 9, type: "Project" },
+        { path: path.join(top, "proj", "a.md"), size: 1, type: "Project", parent: project },
+      ];
+    };
+    // What each is sent of its own, by file.
+    const sent = (reason: string) => {
+      const [home, project, imported] = files();
+      return [
+        { file_path: home!.path, memory_type: "User", load_reason: reason },
+        { file_path: project!.path, memory_type: "Project", load_reason: reason },
+        { file_path: imported!.path, memory_type: "Project", load_reason: "include", parent_file_path: project!.path },
+      ];
+    };
+    const own = (runs: Stood[]) =>
+      runs.map(({ input: { file_path, memory_type, load_reason, ...rest } }) => ({
+        file_path,
+        memory_type,
+        load_reason,
+        ...("parent_file_path" in rest ? { parent_file_path: rest.parent_file_path } : {}),
+      }));
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+    const loadedRuns = (hooks: Hooks) => hooks.runs.filter((r) => r.event === "InstructionsLoaded");
+
+    // The lead's session, its hooks `given` and its prompt read again finding files() unless `found` is given.
+    async function loading(lead: Provider, given: Hook[], more: Partial<ConstructorParameters<typeof Session>[0]> = {}, found = files) {
+      const bus = new Bus();
+      const errors = collectErrors(bus);
+      const notes: string[] = [];
+      bus.on("hook-note", (line) => notes.push(line));
+      const ctx = await tempContext();
+      const where: Where = { sessionId: () => "s1", transcript: () => undefined, root: ctx.root, mode: () => "never", effort: () => undefined, lead: () => "fake:a" };
+      const hooks = new Hooks({ hooks: given, off: false, leftOut: [] }, where, bus);
+      let reads = 0;
+      const transcript = more.transcript ?? saving();
+      const session = new Session({
+        lead,
+        tools: [echo],
+        system: "t",
+        systemNow: async () => (reads++, { system: "t, read again", files: found() }),
+        ctx,
+        bus,
+        transcript,
+        hooks,
+        ...more,
+      });
+      return { session, hooks, errors, notes, transcript, reads: () => reads };
+    }
+
+    it("fires for each file as session_start, an import as include with its parent, outside a turn: listed with the next", async () => {
+      const { session, hooks, errors } = await loading(new Lead("fake:a", [reply("one")]), [hook()]);
+      const runs = standIn();
+      session.instructionsLoaded(files(), "session_start");
+      await settle();
+      expect(own(runs)).toEqual(sent("session_start"));
+      expect(runs.map((r) => r.input.hook_event_name)).toEqual(["InstructionsLoaded", "InstructionsLoaded", "InstructionsLoaded"]);
+      expect(loadedRuns(hooks)).toEqual([]);
+      await session.send("go");
+      expect(loadedRuns(hooks).map((r) => r.hook.command)).toEqual(["loaded", "loaded", "loaded"]);
+      expect(errors).toEqual([]);
+    });
+
+    it("fires as compact once a /compact's shortening is saved, its import as include, listed with the next turn", async () => {
+      const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted."), reply("next")], 1_000_000);
+      const { session, hooks, transcript } = await loading(lead, [hook()]);
+      const runs = standIn(transcript);
+      await session.send(big);
+      expect(runs).toEqual([]);
+      expect(await session.compact("")).toBeUndefined();
+      await settle();
+      expect(own(runs)).toEqual(sent("compact"));
+      expect(runs.map((r) => r.saved)).toEqual([true, true, true]);
+      expect(loadedRuns(hooks)).toEqual([]);
+      await session.send("go on");
+      expect(loadedRuns(hooks)).toHaveLength(3);
+    });
+
+    it("fires as compact once a turn's shortening is saved, listed with that turn", async () => {
+      const lead = new Lead("fake:a", [measured("noted"), summaryOf("The user sent many x."), reply("done")], 700);
+      const { session, hooks, transcript } = await loading(lead, [hook()]);
+      const runs = standIn(transcript);
+      await session.send(big);
+      await session.send("now this");
+      await settle();
+      expect(own(runs)).toEqual(sent("compact"));
+      expect(runs.map((r) => r.saved)).toEqual([true, true, true]);
+      expect(loadedRuns(hooks)).toHaveLength(3);
+    });
+
+    it.each([
+      ["its summary request fails", () => ({ turns: [measured("noted"), new Error("down")], transcript: undefined })],
+      ["its line cannot be written", () => {
+        const t = saving();
+        return { turns: [measured("noted"), summaryOf("Compacted.")], transcript: new FailsThere(t.file, t.pictures, { inherits: true }) };
+      }],
+    ])("fires nothing for a shortening whose files were read when %s", async (_how, given) => {
+      const { turns, transcript } = given();
+      const { session, reads } = await loading(new Lead("fake:a", turns, 1_000_000), [hook()], transcript ? { transcript } : {});
+      const runs = standIn();
+      await session.send(big);
+      expect(await session.compact("")).toBeDefined();
+      await settle();
+      expect([reads(), runs]).toEqual([1, []]);
+    });
+
+    it("runs only the hooks whose matcher names the load_reason", async () => {
+      const given = [hook({ command: "imports", matcher: { names: ["include"] } }), hook({ command: "starts", matcher: { names: ["session_start"] } })];
+      const { session } = await loading(new Lead("fake:a", []), given);
+      const runs = standIn();
+      session.instructionsLoaded(files(), "session_start");
+      await settle();
+      expect(runs.map((r) => [r.command, r.input.load_reason])).toEqual([["starts", "session_start"], ["starts", "session_start"], ["imports", "include"]]);
+    });
+
+    it("fires nothing for a subagent, at a call or at its shortening", async () => {
+      const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
+      const { session } = await loading(lead, [hook()], { subagent: true, id: "t1" });
+      const runs = standIn();
+      session.instructionsLoaded(files(), "session_start");
+      await session.send(big);
+      expect(await session.compact("")).toBeUndefined();
+      await settle();
+      expect(runs).toEqual([]);
+    });
+
+    it("shows no line for exit code 2, its error output or its answer", async () => {
+      const { session, errors, notes } = await loading(new Lead("fake:a", []), [hook()]);
+      const runs = standIn(undefined, ran(JSON.stringify({ systemMessage: "seen", decision: "block" }), 2, "nope"));
+      session.instructionsLoaded(files(), "session_start");
+      await settle();
+      expect([runs.length, errors, notes]).toEqual([3, [], []]);
+    });
+
+    // Q14: as 8c skips them at the launch's SessionStart, before the window's first SessionStart (hooks.ts); /clear's, after
+    // it, runs them, this one failing as its server is not running.
+    it("does not run an mcp_tool hook at the launch, saying nothing, and runs it at /clear", async () => {
+      const mcp = hook({ command: "", mcp: { server: "notes", tool: "look", input: {} } });
+      const { session, errors } = await loading(new Lead("fake:a", []), [mcp], {}, () => files().slice(1, 2));
+      session.instructionsLoaded(files().slice(1, 2), "session_start");
+      await settle();
+      expect(errors).toEqual([]);
+      session.start("startup");
+      session.instructionsLoaded(files().slice(1, 2), "session_start");
+      await vi.waitFor(() => expect(errors.map((e) => [e.kind, e.attempted])).toEqual([["hook", "InstructionsLoaded hook"]]));
+      expect(errors[0]!.message).toContain("notes is not running");
     });
   });
 });
@@ -4759,10 +4932,10 @@ describe("Session, notes to the model", { timeout: 15_000 }, () => {
   it("builds the fresh prompt with today's date and the setup now, and gives them back", async () => {
     const session = new Session({
       lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
-      systemNow: async (date, setup) => `built ${date} ${setup?.sandbox}`,
+      systemNow: async (date, setup) => ({ system: `built ${date} ${setup?.sandbox}`, files: [] }),
       setup: { now: () => LIVE_ON, today: () => "2026-11-18", root: host.root, platform: host.platform },
     });
-    const built = { system: "built 2026-11-18 live", date: "2026-11-18", setup: LIVE_ON };
+    const built = { system: "built 2026-11-18 live", date: "2026-11-18", setup: LIVE_ON, files: [] };
     expect(await session.freshSystem()).toEqual(built);
     const plain = new Session({
       lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),

@@ -6,7 +6,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { privateDir } from "./auth/private.js";
 import type { Bus } from "./core/bus.js";
-import { type Instructions, type Reached, readInstructions, type Where } from "./core/instructions.js";
+import { type InstructionFile, type Instructions, type Reached, readInstructions, type Where } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
 import { MEMORY_LINE, subagentPrompt } from "./core/prompt.js";
 import { type Conversation, type Ended, Session, type SessionOptions } from "./core/session.js";
@@ -897,13 +897,16 @@ export function chooseSession(
 // A session opened for this window: the conversation for Session.load; the grey lines to say, one that names the session
 // cut to the screen's width; the lines for the model about subagents whose answers were lost and background commands
 // that had not ended, which go into its next request as waiting text does, with `reported` to call once they have been
-// handed out; and its lock's release.
+// handed out; and its lock's release. `built`: its system prompt is the one just built, a new session's always, a resumed
+// one's when the setup or the memory line changed, so the launch fires InstructionsLoaded only then (release 8e plan, step
+// 15; Q26).
 export interface Opened {
   conversation: Conversation;
   lines: { text: string; oneLine?: boolean }[];
   lost: string[];
   reported: () => void;
   release: () => void;
+  built: boolean;
 }
 
 // A new session's transcript, its start line first, then its name, then its lock (release 8a plan, choices 4 and 8).
@@ -936,7 +939,7 @@ export function newSaved(
     tools: start.tools,
     told: { date: start.date, setup: start.setup },
   };
-  return { conversation, lines: [], lost: [], reported: () => {}, release: () => lock?.release() };
+  return { conversation, lines: [], lost: [], reported: () => {}, release: () => lock?.release(), built: true };
 }
 
 // The reason a copy is not made when its new id's lock is held. Approved by the user, 2026-11-06.
@@ -1101,6 +1104,7 @@ export function resumed(
     ),
     reported,
     release: s.release,
+    built: rebuilt || remembered,
   };
 }
 
@@ -1174,15 +1178,16 @@ export class WindowSessions {
 // again. A file outside the project goes in only when the launch's question allowed it; one not asked about then is left
 // out without asking (user, 2026-11-06: "Re-read, reuse launch's answer"). `asked` holds the launch's answer for each
 // path it asked about, or is "all" in never mode, where the launch read them without asking. The lead's first lines are
-// built again with that day's date and the setup as found then (system prompt plan, Task 8; design, "The date").
+// built again with that day's date and the setup as found then (system prompt plan, Task 8; design, "The date"). The files
+// put in come back beside the prompt, for InstructionsLoaded once it is the conversation's (release 8e plan, step 15).
 export function systemAgain(
   first: (date: string, setup?: Setup) => string,
   where: Where,
   asked: ReadonlyMap<string, boolean> | "all",
-): (date: string, setup?: Setup) => Promise<string> {
+): (date: string, setup?: Setup) => Promise<{ system: string; files: InstructionFile[] }> {
   return async (date, setup) => {
     const again = await readInstructions(where, async (reached) => asked === "all" || reached.every((r) => asked.get(r.path) === true));
-    return [first(date, setup), again.text].filter(Boolean).join("\n\n");
+    return { system: [first(date, setup), again.text].filter(Boolean).join("\n\n"), files: again.read };
   };
 }
 

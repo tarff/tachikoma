@@ -1300,6 +1300,91 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(alive()).toBe(false);
   });
 
+  // A stand-in model answering "done" to each request once `ready()` holds, looking every 20 ms.
+  async function answersWhen(ready: () => boolean) {
+    const server = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const answer = () => {
+          if (!ready()) return void setTimeout(answer, 20);
+          const message = { role: "assistant", content: "done" };
+          const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+          const body = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [{ index: 0, finish_reason: "stop", message }], usage };
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+        };
+        answer();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+  }
+
+  // Release 8e plan, step 15 (Codex round 1, point 7; round 2, point 8): the launch's InstructionsLoaded is not waited
+  // for, so a hook that never ends cannot keep the run going: it is stopped once the run is done, saying nothing. The hook
+  // is an ordinary one, not async; it writes its input and then its process id to files in the test's folder, and never
+  // ends. The stand-in model answers only once the id's file is there, so the hook is known to have started before the
+  // answer. Up to 10 s for Windows to end it, as above.
+  it("with -p, fires InstructionsLoaded at the launch without waiting for its hook, which is stopped once the run is done", async () => {
+    const { proj, data } = place();
+    writeFileSync(path.join(proj, "CLAUDE.md"), "Be brief.\n");
+    const pidFile = path.join(path.dirname(proj), "pid");
+    const inputFile = path.join(path.dirname(proj), "input.json");
+    const script = path.join(path.dirname(proj), "hook.cjs");
+    writeFileSync(
+      script,
+      `const fs = require("fs");
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.writeFileSync(${JSON.stringify(inputFile)}, text);
+  fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+});
+setInterval(() => {}, 1000);`,
+    );
+    const url = await answersWhen(() => existsSync(pidFile));
+    const hooks = { InstructionsLoaded: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const r = await tachiLater("-p", "hi", { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) });
+    expect(r).toEqual({ code: 0, stdout: "done\n", stderr: "" });
+    const input = JSON.parse(readFileSync(inputFile, "utf8")) as Record<string, unknown>;
+    expect(input).toMatchObject({ hook_event_name: "InstructionsLoaded", file_path: path.join(proj, "CLAUDE.md"), memory_type: "Project", load_reason: "session_start" });
+    expect("parent_file_path" in input).toBe(false);
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    onTestFinished(() => void (alive() && process.kill(pid)));
+    for (let i = 0; alive() && i < 500; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(alive()).toBe(false);
+  });
+
+  // Release 8e plan, step 15 (Q26): a launch into a saved session fires InstructionsLoaded only when the session gets the
+  // prompt just built: saved under another setup it does, under the same one it keeps its saved prompt and fires nothing.
+  // The hook names a program not on PATH, so a fire says its red line at once, before the request goes, and no process
+  // is left to tell apart from one that never started.
+  it("with -p -r, fires InstructionsLoaded into a session saved under another setup, and not into one saved under the same", { timeout: 30_000 }, async () => {
+    const { proj, data, dir } = place();
+    writeFileSync(path.join(proj, "CLAUDE.md"), "Be brief.\n");
+    write(dir, "same", [start("same"), message("user", "first"), message("assistant", "one")]);
+    write(dir, "boxed", [{ ...start("boxed"), box: true, setup: { sandbox: "live", network: "off", git: "none" } }, message("user", "first"), message("assistant", "one")]);
+    const { url } = await standIn();
+    const hooks = { InstructionsLoaded: [{ hooks: [{ type: "command", command: "tachi-no-such-program", args: [] }] }] };
+    const env = { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) };
+    const line = "hook: InstructionsLoaded hook failed: tachi-no-such-program could not start (not found on PATH)\n";
+    const boxed = await tachiLater("-p", "next", "-r", "boxed", env);
+    expect(boxed).toMatchObject({ code: 0, stdout: "done\n" });
+    expect(boxed.stderr).toContain(line);
+    const same = await tachiLater("-p", "next", "-r", "same", env);
+    expect(same).toMatchObject({ code: 0, stdout: "done\n", stderr: "Resumed: first.\n" });
+  });
+
   // Task 6's quality review: a window cannot start without a terminal, so it is refused before a held session is copied.
   // The lock is this test process's own, as above.
   it("refuses -c without a terminal before copying a session another window has open", () => {

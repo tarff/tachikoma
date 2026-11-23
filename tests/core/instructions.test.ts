@@ -250,3 +250,72 @@ describe("readInstructions, files that lead elsewhere", () => {
     expect(r.left).toEqual([{ path: "/dev/zero", why: "not a file" }]);
   });
 });
+
+// Release 8e plan, step 15: what InstructionsLoaded is sent of each file put in, read from the text as composed: its type
+// (User for the user's two files, Local for CLAUDE.local.md, Project for the rest, an import its parent's, Q15) and its
+// parent, the file whose text brought it in, none for a file the walk found itself.
+describe("readInstructions, what is known about each file (release 8e plan, step 15)", () => {
+  // The entry for the file at `p` with body `body`, of `type`, brought in by the file at `parent` when given.
+  const entry = (m: Machine, p: string, body: string, type: string, parent?: string) => ({
+    path: m.at(p),
+    size: body.length,
+    type,
+    ...(parent ? { parent: m.at(parent) } : {}),
+  });
+
+  it("gives each file its type and parent: the user's files, a project CLAUDE.md, CLAUDE.local.md, AGENTS.md and imports of imports", async () => {
+    const m = await machine({
+      "home/.claude/CLAUDE.md": "user @~/notes/a.md",
+      "home/notes/a.md": "a @b.md",
+      "home/notes/b.md": "b",
+      "codex/AGENTS.md": "codex",
+      "work/proj/CLAUDE.md": "proj @docs/c.md",
+      "work/proj/docs/c.md": "c @d.md",
+      "work/proj/docs/d.md": "d",
+      "work/proj/CLAUDE.local.md": "local @e.md",
+      "work/proj/e.md": "e",
+      "work/proj/AGENTS.md": "agents",
+    });
+    const r = await read(m, unasked, m.at("codex"));
+    expect(r.read).toEqual([
+      entry(m, "home/.claude/CLAUDE.md", "user @~/notes/a.md", "User"),
+      entry(m, "home/notes/a.md", "a @b.md", "User", "home/.claude/CLAUDE.md"),
+      entry(m, "home/notes/b.md", "b", "User", "home/notes/a.md"),
+      entry(m, "codex/AGENTS.md", "codex", "User"),
+      entry(m, "work/proj/CLAUDE.md", "proj @docs/c.md", "Project"),
+      entry(m, "work/proj/docs/c.md", "c @d.md", "Project", "work/proj/CLAUDE.md"),
+      entry(m, "work/proj/docs/d.md", "d", "Project", "work/proj/docs/c.md"),
+      entry(m, "work/proj/CLAUDE.local.md", "local @e.md", "Local"),
+      entry(m, "work/proj/e.md", "e", "Local", "work/proj/CLAUDE.local.md"),
+      entry(m, "work/proj/AGENTS.md", "agents", "Project"),
+    ]);
+  });
+
+  it("lists a file two files import once, with the first as its parent and that one's type", async () => {
+    const m = await machine({
+      "work/proj/CLAUDE.local.md": "local @shared.md",
+      "work/proj/AGENTS.md": "agents @shared.md",
+      "work/proj/shared.md": "shared",
+    });
+    const r = await read(m);
+    expect(r.read).toEqual([
+      entry(m, "work/proj/CLAUDE.local.md", "local @shared.md", "Local"),
+      entry(m, "work/proj/shared.md", "shared", "Local", "work/proj/CLAUDE.local.md"),
+      entry(m, "work/proj/AGENTS.md", "agents @shared.md", "Project"),
+    ]);
+  });
+
+  it("gives a project file that a declined file imports, put in where the walk found it, no parent", async () => {
+    const m = await machine({ "elsewhere/x.md": "x @../work/proj/AGENTS.md", "work/proj/AGENTS.md": "agents" });
+    const see = `see @${m.at("elsewhere/x.md")}`;
+    await writeFile(m.at("work/proj/CLAUDE.md"), see);
+    const declined = await read(m, async () => false);
+    expect(declined.read).toEqual([entry(m, "work/proj/CLAUDE.md", see, "Project"), entry(m, "work/proj/AGENTS.md", "agents", "Project")]);
+    const allowed = await read(m, async () => true);
+    expect(allowed.read).toEqual([
+      entry(m, "work/proj/CLAUDE.md", see, "Project"),
+      entry(m, "elsewhere/x.md", "x @../work/proj/AGENTS.md", "Project", "work/proj/CLAUDE.md"),
+      entry(m, "work/proj/AGENTS.md", "agents", "Project", "elsewhere/x.md"),
+    ]);
+  });
+});

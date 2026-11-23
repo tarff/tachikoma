@@ -989,6 +989,9 @@ if (parsed.print !== undefined) {
   // Loaded once the error listeners are on, so a start line or mend that failed is said now, not at the first write.
   for (const line of said) console.error(gray(line.text));
   session.load(opened.conversation);
+  // The launch's instruction files, when the conversation's prompt is the one just built from them (release 8e plan, step
+  // 15; Q26), before SessionStart, so their mcp_tool hooks are skipped as the launch's SessionStart's are (Q14).
+  if (opened.built) session.instructionsLoaded(instructions.read, "session_start");
   session.start(source);
   // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us. The first Ctrl-C stops
   // the turn, or the wait for background commands; a second ends at once through process.exit, so the exit handlers still
@@ -1214,6 +1217,7 @@ if (parsed.print !== undefined) {
   for (const line of mcpLines(servers, { print: false })) bus.emit("mcp-note", line);
   for (const message of unsaved) bus.emit("error", { kind: "mcp", attempted: "MCP answers", message, lead: session.lead.id });
   session.load(opened.conversation);
+  if (opened.built) session.instructionsLoaded(instructions.read, "session_start"); // as for -p, above
   session.start(source);
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);

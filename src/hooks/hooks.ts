@@ -210,8 +210,9 @@ export class Hooks {
     const { hooks, off } = this.#shared.config;
     // Claude Code skips mcp_tool hooks at the launch's SessionStart, without a line, as its servers are still connecting
     // (release 8c plan, choice 21): the window's first SessionStart, whatever its source, as -c, -r and --fork-session
-    // launch with another (cli.tsx).
-    const launch = event === "SessionStart" && !this.#shared.launched;
+    // launch with another (cli.tsx). The launch's InstructionsLoaded, fired before that SessionStart (cli.tsx), skips them
+    // so too (release 8e plan, step 15; Q14).
+    const launch = (event === "SessionStart" || event === "InstructionsLoaded") && !this.#shared.launched;
     if (event === "SessionStart") this.#shared.launched = true;
     const seen = new Set<string>();
     const picked = off ? [] : hooks.filter((h) => {

@@ -30,6 +30,7 @@ import { projectFile } from "../../src/core/datadir.js";
 import { attachErrorLog } from "../../src/core/errorlog.js";
 import { exportText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
+import type { InstructionFile } from "../../src/core/instructions.js";
 import { MEMORY_LINE } from "../../src/core/prompt.js";
 import { listSessions, openSession } from "../../src/core/sessions.js";
 import { INSTRUCTIONS } from "../../src/core/shorten.js";
@@ -208,6 +209,7 @@ async function mount(
     mcp?: (bus: Bus) => { servers: Servers; project?: ServerConfig[] };
     theme?: Theme; // the look and palette, as cli.tsx gives them; the dark full one when not given (TUI design pass, Task 7)
     memory?: AppProps["memory"]; // long-term memory in the window (8d plan, step 28); none when not given
+    instructions?: InstructionFile[]; // the files the instruction files' read again puts in (release 8e plan, step 15); none when not given
   } = {},
 ) {
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
@@ -264,7 +266,8 @@ async function mount(
     lead,
     tools,
     system: "t",
-    systemNow: async () => "t, read again", // the instruction files read again (release 8a plan, choice 3)
+    // The instruction files read again (release 8a plan, choice 3), and those they put in (release 8e plan, step 15).
+    systemNow: async () => ({ system: "t, read again", files: opts.instructions ?? [] }),
     ctx: { ...ctx, gate },
     bus,
     pictures,
@@ -11194,6 +11197,67 @@ describe("App's sessions", () => {
     await until(app, "Resumed: lead a's session, kept as it was.");
     await tick();
     expect([session.lead.id, runs]).toEqual(["fake:a", []]);
+  });
+
+  // Release 8e plan, step 15: InstructionsLoaded's runs, stood in for as switchRuns stands in for the switch events', each
+  // answering at once; an mcp_tool hook's call is real.
+  const loadedRuns = () => {
+    const runs: Record<string, unknown>[] = [];
+    const real = vi.mocked(runHook).getMockImplementation()!;
+    onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+    vi.mocked(runHook).mockImplementation(async (hook, input, opts) => {
+      const fields = input as Record<string, unknown>;
+      if (fields.hook_event_name !== "InstructionsLoaded") return real(hook, input, opts);
+      runs.push(fields);
+      return ran();
+    });
+    return runs;
+  };
+  const loadedHook: Hook = { event: "InstructionsLoaded", matcher: { all: true }, command: "loaded", async: false, where: "" };
+
+  it("fires InstructionsLoaded at /clear for each file read again, once the new conversation is loaded, an mcp_tool hook too (release 8e plan, step 15)", async () => {
+    const runs = loadedRuns();
+    const project = path.join(dir, "CLAUDE.md"); // named only: nothing reads it
+    const imported = path.join(dir, "a.md");
+    const instructions: InstructionFile[] = [{ path: project, size: 3, type: "Project" }, { path: imported, size: 1, type: "Project", parent: project }];
+    const mcpHook: Hook = { ...loadedHook, command: "", mcp: { server: "notes", tool: "look", input: {} } };
+    const { app, session } = await saved([], { hooks: [loadedHook, mcpHook], instructions });
+    const old = session.id;
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    await waitFor(() => runs.length === 2);
+    expect(session.id).not.toBe(old);
+    expect(runs.map((r) => [r.session_id, r.file_path, r.memory_type, r.load_reason, r.parent_file_path])).toEqual([
+      [session.id, project, "Project", "session_start", undefined],
+      [session.id, imported, "Project", "include", project],
+    ]);
+    await until(app, "InstructionsLoaded hook failed:");
+    expect(bare(stripVTControlCharacters(app.lastFrame()!))).toContain(bare("notes is not running"));
+  });
+
+  it("fires no InstructionsLoaded at /resume into a session saved under another setup, nor at /branch, though each loads the launch's prompt; /clear after fires (release 8e plan, step 15)", async () => {
+    const first = await earlier("remember plum");
+    const file = fileOf(first.session.id);
+    const [head, ...rest] = readFileSync(file, "utf8").split("\n");
+    const boxed = { ...JSON.parse(head!), box: true, setup: { sandbox: "live", network: "off", git: "none" } };
+    writeFileSync(file, [JSON.stringify(boxed), ...rest].join("\n"));
+    const runs = loadedRuns();
+    const instructions: InstructionFile[] = [{ path: path.join(dir, "CLAUDE.md"), size: 3, type: "Project" }];
+    const { app, session } = await saved([], { hooks: [loadedHook], instructions, prompt: "The launch's prompt." });
+    await type(app, "/resume");
+    await until(app, "remember plum");
+    await press(app, "\r");
+    await until(app, "Resumed: remember plum.");
+    expect([session.id, session.system]).toEqual([first.session.id, "The launch's prompt."]);
+    await type(app, "/branch");
+    await until(app, "Branched:");
+    expect(session.system).toBe("The launch's prompt.");
+    await tick();
+    expect(runs).toEqual([]);
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    await waitFor(() => runs.length === 1);
+    expect([runs[0]!.session_id, runs[0]!.load_reason]).toEqual([session.id, "session_start"]);
   });
 
   it("keeps the window's lead when a resumed session's saved lead cannot be made, saying so", async () => {

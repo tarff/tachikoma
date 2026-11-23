@@ -78,8 +78,8 @@ describe("the instruction files on screen", () => {
   const r = {
     text: "...",
     read: [
-      { path: path.join(home, ".claude", "CLAUDE.md"), size: 1200 },
-      { path: path.join(proj, "AGENTS.md"), size: 3100 },
+      { path: path.join(home, ".claude", "CLAUDE.md"), size: 1200, type: "User" as const },
+      { path: path.join(proj, "AGENTS.md"), size: 3100, type: "Project" as const },
     ],
     left: [{ path: path.resolve("/elsewhere/x.md"), why: "not allowed" }],
   };
@@ -1575,6 +1575,20 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       });
     });
 
+    // Release 8e plan, step 15 (Q26; Codex round 2, point 10): the opening hands out whether the session got this launch's
+    // prompt, just built, so the launch fires InstructionsLoaded only then: never by comparing prompt texts or looking for
+    // the rebuilt line, which a change of the memory line alone does not say.
+    it("says whether the session got this launch's prompt: no for the same setup, yes for another, and yes for the memory line alone", () => {
+      for (const id of ["q26-same", "q26-box", "q26-memory"]) saved(dir, id, chat(start(id)));
+      const same = open("q26-same", { prompt: { setup: OFF, full: "Other words." } });
+      expect([same.built, same.conversation.system]).toEqual([false, "Saved prompt."]);
+      const box = open("q26-box", { prompt: { setup: LIVE_OFF, full: "Box prompt." } });
+      expect([box.built, box.conversation.system]).toEqual([true, "Box prompt."]);
+      const memory = open("q26-memory", { prompt: { setup: OFF, full: `Saved prompt.\n\n${MEMORY_LINE}` } });
+      expect([memory.built, memory.conversation.system]).toEqual([true, `Saved prompt.\n\n${MEMORY_LINE}`]);
+      expect(memory.lines.map((l) => l.text)).toEqual(["Resumed: hi."]); // no rebuilt line
+    });
+
     it("rebuilds the prompt of a session saved in the sandbox before the setup was recorded, saying why", () => {
       const inBox = saved(dir, "oldbox", chat({ ...start("oldbox"), box: true }));
       saved(dir, "oldhost", chat({ ...start("oldhost"), box: true }));
@@ -1896,16 +1910,34 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     expect(launch.text).toContain("allowed words");
     writeFileSync(path.join(root, "CLAUDE.md"), "second words\n@../outside/allowed.md\n");
     const again = systemAgain((date) => `The base of ${date}.`, where, asked);
-    let text = await again("2026-11-18");
+    let text = (await again("2026-11-18")).system;
     expect(text.startsWith("The base of 2026-11-18.\n\n")).toBe(true);
     expect(text).toContain("second words");
     expect(text).toContain("allowed words");
     writeFileSync(path.join(root, "CLAUDE.md"), "third words\n@../outside/new.md\n");
-    text = await again("2026-11-18");
+    text = (await again("2026-11-18")).system;
     expect(text).toContain("third words");
     expect(text).not.toContain("new words");
     const all = systemAgain(() => "The base.", where, "all");
-    expect(await all("2026-11-18")).toContain("new words"); // never mode reads them, as at launch
+    expect((await all("2026-11-18")).system).toContain("new words"); // never mode reads them, as at launch
+  });
+
+  // Release 8e plan, step 15: the files read again come back beside the text, for InstructionsLoaded to be sent once the
+  // text is the conversation's prompt; those left out are not among them.
+  it("hands back the instruction files read again beside the prompt, those left out not among them", async () => {
+    const own = mkdtempSync(path.join(tmpdir(), "tachi-clilib-instr-"));
+    onTestFinished(() => removeTree(own));
+    const [home, root, outside] = [path.join(own, "home"), path.join(own, "project"), path.join(own, "outside")];
+    for (const d of [home, root, outside]) mkdirSync(d);
+    writeFileSync(path.join(outside, "new.md"), "new words");
+    writeFileSync(path.join(root, "a.md"), "a words");
+    writeFileSync(path.join(root, "CLAUDE.md"), "@a.md @../outside/new.md\n");
+    const where = { root, home, top: root };
+    const claude = { path: path.join(root, "CLAUDE.md"), size: 25, type: "Project" };
+    const a = { path: path.join(root, "a.md"), size: 7, type: "Project", parent: claude.path };
+    expect((await systemAgain(() => "The base.", where, new Map())("2026-11-18")).files).toEqual([claude, a]);
+    const all = await systemAgain(() => "The base.", where, "all")("2026-11-18");
+    expect(all.files).toEqual([claude, a, { path: path.join(outside, "new.md"), size: 9, type: "Project", parent: claude.path }]);
   });
 
   describe("newSaved", () => {
@@ -1922,6 +1954,13 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       const first = { t: "start", v: 1, id: "fresh", lead: "fake:a", print: true, system: "New prompt.", box: false };
       expect(lines).toMatchObject([{ ...first, ...recorded, tools }, { t: "name", name: "my name" }]);
       expect(read(path.join(dir, "fresh.lock"))).toBe(String(process.pid));
+    });
+
+    // Release 8e plan, step 15: a new session always has the prompt just built, so the launch fires InstructionsLoaded.
+    it("says a new session got the prompt just built", () => {
+      const o = newSaved(dir, { ...begin, ...recorded, id: "fresh-built", print: true });
+      onTestFinished(o.release);
+      expect(o.built).toBe(true);
     });
 
     it("goes on unsaved, taking no lock, when a file stands where the sessions folder should be", () => {
