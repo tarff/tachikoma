@@ -4025,12 +4025,15 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const s = await setup({ mode: "ask", says, turns, answers: [true, true] });
     await s.session.send("go");
     expect(s.ran).toEqual(["echo other", "echo two"]);
-    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([
+    const parts = s.lead.seen[1]!.at(-1)!.parts;
+    expect(parts.filter((p) => p.type === "tool_result")).toEqual([
       { type: "tool_result", callId: "c1", output: "ran echo other", isError: false },
       { type: "tool_result", callId: "c2", output: "ran echo two", isError: false },
-      hookText("PreToolUse", "other call"),
-      hookText("PreToolUse", "restart"),
     ]);
+    // In whatever order the two calls' texts landed: each once, the first pass's not at all.
+    const told = parts.filter((p) => p.type !== "tool_result");
+    expect(told).toHaveLength(2);
+    expect(told).toEqual(expect.arrayContaining([hookText("PreToolUse", "other call"), hookText("PreToolUse", "restart")]));
   });
 
   it("ends a call stopped during its PermissionRequest restart as cancelled, with no second restart", async () => {
