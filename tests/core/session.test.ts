@@ -3815,6 +3815,32 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(asked).toEqual([]);
   });
 
+  // As at PermissionDenied: a throw that is not a stop, here a listener of the hooks' lines, is said as a red line, and the
+  // PermissionRequest hooks decide nothing, so the question goes ahead.
+  it("puts the question when a listener of the hooks' lines throws at PermissionRequest, saying so as a red line", async () => {
+    const said = JSON.stringify({ systemMessage: "hello", hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
+    const s = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: said }], turns: shellCall("echo hi"), answers: [true] });
+    s.bus.on("hook-note", () => {
+      throw new Error("listener broke");
+    });
+    await s.session.send("go");
+    expect(requested(s)).toHaveLength(1);
+    expect([s.asked, s.ran, s.outcomes]).toEqual([[{ summary: "run: echo hi" }], ["echo hi"], ["ok"]]);
+    expect(s.errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([["hook", "PermissionRequest hook", "PermissionRequest hook failed: listener broke"]]);
+  });
+
+  // Q6: a hook's allow under auto mode's pause runs that one call, and the pause stays: the next call is still put to the
+  // user with the pause's line, not handed to the judge.
+  it("leaves auto mode paused after a PermissionRequest allow under the pause", async () => {
+    const turns = [1, 2, 3, 4, 5].map((n) => callTool(`c${n}`, "shell", { command: `echo ${n}` }));
+    const s = await setup({ mode: "auto", says: [{ event: "PermissionRequest", stdout: "", seq: [ALLOW] }], turns: [...turns, reply("ok")], judge: NO });
+    await s.session.send("go");
+    expect(s.judged).toEqual(["run: echo 1", "run: echo 2", "run: echo 3"]);
+    expect(s.ran).toEqual(["echo 4"]);
+    expect(s.asked).toEqual([{ summary: "run: echo 5", note: "Auto mode paused after 3 refusals; approving this resumes it." }]);
+    expect(requested(s)).toHaveLength(2);
+  });
+
   it("does not fire PermissionRequest for the question to send a request again without its pictures", async () => {
     const { script, out } = await hookFolder();
     const hook: Hook = { event: "PermissionRequest", matcher: { all: true }, command: process.execPath, args: [script, out, ALLOW, "0"], async: false, where: "" };
