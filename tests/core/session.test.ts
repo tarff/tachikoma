@@ -4381,6 +4381,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     ["a decision block", batchSays(block("Lint first")), "Lint first"],
     ["a continue: false", batchSays(stops("Enough")), "Enough"],
     ["an exit code 2 with no error output", batchSays("", { code: 2 }), ""],
+    ["a decision block with no reason", batchSays(JSON.stringify({ decision: "block" })), ""],
+    ["a continue: false with no stopReason", batchSays(stops()), ""],
   ])("ends the turn at a PostToolBatch hook's %s, the results stored, its reason going with the next prompt's request", async (_name, says, reason) => {
     const s = await setup({ mode: "never", says: [says], turns: [callTool("c1", "shell", { command: "echo hi" }), reply("ok")] });
     expect(await s.session.send("go")).toEqual({ stopped: reason });
