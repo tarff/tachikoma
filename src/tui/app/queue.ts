@@ -13,7 +13,7 @@ import { CANCELLED } from "../../core/shorten.js";
 import type { CommandTask, Task } from "../../core/tasks.js";
 import { errorText, type Part, type Picture, type Provider } from "../../core/types.js";
 import { droppedNote } from "../../exec/log.js";
-import { hookName } from "../../hooks/answer.js";
+import { type Combined, hookName } from "../../hooks/answer.js";
 import { limitOf } from "../../hooks/hooks.js";
 import { KEYBINDINGS } from "../../keybindings.js";
 import { NotReached, type Server } from "../../mcp/server.js";
@@ -21,6 +21,7 @@ import { until } from "../../mcp/tools.js";
 import { type MemoryState, NO_UV } from "../../memory/memory.js";
 import { LESSONS } from "../../memory/paths.js";
 import { LONGEST_ENTRY } from "../../memory/saver.js";
+import { canonicalName, switchFields } from "../../providers/switching.js";
 import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS, shownFile } from "../../settings.js";
@@ -64,13 +65,15 @@ export const queue = (ui: UI, fns: Fns) => {
   // over (owner.ts, busy), to an editor too, /screen, /settings and /keybindings wait, as each would hand it over
   // again; messages and other commands go on (release 6 plan, Task 12).
   // A lead or screen the settings file set waits here as `/lead` and `/screen` would in the queue, the screen also
-  // while the terminal is handed over (release 6 design, "When a live change applies").
+  // while the terminal is handed over (release 6 design, "When a live change applies"). A lead its PreModelSwitch hooks
+  // decide first is taken, and sends nothing until they have: this runs again then (release 8e plan, step 13).
   const next = () => {
     const h = ui.happening();
     if (h.phase.kind === "ended" || h.phase.kind === "review" || h.working || h.waiting) return;
     const w = ui.waiting.current;
-    if (w.lead !== undefined) fns.fileLead(w.lead);
+    const lead = w.lead;
     w.lead = undefined;
+    if (lead !== undefined && fns.fileLead(lead)) return;
     if (w.screen && !ui.owner.busy) {
       const to = w.screen;
       w.screen = undefined;
@@ -576,7 +579,7 @@ export const queue = (ui: UI, fns: Fns) => {
     // The pick comes after any edit of the file's lead made while the list was open, so it wins, as a /lead typed
     // then would.
     ui.waiting.current.lead = undefined;
-    void asCommand(() => leadTo(spec).catch((err) => fns.say({ text: errorText(err), color: "error" }))).finally(fns.next);
+    void asCommand(() => leadTo(spec, "picker").catch((err) => fns.say({ text: errorText(err), color: "error" }))).finally(fns.next);
   };
   // A list's pick says its output as a command does, one block from its first line said (TUI design pass, Task 3's code
   // review; output.ts, say), the mark gone once it ends, as perform's is.
@@ -607,15 +610,58 @@ export const queue = (ui: UI, fns: Fns) => {
   // conversation that will not fit the new lead's smaller window is shortened first, by the lead leading now, and the
   // switch is refused if it cannot be (release 8a design, "When to shorten"). Meanwhile it works as a turn does: what is
   // typed waits in the queue, and Ctrl-C stops it, quietly, the lead staying as it was, as a stopped turn says nothing.
-  const leadTo = async (spec: string) => {
+  // PreModelSwitch's hooks decide it before the shortening, in the same state, `source` saying which of the two asked
+  // (release 8e plan, step 13); one they stop shortens nothing.
+  const leadTo = async (spec: string, source: "command" | "picker" = "command") => {
     const provider = fns.make(spec);
+    const hooked = switchHooked(provider);
     // With nothing to shorten, or no window to look up, no check can be needed: the switch is made at once, so a prompt
-    // typed straight after /lead waits for it in the queue as one of its own (Task 13's spec review).
-    if (!ui.session.messages.length || !provider.contextWindow) return ui.session.setLead(provider);
-    const { got: problem, signal } = await between((signal) => ui.session.makeRoom(provider, signal));
-    if (signal.aborted) return;
+    // typed straight after /lead waits for it in the queue as one of its own (Task 13's spec review); with hooks to
+    // decide it, it waits for them.
+    const room = ui.session.messages.length > 0 && !!provider.contextWindow;
+    if (!hooked && !room) return ui.session.setLead(provider);
+    const { got: problem, signal } = await between(async (signal) => {
+      if (hooked && !(await switchAllowed(provider, source, spec, signal))) return null;
+      return room ? ui.session.makeRoom(provider, signal) : undefined;
+    });
+    if (signal.aborted || problem === null) return;
     if (problem === undefined) return ui.session.setLead(provider);
     fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "error" });
+  };
+  // Whether PreModelSwitch's hooks decide a switch to `to` (release 8e plan, step 13): it is another model than the one
+  // leading, told by the ids alone, so a dated and an undated name are two (Q31), and a hook is in force at the event.
+  const switchHooked = (to: Provider) => {
+    const c = ui.hooks?.config;
+    return to.id !== ui.session.lead.id && !!c && !c.off && c.hooks.some((h) => h.event === "PreModelSwitch");
+  };
+  // PreModelSwitch before a switch the user asked for (release 8e plan, step 13; design, "Switching the lead model"): sent
+  // step 12's fields, the status line's context number now among them (Q10), and matched on the new model's canonical name,
+  // every hook running for a model with none (Q12). True when the switch goes ahead. A deny, a time-out's and an
+  // onFailure "block" failure's among them (Q13, Q28), says the design's line, the file's adding that it still names the
+  // model; so does an ask there, a deny for the file. For /lead and the list an ask is the design's question, the window's
+  // own yes or no, which is no tool's. A stop says nothing. The model is named as "lead is now" names it.
+  const switchAllowed = async (to: Provider, source: "command" | "picker", requested: string, signal: AbortSignal, file = false) => {
+    const match = canonicalName(to.id);
+    const fields = switchFields({
+      from: ui.session.lead.id, to: to.id, source, requested, contextTokens: ui.stats.context, lastReply: ui.session.lastReply,
+    });
+    let c: Combined;
+    try {
+      c = await ui.hooks!.fire("PreModelSwitch", fields, { ...(match === undefined ? { every: true } : { match }), signal });
+    } catch (err) {
+      if (signal.aborted) return false;
+      throw err;
+    }
+    if (signal.aborted) return false;
+    const reason = c.reason ? `: ${c.reason}` : ""; // W6: none given, none said
+    if (c.decision === "deny" || (c.decision === "ask" && file)) {
+      const line = gray(visible(`The switch to ${to.id} was stopped by a hook${reason}.${file ? ` ${SETTINGS} still names it.` : ""}`, { tabs: true }));
+      if (file) fns.note(line);
+      else fns.say(line);
+      return false;
+    }
+    if (c.decision !== "ask") return true;
+    return (await ui.asking.current?.(visible(`A hook asks${reason}. Switch to ${to.id}`, { tabs: true }), undefined, undefined, true)) ?? false;
   };
   // /compact [words]: the whole conversation shortened now, the words its summary's focus (release 8a plan, Task 13). It
   // works as leadTo does: what is typed waits in the queue, and Ctrl-C stops it. A failure's red line comes from the
@@ -990,7 +1036,7 @@ export const queue = (ui: UI, fns: Fns) => {
   };
   return {
     submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave, stillRunning, startFresh, resume,
-    pickSession, closeSessions, branch, rename, exportTo, mcpAction, closeMcp,
+    pickSession, closeSessions, branch, rename, exportTo, mcpAction, closeMcp, between, switchHooked, switchAllowed,
   };
 };
 

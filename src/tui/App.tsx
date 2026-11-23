@@ -198,6 +198,7 @@ export interface Fns {
   startFresh: QueueArea["startFresh"]; resume: QueueArea["resume"];
   pickSession: QueueArea["pickSession"]; closeSessions: QueueArea["closeSessions"]; branch: QueueArea["branch"];
   rename: QueueArea["rename"]; exportTo: QueueArea["exportTo"]; mcpAction: QueueArea["mcpAction"]; closeMcp: QueueArea["closeMcp"];
+  between: QueueArea["between"]; switchHooked: QueueArea["switchHooked"]; switchAllowed: QueueArea["switchAllowed"];
   readsEnded: PictureReadsArea["readsEnded"]; stopReads: PictureReadsArea["stopReads"];
   settle: PictureReadsArea["settle"]; newPicture: PictureReadsArea["newPicture"];
   imagePaste: PictureReadsArea["imagePaste"]; pastePictures: PictureReadsArea["pastePictures"];

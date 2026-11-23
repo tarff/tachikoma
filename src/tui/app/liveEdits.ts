@@ -189,17 +189,34 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       line(String(now.speed));
     }
   };
-  // The lead the file names, as /lead sets it, its line saying where it came from (onLead, App.tsx).
-  const fileLead = (spec: string) => {
+  // The lead the file names, as /lead sets it, its line saying where it came from (onLead, App.tsx). When PreModelSwitch's
+  // hooks decide it (queue.ts, switchHooked), they do first, between turns as /lead's shortening runs, the queue held
+  // meanwhile, and the lead is set before that ends; true then, and next() runs again once it is decided, sending what
+  // waited (release 8e plan, step 13). A switch they stop is not tried again until the file's lead changes again.
+  const fileLead = (spec: string): boolean => {
     let provider: Provider;
     try {
       provider = fns.make(spec);
     } catch (err) {
-      return fns.note({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "error" });
+      fns.note({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "error" });
+      return false;
     }
-    ui.leadFromFile.current = true; // read by onLead while setLead runs: the bus calls its handlers at once
-    ui.session.setLead(provider);
-    ui.leadFromFile.current = false;
+    const set = () => {
+      ui.leadFromFile.current = true; // read by onLead while setLead runs: the bus calls its handlers at once
+      ui.session.setLead(provider);
+      ui.leadFromFile.current = false;
+    };
+    if (!fns.switchHooked(provider)) {
+      set();
+      return false;
+    }
+    void fns
+      .between(async (signal) => {
+        if ((await fns.switchAllowed(provider, "command", spec, signal, true)) && !signal.aborted) set();
+      })
+      .catch((err) => fns.note({ text: errorText(err), color: "error" }))
+      .finally(fns.next);
+    return true;
   };
   // Vim mode on, from INSERT, or off, leaving the text and cursor as they are (release 6 design's table), with its
   // line; `from` says the settings file asked. Asked to be what it is, it stays as it is.

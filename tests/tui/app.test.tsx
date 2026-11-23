@@ -49,6 +49,7 @@ import { editFileTool } from "../../src/tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import type { Event as HookEvent, Hook, HooksConfig } from "../../src/hooks/config.js";
 import { Hooks } from "../../src/hooks/hooks.js";
+import { type Ran, runHook } from "../../src/hooks/run.js";
 import { readKeybindings } from "../../src/keybindings.js";
 import { History } from "../../src/tui/history.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
@@ -89,6 +90,12 @@ vi.mock("node:fs", async (original) => {
     return (fs.readFileSync as (...args: unknown[]) => unknown)(file, ...rest);
   }) as typeof fs.readFileSync;
   return { ...fs, readFileSync };
+});
+// Hooks run as they are; the switch tests stand in for the runs of PreModelSwitch's and PostModelSwitch's (switchRuns,
+// below), as tests/hooks/hooks.test.ts stands in for runHook.
+vi.mock("../../src/hooks/run.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/hooks/run.js")>();
+  return { ...real, runHook: vi.fn(real.runHook) };
 });
 
 // Wait until the screen shows `text`; the session runs real file I/O in the background.
@@ -167,6 +174,7 @@ async function mount(
     historyFile?: string;
     past?: string[]; // the project's prompts from earlier sessions
     newLead?: Provider; // what /lead and the picker make
+    makeLead?: (spec: string) => Provider; // what /lead, the picker and the file's lead make of the words, in newLead's place
     rows?: number; // the terminal's height
     intro?: AppProps["intro"]; // the start line
     restored?: boolean; // the window opens on a restored conversation, as -c and -r open one
@@ -304,7 +312,7 @@ async function mount(
       makeProvider={(spec) => {
         opts.made?.push(spec);
         if (opts.leadFails) throw new Error(opts.leadFails);
-        return opts.newLead ?? new FakeProvider("b", []);
+        return opts.makeLead?.(spec) ?? opts.newLead ?? new FakeProvider("b", []);
       }}
       login={opts.login ?? (async () => {})}
       listModels={async (signal, warn) => {
@@ -10618,6 +10626,81 @@ describe("App's live settings", () => {
       vi.useRealTimers();
     }
   });
+
+  // Release 8e plan, step 13: PreModelSwitch decides a lead the file names before it applies, sent "command" and the file's
+  // value (switchRuns, at the end of this file).
+  it("sends a lead the file names to PreModelSwitch as \"command\" with the file's value, and applies it once allowed (release 8e plan, step 13)", async () => {
+    const runs = switchRuns();
+    const { app, session, write } = await watching([], {}, { hooks: [switchHook()] });
+    write({ lead: "ollama:b" });
+    await sees(app, `lead is now fake:b ${FROM}`);
+    expect(preRuns(runs).map((r) => switchFieldsOf(r.input))).toEqual([{
+      from_model: "a", to_model: "b", requested_model: "ollama:b", source: "command", context_tokens: 0, prompt_cache_warm: false,
+      cache_ttl: "5m", estimated_cache_write_usd: null,
+    }]);
+    expect(session.lead.id).toBe("fake:b");
+  });
+
+  it.each([
+    ["a deny", decided("deny", "Too costly"), "The switch to fake:b was stopped by a hook: Too costly. settings.json still names it."],
+    ["an ask, a deny here", decided("ask", "Costly"), "The switch to fake:b was stopped by a hook: Costly. settings.json still names it."],
+    ["a deny with no reason (W6)", decided("deny"), "The switch to fake:b was stopped by a hook. settings.json still names it."],
+  ])("keeps the lead on a lead the file names that a hook's %s stops, saying the file still names it (release 8e plan, step 13)", async (_how, answer, line) => {
+    switchRuns(() => answer);
+    const { app, session, write } = await watching([], {}, { hooks: [switchHook()] });
+    write({ lead: "ollama:b" });
+    await sees(app, line);
+    expect(session.lead.id).toBe("fake:a");
+    expect(flat(app)).not.toContain("lead is now");
+    expect(flat(app)).not.toContain("Switch to fake:b?");
+  });
+
+  it("fires nothing for a lead the file names that already leads, and still says the lead is now that model (release 8e plan, step 13; Q31)", async () => {
+    const runs = switchRuns();
+    const { app, write } = await watching([], {}, { newLead: new FakeProvider("a", []), hooks: [switchHook()] });
+    write({ lead: "fake:a" });
+    await sees(app, `lead is now fake:a ${FROM}`);
+    expect(runs).toEqual([]);
+  });
+
+  it.each([
+    ["allowed, to the new lead", ran(), "from b"],
+    ["stopped, to the old lead", decided("deny", "No"), "still a"],
+  ])("holds a prompt typed while a hook decides the file's lead until it has decided, then sends it (release 8e plan, step 13): %s", async (_how, answer, said) => {
+    let decide!: () => void;
+    const runs = switchRuns(() => new Promise<Ran>((resolve) => (decide = () => resolve(answer))));
+    const lead = new FakeProvider("a", [reply("still a")]);
+    const b = new FakeProvider("b", [reply("from b")]);
+    const { app, session, write } = await watching([], {}, { lead, newLead: b, hooks: [switchHook()] });
+    write({ lead: "ollama:b" });
+    await vi.waitFor(() => expect(runs).toHaveLength(1), WATCHED);
+    await type(app, "next");
+    await tick();
+    expect([lead.seen.length, b.seen.length, session.messages.length]).toEqual([0, 0, 0]);
+    decide();
+    await until(app, said);
+    expect(lead.seen.length + b.seen.length).toBe(1);
+  });
+
+  it.each([
+    ["allowed", "fake:d", ran(), `lead is now fake:d ${FROM}`],
+    ["stopped", "fake:b", decided("deny", "No"), "The switch to fake:d was stopped by a hook: No. settings.json still names it."],
+  ])("decides a lead the file names twice during a slow decision after that one, the newest alone (release 8e plan, step 13), %s: the lead ends %s", async (_how, id, last, line) => {
+    let go!: () => void;
+    const runs = switchRuns(() => (runs.length === 1 ? new Promise<Ran>((resolve) => (go = () => resolve(ran()))) : last));
+    const { app, session, where, write } = await watching([], {}, { makeLead: (spec) => new FakeProvider(spec.split(":")[1]!, []), hooks: [switchHook()] });
+    const read = readsOf(where);
+    write({ lead: "ollama:b" });
+    await vi.waitFor(() => expect(runs).toHaveLength(1), WATCHED);
+    await read(() => write({ lead: "ollama:c" }));
+    await read(() => write({ lead: "ollama:d" }));
+    go();
+    await sees(app, line);
+    expect(preRuns(runs).map((r) => r.input.requested_model)).toEqual(["ollama:b", "ollama:d"]);
+    expect(session.lead.id).toBe(id);
+    expect(flat(app)).toContain(`lead is now fake:b ${FROM}`);
+    expect(flat(app)).not.toContain("fake:c");
+  });
 });
 
 // Release 7 plan, Task 21: in copy mode, leaving stops the box, and once Docker reports it gone the review opens in the
@@ -11026,6 +11109,18 @@ describe("App's sessions", () => {
     await type(app, "go on");
     await until(app, "a again");
     expect(rowOf(first.session.id)?.lead).toBe("fake:a");
+  });
+
+  // Release 8e plan, step 13: PreModelSwitch is for the switches the user asks for, not a resumed session's saved lead.
+  it("fires no PreModelSwitch when /resume switches to the resumed session's saved lead (release 8e plan, step 13)", async () => {
+    const runs = switchRuns();
+    await earlier("lead a's own session");
+    const { app, session } = await saved([], { lead: new FakeProvider("b", []), newLead: new FakeProvider("a", []), hooks: [switchHook()] });
+    await type(app, "/resume");
+    await until(app, "lead a's own session");
+    await press(app, "\r");
+    await until(app, "lead is now fake:a");
+    expect([session.lead.id, runs]).toEqual(["fake:a", []]);
   });
 
   it("keeps the window's lead when a resumed session's saved lead cannot be made, saying so", async () => {
@@ -14239,5 +14334,376 @@ describe("long-term memory in the window", () => {
     const off = await mount([], { memory: settings });
     await tick();
     expect(off.app.lastFrame()).not.toContain("memory");
+  });
+});
+
+// Release 8e plan, step 13: the runs of the two switch events' hooks stood in, so no child process starts and a fake clock
+// can time them; every other event's hooks run as they are. `answer` gives each run's Ran, or a promise of one, from what
+// it was sent and the time limit it was given; a stop of the run rejects it, as a stopped hook's run rejects (run.ts).
+// Each run is listed, in the order they started.
+interface SwitchRun { event: string; command: string; input: Record<string, unknown>; limit: number }
+function switchRuns(answer: (run: SwitchRun) => Ran | Promise<Ran> = () => ran()): SwitchRun[] {
+  const runs: SwitchRun[] = [];
+  const real = vi.mocked(runHook).getMockImplementation()!;
+  onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+  vi.mocked(runHook).mockImplementation((hook, input, opts) => {
+    const fields = input as Record<string, unknown>;
+    const event = String(fields.hook_event_name);
+    if (event !== "PreModelSwitch" && event !== "PostModelSwitch") return real(hook, input, opts);
+    const run = { event, command: hook.command, input: fields, limit: opts.limit };
+    runs.push(run);
+    return new Promise<Ran>((resolve, reject) => {
+      opts.signal?.addEventListener("abort", () => reject(new Error("Cancelled")), { once: true });
+      void Promise.resolve(answer(run)).then(resolve, reject);
+    });
+  });
+  return runs;
+}
+const ran = (stdout = "", code = 0, stderr = ""): Ran => ({ code, stdout, stderr, ms: 1 });
+// A PreModelSwitch hook's allow, deny or ask, with its reason when given.
+const decided = (permissionDecision: string, permissionDecisionReason?: string) =>
+  ran(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreModelSwitch", permissionDecision, ...(permissionDecisionReason === undefined ? {} : { permissionDecisionReason }) } }));
+const switchHook = (over: Partial<Hook> = {}): Hook => ({ event: "PreModelSwitch", matcher: { all: true }, command: "check-switch", async: false, where: "", ...over });
+const preRuns = (runs: SwitchRun[]) => runs.filter((r) => r.event === "PreModelSwitch");
+// The fields a switch hook is sent beyond the common ones (release 8e plan, step 12), those it was sent.
+const SWITCH_FIELDS = ["from_model", "to_model", "requested_model", "source", "context_tokens", "prompt_cache_warm", "cache_ttl", "estimated_cache_write_usd", "pricing"];
+const switchFieldsOf = (input: Record<string, unknown>) => Object.fromEntries(SWITCH_FIELDS.filter((k) => k in input).map((k) => [k, input[k]]));
+
+// Release 8e plan, step 13: PreModelSwitch before `/lead <model>` and a pick from the model list; the settings file's lead
+// is in "App's live settings", /resume in "App's sessions".
+describe("App's PreModelSwitch hooks (release 8e plan, step 13)", { timeout: 60_000 }, () => {
+  // A long line wraps, and Ink can carry the space it broke at onto the next row.
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " ");
+  const sees = (app: ReturnType<typeof render>, text: string) => vi.waitFor(() => expect(flat(app)).toContain(text), WATCHED);
+  // A real hook's Node process may take a few seconds to start while other tests run: up to 10 s.
+  async function slowly(check: () => boolean) {
+    for (let i = 0; i < 200 && !check(); i++) await tick();
+    expect(check()).toBe(true);
+  }
+  const models: ModelGroup[] = [{ provider: "fake", models: ["a", "b"] }];
+  // The model list opened with /model, and the model `down` rows below the first picked with Enter, as the user picks one.
+  async function pickFrom(app: ReturnType<typeof render>, down: number) {
+    await type(app, "/model");
+    await until(app, "● fake:a");
+    await tick(); // the picker starts reading keys just after it first appears
+    for (let i = 0; i < down; i++) await press(app, "\u001b[B");
+    await press(app, "\r");
+  }
+  // A stand-in model named `id`, answering with `turns`.
+  const named = (id: string, turns: Turn[] = []) => Object.assign(new FakeProvider("x", turns), { id });
+  const STOPPED = "The switch to fake:b was stopped by a hook";
+
+  it("refuses a /lead model that cannot be made with today's line, before any hook runs", async () => {
+    const runs = switchRuns();
+    const { app, session } = await mount([], { leadFails: "no such model", hooks: [switchHook()] });
+    await type(app, "/lead nothing:x");
+    await until(app, "no such model");
+    expect([runs, session.lead.id]).toEqual([[], "fake:a"]);
+  });
+
+  it("sends a real hook a /lead switch's fields, matched on the new model's canonical name, then switches, and the next prompt goes to the new lead", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-switch-"));
+    onTestFinished(() => removeTree(dir));
+    const file = path.join(dir, "input.json");
+    const script = path.join(dir, "hook.cjs");
+    writeFileSync(script, `let s = "";\nprocess.stdin.on("data", (d) => (s += d)).on("end", () => require("fs").writeFileSync(${JSON.stringify(file)}, s));\n`);
+    const opus = named("anthropic:claude-opus-5-5", [reply("from opus")]);
+    // 1,200 + 5,000 + 800 + 34: the status line's context number after this reply.
+    const lead = new FakeProvider("a", [{ ...reply("one"), usage: { input: 1200, output: 34, cacheRead: 5000, cacheWrite: 800 } }]);
+    const hooks = [switchHook({ matcher: { names: ["claude-opus-5-5"] }, command: process.execPath, args: [script] })];
+    const { app, session } = await mount([], { lead, newLead: opus, hooks });
+    await type(app, "hi");
+    await until(app, "one");
+    await type(app, "/lead anthropic:claude-opus-5-5");
+    await slowly(() => session.lead === opus);
+    const sent = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    expect(sent.hook_event_name).toBe("PreModelSwitch");
+    // 7,034 tokens at claude-opus-5-5's 5 USD a million for a cache write.
+    expect(switchFieldsOf(sent)).toEqual({
+      from_model: "a", to_model: "claude-opus-5-5", requested_model: "anthropic:claude-opus-5-5", source: "command", context_tokens: 7034,
+      prompt_cache_warm: false, cache_ttl: "5m", estimated_cache_write_usd: 0.03517, pricing: "catalog",
+    });
+    await type(app, "next");
+    await until(app, "from opus");
+    expect(opus.seen).toHaveLength(1);
+  });
+
+  it("sends a pick from the model list as \"picker\" with no requested model, then leads with it, and the next prompt goes to it", async () => {
+    const runs = switchRuns();
+    const b = new FakeProvider("b", [reply("from b")]);
+    const { app, session } = await mount([], { models, newLead: b, hooks: [switchHook()] });
+    await pickFrom(app, 1);
+    await until(app, "lead is now fake:b");
+    expect(preRuns(runs).map((r) => switchFieldsOf(r.input))).toEqual([{
+      from_model: "a", to_model: "b", requested_model: null, source: "picker", context_tokens: 0, prompt_cache_warm: false, cache_ttl: "5m",
+      estimated_cache_write_usd: null,
+    }]);
+    await type(app, "next");
+    await until(app, "from b");
+    expect([session.lead.id, b.seen.length]).toEqual(["fake:b", 1]);
+  });
+
+  it.each([
+    ["exit code 2", ran("", 2, "Too costly")],
+    ['"decision": "block"', ran(JSON.stringify({ decision: "block", reason: "Too costly" }))],
+    ["a deny", decided("deny", "Too costly")],
+  ])("keeps the lead on a /lead that a hook's %s stops, saying so, shortening nothing, and the next prompt goes to the lead", async (_how, answer) => {
+    switchRuns(() => answer);
+    let looked = 0;
+    const b: Provider = { id: "fake:b", complete: async () => reply("from b"), contextWindow: async () => (looked++, 1) };
+    const lead = new FakeProvider("a", [reply("one"), reply("still a")]);
+    const { app, session } = await mount([], { lead, newLead: b, hooks: [switchHook()] });
+    await type(app, "hi");
+    await until(app, "one");
+    await type(app, "/lead fake:b");
+    await until(app, `${STOPPED}: Too costly.`);
+    await type(app, "again");
+    await until(app, "still a");
+    expect([session.lead.id, looked, lead.seen.length]).toEqual(["fake:a", 0, 2]);
+    expect(app.lastFrame()).not.toContain("lead is now");
+  });
+
+  it("keeps the lead on a pick from the model list that a hook stops, saying so", async () => {
+    switchRuns(() => decided("deny", "Too costly"));
+    const lead = new FakeProvider("a", [reply("still a")]);
+    const { app, session } = await mount([], { lead, models, hooks: [switchHook()] });
+    await pickFrom(app, 1);
+    await until(app, `${STOPPED}: Too costly.`);
+    await type(app, "again");
+    await until(app, "still a");
+    expect(session.lead.id).toBe("fake:a");
+    expect(app.lastFrame()).not.toContain("lead is now");
+  });
+
+  it("makes a /lead with an empty conversation wait for its hook, between turns, what is typed waiting in the queue", async () => {
+    let allow!: () => void;
+    const runs = switchRuns(() => new Promise<Ran>((resolve) => (allow = () => resolve(ran()))));
+    const b = new FakeProvider("b", [reply("from b")]);
+    const { app, session } = await mount([], { newLead: b, hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await waitFor(() => runs.length === 1);
+    expect(app.lastFrame()).toContain("Esc to stop");
+    await type(app, "hello");
+    expect([session.lead.id, session.messages]).toEqual(["fake:a", []]);
+    allow();
+    await until(app, "from b");
+    expect(session.lead.id).toBe("fake:b");
+    expect(app.lastFrame()).toMatch(/lead is now fake:b[\s\S]*from b/);
+  });
+
+  it("leaves the reason off the stopped switch's line and off the question when the hook gives none (W6)", async () => {
+    const answers = [decided("deny"), decided("ask")];
+    switchRuns(() => answers.shift()!);
+    const { app, session } = await mount([], { hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, `${STOPPED}.`);
+    await type(app, "/lead fake:b");
+    await until(app, "A hook asks. Switch to fake:b? [y/n]");
+    await press(app, "n");
+    await until(app, "A hook asks. Switch to fake:b: no");
+    expect(session.lead.id).toBe("fake:a");
+  });
+
+  it.each([
+    ["yes", "y", "fake:b"],
+    ["no", "n", "fake:a"],
+  ])("puts a hook's ask on /lead to the user as the window's question, and on %s the lead is as the answer says", async (said, key, id) => {
+    switchRuns(() => decided("ask", "Costly"));
+    const { app, session } = await mount([], { hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, "A hook asks: Costly. Switch to fake:b? [y/n]");
+    await press(app, key);
+    await until(app, `A hook asks: Costly. Switch to fake:b: ${said}`);
+    await tick();
+    expect(session.lead.id).toBe(id);
+    expect(app.lastFrame()!.includes("lead is now fake:b")).toBe(id === "fake:b");
+  });
+
+  it("fires nothing when /lead or a pick names the model already leading, and still says the lead is now that model (Q31)", async () => {
+    const runs = switchRuns();
+    const { app } = await mount([], { models, newLead: new FakeProvider("a", []), hooks: [switchHook()] });
+    await type(app, "/lead fake:a");
+    await until(app, "lead is now fake:a");
+    await pickFrom(app, 0);
+    await waitFor(() => app.lastFrame()!.split("lead is now fake:a").length === 3);
+    expect(runs).toEqual([]);
+  });
+
+  it("fires nothing for another spelling that the provider factory makes into the model already leading (Q31)", async () => {
+    const runs = switchRuns();
+    const made: string[] = [];
+    const { app, session } = await mount([], { made, newLead: new FakeProvider("a", []), hooks: [switchHook()] });
+    await type(app, "/lead fake:A");
+    await until(app, "lead is now fake:a");
+    expect([made, runs, session.lead.id]).toEqual([["fake:A"], [], "fake:a"]);
+  });
+
+  it("runs a hook whose matcher is the undated name on a /lead to the dated name, and switches, as the two ids differ", async () => {
+    const runs = switchRuns();
+    const dated = named("anthropic:claude-haiku-4-5-20251001");
+    const hooks = [
+      switchHook({ command: "haiku", matcher: { names: ["claude-haiku-4-5"] } }),
+      switchHook({ command: "opus", matcher: { names: ["claude-opus-5-5"] } }),
+    ];
+    const { app, session } = await mount([], { lead: named("anthropic:claude-haiku-4-5"), newLead: dated, hooks });
+    await type(app, "/lead anthropic:claude-haiku-4-5-20251001");
+    await until(app, "lead is now anthropic:claude-haiku-4-5-20251001");
+    expect(runs.map((r) => [r.command, r.input.from_model, r.input.to_model])).toEqual([["haiku", "claude-haiku-4-5", "claude-haiku-4-5-20251001"]]);
+    expect(session.lead).toBe(dated);
+  });
+
+  it("runs every hook, whatever its matcher, on a /lead to another provider's model, which has no canonical name", async () => {
+    const runs = switchRuns();
+    const hooks = [
+      switchHook({ command: "named", matcher: { names: ["claude-opus-5-5"] } }),
+      switchHook({ command: "pattern", matcher: { regex: /^nothing$/ } }),
+    ];
+    const { app } = await mount([], { newLead: named("openai:gpt-5.5"), hooks });
+    await type(app, "/lead openai:gpt-5.5");
+    await until(app, "lead is now openai:gpt-5.5");
+    expect(runs.map((r) => r.command).sort()).toEqual(["named", "pattern"]);
+  });
+
+  // The status line's number reflects the fallback's reply, which rescued the turn; the cache's warmth is timed from the
+  // lead's own refused reply. Their sizes and times differ, so neither can stand in for the other.
+  it("sends the status line's context number, the fallback's reply's, and times the cache's warmth from the lead's own reply", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    onTestFinished(() => void vi.useRealTimers());
+    const at = Date.UTC(2026, 10, 23, 12);
+    const minutes = (n: number) => at + n * 60_000;
+    const lead: Provider = {
+      id: "anthropic:claude-opus-5-5",
+      complete: async () => {
+        vi.setSystemTime(at);
+        return { ...reply(""), usage: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0 }, cutOff: { kind: "refusal", detail: "declined" } };
+      },
+    };
+    const rescue: Provider = {
+      id: "fake:f",
+      complete: async () => {
+        vi.setSystemTime(minutes(2));
+        return { ...reply("rescued"), usage: { input: 7000, output: 34, cacheRead: 0, cacheWrite: 0 } };
+      },
+    };
+    const runs = switchRuns(() => decided("deny", "Not now"));
+    const { app, session } = await mount([], { lead, hooks: [switchHook()] });
+    session.setFallback(rescue);
+    await type(app, "one");
+    await until(app, "rescued");
+    vi.setSystemTime(minutes(4)); // 4 minutes after the lead's reply, 2 after the fallback's
+    await type(app, "/lead fake:b");
+    await until(app, `${STOPPED}: Not now.`);
+    vi.setSystemTime(minutes(6)); // 6 minutes after the lead's reply, 4 after the fallback's
+    await type(app, "/lead fake:b");
+    await waitFor(() => runs.length === 2);
+    expect(runs.map((r) => [r.input.context_tokens, r.input.prompt_cache_warm])).toEqual([[7034, true], [7034, false]]);
+  });
+
+  it("keeps the lead, saying nothing and shortening nothing, when Esc stops a /lead's hook, and goes on after", async () => {
+    const runs = switchRuns(() => new Promise<Ran>(() => {}));
+    let looked = 0;
+    const b: Provider = { id: "fake:b", complete: async () => reply("from b"), contextWindow: async () => (looked++, 1) };
+    const lead = new FakeProvider("a", [reply("one"), reply("still a")]);
+    const { app, session } = await mount([], { lead, newLead: b, hooks: [switchHook()] });
+    await type(app, "hi");
+    await until(app, "one");
+    await type(app, "/lead fake:b");
+    await waitFor(() => runs.length === 1);
+    await press(app, "\u001b"); // Esc
+    await gone(app, "Esc to stop");
+    await type(app, "again");
+    await until(app, "still a");
+    expect([session.lead.id, looked]).toEqual(["fake:a", 0]);
+    expect(app.lastFrame()).not.toContain("stopped by a hook");
+    expect(app.lastFrame()).not.toContain("lead is now");
+  });
+
+  it("keeps the lead when Esc stops the shortening after an allowing hook, the hook having run once and PostModelSwitch never", async () => {
+    const runs = switchRuns();
+    let window = 0;
+    let summarising = false;
+    const turns: ((req: CompletionRequest) => Promise<Turn>)[] = [
+      async (req) => {
+        window = characters(req.system, [], req.tools) + 1000; // the prompt does not fit the new lead's window, a summary would
+        return { ...reply("noted"), usage: { ...usage, input: characters(req.system, req.messages, req.tools) } };
+      },
+      (req) =>
+        new Promise((_, reject) => {
+          summarising = true;
+          req.signal?.addEventListener("abort", () => reject(new Error("Request was aborted.")), { once: true });
+        }),
+      async () => reply("still fake:a"),
+    ];
+    const lead: Provider = { id: "fake:a", complete: (req) => turns.shift()!(req) };
+    const newLead: Provider = { id: "fake:b", complete: async () => reply("hi"), contextWindow: async () => window };
+    const hooks = [switchHook(), switchHook({ event: "PostModelSwitch", command: "after" })];
+    const { app, session } = await mount([], { lead, newLead, save: true, hooks });
+    await session.send("x".repeat(2000));
+    await type(app, "/lead fake:b");
+    await waitFor(() => summarising);
+    await press(app, "\u001b"); // Esc
+    await type(app, "and now");
+    await until(app, "still fake:a");
+    expect(session.lead.id).toBe("fake:a");
+    expect(runs.map((r) => r.event)).toEqual(["PreModelSwitch"]);
+    expect(app.lastFrame()).not.toContain("was not made the lead");
+  });
+
+  const UNSTARTED: Ran = { code: null, stdout: "", stderr: "", ms: 1, failed: "start", startError: "ENOENT" };
+
+  it('stops the switch with the grey line when a hook with "onFailure": "block" cannot start (Q28)', async () => {
+    switchRuns(() => UNSTARTED);
+    const { app, session } = await mount([], { hooks: [switchHook({ onFailure: "block" })] });
+    await type(app, "/lead fake:b");
+    await sees(app, `${STOPPED}: check-switch could not start (ENOENT).`);
+    expect(session.lead.id).toBe("fake:a");
+    expect(app.lastFrame()).not.toContain("hook failed");
+  });
+
+  it("says the red line and switches when a hook without onFailure cannot start (Q28)", async () => {
+    switchRuns(() => UNSTARTED);
+    const { app, session } = await mount([], { hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    expect(flat(app)).toContain("✗ PreModelSwitch hook failed: check-switch could not start (ENOENT)");
+    expect(session.lead.id).toBe("fake:b");
+    expect(app.lastFrame()).not.toContain("stopped by a hook");
+  });
+
+  it("stops the switch when a hook runs out of time at 30 s, saying both the red time-out line and the grey line (Q13)", async () => {
+    const runs = switchRuns((r) => new Promise<Ran>((resolve) => setTimeout(() => resolve({ ...ran("", 0), code: null, failed: "time", limit: r.limit }), r.limit * 1000)));
+    const { app, session } = await mount([], { hooks: [switchHook()] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // The clock moved on by `ms`, then one turn of the event loop (setImmediate is not faked), in which the screen is drawn.
+    const wait = async (ms: number) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    try {
+      app.stdin.write("/lead fake:b");
+      await wait(0);
+      app.stdin.write("\r");
+      for (let i = 0; i < 40 && !runs.length; i++) await wait(0);
+      expect(runs.map((r) => r.limit)).toEqual([30]);
+      await wait(29_999);
+      expect(app.lastFrame()).not.toContain("stopped by a hook");
+      expect(app.lastFrame()).toContain("Esc to stop");
+      await wait(1);
+      expect(flat(app)).toContain("✗ PreModelSwitch hook failed: check-switch ran out of time after 30 s");
+      expect(flat(app)).toContain(`${STOPPED}: check-switch ran out of time after 30 s.`);
+      expect(session.lead.id).toBe("fake:a");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets an async hook decide nothing: its deny is said as a block it cannot make, and the switch is made", async () => {
+    switchRuns(() => decided("deny", "Too costly"));
+    const { app, session } = await mount([], { hooks: [switchHook({ async: true })] });
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await sees(app, 'PreModelSwitch hook failed: check-switch asked to block, but an "async" hook cannot block');
+    expect(session.lead.id).toBe("fake:b");
+    expect(app.lastFrame()).not.toContain("stopped by a hook");
   });
 });
