@@ -17,7 +17,7 @@ import { lessonLabel, matchText } from "../tools/memory.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
-import { type Ask, Declined, type PermissionGate, StoppedFirst, visible } from "./permissions.js";
+import { type Ask, type Decision, Declined, type PermissionGate, StoppedFirst, visible } from "./permissions.js";
 import { dueNotes, isSetupNote, localDate, type Told, toldAfter } from "./setup.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
@@ -1262,7 +1262,7 @@ export class Session {
       const own = this.opts.ctx.gate.noting(() => {
         if (!signal.aborted) this.#asked(call.id);
       });
-      const pre = hooks ? await this.#preToolUse(call, entry, hooks, own, signal) : { input: call.input, gate: own };
+      const pre = hooks ? await this.#preToolUse(call, entry, hooks, own, round) : { input: call.input, gate: own };
       if ("stop" in pre) {
         round.stop("PreToolUse", pre.stop);
         return stopped(NOT_RUN);
@@ -1454,8 +1454,9 @@ export class Session {
     entry: { name: string; input: unknown },
     hooks: Hooks,
     given: PermissionGate,
-    signal?: AbortSignal,
+    round: Round,
   ): Promise<{ input: unknown; gate: PermissionGate } | { refused: string } | { stop: string }> {
+    const { signal } = round;
     const paths = this.#hookPaths();
     const { tool_name, tool_input } = toClaude(call, paths);
     const c = await hooks.fire("PreToolUse", { tool_name, tool_input, tool_use_id: call.id }, { match: tool_name, signal });
@@ -1483,17 +1484,23 @@ export class Session {
       if ("problem" in back) return refused(`A PreToolUse hook's rewrite of ${call.name} could not be used (${back.problem}): ${commandOf(c.rewrite.from)}`);
       input = back.input;
     }
-    // The question names the call that would run, by its name and input, as Ctrl+O does (choice 15).
+    const own = this.opts.tools.some((t) => t.spec.name === call.name);
+    const offered = own ? undefined : this.#offered.find((o) => o.spec.name === call.name);
+    // The call's PermissionRequest decider, bound to the input that will run, before any question or -p refusal and before
+    // the copies below, so they share its one record (release 8e plan, step 8; Codex round 1, point 1). Only where one of
+    // its hooks matches the call, so a gate with none behaves as before.
     let gate = given;
+    const named = toClaude({ name: call.name, input }, paths);
+    if (hooks.has("PermissionRequest", named.tool_name)) gate = given.deciding(() => this.#permissionRequest(hooks, call, named, offered, round));
+    // The question names the call that would run, by its name and input, as Ctrl+O does (choice 15).
     if (c.decision === "ask") {
       // Where nobody can be asked, in never and -p, the refusal is a grey line too, as a deny's is (the user's choice,
       // 2026-11-09); an MCP call's, the request's own MCP tool, is asked in never (release 8c plan, choice 47), except
-      // a box server's while the box's network is off (8c-2a plan, choice 7).
-      const own = this.opts.tools.some((t) => t.spec.name === call.name);
-      const offered = own ? undefined : this.#offered.find((o) => o.spec.name === call.name);
-      const cannot = gate.hookCannotAsk(c.reason ?? "", offered !== undefined, offered?.boxNetwork === "off");
+      // a box server's while the box's network is off (8c-2a plan, choice 7). The decider comes first where the question
+      // would be put, -p included (release 8e plan, step 7).
+      const summary = `${call.name} ${JSON.stringify(input)}`;
+      const cannot = await gate.putHookAsk(summary, c.reason ?? "", offered !== undefined, offered?.boxNetwork === "off", signal);
       if (cannot !== undefined) return refused(cannot);
-      await gate.hookAsks(`${call.name} ${JSON.stringify(input)}`, c.reason ?? "");
       gate = gate.withHook({ asked: true });
     } else if (c.decision === "allow") gate = gate.withHook({ allow: true });
     // What runs is what the record keeps, saved before it runs (choice 16; design, review finding 4); the reply in the
@@ -1507,6 +1514,41 @@ export class Session {
       }
     }
     return { input, gate };
+  }
+
+  // PermissionRequest just before a question about a call, or in -p where it would be refused (release 8e plan, step 8;
+  // design, "The permission events"), sent the input that would run in Claude Code's names and an MCP tool's server,
+  // matched on the tool's Claude Code name, under the reply's signal, so a stop kills it and cancels the call (the gate).
+  // An allow is silent; a deny is said with W1, told to the gate for -p's exit code, and its interrupt ends the turn as a
+  // hook's continue: false does (W2, said as the round ends). A rewrite is step 9's: until then an allow carrying one runs
+  // the input as it stands. A throw that is not a stop decides nothing, said as #permissionDenied says it.
+  async #permissionRequest(
+    hooks: Hooks,
+    call: ToolCall,
+    named: { tool_name: string; tool_input: unknown },
+    offered: Offered | undefined,
+    round: Round,
+  ): Promise<Decision> {
+    const say = (line: string) => this.opts.bus.emit("hook-note", line);
+    let c: Combined;
+    try {
+      const fields = { ...named, ...(offered !== undefined && { mcp_server: offered.server }) };
+      c = await hooks.fire("PermissionRequest", fields, { match: named.tool_name, signal: round.signal });
+    } catch (err) {
+      if (round.signal.aborted) throw err;
+      const message = `PermissionRequest hook failed: ${errorText(err)}`;
+      this.opts.bus.emit("error", { kind: "hook", attempted: "PermissionRequest hook", message, lead: this.#lead.id });
+      return undefined;
+    }
+    if (c.updatedPermissions) say("A PermissionRequest hook's updatedPermissions was ignored: Tachikoma has no permission rules.");
+    if (c.decision === "deny") {
+      const line = c.reason ? `A PermissionRequest hook refused ${call.name}: ${c.reason}` : `A PermissionRequest hook refused ${call.name}.`;
+      say(line);
+      this.opts.ctx.gate.hookRefused();
+      if (c.interrupt) round.stop("PermissionRequest", c.reason ?? "");
+      return { deny: c.reason || line };
+    }
+    return c.decision === "allow" ? { allow: true } : undefined;
   }
 
   // A call the user is shown a question for, saved once (Task 15).

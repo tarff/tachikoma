@@ -624,6 +624,59 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(sent[1]!.messages.at(-1)).toMatchObject({ role: "tool", content: told });
   });
 
+  // Release 8e plan, step 8 (Q7; Codex round 1, point 10; round 3, point 7): in -p a PermissionRequest hook runs where the
+  // call would be refused, and its deny fails the run as any refused call does, through the real wiring. The lead is a
+  // stand-in served on the loopback address, as above: it asks to read a file outside the project, beside it in the test's
+  // own folder, which -p refuses today as it would need approval, then answers. The hook leaves a marker file, so the test
+  // knows it ran. Its own limit: the run pays the -p start of about 7.5 s ("Before you start").
+  it.each([
+    ["a deny fails the run with exit code 1, the hook's message to the model and W1 on stderr", "deny", 1, "Error: not the notes", "note: A PermissionRequest hook refused read_file: not the notes\n"],
+    ["an allow reads the file and exits 0", "allow", 0, "     1\tmade-up notes", ""],
+  ] as const)("with -p, a PermissionRequest hook runs for a call -p would refuse: %s", { timeout: 60_000 }, async (_name, behavior, code, told, stderr) => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-permission-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    const notes = path.join(top, "elsewhere", "notes.txt");
+    mkdirSync(path.dirname(notes));
+    writeFileSync(notes, "made-up notes\n");
+    const marker = path.join(top, "hook-ran");
+    const decision = behavior === "deny" ? { behavior, message: "not the notes" } : { behavior };
+    const said = JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision } });
+    const script = path.join(top, "hook.cjs");
+    writeFileSync(script, `require("fs").writeFileSync(${JSON.stringify(marker)}, "");\nprocess.stdout.write(${JSON.stringify(said)});`);
+    const hooks = { PermissionRequest: [{ matcher: "Read", hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const sent: { messages: { role: string; content?: unknown }[] }[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const request = JSON.parse(body) as (typeof sent)[number];
+        sent.push(request);
+        const first = !request.messages.some((m) => m.role === "tool");
+        const call = { id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: notes }) } };
+        const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+        const choice = { index: 0, finish_reason: first ? "tool_calls" : "stop", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
+    expect(existsSync(marker)).toBe(true);
+    expect(r).toEqual({ code, stdout: "done\n", stderr });
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.messages.at(-1)).toMatchObject({ role: "tool", content: told });
+  });
+
   // Background commands plan, Task 11 (design, "With -p"): after its answer the run waits while a background command runs,
   // and the command's ending gets a turn, whose answer is printed too. The lead is a stand-in served on the loopback
   // address, as above; a PreToolUse hook of the test's own allows the command, as -p asks nobody. Its own limit: the run

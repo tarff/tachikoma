@@ -3614,6 +3614,223 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const told = worker.seen[1]!.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [p.output] : [])));
     expect(told).toEqual([`The judge refused: It was not asked for. ${RETRY}`]);
   });
+
+  // Release 8e plan, step 8 (design, "The permission events"): PermissionRequest runs just before a question about a tool
+  // call, and in -p where the call would be refused, sent the input that would run; its allow runs the call unasked, its
+  // deny refuses it with W1, and its interrupt also ends the turn with W2. A rewrite is step 9's: until then it is a plain
+  // allow.
+  const permission = (decision: object) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision } });
+  const ALLOW = permission({ behavior: "allow" });
+  const requested = (s: { inputs: () => Record<string, unknown>[] }) => s.inputs().filter((i) => i.hook_event_name === "PermissionRequest");
+  const W1 = (tool: string, message?: string) => (message ? `A PermissionRequest hook refused ${tool}: ${message}` : `A PermissionRequest hook refused ${tool}.`);
+  // The question each mode puts: ask and project, and -p, for a plain command; auto for a danger; never for an MCP call.
+  // Each test makes its turns afresh, as the stand-in model uses them up.
+  const QUESTIONS = [
+    ["ask", () => shellCall("echo hi"), "shell", "ran echo hi"],
+    ["project", () => shellCall("echo hi"), "shell", "ran echo hi"],
+    ["auto", () => shellCall(push), "shell", `ran ${push}`],
+    ["never", () => oneCall("mcp__docs__lookup", { word: "hi" }), "mcp__docs__lookup", "found"],
+    ["-p", () => shellCall("echo hi"), "shell", "ran echo hi"],
+  ] as const;
+
+  it("sends PermissionRequest a shell call in Claude Code's names, with no tool_use_id and no mcp_server", async () => {
+    const s = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: ALLOW }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "Bash", tool_input: { command: "echo hi" } })]);
+    expect(["tool_use_id" in requested(s)[0]!, "mcp_server" in requested(s)[0]!]).toEqual([false, false]);
+    expect([s.ran, s.asked, s.notes, s.errors]).toEqual([["echo hi"], [], [], []]);
+  });
+
+  it("sends PermissionRequest a write's input as a PreToolUse hook rewrote it, and its allow writes the rewritten path unasked", async () => {
+    const root = await folder();
+    const b = path.join(root, "b.txt");
+    const says: Says[] = [{ stdout: rewrite({ file_path: b, content: "x" }) }, { event: "PermissionRequest", stdout: ALLOW }];
+    const s = await setup({ mode: "ask", root, says, turns: oneCall("write_file", { path: "a.txt", content: "x" }) });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "Write", tool_input: { file_path: b, content: "x" } })]);
+    expect([existsSync(path.join(root, "a.txt")), readFileSync(b, "utf8"), s.asked]).toEqual([false, "x", []]);
+  });
+
+  it("sends PermissionRequest an MCP call's input and its server as mcp_server", async () => {
+    const s = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: ALLOW }], turns: oneCall("mcp__docs__lookup", { word: "hi" }), mcp: docs });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "mcp__docs__lookup", tool_input: { word: "hi" }, mcp_server: "docs" })]);
+    expect([s.results(), s.asked]).toEqual([[{ output: "found", isError: false }], []]);
+  });
+
+  it("sends PermissionRequest the input a PreToolUse hook rewrote and asked about, in ask mode before the question", async () => {
+    const pre = rewrite({ command: "echo two" }, { permissionDecision: "ask", permissionDecisionReason: "Sure?" });
+    const s = await setup({ mode: "ask", says: [{ stdout: pre }, { event: "PermissionRequest", stdout: "" }], turns: shellCall("echo one"), answers: [true] });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "Bash", tool_input: { command: "echo two" } })]);
+    expect(s.asked).toEqual([{ summary: 'shell {"command":"echo two"}', note: "A hook asks: Sure?" }]);
+    expect(s.ran).toEqual(["echo two"]);
+  });
+
+  it("in -p, sends PermissionRequest the input a PreToolUse hook rewrote and asked about, and its allow runs the rewritten call", async () => {
+    const pre = rewrite({ command: "echo two" }, { permissionDecision: "ask", permissionDecisionReason: "Sure?" });
+    const s = await setup({ mode: "-p", says: [{ stdout: pre }, { event: "PermissionRequest", stdout: ALLOW }], turns: shellCall("echo one") });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "Bash", tool_input: { command: "echo two" } })]);
+    expect([s.ran, s.asked, s.refusals, s.notes]).toEqual([["echo two"], [], [], []]);
+  });
+
+  it("in never, fires PermissionRequest for a PreToolUse hook's ask on an MCP call, its allow running it, and not for one on a shell call", async () => {
+    const says: Says[] = [{ stdout: decide("ask") }, { event: "PermissionRequest", stdout: ALLOW }];
+    const mcp = await setup({ mode: "never", says, turns: oneCall("mcp__docs__lookup", { word: "hi" }), mcp: docs });
+    await mcp.session.send("go");
+    expect(requested(mcp)).toEqual([expect.objectContaining({ tool_name: "mcp__docs__lookup", mcp_server: "docs" })]);
+    expect([mcp.results(), mcp.asked]).toEqual([[{ output: "found", isError: false }], []]);
+    const shell = await setup({ mode: "never", says, turns: shellCall("echo hi") });
+    await shell.session.send("go");
+    const line = "Not allowed in never mode: a PreToolUse hook asked for this call to be approved.";
+    expect([requested(shell), shell.results(), shell.ran]).toEqual([[], [{ output: line, isError: true }], []]);
+  });
+
+  it.each(QUESTIONS)("in %s, a PermissionRequest allow runs the call with no question", async (mode, turns, _tool, output) => {
+    const s = await setup({ mode, says: [{ event: "PermissionRequest", stdout: ALLOW }], turns: turns(), mcp: docs });
+    await s.session.send("go");
+    expect([s.results(), s.asked, s.judged, s.notes, s.refusals, s.outcomes]).toEqual([[{ output, isError: false }], [], [], [], [], ["ok"]]);
+    expect(requested(s)).toHaveLength(1);
+  });
+
+  it.each(QUESTIONS)("in %s, a PermissionRequest deny refuses the call with its message to the model and W1, counted as a refusal", async (mode, turns, tool) => {
+    const s = await setup({ mode, says: [{ event: "PermissionRequest", stdout: permission({ behavior: "deny", message: "not this" }) }], turns: turns(), mcp: docs });
+    await s.session.send("go");
+    expect([s.results(), s.asked, s.ran, s.notes, s.refusals, s.outcomes]).toEqual([
+      [{ output: "not this", isError: true }], [], [], [W1(tool, "not this")], [1], ["declined"],
+    ]);
+  });
+
+  it.each(QUESTIONS)("in %s, a PermissionRequest deny with interrupt refuses the call and ends the turn, with W1 and W2", async (mode, turns, tool) => {
+    const says: Says[] = [{ event: "PermissionRequest", stdout: permission({ behavior: "deny", message: "stop here", interrupt: true }) }];
+    const s = await setup({ mode, says, turns: turns(), mcp: docs });
+    await s.session.send("go");
+    expect([s.results(), s.asked, s.ran, s.refusals]).toEqual([[{ output: "stop here", isError: true }], [], [], [1]]);
+    expect(s.notes).toEqual([W1(tool, "stop here"), "A PermissionRequest hook stopped the turn: stop here"]);
+    expect(s.lead.seen).toHaveLength(1); // the turn ended with the call's result: the model was not asked again
+  });
+
+  it.each(["ask", "-p"] as const)("in %s, a PermissionRequest allow runs a dangerous command with no question and no refusal", async (mode) => {
+    const s = await setup({ mode, says: [{ event: "PermissionRequest", stdout: ALLOW }], turns: shellCall(push) });
+    await s.session.send("go");
+    expect([s.ran, s.asked, s.refusals, s.notes]).toEqual([[push], [], [], []]);
+  });
+
+  it("puts the question as before when no PermissionRequest hook decides, and in -p refuses the call as before", async () => {
+    const asked = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: "" }], turns: shellCall("echo hi"), answers: [true] });
+    await asked.session.send("go");
+    expect([requested(asked).length, asked.asked, asked.ran]).toEqual([1, [{ summary: "run: echo hi" }], ["echo hi"]]);
+    const headless = await setup({ mode: "-p", says: [{ event: "PermissionRequest", stdout: "" }], turns: shellCall("echo hi") });
+    await headless.session.send("go");
+    expect(requested(headless)).toHaveLength(1);
+    expect([headless.results(), headless.ran, headless.notes]).toEqual([[{ output: `${P}: run: echo hi`, isError: true }], [], []]);
+  });
+
+  it("refuses the call when one PermissionRequest hook allows and another denies", async () => {
+    const says: Says[] = [{ event: "PermissionRequest", stdout: ALLOW }, { event: "PermissionRequest", names: ["Bash"], stdout: permission({ behavior: "deny", message: "no" }) }];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect([s.results(), s.ran, s.asked, s.notes]).toEqual([[{ output: "no", isError: true }], [], [], [W1("shell", "no")]]);
+  });
+
+  it("tells the model W1 for a PermissionRequest deny with no message, and says W2 with no reason for its interrupt", async () => {
+    const bare = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: permission({ behavior: "deny" }) }], turns: shellCall("echo hi") });
+    await bare.session.send("go");
+    expect([bare.results(), bare.notes]).toEqual([[{ output: W1("shell"), isError: true }], [W1("shell")]]);
+    const stopped = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: permission({ behavior: "deny", interrupt: true }) }], turns: shellCall("echo hi") });
+    await stopped.session.send("go");
+    expect([stopped.results(), stopped.notes]).toEqual([[{ output: W1("shell"), isError: true }], [W1("shell"), "A PermissionRequest hook stopped the turn."]]);
+  });
+
+  it("gives each call of the reply one result when a PermissionRequest deny's interrupt comes at the first", async () => {
+    const turns = [many(["c1", "shell", { command: "echo one" }], ["c2", "shell", { command: "echo two" }]), reply("ok")];
+    const s = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: permission({ behavior: "deny", message: "enough", interrupt: true }) }], turns });
+    await s.session.send("go");
+    expect(s.results()).toEqual([{ output: "enough", isError: true }, { output: NOT_RUN, isError: true }]);
+    expect([s.ran, s.asked, requested(s).length]).toEqual([[], [], 1]);
+  });
+
+  it("says a PermissionRequest hook's updatedPermissions was ignored, and still takes its allow", async () => {
+    const said = permission({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] });
+    const s = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: said }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect([s.ran, s.asked]).toEqual([["echo hi"], []]);
+    expect(s.notes).toEqual(["A PermissionRequest hook's updatedPermissions was ignored: Tachikoma has no permission rules."]);
+  });
+
+  it("decides nothing for a PermissionRequest hook's exit code 2, its deny unread and no line said", async () => {
+    const says: Says[] = [{ event: "PermissionRequest", stdout: permission({ behavior: "deny", message: "no" }), code: 2 }];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo hi"), answers: [true] });
+    await s.session.send("go");
+    expect([s.asked, s.ran, s.notes, s.errors]).toEqual([[{ summary: "run: echo hi" }], ["echo hi"], [], []]);
+  });
+
+  it("runs only the PermissionRequest hooks whose matcher names the tool", async () => {
+    const says: Says[] = [
+      { event: "PermissionRequest", names: ["Write"], stdout: permission({ behavior: "deny", message: "no" }) },
+      { event: "PermissionRequest", names: ["Bash"], stdout: ALLOW },
+    ];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "Bash" })]);
+    expect([s.ran, s.asked]).toEqual([["echo hi"], []]);
+  });
+
+  it("cancels the call, asking nothing, when the turn is stopped while its PermissionRequest hook runs", async () => {
+    const root = await folder();
+    const abort = new AbortController();
+    const s = await setup({ mode: "ask", root, says: [{ event: "PermissionRequest", stdout: ALLOW, go: path.join(root, "never-made") }], turns: shellCall("echo hi") });
+    const sent = s.session.send("go", abort.signal);
+    while (!requested(s).length) await pause(20);
+    abort.abort();
+    await sent;
+    expect([s.results(), s.outcomes, s.ran, s.asked]).toEqual([[{ output: "Cancelled by the user.", isError: true }], ["cancelled"], [], []]);
+  });
+
+  it("fires a subagent's PermissionRequest with its agent_id, and its allow runs the subagent's call unasked", async () => {
+    const root = await folder();
+    const elsewhere = path.join(await folder(), "a.txt");
+    writeFileSync(elsewhere, "A\n");
+    const { script, out } = await hookFolder();
+    const hook: Hook = { event: "PermissionRequest", matcher: { all: true }, command: process.execPath, args: [script, out, ALLOW, "0"], async: false, where: "" };
+    const bus = new Bus();
+    const asked: string[] = [];
+    const gate = new PermissionGate("ask", async (summary) => (asked.push(summary), false), undefined, { root, headless: false });
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const worker = new FakeProvider("w", [callTool("c1", "read_file", { path: elsewhere }), reply("found it")]);
+    const tasks = new Tasks({
+      bus,
+      max: 8,
+      worker: () => worker,
+      system: "sub",
+      tools: [readFileTool],
+      ctx: { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate },
+      hooks: new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, bus),
+    });
+    expect(await tasks.start("look", { background: false }).done).toEqual({ state: "done", text: "found it" });
+    const inputs = readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+    const fired = { hook_event_name: "PermissionRequest", agent_id: "t1", agent_type: "Explore", tool_name: "Read", tool_input: { file_path: elsewhere } };
+    expect(inputs).toEqual([expect.objectContaining(fired)]);
+    expect(asked).toEqual([]);
+  });
+
+  it("does not fire PermissionRequest for the question to send a request again without its pictures", async () => {
+    const { script, out } = await hookFolder();
+    const hook: Hook = { event: "PermissionRequest", matcher: { all: true }, command: process.execPath, args: [script, out, ALLOW, "0"], async: false, where: "" };
+    const bus = new Bus();
+    const ctx = await tempContext();
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root: ctx.root, mode: () => ctx.gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const lead = new FakeProvider("a", [Object.assign(new Error("failed with 400"), { status: 400 })]);
+    const asked: string[] = [];
+    const ask: Ask = async (summary) => (asked.push(summary), false);
+    const hooks = new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, bus);
+    const session = new Session({ lead, tools: [], system: "t", ctx, bus, ask, hooks });
+    const png = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }; // a stand-in, never read from disk
+    await session.send([{ type: "text", text: "look " }, { type: "image", id: 1, ...png }]);
+    expect(asked).toEqual(["Send again without the pictures"]);
+    expect(existsSync(out)).toBe(false);
+  });
 });
 
 // System prompt plan, Task 7 (decisions 6 and 7): a lead session given a setup tells the model of a new date or setup
