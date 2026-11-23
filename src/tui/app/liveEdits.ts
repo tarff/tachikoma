@@ -1,3 +1,4 @@
+import path from "node:path";
 import { resolve } from "../../clilib.js";
 import { visible } from "../../core/permissions.js";
 import { errorText, type Provider } from "../../core/types.js";
@@ -6,7 +7,7 @@ import { mergeServers } from "../../mcp/config.js";
 import { switchFields } from "../../providers/switching.js";
 import { NO_RULES } from "../../safety/rules.js";
 import { rules } from "../../sandbox/sites.js";
-import { hooksOf, type Loaded, SETTINGS, type Settings } from "../../settings.js";
+import { hooksOf, type Loaded, SETTINGS, type Settings, settingsDir } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { editorCommand } from "../external.js";
 import { start as vimStart } from "../vim.js";
@@ -23,6 +24,69 @@ const same = (a: unknown, b: unknown) => {
 // list is the same as an empty one (8c-2b plan, Step 3's review).
 const compared = (s: Settings, key: (typeof LIVE)[number]) =>
   key === "allowedSites" ? (s.allowedSites ?? []).map(rules.siteText).sort() : s[key];
+// What fixed an entry for this session, a flag or a variable, so an edit of it is left as that set it (onSettings).
+// VISUAL and EDITOR come before the file's editor, as a flag comes before an entry (external.ts, editorCommand).
+const fixedBy = (ui: UI, key: (typeof LIVE)[number]) =>
+  key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : ui.live?.given[key];
+// The entries whose edit only says it takes effect at the next launch (applyEntry).
+const NEXT_LAUNCH: readonly (typeof LIVE)[number][] = ["mode", "sandbox", "network", "judge", "allowedSites", "memory", "theme"];
+
+// ConfigChange before a read of the settings file applies (release 8e plan, step 16; design, "Notification,
+// InstructionsLoaded, ConfigChange"), `fns` the latest drawing's (App.tsx). Its hooks in force decide, sent the source and
+// the file's path; a block keeps the whole read out, with its line, so the settings in force, the warnings said, the
+// left-out rows and what the next read is compared with stay as they were. A broken read fires nothing, and neither
+// does the watcher's first read unless it changes something in force (Q27): an entry that takes effect in this session,
+// a warning or a left-out row; every later good read fires (Q16). One read is decided at a time: one made meanwhile
+// waits, a newer one taking its place, and is decided once the one before has applied or been kept out, against what is
+// in force by then. `stop`, at the window's close, ends the hooks still deciding, as a stop ends a hook, and throws away
+// the read being decided and the one waiting, saying nothing.
+export const configChanges = (ui: UI, fns: () => Pick<Fns, "note" | "onSettings">) => {
+  const file = path.join(settingsDir(ui.home), SETTINGS);
+  const stopped = new AbortController();
+  let first = true;
+  let deciding = false;
+  let waiting: { read: Loaded; first: boolean } | undefined;
+  const inForce = (read: Exclude<Loaded, { problem: string }>) =>
+    !same(read.warnings, ui.warned.current) ||
+    !same(read.hooksLeftOut ?? [], ui.hooks?.config.leftOut ?? []) ||
+    LIVE.some((key) => !NEXT_LAUNCH.includes(key) && !fixedBy(ui, key) && !same(compared(ui.fileNow.current, key), compared(read.settings, key)));
+  const decide = async (read: Loaded) => {
+    const c = await ui.hooks!.fire("ConfigChange", { source: "user_settings", file_path: file }, { match: "user_settings", outside: true, signal: stopped.signal });
+    if (stopped.signal.aborted) return;
+    ui.newEdit.current = true; // its lines are its own edit's, as the watcher's begin makes them (App.tsx)
+    if (c.block === undefined) return fns().onSettings(read);
+    // W7: none given, none said. A full stop after it unless it ends in one, as the switch's line (queue.ts).
+    const reason = c.block ? `: ${c.block}${/[.!?]$/.test(c.block) ? "" : "."}` : ".";
+    fns().note(gray(visible(`A ConfigChange hook stopped this settings change${reason}`, { tabs: true })));
+  };
+  const take = (read: Loaded, isFirst: boolean) => {
+    const fires = !("problem" in read) && (!isFirst || inForce(read)) && (ui.hooks?.has("ConfigChange", "user_settings") ?? false);
+    if (!fires) return fns().onSettings(read);
+    deciding = true;
+    void decide(read)
+      .catch((err) => {
+        if (!stopped.signal.aborted) fns().note({ text: errorText(err), color: "error" });
+      })
+      .finally(() => {
+        deciding = false;
+        const next = waiting;
+        waiting = undefined;
+        if (next && !stopped.signal.aborted) take(next.read, next.first);
+      });
+  };
+  const deliver = (read: Loaded) => {
+    const isFirst = first;
+    first = false;
+    if (stopped.signal.aborted) return;
+    if (deciding) waiting = { read, first: isFirst };
+    else take(read, isFirst);
+  };
+  const stop = () => {
+    stopped.abort();
+    waiting = undefined;
+  };
+  return { deliver, stop };
+};
 
 export const liveEdits = (ui: UI, fns: Fns) => {
   // A live edit of the settings file (release 6 design, "Live edits"): a broken file keeps the last good settings
@@ -40,8 +104,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     const now = resolve({}, {}, read.settings);
     for (const key of LIVE) {
       if (same(compared(before, key), compared(read.settings, key))) continue;
-      // VISUAL and EDITOR come before the file's editor, as a flag comes before an entry (external.ts, editorCommand).
-      const flag = key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : ui.live?.given[key];
+      const flag = fixedBy(ui, key);
       if (flag) fns.note(gray(`${SETTINGS}'s "${key}" was left as ${flag} set it for this session`));
       else fns.applyEntry(key, read.settings, now, before);
     }

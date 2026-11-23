@@ -25,7 +25,7 @@ import type { TodoItem } from "../tools/todo.js";
 import { characters, contextsOf, FROM, gray, isFile, type Question, SHORTEN_WORDS, STOPPING, visualSelection } from "./app/constants.js";
 import { handover } from "./app/handover.js";
 import { keyRouting } from "./app/keyRouting.js";
-import { liveEdits } from "./app/liveEdits.js";
+import { configChanges, liveEdits } from "./app/liveEdits.js";
 import { mouse } from "./app/mouse.js";
 import { output } from "./app/output.js";
 import { pictureReads } from "./app/pictureReads.js";
@@ -514,14 +514,16 @@ export function App(props: AppProps) {
     // Each a notice, the red one a block without the grey dot, as a live edit's problem is (TUI design pass, Task 3's review).
     const launchLines: Line[] = [...warnings.map((w) => noticeLine(gray(w), ui.palette)), ...(off ? [{ text: off, color: "error" as const, block: true as const }] : [])];
     fns.say(...launchLines, ...ui.intro);
-    // A watch that cannot start leaves the session as the launch set it, and says so.
+    // A watch that cannot start leaves the session as the launch set it, and says so. Each read of the settings file is
+    // ConfigChange's to decide first, stopped where the watching stops (release 8e plan, step 16).
     let unwatch: (() => void) | undefined;
+    const settingsChanges = configChanges(ui, () => latest.current);
     try {
       unwatch =
         ui.live &&
         watchSettings(
           ui.home,
-          (read) => latest.current.onSettings(read),
+          (read) => settingsChanges.deliver(read),
           (read) => latest.current.onKeys(read),
           // A live file's line, as an edit's, of its own (note; choice 35).
           () => latest.current.noteAlone(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} and ${KEYBINDINGS} are no longer watched this session`)),
@@ -548,6 +550,7 @@ export function App(props: AppProps) {
       ui.owner.end();
       ui.mouse?.off("mouse", onReport);
       unwatch?.();
+      settingsChanges.stop();
       clearInterval(minutes);
       clearTimeout(ui.first.current?.timer);
       clearTimeout(ui.chordTimer.current);

@@ -59,7 +59,7 @@ import { OpenAIProvider } from "../../src/providers/openai.js";
 import { judgeOf } from "../../src/safety/judge.js";
 import { dangers, NO_RULES } from "../../src/safety/rules.js";
 import type { Manifest } from "../../src/sandbox/snapshot.js";
-import { readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
+import { type Loaded, readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
@@ -97,6 +97,19 @@ vi.mock("node:fs", async (original) => {
 vi.mock("../../src/hooks/run.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../../src/hooks/run.js")>();
   return { ...real, runHook: vi.fn(real.runHook) };
+});
+// The settings watcher's callbacks for each home it watches, so a ConfigChange test can hand the window a read straight,
+// as the watcher hands it one (release 8e plan, step 16); the watcher itself runs as it is.
+const watchers = vi.hoisted(() => new Map<string, { on: (read: Loaded) => void; begin?: () => void }>());
+vi.mock("../../src/settingsWatch.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/settingsWatch.js")>();
+  return {
+    ...real,
+    watchSettings: (...args: Parameters<typeof real.watchSettings>) => {
+      watchers.set(args[0], { on: args[1], begin: args[4] });
+      return real.watchSettings(...args);
+    },
+  };
 });
 
 // Wait until the screen shows `text`; the session runs real file I/O in the background.
@@ -15098,5 +15111,373 @@ describe("App's PostModelSwitch hooks (release 8e plan, step 14)", { timeout: 60
     finish();
     await until(app, "from b");
     expect(b.seen[0]!.at(-1)!.parts).toEqual([postText("b leads now"), { type: "text", text: "second" }]);
+  });
+});
+
+// Release 8e plan, step 16: the runs of the hooks at `events` stood in, as switchRuns stands in for the switch events',
+// ConfigChange's unless given; every other event's hooks run as they are. Each run is listed, in the order they started,
+// with whether a stop ended it.
+interface HookRun { event: string; command: string; input: Record<string, unknown>; stopped: boolean }
+function configRuns(answer: (run: HookRun) => Ran | Promise<Ran> = () => ran(), events = ["ConfigChange"]): HookRun[] {
+  const runs: HookRun[] = [];
+  const real = vi.mocked(runHook).getMockImplementation()!;
+  onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+  vi.mocked(runHook).mockImplementation((hook, input, opts) => {
+    const fields = input as Record<string, unknown>;
+    const event = String(fields.hook_event_name);
+    if (!events.includes(event)) return real(hook, input, opts);
+    const run = { event, command: hook.command, input: fields, stopped: false };
+    runs.push(run);
+    return new Promise<Ran>((resolve, reject) => {
+      opts.signal?.addEventListener("abort", () => ((run.stopped = true), reject(new Error("Cancelled"))), { once: true });
+      void Promise.resolve(answer(run)).then(resolve, reject);
+    });
+  });
+  return runs;
+}
+const configHook = (over: Partial<Hook> = {}): Hook => ({ event: "ConfigChange", matcher: { all: true }, command: "check-config", async: false, where: "", ...over });
+// A "hooks" entry as the user writes it in the settings file, one command hook at `event`.
+const hookEntry = (event: string, command: string) => ({ [event]: [{ hooks: [{ type: "command", command }] }] });
+
+// Release 8e plan, step 16: ConfigChange decides a change of the settings file before any of it applies. The window's
+// reads are handed to it straight (hand), as the watcher hands them, or come through the real watcher, one write a step.
+describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_000 }, () => {
+  const FROM = "(from settings.json)";
+  const STOPPED = "A ConfigChange hook stopped this settings change";
+  const SIZE = (n: string) => `autoCompactWindow is now ${n} ${FROM}`;
+  const PINNED = (mode: string) => `"mode" changes in settings.json take effect at the next launch; the mode stays ${mode}`;
+  const LEFT_OUT = "FileChanged: Tachikoma doesn't watch files for hooks";
+  const LEED = 'settings.json: "leed" is not a setting; it was left out';
+  // A long line wraps, and Ink can carry the space it broke at onto the next row.
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " ");
+  const sees = (app: ReturnType<typeof render>, text: string) => vi.waitFor(() => expect(flat(app)).toContain(text), WATCHED);
+  // How often the conversation says `text`, above the prompt: the hint row under it shows an edit's last line too.
+  const times = (app: ReturnType<typeof render>, text: string) => {
+    const f = flat(app);
+    return f.slice(0, f.lastIndexOf("›")).split(text).length - 1;
+  };
+  const json = (o: object) => JSON.stringify(o);
+
+  // A window whose settings file holds `text` (none when null) at the watcher's first read and whose launch read
+  // `launched` (that text, or {} with none, unless given), the hooks in force the launch's file's then `hooks` (a
+  // ConfigChange hook unless given). `hand` gives the window a read of a text straight; `write` writes the file;
+  // `read` writes it and waits until the watcher has read it (app's live settings, readsOf).
+  async function launch(
+    text: string | null,
+    o: { launched?: string; given?: Given; hooks?: Hook[]; mount?: Parameters<typeof mount>[1] } = {},
+  ) {
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    onTestFinished(() => removeTree(home));
+    const where = path.join(settingsDir(home), "settings.json");
+    mkdirSync(settingsDir(home), { recursive: true });
+    if (text !== null) writeFileSync(where, text);
+    const loaded = readSettings(o.launched ?? text ?? "{}");
+    if ("problem" in loaded) throw new Error(loaded.problem);
+    const hooks = { hooks: [...(loaded.settings.hooks ?? []), ...(o.hooks ?? [configHook()])], off: false, leftOut: loaded.hooksLeftOut ?? [] };
+    const m = await mount([], { ...o.mount, home, live: { loaded, given: o.given ?? {} }, hooks });
+    const hand = (t: string) => {
+      const w = watchers.get(home)!;
+      w.begin?.();
+      w.on(readSettings(t));
+    };
+    const write = (t: string) => writeFileSync(where, t);
+    const readOf = (file: string) => async (t: string) => {
+      const before = reads.get(file) ?? 0;
+      writeFileSync(file, t);
+      await vi.waitFor(() => expect(reads.get(file) ?? 0).toBeGreaterThan(before), WATCHED);
+    };
+    return { ...m, hooks: m.hooks!, home, where, hand, write, read: readOf(where), readOf };
+  }
+
+  it.each([
+    ["exit code 2", ran("", 2, "Not now"), `${STOPPED}: Not now.`],
+    ['"decision": "block" with no reason (W7)', ran(json({ decision: "block" })), `${STOPPED}.`],
+  ])("keeps a whole change a ConfigChange hook's %s blocks out: the settings, hooks, warnings and left-out rows in force stay, with its line", async (_how, answer, line) => {
+    const runs = configRuns(() => answer);
+    const { app, session, hooks, hand } = await launch("{}");
+    const before = structuredClone(hooks.config);
+    hand(json({ autoCompactWindow: 200000, leed: 1, hooks: { ...hookEntry("FileChanged", "x"), ...hookEntry("Stop", "y") } }));
+    await sees(app, line);
+    await tick();
+    expect(runs).toHaveLength(1);
+    expect(session.autoCompact).toBeNull();
+    expect(hooks.config).toEqual(before);
+    for (const said of ["autoCompactWindow is now", LEED, LEFT_OUT, "Hooks changed"]) expect(flat(app)).not.toContain(said);
+  });
+
+  it("compares the next save after a blocked one with the settings in force, not with the blocked one", async () => {
+    let n = 0;
+    configRuns(() => (n++ === 0 ? ran("", 2, "No") : ran()));
+    const { app, session, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, `${STOPPED}: No.`);
+    hand(json({ autoCompactWindow: 200000, scrollSpeed: 5 }));
+    await sees(app, SIZE("200,000"));
+    await sees(app, `scrollSpeed is now 5 ${FROM}`);
+    expect(session.autoCompact).toBe(200_000);
+  });
+
+  it("applies a change its ConfigChange hook allows as before, the hook sent source user_settings and the file's path", async () => {
+    const runs = configRuns();
+    const { app, session, where, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, SIZE("200,000"));
+    expect(session.autoCompact).toBe(200_000);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.input).toMatchObject({ hook_event_name: "ConfigChange", source: "user_settings", file_path: where });
+    expect(flat(app)).not.toContain(STOPPED);
+  });
+
+  // Q28: onFailure "block" makes a failure a block, with the failure as its reason; without it, its red line.
+  it.each([
+    ['with onFailure "block", kept out, the failure its reason', { onFailure: "block" as const }, true],
+    ["without onFailure, its red line, and the change applies", {}, false],
+  ])("treats a ConfigChange hook that cannot start %s", async (_how, over, kept) => {
+    configRuns(() => ({ code: null, stdout: "", stderr: "", ms: 1, failed: "start", startError: "spawn check-config ENOENT" }));
+    const { app, session, hand } = await launch("{}", { hooks: [configHook(over)] });
+    hand(json({ autoCompactWindow: 200000 }));
+    if (kept) {
+      await sees(app, `${STOPPED}: check-config could not start (spawn check-config ENOENT).`);
+      expect(session.autoCompact).toBeNull();
+      expect(flat(app)).not.toContain("ConfigChange hook failed");
+    } else {
+      await sees(app, "ConfigChange hook failed: check-config could not start (spawn check-config ENOENT)");
+      await sees(app, SIZE("200,000"));
+      expect(flat(app)).not.toContain(STOPPED);
+    }
+  });
+
+  // D9: ConfigChange discards systemMessage and continue.
+  it.each([
+    ["blocked", ran(json({ decision: "block", reason: "No", systemMessage: "Seen it" })), `${STOPPED}: No.`],
+    ["allowed", ran(json({ systemMessage: "Seen it", continue: false, stopReason: "Halt" })), SIZE("200,000")],
+  ])("shows no line for a ConfigChange hook's systemMessage, the change %s, and its continue does nothing", async (_how, answer, line) => {
+    configRuns(() => answer);
+    const { app, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, line);
+    await tick();
+    expect(flat(app)).not.toContain("Seen it");
+    expect(flat(app)).not.toContain("Halt");
+  });
+
+  it("decides a save made while a ConfigChange hook decides the last once that one is decided, the newer landing last", async () => {
+    let go!: () => void;
+    const runs = configRuns(() => (runs.length === 1 ? new Promise<Ran>((resolve) => (go = () => resolve(ran()))) : ran()));
+    const { app, session, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    await tick();
+    expect([runs.length, session.autoCompact]).toEqual([1, null]);
+    go();
+    await sees(app, SIZE("200,000"));
+    expect(flat(app).indexOf(SIZE("100,000"))).toBeLessThan(flat(app).indexOf(SIZE("200,000")));
+    expect([runs.length, session.autoCompact]).toEqual([2, 200_000]);
+  });
+
+  it("keeps only the newest of the saves made while a ConfigChange hook decides, the middle one never decided nor applied", async () => {
+    let go!: () => void;
+    const runs = configRuns(() => (runs.length === 1 ? new Promise<Ran>((resolve) => (go = () => resolve(ran()))) : ran()));
+    const { app, session, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    hand(json({ autoCompactWindow: 300000 }));
+    go();
+    await sees(app, SIZE("300,000"));
+    await tick();
+    expect(flat(app)).toContain(SIZE("100,000"));
+    expect(flat(app)).not.toContain("200,000");
+    expect([runs.length, session.autoCompact]).toEqual([2, 300_000]);
+  });
+
+  it("has a change that removes its own ConfigChange hook decided by that hook, and the next change runs no hook", async () => {
+    const runs = configRuns();
+    const { app, session, hand } = await launch(json({ hooks: hookEntry("ConfigChange", "check-config") }), { hooks: [] });
+    hand("{}");
+    await sees(app, "Hooks changed: none in force.");
+    expect(runs).toHaveLength(1);
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, SIZE("200,000"));
+    expect(runs).toHaveLength(1);
+    expect(session.autoCompact).toBe(200_000);
+  });
+
+  it("lets an async ConfigChange hook decide nothing: the change applies, with 8b's line", async () => {
+    configRuns(() => ran("", 2, "No"));
+    const { app, session, hand } = await launch("{}", { hooks: [configHook({ async: true })] });
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, SIZE("200,000"));
+    await sees(app, 'ConfigChange hook failed: check-config asked to block, but an "async" hook cannot block');
+    expect(session.autoCompact).toBe(200_000);
+    expect(flat(app)).not.toContain(STOPPED);
+  });
+
+  it.each([
+    ["user_settings picks the hook", "user_settings", 1],
+    ["another value does not", "project_settings", 0],
+  ])("matches a ConfigChange hook on its source: a matcher %s", async (_how, name, n) => {
+    const runs = configRuns(() => ran("", 2, "No"));
+    const { app, hand } = await launch("{}", { hooks: [configHook({ matcher: { names: [name] } })] });
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, n ? `${STOPPED}: No.` : SIZE("200,000"));
+    expect(runs).toHaveLength(n);
+  });
+
+  // Codex round 3, point 3: the window's close ends the deciding, and nothing it would have done happens after.
+  it("ends a ConfigChange hook still deciding when the window closes, applying neither that save nor the one waiting, saying nothing", async () => {
+    const unhandled: unknown[] = [];
+    const heard = (err: unknown) => void unhandled.push(err);
+    process.on("unhandledRejection", heard);
+    onTestFinished(() => void process.off("unhandledRejection", heard));
+    let go!: () => void;
+    const runs = configRuns(() => new Promise<Ran>((resolve) => (go = () => resolve(ran()))));
+    const { app, session, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    app.unmount();
+    await waitFor(() => runs[0]!.stopped);
+    go();
+    await tick();
+    await tick();
+    expect([runs.length, session.autoCompact]).toEqual([1, null]);
+    const all = app.frames.join("\n");
+    for (const said of ["autoCompactWindow is now", STOPPED]) expect(all).not.toContain(said);
+    expect(unhandled).toEqual([]);
+  });
+
+  // Codex round 3, point 10: the watcher hands a text on again after it read the file empty (settingsWatch.test.ts).
+  it("decides a text handed in again again: a blocked one is blocked again, an applied one applies nothing new", async () => {
+    const runs = configRuns(() => (runs.length <= 2 ? ran("", 2, "No") : ran()));
+    const { app, session, hand } = await launch("{}");
+    const blocked = json({ autoCompactWindow: 100000 });
+    hand(blocked);
+    await sees(app, `${STOPPED}: No.`);
+    hand(blocked);
+    await waitFor(() => runs.length === 2 && times(app, `${STOPPED}: No.`) === 2);
+    const allowed = json({ autoCompactWindow: 200000 });
+    hand(allowed);
+    await sees(app, SIZE("200,000"));
+    hand(allowed);
+    await waitFor(() => runs.length === 4);
+    await tick();
+    expect(times(app, SIZE("200,000"))).toBe(1);
+    expect(session.autoCompact).toBe(200_000);
+  });
+
+  // Codex round 1, point 4: ConfigChange first, by the hooks in force before the save; the switch then by the new ones.
+  it.each([
+    ["blocked, neither applies and no PreModelSwitch hook runs", ran("", 2, "No"), ["ConfigChange"]],
+    ["allowed, the new hooks apply and the save's PreModelSwitch hook decides the switch", ran(), ["ConfigChange", "PreModelSwitch"]],
+  ])("decides a save that changes both the hooks and the lead by ConfigChange first: %s", async (_how, answer, events) => {
+    const runs = configRuns((r) => (r.event === "ConfigChange" ? answer : ran()), ["ConfigChange", "PreModelSwitch"]);
+    const { app, session, hooks, hand } = await launch("{}");
+    hand(json({ lead: "ollama:b", hooks: { ...hookEntry("ConfigChange", "check-config"), ...hookEntry("PreModelSwitch", "check-switch") } }));
+    if (events.length === 1) {
+      await sees(app, `${STOPPED}: No.`);
+      await tick();
+      expect(session.lead.id).toBe("fake:a");
+      expect(hooks.config.hooks.map((h) => h.event)).toEqual(["ConfigChange"]);
+    } else {
+      await sees(app, `lead is now fake:b ${FROM}`);
+      expect(hooks.config.hooks.map((h) => h.event)).toEqual(["ConfigChange", "PreModelSwitch"]);
+      expect(runs.at(-1)!.command).toBe("check-switch");
+    }
+    expect(runs.map((r) => r.event)).toEqual(events);
+  });
+
+  // What the watcher delivers, through the real watcher (Q16, Q27), one write a step.
+  it("fires nothing for the launch's own text at the watcher's first read", async () => {
+    const runs = configRuns();
+    await launch(json({ autoCompactWindow: 200000 }));
+    await tick();
+    expect(runs).toEqual([]);
+  });
+
+  it.each([
+    ["an entry that takes effect in this session", json({ autoCompactWindow: 200000 }), SIZE("200,000")],
+    ["only a hook left out, a new left-out row and its warning", json({ hooks: hookEntry("FileChanged", "x") }), LEFT_OUT],
+    ["only a new warning", json({ leed: 1 }), LEED],
+  ])("fires ConfigChange once for an edit made before the watch started that changes %s (Q27)", async (_how, text, line) => {
+    const runs = configRuns();
+    const { app } = await launch(text, { launched: "{}" });
+    await sees(app, line);
+    await tick();
+    expect(runs).toHaveLength(1);
+  });
+
+  it.each([
+    ["only its spacing", '{ "maxTasks" : 3 }', '{"maxTasks": 3}', {}, null],
+    ['only "mode", which waits for the next launch', json({ mode: "project" }), "{}", {}, PINNED("ask")],
+    ['only "lead", in a window launched with --lead', json({ lead: "ollama:b" }), "{}", { lead: "--lead" }, `settings.json's "lead" was left as --lead set it for this session`],
+  ])("fires nothing for an edit made before the watch started that changes %s, saying what it says today (Q27)", async (_how, text, launched, given, line) => {
+    const runs = configRuns();
+    const { app } = await launch(text, { launched, given });
+    if (line) await sees(app, line);
+    await tick();
+    expect(runs).toEqual([]);
+  });
+
+  it.each([
+    ['"mode"', json({ mode: "project" }), {}, PINNED("ask")],
+    ['"lead" in a window launched with --lead', json({ lead: "ollama:b" }), { lead: "--lead" }, `settings.json's "lead" was left as --lead set it for this session`],
+    ["only the spacing", '{ }', {}, null],
+  ])("fires ConfigChange for a later save that changes %s (Q16)", async (_how, text, given, line) => {
+    const runs = configRuns();
+    const { app, write } = await launch("{}", { given });
+    write(text);
+    await vi.waitFor(() => expect(runs).toHaveLength(1), WATCHED);
+    if (line) await sees(app, line);
+  });
+
+  it.each([
+    ["an entry that takes effect in this session, fires once", json({ autoCompactWindow: 200000 }), 1],
+    ["only {}, fires nothing", "{}", 0],
+  ])("for a settings file first made after the launch, with %s, and the next save fires", async (_how, text, n) => {
+    const runs = configRuns();
+    const { app, read } = await launch(null);
+    await read(text);
+    if (n) await sees(app, SIZE("200,000"));
+    await tick();
+    expect(runs).toHaveLength(n);
+    await read(json({ autoCompactWindow: 300000 }));
+    await sees(app, SIZE("300,000"));
+    expect(runs).toHaveLength(n + 1);
+  });
+
+  it("fires nothing for a file broken at the watcher's first read, which gets its red line, and fires for the good save after", async () => {
+    const runs = configRuns();
+    const { app, write } = await launch('{"mode": ', { launched: "{}" });
+    await sees(app, "settings.json is not valid JSON");
+    expect(runs).toEqual([]);
+    write(json({ mode: "project" }));
+    await sees(app, PINNED("ask"));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("fires nothing for a blocked text saved again in place", async () => {
+    const runs = configRuns(() => ran("", 2, "No"));
+    const { app, write, read } = await launch("{}");
+    const text = json({ autoCompactWindow: 200000 });
+    write(text);
+    await sees(app, `${STOPPED}: No.`);
+    await read(text);
+    await tick();
+    expect(runs).toHaveLength(1);
+    expect(times(app, `${STOPPED}: No.`)).toBe(1);
+  });
+
+  it("fires nothing and applies nothing for an empty save alone, nor for an edit of keybindings.json", async () => {
+    const runs = configRuns();
+    const { app, session, home, read, readOf } = await launch(json({ autoCompactWindow: 200000 }));
+    await read("");
+    await tick();
+    await readOf(path.join(settingsDir(home), "keybindings.json"))('{"bindings": []}');
+    await tick();
+    expect(runs).toEqual([]);
+    expect(flat(app)).not.toContain("autoCompactWindow is now");
+    expect(session.autoCompact).toBeNull();
   });
 });
