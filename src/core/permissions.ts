@@ -292,23 +292,27 @@ export class PermissionGate {
   // A gate for one call with its PermissionRequest decider (release 8e plan, step 7), asked just before the first
   // question about the call, or in -p before the refusal its ask reports (Q4); on a gate that already has the call's
   // record, that record pointed to `decide`, so one already asked is not asked again. Null: a call that starts again
-  // (step 9), its record marked asked, with no decision, so no decider given it later is asked.
+  // (step 9), with a record of its own, asked, with no decision, so no decider given it later is asked, and neither the
+  // old call's answer nor its copies carry over.
   deciding(decide: Decider | null): PermissionGate {
     const gate = new PermissionGate(this.#mode, this.ask, this.refusal, this.options);
     gate.#parent = this.#parent ?? this;
     if (this.#own) gate.#own = this.#own;
     gate.#owner = this.#owner;
     gate.#hook = this.#hook;
-    gate.#request = this.#request ?? {};
-    if (decide === null) gate.#request.answer ??= Promise.resolve(undefined);
-    else gate.#request.decide = decide;
+    if (decide === null) gate.#request = { answer: Promise.resolve(undefined) };
+    else {
+      gate.#request = this.#request ?? {};
+      gate.#request.decide = decide;
+    }
     return gate;
   }
 
   // The call's PermissionRequest decider, asked once for the call (Q5): every copy of the call's gate shares its answer,
   // so an allow covers each later question, and no decision leaves them to the user, or in -p to its refusal. True: an
   // allow, and the question is skipped. A deny refuses with its words; a new input starts the call again (StartAgain). A
-  // stop while it runs, or before an allow or a new input is acted on, runs nothing, as a yes after a stop does.
+  // stop while it runs cancels the call, whatever it answered, a deny aside, and puts no question: Esc kills the hook
+  // and cancels the call (design), as a yes after a stop runs nothing.
   async #decided(signal?: AbortSignal): Promise<boolean> {
     const request = this.#request;
     if (!request) return false;
@@ -316,7 +320,10 @@ export class PermissionGate {
     const decision = await request.answer.catch((err: unknown) => {
       throw signal?.aborted ? new StoppedFirst() : err;
     });
-    if (decision === undefined) return false;
+    if (decision === undefined) {
+      if (signal?.aborted) throw new StoppedFirst();
+      return false;
+    }
     if ("deny" in decision) throw new Declined(decision.deny);
     if (signal?.aborted) throw new StoppedFirst();
     if ("input" in decision) throw new StartAgain(decision.input);

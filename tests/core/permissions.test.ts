@@ -782,6 +782,17 @@ describe("the gate's PermissionRequest decider", () => {
     expect([seen, first.log]).toEqual([["second"], []]);
   });
 
+  // The review of step 7: a call that starts again after a new input gets a record of its own, so it neither keeps the
+  // new input as its answer nor changes the old call's copies.
+  it("gives a gate made already asked from a call's gate a record of its own, so a new input is not raised again", async () => {
+    const { gate, log, decider } = gateIn("ask");
+    const call = gate.deciding(decider({ input: { command: "echo safer" } }));
+    await expect(call.require(run(push))).rejects.toBeInstanceOf(StartAgain);
+    await call.deciding(null).require(run(push));
+    expect(log).toEqual(["decider", `asked: run: ${push}`]);
+    await expect(call.withHook({ asked: true }).require(run(push))).rejects.toBeInstanceOf(StartAgain);
+  });
+
   // Q6: only the user's own yes resumes auto mode.
   it("runs one call it allows under auto mode's pause and leaves the pause, which the user's yes to the next question still lifts", async () => {
     const { gate, log, notes, judged, decider } = gateIn("auto");
@@ -793,11 +804,12 @@ describe("the gate's PermissionRequest decider", () => {
   });
 
   it("runs nothing when a stop comes while the decider runs, at its own question and at a hook's ask", async () => {
-    for (const ends of ["rejects", "allows", "rewrites"] as const) {
+    for (const ends of ["rejects", "decides nothing", "allows", "rewrites"] as const) {
       const { gate, log } = gateIn("ask");
       const stopping = (stop: AbortController) => async (): Promise<Decision> => {
         stop.abort();
         if (ends === "rejects") throw new Error("stopped");
+        if (ends === "decides nothing") return undefined;
         return ends === "allows" ? { allow: true } : { input: {} };
       };
       const one = new AbortController();
