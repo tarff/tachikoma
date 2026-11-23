@@ -246,7 +246,10 @@ describe("MCP calls in hooks", { timeout: 15_000 }, () => {
     const five = ["Notification", "StopFailure", "InstructionsLoaded", "PermissionDenied", "PermissionRequest"] as const;
     for (const event of five) {
       const gone = mcpHook(event, "echo", {}, { mcp: { server: "gone", tool: "echo", input: {} }, onFailure: "block" });
-      const c = await t.hooksOf([mcpHook(event, "error", {}, { onFailure: "block" }), gone]).fire(event, {});
+      const hooks = t.hooksOf([mcpHook(event, "error", {}, { onFailure: "block" }), gone]);
+      // After the launch: the launch's InstructionsLoaded skips mcp_tool hooks, as its SessionStart does (step 15, Q14).
+      await hooks.fire("SessionStart", {});
+      const c = await hooks.fire(event, {});
       expect([c.failures, c.decision, c.retry, c.block], event).toEqual([lines, undefined, undefined, undefined]);
     }
     expect(t.hookErrors()).toEqual(five.flatMap((e) => lines.map((l) => `${e} hook failed: ${l}`)));
@@ -279,6 +282,8 @@ describe("MCP calls in hooks", { timeout: 15_000 }, () => {
     ]);
     const others = ["PostModelSwitch", "Notification", "StopFailure", "InstructionsLoaded", "PermissionDenied"] as const;
     const notWaited = t.hooksOf(others.map((event) => mcpHook(event, "echo", { text: "x" })));
+    // After the launch: the launch's InstructionsLoaded skips mcp_tool hooks, as its SessionStart does (step 15, Q14).
+    await notWaited.fire("SessionStart", {});
     const [request, pre, batch, config, ...rest] = await Promise.all([
       waited.fire("PermissionRequest", {}), waited.fire("PreModelSwitch", {}), waited.fire("PostToolBatch", {}), waited.fire("ConfigChange", {}),
       ...others.map((event) => notWaited.fire(event, {})),
