@@ -10655,9 +10655,10 @@ describe("App's live settings", () => {
     expect(flat(app)).not.toContain("Switch to fake:b?");
   });
 
+  // PostModelSwitch neither (release 8e plan, step 14).
   it("fires nothing for a lead the file names that already leads, and still says the lead is now that model (release 8e plan, step 13; Q31)", async () => {
     const runs = switchRuns();
-    const { app, write } = await watching([], {}, { newLead: new FakeProvider("a", []), hooks: [switchHook()] });
+    const { app, write } = await watching([], {}, { newLead: new FakeProvider("a", []), hooks: [switchHook(), postHook()] });
     write({ lead: "fake:a" });
     await sees(app, `lead is now fake:a ${FROM}`);
     expect(runs).toEqual([]);
@@ -10704,11 +10705,12 @@ describe("App's live settings", () => {
     expect(flat(app)).not.toContain("fake:c");
   });
 
-  // Step 13's review (the user): a hook's allow applies the file's lead only while the file still names it.
+  // Step 13's review (the user): a hook's allow applies the file's lead only while the file still names it. No switch is
+  // made, so no PostModelSwitch fires (release 8e plan, step 14).
   it("keeps the lead when the file's lead line is removed while a hook decides it, and the hook then allows (release 8e plan, step 13)", async () => {
     let allow!: () => void;
     const runs = switchRuns(() => new Promise<Ran>((resolve) => (allow = () => resolve(ran()))));
-    const { app, session, where, write } = await watching([], {}, { hooks: [switchHook()] });
+    const { app, session, where, write } = await watching([], {}, { hooks: [switchHook(), postHook()] });
     write({ lead: "ollama:b" });
     await vi.waitFor(() => expect(runs).toHaveLength(1), WATCHED);
     await readsOf(where)(() => write({}));
@@ -10718,6 +10720,24 @@ describe("App's live settings", () => {
     await tick();
     expect(session.lead.id).toBe("fake:a");
     expect(flat(app)).not.toContain(`lead is now fake:b ${FROM}`);
+    expect(runs.map((r) => r.event)).toEqual(["PreModelSwitch"]);
+  });
+
+  // Release 8e plan, step 14: PostModelSwitch once a lead the file names applies, sent "command" and the file's value,
+  // after its PreModelSwitch hook when there is one.
+  it.each([
+    ["with no PreModelSwitch hook", [] as string[]],
+    ["after an allowing PreModelSwitch hook", ["PreModelSwitch"]],
+  ])("fires PostModelSwitch once a lead the file names applies, %s (release 8e plan, step 14)", async (_how, first) => {
+    const runs = switchRuns();
+    const { app, write } = await watching([], {}, { hooks: [...(first.length ? [switchHook()] : []), postHook()] });
+    write({ lead: "ollama:b" });
+    await sees(app, `lead is now fake:b ${FROM}`);
+    await vi.waitFor(() => expect(runs.map((r) => r.event)).toEqual([...first, "PostModelSwitch"]), WATCHED);
+    expect(switchFieldsOf(runs.at(-1)!.input)).toEqual({
+      from_model: "a", to_model: "b", requested_model: "ollama:b", source: "command", context_tokens: 0, prompt_cache_warm: false,
+      cache_ttl: "5m", estimated_cache_write_usd: null,
+    });
   });
 });
 
@@ -11138,6 +11158,41 @@ describe("App's sessions", () => {
     await until(app, "lead a's own session");
     await press(app, "\r");
     await until(app, "lead is now fake:a");
+    expect([session.lead.id, runs]).toEqual(["fake:a", []]);
+  });
+
+  // Release 8e plan, step 14: PostModelSwitch after /resume into a session with another lead, as "resume", its context number
+  // 0 as the status line's is then ("Resume size"), and its text goes with the resumed conversation's next request.
+  it("fires PostModelSwitch as \"resume\" when /resume switches to the resumed session's saved lead, its text reaching that conversation (release 8e plan, step 14)", async () => {
+    const runs = switchRuns(() => ran("a leads again"));
+    await earlier("lead a's session, for the switch");
+    const a = new FakeProvider("a", [reply("a again")]);
+    const { app } = await saved([], { lead: new FakeProvider("b", [reply("b says")]), newLead: a, hooks: [postHook()] });
+    await type(app, "hi");
+    await until(app, "b says");
+    await type(app, "/resume");
+    await until(app, "lead a's session, for the switch");
+    await press(app, "\r");
+    await until(app, "lead is now fake:a");
+    await waitFor(() => runs.length === 1);
+    expect(switchFieldsOf(runs[0]!.input)).toEqual({
+      from_model: "b", to_model: "a", requested_model: null, source: "resume", context_tokens: 0, prompt_cache_warm: false, cache_ttl: "5m",
+      estimated_cache_write_usd: null,
+    });
+    await type(app, "go on");
+    await until(app, "a again");
+    expect(a.seen[0]!.map(texts)).toEqual([["lead a's session, for the switch"], ["noted"], ["PostModelSwitch hook:\na leads again", "go on"]]);
+  });
+
+  it("fires no PostModelSwitch when /resume opens a session led by the model leading now (release 8e plan, step 14)", async () => {
+    const runs = switchRuns();
+    await earlier("lead a's session, kept as it was");
+    const { app, session } = await saved([], { hooks: [postHook()] });
+    await type(app, "/resume");
+    await until(app, "lead a's session, kept as it was");
+    await press(app, "\r");
+    await until(app, "Resumed: lead a's session, kept as it was.");
+    await tick();
     expect([session.lead.id, runs]).toEqual(["fake:a", []]);
   });
 
@@ -14578,9 +14633,10 @@ describe("App's PreModelSwitch hooks (release 8e plan, step 13)", { timeout: 60_
     expect([runs.length, app.frames.some((f) => f.includes("Esc to stop"))]).toEqual([counted ? 1 : 0, counted]);
   });
 
+  // PostModelSwitch neither (release 8e plan, step 14).
   it("fires nothing when /lead or a pick names the model already leading, and still says the lead is now that model (Q31)", async () => {
     const runs = switchRuns();
-    const { app } = await mount([], { models, newLead: new FakeProvider("a", []), hooks: [switchHook()] });
+    const { app } = await mount([], { models, newLead: new FakeProvider("a", []), hooks: [switchHook(), postHook()] });
     await type(app, "/lead fake:a");
     await until(app, "lead is now fake:a");
     await pickFrom(app, 0);
@@ -14591,7 +14647,7 @@ describe("App's PreModelSwitch hooks (release 8e plan, step 13)", { timeout: 60_
   it("fires nothing for another spelling that the provider factory makes into the model already leading (Q31)", async () => {
     const runs = switchRuns();
     const made: string[] = [];
-    const { app, session } = await mount([], { made, newLead: new FakeProvider("a", []), hooks: [switchHook()] });
+    const { app, session } = await mount([], { made, newLead: new FakeProvider("a", []), hooks: [switchHook(), postHook()] });
     await type(app, "/lead fake:A");
     await until(app, "lead is now fake:a");
     expect([made, runs, session.lead.id]).toEqual([["fake:A"], [], "fake:a"]);
@@ -14764,5 +14820,198 @@ describe("App's PreModelSwitch hooks (release 8e plan, step 13)", { timeout: 60_
     await sees(app, 'PreModelSwitch hook failed: check-switch asked to block, but an "async" hook cannot block');
     expect(session.lead.id).toBe("fake:b");
     expect(app.lastFrame()).not.toContain("stopped by a hook");
+  });
+});
+
+// Release 8e plan, step 14: a PostModelSwitch hook, and its text as the model is sent it.
+const postHook = (over: Partial<Hook> = {}): Hook => switchHook({ event: "PostModelSwitch", command: "after", ...over });
+const postText = (text: string) => ({ type: "text", text: `PostModelSwitch hook:\n${text}`, from: "hooks" });
+
+// Release 8e plan, step 14: PostModelSwitch after `/lead <model>` and a pick from the model list; the settings file's lead
+// is in "App's live settings", /resume in "App's sessions", and the model already leading in step 13's tests above.
+describe("App's PostModelSwitch hooks (release 8e plan, step 14)", { timeout: 60_000 }, () => {
+  const models: ModelGroup[] = [{ provider: "fake", models: ["a", "b"] }];
+  // The model list opened with /model, and the model `down` rows below the first picked with Enter, as the user picks one.
+  async function pickFrom(app: ReturnType<typeof render>, down: number) {
+    await type(app, "/model");
+    await until(app, "● fake:a");
+    await tick(); // the picker starts reading keys just after it first appears
+    for (let i = 0; i < down; i++) await press(app, "\u001b[B");
+    await press(app, "\r");
+  }
+  // A stand-in model named `id`.
+  const named = (id: string) => Object.assign(new FakeProvider("x", []), { id });
+  // The fields of a switch from fake:a to fake:b with nothing priced or cached, `over` changing some.
+  const toB = (over: object = {}) => ({
+    from_model: "a", to_model: "b", requested_model: "fake:b", source: "command", context_tokens: 0, prompt_cache_warm: false, cache_ttl: "5m",
+    estimated_cache_write_usd: null, ...over,
+  });
+
+  it("fires PostModelSwitch after a /lead with the switch's fields and a 30 s limit, its text going with the next prompt's request", async () => {
+    const runs = switchRuns(() => ran("b leads now"));
+    const lead = new FakeProvider("a", [reply("one")]);
+    const b = new FakeProvider("b", [reply("from b")]);
+    const { app } = await mount([], { lead, newLead: b, hooks: [postHook()] });
+    await type(app, "hi");
+    await until(app, "one");
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await waitFor(() => runs.length === 1);
+    // 10 + 5: the stand-in's usage, the status line's context number after its reply.
+    expect([runs[0]!.event, runs[0]!.limit, switchFieldsOf(runs[0]!.input)]).toEqual(["PostModelSwitch", 30, toB({ context_tokens: 15 })]);
+    await type(app, "next");
+    await until(app, "from b");
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([postText("b leads now"), { type: "text", text: "next" }]);
+  });
+
+  it("fires PostModelSwitch after a pick from the model list as \"picker\", with no requested model", async () => {
+    const runs = switchRuns();
+    const { app, session } = await mount([], { models, newLead: new FakeProvider("b", []), hooks: [postHook()] });
+    await pickFrom(app, 1);
+    await until(app, "lead is now fake:b");
+    await waitFor(() => runs.length === 1);
+    expect(switchFieldsOf(runs[0]!.input)).toEqual(toB({ requested_model: null, source: "picker" }));
+    expect(session.lead.id).toBe("fake:b");
+  });
+
+  it("sends PostModelSwitch, after a /lead that shortened the conversation to fit, the status line's number then: 0", async () => {
+    const runs = switchRuns();
+    let window = 0;
+    let size = 0;
+    const turns: ((req: CompletionRequest) => Promise<Turn>)[] = [
+      async (req) => {
+        window = characters(req.system, [], req.tools) + 1000; // the prompt does not fit the new lead's window, a summary does
+        size = characters(req.system, req.messages, req.tools);
+        return { ...reply("noted"), usage: { ...usage, input: size } };
+      },
+      async () => reply("the summary"),
+    ];
+    const lead: Provider = { id: "fake:a", complete: (req) => turns.shift()!(req) };
+    const newLead: Provider = { id: "fake:b", complete: async () => reply("hi"), contextWindow: async () => window };
+    const { app, session } = await mount([], { lead, newLead, save: true, hooks: [switchHook(), postHook()] });
+    await session.send("x".repeat(2000));
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await waitFor(() => runs.length === 2);
+    expect(runs.map((r) => [r.event, switchFieldsOf(r.input)])).toEqual([
+      ["PreModelSwitch", toB({ context_tokens: size + usage.output })],
+      ["PostModelSwitch", toB()],
+    ]);
+    expect(turns).toEqual([]); // the summary was asked for
+  });
+
+  // The status line's number reflects the fallback's reply, which rescued the turn; the cache's warmth is timed from the
+  // lead's own refused reply: 4 minutes after it warm, 6 minutes after it not, though the fallback's came 2 minutes later.
+  it.each([
+    [4, true],
+    [6, false],
+  ])("sends PostModelSwitch, %i minutes after a turn a fallback rescued, the fallback's reply's size and a cache warm: %s", async (after, warm) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    onTestFinished(() => void vi.useRealTimers());
+    const at = Date.UTC(2026, 10, 23, 12);
+    const lead: Provider = {
+      id: "anthropic:claude-opus-5-5",
+      complete: async () => {
+        vi.setSystemTime(at);
+        return { ...reply(""), usage: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0 }, cutOff: { kind: "refusal", detail: "declined" } };
+      },
+    };
+    const rescue: Provider = {
+      id: "fake:f",
+      complete: async () => {
+        vi.setSystemTime(at + 2 * 60_000);
+        return { ...reply("rescued"), usage: { input: 7000, output: 34, cacheRead: 0, cacheWrite: 0 } };
+      },
+    };
+    const runs = switchRuns();
+    const { app, session } = await mount([], { lead, hooks: [postHook()] });
+    session.setFallback(rescue);
+    await type(app, "one");
+    await until(app, "rescued");
+    vi.setSystemTime(at + after * 60_000);
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await waitFor(() => runs.length === 1);
+    expect(switchFieldsOf(runs[0]!.input)).toEqual(toB({ from_model: "claude-opus-5-5", context_tokens: 7034, prompt_cache_warm: warm }));
+  });
+
+  it("fires PostModelSwitch on a /lead from a dated Anthropic name to its undated one, as the two ids differ (Q31)", async () => {
+    const runs = switchRuns();
+    const undated = named("anthropic:claude-haiku-4-5");
+    const hooks = [postHook({ matcher: { names: ["claude-haiku-4-5"] } })];
+    const { app, session } = await mount([], { lead: named("anthropic:claude-haiku-4-5-20251001"), newLead: undated, hooks });
+    await type(app, "/lead anthropic:claude-haiku-4-5");
+    await until(app, "lead is now anthropic:claude-haiku-4-5");
+    await waitFor(() => runs.length === 1);
+    expect(runs.map((r) => [r.event, r.input.from_model, r.input.to_model])).toEqual([["PostModelSwitch", "claude-haiku-4-5-20251001", "claude-haiku-4-5"]]);
+    expect(session.lead).toBe(undated);
+  });
+
+  it.each([
+    ["a deny stops", decided("deny", "No"), "", "The switch to fake:b was stopped by a hook: No."],
+    ["a question answered no to stops", decided("ask", "Sure"), "n", "A hook asks: Sure. Switch to fake:b: no"],
+  ])("fires no PostModelSwitch after a /lead %s", async (_how, answer, key, line) => {
+    const runs = switchRuns((r) => (r.event === "PreModelSwitch" ? answer : ran()));
+    const { app, session } = await mount([], { hooks: [switchHook(), postHook()] });
+    await type(app, "/lead fake:b");
+    if (key) {
+      await until(app, "Switch to fake:b? [y/n]");
+      await press(app, key);
+    }
+    await until(app, line);
+    await tick();
+    expect([session.lead.id, runs.map((r) => r.event)]).toEqual(["fake:a", ["PreModelSwitch"]]);
+  });
+
+  it("fires PostModelSwitch after PreModelSwitch on a /lead whose hook's question is answered yes", async () => {
+    const runs = switchRuns((r) => (r.event === "PreModelSwitch" ? decided("ask", "Sure") : ran()));
+    const { app, session } = await mount([], { hooks: [switchHook(), postHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, "A hook asks: Sure. Switch to fake:b? [y/n]");
+    await press(app, "y");
+    await until(app, "lead is now fake:b");
+    await waitFor(() => runs.length === 2);
+    expect([session.lead.id, runs.map((r) => r.event)]).toEqual(["fake:b", ["PreModelSwitch", "PostModelSwitch"]]);
+  });
+
+  it("fires no PostModelSwitch at the launch, nor when a fallback answers a turn the lead refused", async () => {
+    const runs = switchRuns();
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const { app, session } = await mount([refused], { save: true, hooks: [postHook()] });
+    session.setFallback(new FakeProvider("f", [reply("rescued")]));
+    await type(app, "one");
+    await until(app, "rescued");
+    await tick();
+    expect([session.lead.id, runs]).toEqual(["fake:a", []]);
+  });
+
+  // Q23: a prompt that waited in the queue is sent from when it leaves it, so its 5 s start then. Only Date is faked: the
+  // hook finishes 4.999 s after the prompt left the queue, 10.999 s after its Enter, and its text still goes with it.
+  it("gives a prompt that waited in the queue longer than 5 s its full 5 s from when it leaves the queue (Q23)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    onTestFinished(() => void vi.useRealTimers());
+    const at = Date.UTC(2026, 10, 23, 12);
+    vi.setSystemTime(at);
+    const answers: ((t: Turn) => void)[] = [];
+    const lead: Provider = { id: "fake:a", complete: () => new Promise((resolve) => void answers.push(resolve)) };
+    const b = new FakeProvider("b", [reply("from b")]);
+    let finish!: () => void;
+    const runs = switchRuns(() => new Promise<Ran>((resolve) => (finish = () => resolve(ran("b leads now")))));
+    const { app, session } = await mount([], { lead, newLead: b, hooks: [postHook()] });
+    const sent: (number | undefined)[] = [];
+    const send = session.send.bind(session);
+    session.send = (text, signal, supply, from) => (sent.push(from), send(text, signal, supply, from));
+    await type(app, "first");
+    await waitFor(() => answers.length === 1);
+    await type(app, "/lead fake:b");
+    await type(app, "second");
+    vi.setSystemTime(at + 6_000);
+    answers[0]!(reply("one"));
+    await waitFor(() => runs.length === 1 && sent.length === 2);
+    expect(sent).toEqual([at, at + 6_000]);
+    vi.setSystemTime(at + 10_999);
+    finish();
+    await until(app, "from b");
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([postText("b leads now"), { type: "text", text: "second" }]);
   });
 });

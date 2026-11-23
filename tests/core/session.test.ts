@@ -29,6 +29,7 @@ import { type Executor, MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import { type Event, type Hook, readHooks } from "../../src/hooks/config.js";
 import { Hooks, type Where } from "../../src/hooks/hooks.js";
+import { type Ran, runHook } from "../../src/hooks/run.js";
 import type { Offered } from "../../src/mcp/servers.js";
 import type { McpTools } from "../../src/mcp/tools.js";
 import { fitted, LIMITS } from "../../src/providers/pictures.js";
@@ -46,6 +47,13 @@ import { LESSONS, WING } from "../../src/memory/paths.js";
 import { entriesOf, type Turn as SavedTurn } from "../../src/memory/saver.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, standInRun, tempContext, texts, usage } from "../helpers.js";
 import { readLog } from "../mcp/fake.js";
+
+// Hooks run as they are; the PostModelSwitch tests stand in for some events' runs (release 8e plan, step 14; standIn,
+// below), as tests/tui/app.test.tsx does.
+vi.mock("../../src/hooks/run.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/hooks/run.js")>();
+  return { ...real, runHook: vi.fn(real.runHook) };
+});
 
 const echo = defineTool("echo", "Echo text back", z.object({ text: z.string() }), async ({ text }) => text);
 const boom = defineTool("boom", "Always fails", z.object({}), async () => {
@@ -5835,5 +5843,367 @@ describe("Session, the lesson ask", { timeout: 15_000 }, () => {
       [reply("A lesson.")], { more: { subagent: true } });
     await s.session.send("go");
     expect(s.asks()).toEqual([]);
+  });
+});
+
+// Release 8e plan, step 14: PostModelSwitch, fired when a caller hands setLead the switch's fields, its text going with the
+// next request, a prompt's first one waiting for it up to 5 s from when the window started sending the prompt. The runs of
+// the events named to standIn are stood in, each answering when the test says, so a fake clock can time them.
+describe("Session, PostModelSwitch (release 8e plan, step 14)", { timeout: 15_000 }, () => {
+  interface Stood { event: string; command: string; input: Record<string, unknown>; finish: (r?: Ran) => void }
+  function standIn(...events: string[]): Stood[] {
+    const runs: Stood[] = [];
+    const real = vi.mocked(runHook).getMockImplementation()!;
+    onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+    vi.mocked(runHook).mockImplementation((hook, input, opts) => {
+      const fields = input as Record<string, unknown>;
+      const event = String(fields.hook_event_name);
+      if (!events.includes(event)) return real(hook, input, opts);
+      return new Promise<Ran>((resolve, reject) => {
+        opts.signal?.addEventListener("abort", () => reject(new Error("Cancelled")), { once: true });
+        runs.push({ event, command: hook.command, input: fields, finish: (r = ran()) => resolve(r) });
+      });
+    });
+    return runs;
+  }
+  const ran = (stdout = "", code = 0, stderr = ""): Ran => ({ code, stdout, stderr, ms: 1 });
+  const hook = (over: Partial<Hook> = {}): Hook => ({ event: "PostModelSwitch", matcher: { all: true }, command: "after", async: false, where: "", ...over });
+  // What a caller hands setLead (queue.ts, from switchFields), passed on as it is.
+  const FIELDS = {
+    from_model: "a", to_model: "b", requested_model: "fake:b", source: "command", context_tokens: 0, prompt_cache_warm: false, cache_ttl: "5m",
+    estimated_cache_write_usd: null,
+  };
+  const hookText = (text: string, event = "PostModelSwitch") => ({ type: "text", text: `${event} hook:\n${text}`, from: "hooks" });
+  const said = (text: string) => ({ type: "text", text });
+  const task = (text: string) => ({ type: "text", text, from: "tasks" });
+  const conversation = (id: string, messages: Message[] = []): Conversation => ({ id, messages, system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+  // How many of `messages` hold `text` as a part.
+  const holding = (messages: Message[], text: string) => messages.filter((m) => m.parts.some((p) => p.type === "text" && p.text === text)).length;
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  // The session leads with fake:a; `hooks` are its hooks, a PostModelSwitch hook named "after" unless given.
+  async function setup(o: { hooks?: Hook[]; inbox?: () => string[] } = {}) {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const notes: string[] = [];
+    bus.on("hook-note", (line) => notes.push(line));
+    const ctx = await tempContext();
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root: ctx.root, mode: () => "never", effort: () => undefined, lead: () => session.lead.id };
+    const hooks = new Hooks({ hooks: o.hooks ?? [hook()], off: false, leftOut: [] }, where, bus);
+    const session: Session = new Session({ lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx, bus, hooks, ...(o.inbox ? { inbox: o.inbox } : {}) });
+    return { session, hooks, errors, notes };
+  }
+  // setTimeout's and Date's clock faked; the function moves it on by `ms`, then lets what that started run (setImmediate is
+  // not faked).
+  function clock() {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], now: Date.UTC(2026, 10, 23, 12) });
+    onTestFinished(() => void vi.useRealTimers());
+    return async (ms = 0) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      await settle();
+    };
+  }
+  // Until `check` holds, letting what is under way run, the clock left as it is.
+  async function until(check: () => boolean) {
+    for (let i = 0; i < 50 && !check(); i++) await settle();
+    expect(check()).toBe(true);
+  }
+
+  it("fires nothing when the lead is set without a switch's fields", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    s.session.setLead(new FakeProvider("b", []));
+    await settle();
+    expect(runs).toEqual([]);
+  });
+
+  it("fires with the fields handed in, matched on the new model's canonical name, every hook running for a model with none", async () => {
+    const s = await setup({ hooks: [hook({ command: "haiku", matcher: { names: ["claude-haiku-4-5"] } }), hook({ command: "opus", matcher: { names: ["claude-opus-5-5"] } })] });
+    const runs = standIn("PostModelSwitch");
+    const named = (id: string) => Object.assign(new FakeProvider("x", []), { id });
+    s.session.setLead(named("anthropic:claude-haiku-4-5-20251001"), FIELDS);
+    expect(runs.map((r) => r.command)).toEqual(["haiku"]);
+    expect(runs[0]!.input).toEqual(expect.objectContaining({ hook_event_name: "PostModelSwitch", ...FIELDS }));
+    s.session.setLead(named("openai:gpt-5.5"), FIELDS);
+    expect(runs.slice(1).map((r) => r.command)).toEqual(["haiku", "opus"]);
+  });
+
+  it.each([
+    ["plain output", ran("b leads now")],
+    ["additionalContext", ran(JSON.stringify({ hookSpecificOutput: { hookEventName: "PostModelSwitch", additionalContext: "b leads now" } }))],
+  ])("sends the text of a hook that finishes just under 5 s after the send with that request: %s", async (_how, answer) => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(4_999);
+    expect(b.seen).toEqual([]);
+    runs[0]!.finish(answer);
+    await sent;
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([hookText("b leads now"), said("go")]);
+  });
+
+  it("sends the request without the text of a hook still running 5 s after the send, and the next request carries it", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one"), reply("two")]);
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(4_999);
+    expect(b.seen).toEqual([]);
+    await wait(1);
+    expect(b.seen).toHaveLength(1);
+    await sent;
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
+    await wait(1);
+    runs[0]!.finish(ran("b leads now"));
+    await wait();
+    await s.session.send("again", undefined, undefined, Date.now());
+    expect(b.seen[1]!.at(-1)!.parts).toEqual([hookText("b leads now"), said("again")]);
+  });
+
+  it("waits only the rest of the 5 s after a UserPromptSubmit hook that took 3 s", async () => {
+    const s = await setup({ hooks: [hook(), hook({ event: "UserPromptSubmit", command: "prompt" })] });
+    const runs = standIn("PostModelSwitch", "UserPromptSubmit");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait();
+    expect(runs.map((r) => r.event)).toEqual(["PostModelSwitch", "UserPromptSubmit"]);
+    await wait(3_000);
+    runs[1]!.finish();
+    await wait(1_999);
+    expect(b.seen).toEqual([]);
+    await wait(1);
+    expect(b.seen).toHaveLength(1);
+    await sent;
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
+  });
+
+  it.each([
+    ["5.5 s, after the 5 s: the first request goes without it, and the second carries it", 5_500, false],
+    ["4 s, within the 5 s: the first request carries it", 4_000, true],
+  ])("waits for nothing after a UserPromptSubmit hook that took 6 s, the switch's hook finishing at %s", async (_when, at, first) => {
+    const s = await setup({ hooks: [hook(), hook({ event: "UserPromptSubmit", command: "prompt" })] });
+    const runs = standIn("PostModelSwitch", "UserPromptSubmit");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one"), reply("two")]);
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(at);
+    runs[0]!.finish(ran("b leads now"));
+    await wait(6_000 - at);
+    runs[1]!.finish();
+    await wait();
+    expect(b.seen).toHaveLength(1);
+    await sent;
+    expect(b.seen[0]!.at(-1)!.parts).toEqual(first ? [hookText("b leads now"), said("go")] : [said("go")]);
+    const again = s.session.send("again", undefined, undefined, Date.now());
+    await until(() => runs.length === 3);
+    runs[2]!.finish();
+    await again;
+    expect(b.seen[1]!.at(-1)!.parts).toEqual(first ? [said("again")] : [hookText("b leads now"), said("again")]);
+  });
+
+  it("puts the text of a hook that finishes once the first request has gone in its tool round's results message, and in no later request", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new Held("fake:b");
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(5_000);
+    expect(b.asked).toHaveLength(1);
+    runs[0]!.finish(ran("b leads now"));
+    await wait();
+    b.answer(callTool("c1", "echo", { text: "ping" }));
+    await until(() => b.asked.length === 2);
+    expect(b.asked[1]!.messages.at(-1)!.parts).toEqual([{ type: "tool_result", callId: "c1", output: "ping", isError: false }, hookText("b leads now")]);
+    b.answer("done");
+    await sent;
+    const again = s.session.send("again", undefined, undefined, Date.now());
+    await until(() => b.asked.length === 3);
+    b.answer("ok");
+    await again;
+    expect(b.asked[2]!.messages.at(-1)!.parts).toEqual([said("again")]);
+    expect(holding(b.asked[2]!.messages, "PostModelSwitch hook:\nb leads now")).toBe(1);
+  });
+
+  it("puts the text of a hook that finishes once the first request has gone in the message carrying a Stop hook's feedback, once", async () => {
+    const s = await setup({ hooks: [hook(), hook({ event: "Stop", command: "stop" })] });
+    const runs = standIn("PostModelSwitch", "Stop");
+    const wait = clock();
+    const b = new Held("fake:b");
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(5_000);
+    expect(b.asked).toHaveLength(1);
+    runs[0]!.finish(ran("b leads now"));
+    b.answer("first");
+    await until(() => runs.length === 2);
+    runs[1]!.finish(ran(JSON.stringify({ decision: "block", reason: "keep going" })));
+    await until(() => b.asked.length === 2);
+    expect(b.asked[1]!.messages.at(-1)!.parts).toEqual([{ type: "text", text: "Stop hook feedback:\nkeep going", from: "hooks" }, hookText("b leads now")]);
+    b.answer("second");
+    await until(() => runs.length === 3);
+    runs[2]!.finish();
+    await sent;
+    expect(holding(s.session.messages, "PostModelSwitch hook:\nb leads now")).toBe(1);
+  });
+
+  it("keeps the text of a hook that finishes during a turn that makes no further request for the next turn's first request", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new Held("fake:b");
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(5_000);
+    runs[0]!.finish(ran("b leads now"));
+    await wait();
+    b.answer("one");
+    await sent;
+    const again = s.session.send("again", undefined, undefined, Date.now());
+    await until(() => b.asked.length === 2);
+    b.answer("two");
+    await again;
+    expect(b.asked[1]!.messages.at(-1)!.parts).toEqual([hookText("b leads now"), said("again")]);
+  });
+
+  it("ends the turn when Esc comes during the wait, sending and keeping nothing, the background answer and the text waiting for the next", async () => {
+    const waiting = ["t1 finished"];
+    const s = await setup({ inbox: () => waiting.splice(0) });
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    const listed = s.hooks.runs;
+    const stop = new AbortController();
+    const sent = s.session.send("go", stop.signal, undefined, Date.now());
+    await wait(1_000);
+    stop.abort();
+    expect(await sent).toBeUndefined();
+    expect([b.seen, s.session.prompts, s.session.messages, waiting]).toEqual([[], [], [], ["t1 finished"]]);
+    expect(s.hooks.runs).toBe(listed);
+    runs[0]!.finish(ran("b leads now"));
+    await wait();
+    await s.session.send("again", undefined, undefined, Date.now());
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([hookText("b leads now"), said("again"), task("t1 finished")]);
+    expect(s.session.prompts).toEqual(["again"]);
+  });
+
+  it("sends a turn of background answers alone with the text already there, and does not wait for a hook still running (Q24)", async () => {
+    const waiting = ["t1 finished"];
+    const s = await setup({ inbox: () => waiting.splice(0) });
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one"), reply("two")]);
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("", undefined, undefined, Date.now());
+    await wait();
+    expect(b.seen).toHaveLength(1);
+    await sent;
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([task("t1 finished")]);
+    runs[0]!.finish(ran("b leads now"));
+    await wait();
+    waiting.push("t2 finished");
+    await s.session.send("", undefined, undefined, Date.now());
+    expect(b.seen[1]!.at(-1)!.parts).toEqual([hookText("b leads now"), task("t2 finished")]);
+  });
+
+  it.each([
+    ["after the newer one's", false],
+    ["before the newer switch is made", true],
+  ])("sends only the newer of two switches' text, the older one's hook finishing %s", async (_when, early) => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", []);
+    const c = new FakeProvider("c", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    if (early) runs[0]!.finish(ran("b leads now"));
+    await settle();
+    s.session.setLead(c, { ...FIELDS, from_model: "b", to_model: "c", requested_model: "fake:c" });
+    runs[1]!.finish(ran("c leads now"));
+    await settle();
+    if (!early) runs[0]!.finish(ran("b leads now"));
+    await settle();
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect(c.seen[0]!.at(-1)!.parts).toEqual([hookText("c leads now"), said("go")]);
+  });
+
+  it.each([
+    ["/clear", "finishes after it", false],
+    ["/resume", "finishes after it", false],
+    ["/branch", "finishes after it", false],
+    ["/clear", "had finished before it", true],
+    ["/resume", "had finished before it", true],
+    ["/branch", "had finished before it", true],
+  ])("drops the text of a hook that %s %s, as another conversation's", async (load, _when, early) => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    if (early) runs[0]!.finish(ran("b leads now"));
+    await settle();
+    if (load === "/clear") s.session.load(conversation("s2"));
+    else if (load === "/resume") s.session.load(conversation("s3", [{ role: "user", parts: [said("old") as Part] }, { role: "assistant", parts: [said("older") as Part] }]));
+    else s.session.load(conversation(s.session.id, [...s.session.messages]), { keepRuns: true });
+    if (!early) runs[0]!.finish(ran("b leads now"));
+    await settle();
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
+    expect(holding(b.seen[0]!, "PostModelSwitch hook:\nb leads now")).toBe(0);
+  });
+
+  it("says a hook's exit 2 as its red line, and sends nothing of it", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    runs[0]!.finish(ran("not read", 2, "nope"));
+    await settle();
+    expect(s.errors.map((e) => e.message)).toEqual(["PostModelSwitch hook failed: after exited with code 2: nope"]);
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
+  });
+
+  it('says only the red line of a hook with "onFailure": "block" that cannot start, the lead switched all the same (Q28)', async () => {
+    const s = await setup({ hooks: [hook({ onFailure: "block" })] });
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    runs[0]!.finish({ code: null, stdout: "", stderr: "", ms: 1, failed: "start", startError: "ENOENT" });
+    await settle();
+    expect([s.errors.map((e) => e.message), s.notes]).toEqual([["PostModelSwitch hook failed: after could not start (ENOENT)"], []]);
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect([s.session.lead, b.seen[0]!.at(-1)!.parts]).toEqual([b, [said("go")]]);
+  });
+
+  it("sends nothing of an async hook's text", async () => {
+    const s = await setup({ hooks: [hook({ async: true })] });
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    runs[0]!.finish(ran("from an async hook"));
+    await settle();
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
+  });
+
+  it("stops a hook still running when Tachikoma exits, saying nothing", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    expect(runs).toHaveLength(1);
+    s.hooks.stopAsync();
+    await settle();
+    expect([s.errors, s.notes]).toEqual([[], []]);
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
   });
 });

@@ -21,7 +21,7 @@ import { until } from "../../mcp/tools.js";
 import { type MemoryState, NO_UV } from "../../memory/memory.js";
 import { LESSONS } from "../../memory/paths.js";
 import { LONGEST_ENTRY } from "../../memory/saver.js";
-import { canonicalName, switchFields } from "../../providers/switching.js";
+import { canonicalName, switchFields, type SwitchSource } from "../../providers/switching.js";
 import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS, shownFile } from "../../settings.js";
@@ -239,6 +239,9 @@ export const queue = (ui: UI, fns: Fns) => {
           }
         } else {
           const { signal } = ui.abort.current;
+          // When the prompt starts being sent, as it leaves the queue for one that waited there, from which its first
+          // request waits up to 5 s for PostModelSwitch's text (release 8e plan, step 14; Q23).
+          const sent = Date.now();
           // The message's pictures sent before it, which a blocked prompt's words do not take back (promptKeys.ts, giveBack).
           const before = new Set(message.spans.flatMap((s) => (ui.pictures.sent(s.id) ? [s.id] : [])));
           const read = await fns.readsEnded(message, signal);
@@ -253,7 +256,7 @@ export const queue = (ui: UI, fns: Fns) => {
             if (!signal.aborted) refused = supplied;
             return null;
           };
-          const ended = await ui.session.send(read.parts, signal, ui.mcp ? got : undefined);
+          const ended = await ui.session.send(read.parts, signal, ui.mcp ? got : undefined, sent);
           if (ended && "unsupplied" in ended) {
             if (refused) fns.say({ text: refused.line, color: "error", block: true }); // the words-back line goes under it
             fns.giveBack(read.draft, before, refused?.said ?? false);
@@ -619,13 +622,13 @@ export const queue = (ui: UI, fns: Fns) => {
     // typed straight after /lead waits for it in the queue as one of its own (Task 13's spec review); with hooks to
     // decide it, it waits for them.
     const room = ui.session.messages.length > 0 && !!provider.contextWindow;
-    if (!hooked && !room) return ui.session.setLead(provider);
+    if (!hooked && !room) return ui.session.setLead(provider, switched(provider, source, spec));
     const { got: problem, signal } = await between(async (signal) => {
       if (hooked && !(await switchAllowed(provider, source, spec, signal))) return null;
       return room ? ui.session.makeRoom(provider, signal) : undefined;
     });
     if (signal.aborted || problem === null) return;
-    if (problem === undefined) return ui.session.setLead(provider);
+    if (problem === undefined) return ui.session.setLead(provider, switched(provider, source, spec));
     fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "error" });
   };
   // Whether PreModelSwitch's hooks decide a switch to `to` (release 8e plan, step 13): it is another model than the one
@@ -638,6 +641,13 @@ export const queue = (ui: UI, fns: Fns) => {
     const match = canonicalName(to.id);
     return match === undefined ? hooks.config.hooks.some((h) => h.event === "PreModelSwitch") : hooks.has("PreModelSwitch", match);
   };
+  // PostModelSwitch's fields for the switch to `to` about to be made, worked out now with step 12's functions, the status
+  // line's context number among them, for the session to fire it with (release 8e plan, step 14); none when `to` is the
+  // model leading already, told by the ids as switchHooked tells it (Q31), so nothing fires.
+  const switched = (to: Provider, source: SwitchSource, requested: string | null) =>
+    to.id === ui.session.lead.id
+      ? undefined
+      : switchFields({ from: ui.session.lead.id, to: to.id, source, requested, contextTokens: ui.stats.context, lastReply: ui.session.lastReply });
   // PreModelSwitch before a switch the user asked for (release 8e plan, step 13; design, "Switching the lead model"): sent
   // step 12's fields, the status line's context number now among them (Q10), and matched on the new model's canonical name,
   // every hook running for a model with none (Q12). True when the switch goes ahead. A deny, a time-out's and an
@@ -918,7 +928,9 @@ export const queue = (ui: UI, fns: Fns) => {
     ui.rerender((n) => n + 1);
     if (how.lead) {
       ui.waiting.current.lead = undefined; // it wins over a lead the settings file set meanwhile, as a /lead typed then would
-      ui.session.setLead(how.lead);
+      // PostModelSwitch as "resume", worked out once the conversation is loaded and the status line's number set to 0
+      // ("Resume size"), so its text is the resumed conversation's (release 8e plan, step 14).
+      ui.session.setLead(how.lead, switched(how.lead, "resume", null));
     }
     ui.session.start(how.start);
   };

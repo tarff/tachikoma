@@ -13,7 +13,7 @@ import type { Memory } from "../memory/memory.js";
 import { LESSONS } from "../memory/paths.js";
 import type { Turn as SavedTurn } from "../memory/saver.js";
 import type { Cache } from "../providers/pictures.js";
-import type { LastReply } from "../providers/switching.js";
+import { canonicalName, type LastReply } from "../providers/switching.js";
 import { lessonLabel, matchText } from "../tools/memory.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ErrorEvent, ToolOutcome } from "./bus.js";
@@ -111,6 +111,9 @@ const keptTooOften = (id: string | undefined) =>
 // The grey line for SessionStart's text left out of a shortening it would no longer let fit (release 8b plan, "Lines this
 // plan adds"; Task 11).
 const LEFT_OUT = "SessionStart hook text was left out: with it, the shortened conversation would not fit the model's window.";
+// How long a prompt's first request waits for PostModelSwitch's hooks, from when the window started sending the prompt:
+// Claude Code's "up to 5 seconds" (release 8e design, "Switching the lead model"; plan, step 14).
+const SWITCH_WAIT = 5_000;
 
 // The note from long-term memory in front of a conversation's first message (8d plan, step 24). Each of its two
 // searches asks for 100 hits, MemPalace's most and the only count steps 13 and 14 measured with (the user's choice
@@ -174,6 +177,13 @@ interface Round {
   stop(event: Event, reason: string): void;
   stopped?: { event: Event; reason: string };
   pictures: Image[];
+}
+
+// A lead switch's PostModelSwitch hooks (Session.#switched; release 8e plan, step 14): `answered` once they have, and
+// `done` then, their text for the model and when they finished.
+interface Switched {
+  answered: Promise<void>;
+  done?: { text: { event: Event; text: string }[]; at: number };
 }
 
 export interface SessionOptions {
@@ -354,6 +364,9 @@ export class Session {
   // switch's prompt_cache_warm (release 8e plan, step 12; Q11); never a judge's, a summary's or a fallback rescue's. A
   // subagent's are its own session's. None before the first reply.
   #lastReply: LastReply | undefined;
+  // The latest lead switch's PostModelSwitch hooks (release 8e plan, step 14). A later switch, or a load of another
+  // conversation, replaces or drops it, so an older switch's text, or one finishing after that, is never sent.
+  #switched: Switched | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -392,11 +405,25 @@ export class Session {
     return this.#lastReply;
   }
 
-  setLead(provider: Provider): void {
+  // `switched`: the switch's fields, which a caller that switched the lead hands in, worked out before the change, so
+  // PostModelSwitch fires, not waited for, matched as PreModelSwitch is: on the new model's canonical name, every hook
+  // running for a model with none (release 8e plan, step 14; Q12). Without them nothing fires, as the lead is also set
+  // where nothing switched.
+  setLead(provider: Provider, switched?: object): void {
     this.#lead = provider;
     this.#transcript?.write({ t: "lead", lead: provider.id });
     this.opts.bus.emit("lead", provider.id);
     this.#saving();
+    const { hooks } = this.opts;
+    if (!switched || !hooks || this.opts.subagent) return;
+    const match = canonicalName(provider.id);
+    const fired = hooks.fireAndLeave("PostModelSwitch", switched, match === undefined ? { every: true } : { match });
+    const s: Switched = {
+      answered: fired.then((c) => {
+        s.done = { text: c.context, at: Date.now() };
+      }),
+    };
+    this.#switched = s;
   }
 
   // Takes a saved or new conversation in place of this one, as the judge, the subagents' worker and the screen hold this
@@ -429,6 +456,9 @@ export class Session {
     // Nor its lead's last reply time, which a /clear or /resume's conversation was never cached under; /branch's, the same
     // messages up to the branch point, keeps it (release 8e plan, step 12; the user's choice at its review).
     if (!opts.keepRuns) this.#lastReply = undefined;
+    // Nor the last switch's PostModelSwitch text, sent or still to come, which belongs to the conversation the switch was
+    // made in, /branch's copy too (release 8e plan, step 14).
+    this.#switched = undefined;
     this.calls.splice(0, this.calls.length, ...c.calls);
     // Its MCP tools loaded through tool_search, so a resume and /branch keep them and /clear starts with none (release 8c
     // plan, choice 41).
@@ -613,14 +643,16 @@ export class Session {
   // among its text (release 6 plan, Task 14). How the turn ended: `blocked`, a UserPromptSubmit hook's block, with its
   // reason, nothing sent or saved; `stopped`, a hook's continue: false, with its stopReason ("" when none), and `unsent`
   // when it came at UserPromptSubmit, nothing sent or saved either; nothing otherwise (release 8b plan, choice 17).
-  // `supply`: the MCP servers' parts for the prompt (release 8c plan, Task 13), the window's only.
-  async send(text: string | Part[], signal?: AbortSignal, supply?: Supply): Promise<Ended | void> {
+  // `supply`: the MCP servers' parts for the prompt (release 8c plan, Task 13), the window's only. `sent`: when the window
+  // started sending the prompt, from which its first request waits up to 5 s for PostModelSwitch's text (release 8e plan,
+  // step 14; Q23); without it, as for a turn of background answers alone, the turn takes only the text already there (Q24).
+  async send(text: string | Part[], signal?: AbortSignal, supply?: Supply, sent?: number): Promise<Ended | void> {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
     this.#called = this.opts.lessonAsk && !this.opts.subagent ? [] : undefined;
     try {
-      return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal, supply);
+      return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal, supply, sent);
     } finally {
       this.#running = false;
       this.#ended();
@@ -679,7 +711,7 @@ export class Session {
     if (!this.opts.subagent) this.opts.memory?.hand({ session: this.id, ...turn, record });
   }
 
-  async #turn(typed: Part[], signal?: AbortSignal, supply?: Supply): Promise<Ended | void> {
+  async #turn(typed: Part[], signal?: AbortSignal, supply?: Supply, sent?: number): Promise<Ended | void> {
     const { bus, hooks } = this.opts;
     // SessionStart's hooks answer first, so their text goes with this request; a stop meanwhile sends and saves nothing and
     // says nothing, as a stop during UserPromptSubmit's does, and their text waits for the next one (Task 10).
@@ -730,6 +762,15 @@ export class Session {
       if (before) hooks!.restoreRuns(before);
       return;
     }
+    // A prompt of the user's waits for the latest switch's PostModelSwitch hooks until 5 s after the window started sending
+    // it, and no longer, before anything is kept or taken, so a stop meanwhile ends the turn as one during UserPromptSubmit
+    // does, the text kept for the next request (release 8e plan, step 14). The time decides which text goes with this
+    // request, too: none from a hook that finished after it.
+    const by = words && sent !== undefined ? sent + SWITCH_WAIT : undefined;
+    if (by !== undefined && !(await this.#switchAnswered(by, signal))) {
+      if (before) hooks!.restoreRuns(before);
+      return;
+    }
     if (words && !this.opts.subagent) this.prompts.push(words);
     // A typed turn, numbered by its prompt's place among the session's prompts (Q4), for the saver (8d plan, step 22).
     if (words && !this.opts.subagent && this.opts.memory) {
@@ -737,9 +778,9 @@ export class Session {
     }
     const own: Part[] = [...typed, ...(supplied ?? []), ...prompted, ...this.#waiting()];
     if (!own.length) return;
-    // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message; the note
-    // from long-term memory goes in front of the prompt (8d plan, step 24).
-    const parts: Part[] = [...this.#hookParts(this.#nextText), ...recalled, ...own, ...this.#notes()];
+    // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message, a switch's
+    // after it (release 8e plan, step 14); the note from long-term memory goes in front of the prompt (8d plan, step 24).
+    const parts: Part[] = [...this.#hookParts(this.#nextText), ...this.#switchParts(by), ...recalled, ...own, ...this.#notes()];
     // The turn's request, kept for a shortening during the turn: after a first one it is no longer in the history.
     const asked: Message = { role: "user", parts };
     this.#push(asked);
@@ -912,7 +953,7 @@ export class Session {
         kept = true;
         bus.emit("hook-note", keptGoing(id, c.block ?? ""), true);
         const said: Part[] = given.map((text) => ({ type: "text", text: `${FEEDBACK}\n${text}`, from: "hooks" }));
-        this.#push({ role: "user", parts: [...said, ...this.#waiting(), ...this.#notes()] });
+        this.#push({ role: "user", parts: [...said, ...this.#switchParts(), ...this.#waiting(), ...this.#notes()] });
         when = "during";
         shortened = false;
         continue;
@@ -974,7 +1015,7 @@ export class Session {
       if (batch) this.#hookText.push(...batch.context);
       this.#push({
         role: "user",
-        parts: [...results, ...round.pictures, ...this.#hookParts(), ...this.#waiting(), ...this.#notes()],
+        parts: [...results, ...round.pictures, ...this.#hookParts(), ...this.#switchParts(), ...this.#waiting(), ...this.#notes()],
       });
       // The set whenever a search grew it, after the results' line (release 8c plan, Task 6b).
       if (this.opts.mcp && this.opts.mcp.loaded.size !== loaded) {
@@ -1527,6 +1568,38 @@ export class Session {
   // (release 8b plan, choice 6), taken so it goes into exactly one message.
   #hookParts(held = this.#hookText): Part[] {
     return held.splice(0).map(({ event, text }) => ({ type: "text", text: `${event} hook:\n${text}`, from: "hooks" }));
+  }
+
+  // The latest switch's PostModelSwitch text once its hooks have answered, by `by` when given, headed as hook text, taken
+  // whole so it goes into exactly one message: the turn's first, a tool round's results or a Stop hook's feedback,
+  // whichever the session builds next (release 8e plan, step 14). None from hooks that finished after `by`: it waits for
+  // the message after.
+  #switchParts(by = Infinity): Part[] {
+    const done = this.#switched?.done;
+    if (!done || done.at > by) return [];
+    this.#switched = undefined;
+    return this.#hookParts(done.text);
+  }
+
+  // The wait for the latest switch's PostModelSwitch hooks, until they answer or until `by`, whichever comes first; none
+  // when there are none still running or `by` has passed, a turn already stopped then going on as before step 14. False
+  // when the turn's stop came first.
+  #switchAnswered(by: number, signal?: AbortSignal): Promise<boolean> {
+    const s = this.#switched;
+    const left = by - Date.now();
+    if (!s || s.done || left <= 0) return Promise.resolve(true);
+    if (signal?.aborted) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const end = (went: boolean) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", stop);
+        resolve(went);
+      };
+      const stop = () => end(false);
+      const timer = setTimeout(() => end(true), left);
+      signal?.addEventListener("abort", stop, { once: true });
+      void s.answered.then(() => end(true));
+    });
   }
 
   // UserPromptSubmit before the prompt goes (release 8b plan, Task 8; design, "What a hook's answer does"), each prompt with

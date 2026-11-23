@@ -3,6 +3,7 @@ import { visible } from "../../core/permissions.js";
 import { errorText, type Provider } from "../../core/types.js";
 import { KEYBINDINGS, type KeysLoaded } from "../../keybindings.js";
 import { mergeServers } from "../../mcp/config.js";
+import { switchFields } from "../../providers/switching.js";
 import { NO_RULES } from "../../safety/rules.js";
 import { rules } from "../../sandbox/sites.js";
 import { hooksOf, type Loaded, SETTINGS, type Settings } from "../../settings.js";
@@ -203,9 +204,15 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       fns.note({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "error" });
       return false;
     }
+    // With PostModelSwitch's fields, worked out as it is made, "command" and the file's value (release 8e plan, step 14),
+    // none when the model named leads already (Q31, told by the ids as queue.ts's switched tells it), so nothing fires.
     const set = () => {
+      const lead = ui.session.lead;
+      const fields = provider.id === lead.id ? undefined : switchFields({
+        from: lead.id, to: provider.id, source: "command", requested: spec, contextTokens: ui.stats.context, lastReply: ui.session.lastReply,
+      });
       ui.leadFromFile.current = true; // read by onLead while setLead runs: the bus calls its handlers at once
-      ui.session.setLead(provider);
+      ui.session.setLead(provider, fields);
       ui.leadFromFile.current = false;
     };
     if (!fns.switchHooked(provider)) {
