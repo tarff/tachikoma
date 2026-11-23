@@ -565,6 +565,10 @@ export function fakeHelper(dir: string) {
 
 type Answer = Awaited<ReturnType<DockerRun>>;
 const STANDIN = fileURLToPath(new URL("../standin/dockerExec.mjs", import.meta.url));
+// The longest killAll waits for the stand-ins to exit: the tests' wait on another process, "a few seconds for a busy
+// machine, well inside the test's 15 s" (WAIT, 5 s, in tests/mcp/servers.test.ts and tests/mcp/box.test.ts), in
+// Wait-Process's whole seconds.
+const STANDIN_WAIT_S = 5;
 
 // A stand-in's server and everything it started, as the kill in the box ends the server's group: on Windows its tree,
 // elsewhere the group it leads (dockerExec.mjs).
@@ -605,7 +609,7 @@ export interface Start {
 // settles. `started()` gives each start; `order()`
 // the calls and starts as they came, each call by its verb and the kill as "kill". `killAll()`, in a test's cleanup
 // once its servers are stopped and before its folder is removed, kills those still running, as a stop with `exit`, or
-// one whose kill in the box failed, ends only the stand-in.
+// one whose kill in the box failed, ends only the stand-in; then it waits for each stand-in to exit (below).
 export function standinBox(dir: string, opts: { kind?: "live" | "copy"; gone?: string } = {}) {
   const record = path.join(dir, `docker-${++made}.jsonl`);
   const calls: string[][] = [];
@@ -636,8 +640,21 @@ export function standinBox(dir: string, opts: { kind?: "live" | "copy"; gone?: s
     }
     return { code: 0, out: "", err: "" };
   };
-  const killAll = () => {
-    for (const { child } of started()) if (child !== undefined && alive(child)) killGroup(child);
+  // Each stand-in works in the folder Servers starts it in, the test's own (src/mcp/server.ts), and on Windows a process
+  // holds its working folder until Windows has let go of it, so the folder's removal could fail with EBUSY (release 8e
+  // plan, step 20's review). Node cannot wait on a process it did not start, so Wait-Process does: the system's own wait
+  // on the process, which ends only once Windows has let go of it, not when its exit code is set, as process.kill(pid,
+  // 0) tells. A stand-in already gone is passed over. Elsewhere a working folder does not stop its removal.
+  const killAll = async () => {
+    const all = started();
+    for (const { child } of all) if (child !== undefined && alive(child)) killGroup(child);
+    if (process.platform !== "win32" || all.length === 0) return;
+    const ids = all.map((s) => s.self).join(",");
+    const wait = `Wait-Process -Id ${ids} -Timeout ${STANDIN_WAIT_S} -ErrorAction SilentlyContinue`;
+    const waiter = spawn(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", wait], {
+      stdio: "ignore", windowsHide: true,
+    });
+    await once(waiter, "exit");
   };
   const program = { file: process.execPath, args: [STANDIN, record] };
   const box: McpBox = { id: "b0x", kind: opts.kind ?? "live", state: new BoxState("b0x", run), run, program };

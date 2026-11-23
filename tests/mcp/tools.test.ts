@@ -1082,7 +1082,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const servers = t.make([await t.local("s", { description: ECHO })], { network, box: fake.box, ...sites });
     onTestFinished(async () => {
       await servers.stopAll();
-      fake.killAll();
+      await fake.killAll();
     });
     servers.startAll();
     await servers.ready();

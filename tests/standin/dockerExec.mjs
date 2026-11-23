@@ -6,10 +6,10 @@
 // `tachikoma: not found` and exits 127, as the inner script does; an input that ends inside the block exits 2.
 // Elsewhere than Windows the child leads a process group of its own, as setsid makes in the box, so the stand-in's
 // kill (tests/mcp/fake.ts) ends it with everything it started.
-// The child works in the system's temp folder, not in the folder this stand-in was started in, the test's own: a server
-// in the box never works in the host's folder. The child is killed by its process id (fake.ts, killGroup), and nothing
-// waits until Windows lets go of a killed process's working folder, so a clean-up removing the test's folder at once
-// could fail with EBUSY (release 8e plan, step 20).
+// The child works in the system's temp folder, not in the folder this stand-in was started in, the test's own, so it
+// does not hold that folder while the test's clean-up removes it: on Windows a process holds its working folder, and
+// the child is killed by its process id (fake.ts, killGroup), with nothing to wait on until Windows lets go of it, so
+// the removal could fail with EBUSY (release 8e plan, step 20). The stand-in itself is waited for (fake.ts, killAll).
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";

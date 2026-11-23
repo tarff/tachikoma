@@ -724,7 +724,7 @@ describe("Servers: a box server's stop that failed", () => {
     const made: Servers[] = [];
     onTestFinished(async () => {
       await Promise.all(made.map((servers) => servers.stopAll()));
-      fake.killAll();
+      await fake.killAll();
     });
     const a = await s.config("s", { stubborn: true, childPidFile: path.join(s.dir, "child-pid") });
     const entry = a.entry as Extract<ServerConfig["entry"], { kind: "stdio" }>;
@@ -981,7 +981,7 @@ describe("Servers: where each server runs", () => {
     const made: Servers[] = [];
     onTestFinished(async () => {
       await Promise.all(made.map((servers) => servers.stopAll()));
-      fake.killAll();
+      await fake.killAll();
     });
     // `sites`: the entries in force with the network "sites" (8c-2b plan, Step 9).
     const make = (configs: ServerConfig[], answers?: () => Answers, settingsDir?: string, sites?: Site[]) => {

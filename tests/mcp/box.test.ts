@@ -170,7 +170,7 @@ async function setup(opts: { gone?: string } = {}) {
   const servers: Server[] = [];
   onTestFinished(async () => {
     await Promise.all(servers.map((s) => s.stop()));
-    fake.killAll();
+    await fake.killAll();
     await removeTree(dir);
   });
   const make = (config: ServerConfig, env: NodeJS.ProcessEnv = process.env) => {
