@@ -123,8 +123,9 @@ export interface Turn {
   native?: Message["native"];
   usage: Usage;
   // Set when the model stopped before finishing: output limit, context limit or refusal. "window": the reply filled
-  // Anthropic's context window (release 8a plan, choice 21).
-  cutOff?: { kind: "max_tokens" | "window" | "refusal"; detail: string };
+  // Anthropic's context window (release 8a plan, choice 21). `limit`: it was a true output limit, not another early stop
+  // the provider gives the same kind, for StopFailure's max_output_tokens (release 8e plan, step 10; "Early stop").
+  cutOff?: { kind: "max_tokens" | "window" | "refusal"; detail: string; limit?: true };
   // Set when the provider itself handed the request to another model (Anthropic's fallback).
   fallbacks?: { from: string; to: string }[];
   servedBy?: string; // "<provider>:<model>" that actually answered, when not the one asked

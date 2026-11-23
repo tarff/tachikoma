@@ -113,7 +113,7 @@ export function fromOpenAI(res: ChatCompletion, kind: string): Turn {
   const raw = choice.message as unknown as Record<string, unknown>;
   const reasoning = Object.fromEntries(REASONING_FIELDS.flatMap((f) => (raw[f] != null ? [[f, raw[f]]] : [])));
   if (Object.keys(reasoning).length) turn.native = { provider: kind, content: reasoning };
-  if (choice.finish_reason === "length") turn.cutOff = { kind: "max_tokens", detail: "The response hit the output limit" };
+  if (choice.finish_reason === "length") turn.cutOff = { kind: "max_tokens", detail: "The response hit the output limit", limit: true };
   if (choice.finish_reason === "content_filter") turn.cutOff = { kind: "refusal", detail: "The provider's content filter stopped the response" };
   // OpenAI can decline with the reason in `refusal`, empty content and finish_reason "stop".
   const refusal: unknown = choice.message.refusal;

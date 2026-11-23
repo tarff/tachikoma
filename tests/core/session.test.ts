@@ -2058,6 +2058,193 @@ process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => {
     expect(summaries).toEqual(["Many x."]);
     expect(texts(session.messages.at(-1)!)).toEqual(["done"]);
   });
+
+  // Release 8e plan, step 10 (design, "The turn ending, and tool batches"; Q8, Q9, Q21, Q22; "Early stop"): StopFailure in
+  // place of Stop when a provider's error ends the lead's turn, matched on `error`, sent the provider's message and the
+  // window's line without its `✗ ` mark. Nothing for a stop, a failed shortening, an unsaved session's "too long", an
+  // early stop that is not an output limit, or a subagent.
+  describe("StopFailure (release 8e plan, step 10)", () => {
+    const failure = (status?: number, words = `failed with ${status ?? "no status"}`) =>
+      Object.assign(new Error(words), status === undefined ? {} : { status });
+    const refusal = (p: string) => ({ ...reply(""), cutOff: { kind: "refusal" as const, detail: `${p} declined` } });
+    // The hooks' inputs, each as its event and the three fields StopFailure is sent.
+    const fired = (inputs: () => Record<string, unknown>[]) =>
+      inputs().map(({ hook_event_name, error, error_details, last_assistant_message }) => ({ hook_event_name, error, error_details, last_assistant_message }));
+    const failures = (inputs: () => Record<string, unknown>[]) => fired(inputs).filter((i) => i.hook_event_name === "StopFailure");
+    const once = (error: string, error_details: string, last_assistant_message: string) =>
+      [{ hook_event_name: "StopFailure", error, error_details, last_assistant_message }];
+    const both: Said[] = [{ event: "StopFailure" }, { event: "Stop" }];
+    // A request the user stops as it goes, rejecting as the SDK does.
+    const stopping = (stop: AbortController) => () => {
+      stop.abort();
+      throw new Error("Request was aborted.");
+    };
+
+    it.each([
+      [429, "rate_limit"], [401, "authentication_failed"], [403, "authentication_failed"], [402, "billing_error"],
+      [400, "invalid_request"], [404, "model_not_found"], [500, "server_error"], [503, "server_error"], [529, "server_error"],
+      [undefined, "unknown"],
+      // A status the design's table does not name is unknown too (the user's choice, 2026-11-23).
+      [413, "unknown"], [422, "unknown"],
+    ] as const)("fires StopFailure once, and not Stop, for a request failing with status %s, as %s", async (status, error) => {
+      const words = `failed with ${status ?? "no status"}`;
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [failure(status)]), {}, both);
+      await session.send("go");
+      expect(errors.map((e) => [e.kind, e.message])).toEqual([["provider", words]]);
+      expect(fired(inputs)).toEqual(once(error, words, `provider: ${words}`));
+    });
+
+    it("runs only the StopFailure hooks whose matcher names the error", async () => {
+      const lead = new Lead("fake:a", [failure(429), failure(404)]);
+      const { session, inputs } = await setup(lead, {}, [{ event: "StopFailure", names: ["rate_limit", "server_error"] }]);
+      await session.send("one");
+      await session.send("two");
+      expect(failures(inputs).map((i) => i.error)).toEqual(["rate_limit"]);
+    });
+
+    it("shows no line for a StopFailure hook's exit code 2, its error output or its answer", async () => {
+      const stdout = JSON.stringify({ systemMessage: "seen", decision: "block", reason: "no" });
+      const { session, errors, notes, inputs } = await setup(new Lead("fake:a", [failure(500)]), {}, [{ event: "StopFailure", code: 2, stderr: "no", stdout }]);
+      await session.send("go");
+      expect(failures(inputs)).toHaveLength(1);
+      expect(errors.map((e) => e.kind)).toEqual(["provider"]);
+      expect(notes).toEqual([]);
+    });
+
+    it("fires nothing for a request the user stops", async () => {
+      const stop = new AbortController();
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [stopping(stop)]), {}, both);
+      await session.send("go", stop.signal);
+      expect([errors, fired(inputs)]).toEqual([[], []]);
+    });
+
+    it("fires nothing for a subagent's failed request", async () => {
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [failure(500)]), { subagent: true, id: "t1" }, [{ event: "StopFailure" }], { id: "t1" });
+      await session.send("go");
+      expect(errors.map((e) => e.kind)).toEqual(["provider"]);
+      expect(inputs()).toEqual([]);
+    });
+
+    describe("at the question whether to send again without the pictures", () => {
+      const look: Part[] = [{ type: "text", text: "look " }, { type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }];
+
+      it("fires nothing on yes when the request sent again succeeds", async () => {
+        const lead = new Lead("fake:a", [failure(400), reply("seen")]);
+        const { session, errors, inputs } = await setup(lead, { ask: async () => true }, both);
+        await session.send(look);
+        expect(errors.map((e) => e.status)).toEqual([400]);
+        expect(failures(inputs)).toEqual([]);
+      });
+
+      it("fires once on yes with the second failure, when the request sent again fails too", async () => {
+        const lead = new Lead("fake:a", [failure(400, "first"), failure(500, "second")]);
+        const { session, errors, inputs } = await setup(lead, { ask: async () => true }, both);
+        await session.send(look);
+        expect(errors.map((e) => e.message)).toEqual(["first", "second"]);
+        expect(fired(inputs)).toEqual(once("server_error", "second", "provider: second"));
+      });
+
+      it("fires once on no, with the failure", async () => {
+        const { session, inputs } = await setup(new Lead("fake:a", [failure(400)]), { ask: async () => false }, both);
+        await session.send(look);
+        expect(fired(inputs)).toEqual(once("invalid_request", "failed with 400", "provider: failed with 400"));
+      });
+
+      it("fires nothing on Ctrl-C, which answers no and stops the turn, though the failure's line was shown", async () => {
+        const stop = new AbortController();
+        const ask = async () => (stop.abort(), false);
+        const { session, errors, inputs } = await setup(new Lead("fake:a", [failure(400)]), { ask }, both);
+        await session.send(look, stop.signal);
+        expect(errors.map((e) => [e.kind, e.status])).toEqual([["provider", 400]]);
+        expect(fired(inputs)).toEqual([]);
+      });
+    });
+
+    // Q21: one event, sent the lead's refusal, though the fallback's own line is shown too.
+    it.each([
+      ["no fallback is set", undefined, [["refusal", "response from fake:a"]]],
+      ["the fallback's request fails", [failure(429)], [["provider", "request to fake:b"], ["refusal", "response from fake:a"]]],
+      ["the fallback's request is too long", [new TooLong("prompt is too long")], [["provider", "request to fake:b"], ["refusal", "response from fake:a"]]],
+      ["the fallback refuses too", [refusal("b")], [["refusal", "response from fake:a"], ["refusal", "response from fake:b"]]],
+    ] as const)("fires StopFailure once as unknown, with the lead's refusal, when %s", async (_, rescue, lines) => {
+      const more = rescue ? { fallback: new Lead("fake:b", [...rescue]) } : {};
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [refusal("a")]), more, both);
+      await session.send("go");
+      expect(errors.map((e) => [e.kind, e.attempted])).toEqual(lines);
+      expect(fired(inputs)).toEqual(once("unknown", "a declined", "refusal: a declined"));
+    });
+
+    it("fires nothing when the user stops the fallback's request after the lead's refusal", async () => {
+      const stop = new AbortController();
+      const fallback = new Lead("fake:b", [stopping(stop)]);
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [refusal("a")]), { fallback }, both);
+      await session.send("go", stop.signal);
+      expect(errors.map((e) => e.kind)).toEqual(["refusal"]); // shown as today
+      expect(fired(inputs)).toEqual([]);
+    });
+
+    it("fires StopFailure as invalid_request for a request still too long once shortened, with Tachikoma's line or the provider's", async () => {
+      const lined = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), summaryOf("Many x."), new TooLong("prompt is too long")], 1_000_000);
+      const a = await setup(lined, {}, both);
+      await a.session.send(big);
+      await a.session.send("now this");
+      expect(failures(a.inputs)).toEqual(once("invalid_request", "prompt is too long", tooLongLine(a.session, "fake:a", 1_000_000)));
+      const own = new Lead("fake:a", [reply("noted"), new TooLong("prompt is too long"), summaryOf("Many x."), new TooLong("prompt is too long: 9 > 8")]);
+      const b = await setup(own, {}, both);
+      await b.session.send(big);
+      await b.session.send("now this");
+      expect(failures(b.inputs)).toEqual(once("invalid_request", "prompt is too long: 9 > 8", "provider: prompt is too long: 9 > 8"));
+    });
+
+    it("fires nothing for an unsaved session the provider answers too long, nor when a summary request fails", async () => {
+      const unsaved = await setup(new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long")], 1_000_000), { transcript: await unsavable() }, both);
+      await unsaved.session.send(big);
+      await unsaved.session.send("now this");
+      expect(unsaved.errors.map((e) => e.kind)).toEqual(["saving", "shortening"]);
+      expect(failures(unsaved.inputs)).toEqual([]);
+      const summary = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "I can't summarise that." } };
+      const failed = await setup(new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), summary], 1_000_000), {}, both);
+      await failed.session.send(big);
+      await failed.session.send("now this");
+      expect(failed.errors.map((e) => e.kind)).toEqual(["shortening"]);
+      expect(failures(failed.inputs)).toEqual([]);
+    });
+
+    const windowLine = "max_tokens: The conversation filled the context window";
+    const filled = "The conversation filled the context window";
+    it("fires StopFailure as max_output_tokens for a reply that fills the window again once shortened", async () => {
+      const { session, inputs } = await setup(new Lead("fake:a", [measured("noted"), cutAtWindow, summaryOf("Many x."), cutAtWindow], 1_000_000), {}, both);
+      await session.send(big);
+      await session.send("now this");
+      expect(failures(inputs)).toEqual(once("max_output_tokens", filled, windowLine));
+    });
+
+    it("fires StopFailure as max_output_tokens for an unsaved session whose reply fills the window (Q22)", async () => {
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [cutAtWindow]), { transcript: await unsavable() }, both);
+      await session.send("go");
+      expect(errors.map((e) => e.kind)).toEqual(["saving", "max_tokens"]);
+      expect(fired(inputs)).toEqual(once("max_output_tokens", filled, windowLine));
+    });
+
+    it("fires StopFailure as max_output_tokens for a fallback's reply that fills the window", async () => {
+      const { session, inputs } = await setup(new Lead("fake:a", [refusal("a")]), { fallback: new Lead("fake:b", [cutAtWindow]) }, both);
+      await session.send("go");
+      expect(fired(inputs)).toEqual(once("max_output_tokens", filled, windowLine));
+    });
+
+    // "Early stop": the ChatGPT provider's two cut-offs (tests/providers/chatgpt.test.ts), told apart by the mark alone.
+    it("fires StopFailure as max_output_tokens for a reply cut off at the output limit, and nothing for one stopped early for another reason", async () => {
+      const limit = { ...reply("par"), cutOff: { kind: "max_tokens" as const, detail: "The response reached its length limit", limit: true as const } };
+      const cut = await setup(new Lead("fake:a", [limit]), {}, both);
+      await cut.session.send("go");
+      expect(fired(cut.inputs)).toEqual(once("max_output_tokens", "The response reached its length limit", "max_tokens: The response reached its length limit"));
+      const detail = 'The response stopped early, for a reason OpenAI gives as "max_messages"';
+      const other = await setup(new Lead("fake:a", [{ ...reply("par"), cutOff: { kind: "max_tokens", detail } }]), {}, both);
+      await other.session.send("go");
+      expect(other.errors.map((e) => [e.kind, e.message])).toEqual([["max_tokens", detail]]);
+      expect(fired(other.inputs)).toEqual([]);
+    });
+  });
 });
 
 // Release 8b plan, Task 6 (design, "Tool hooks"; choices 10, 15 and 16): PreToolUse before each call, its answer against

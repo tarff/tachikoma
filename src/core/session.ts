@@ -15,7 +15,7 @@ import type { Turn as SavedTurn } from "../memory/saver.js";
 import type { Cache } from "../providers/pictures.js";
 import { lessonLabel, matchText } from "../tools/memory.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
-import type { Bus, ToolOutcome } from "./bus.js";
+import type { Bus, ErrorEvent, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
 import { type Ask, type Decision, Declined, type PermissionGate, StartAgain, StoppedFirst, visible } from "./permissions.js";
 import { dueNotes, isSetupNote, localDate, type Told, toldAfter } from "./setup.js";
@@ -69,6 +69,19 @@ const STOPPED = "Stopped: a hook stopped the turn.";
 const RETRY = "A hook says you may try this again.";
 // The grey line for a hook's continue: false, with its stopReason when it gave one (the same).
 const stoppedTurn = (event: Event, reason: string) => (reason ? `A ${event} hook stopped the turn: ${reason}` : `A ${event} hook stopped the turn.`);
+// StopFailure's `error` for a failed request, by its HTTP status (release 8e design, "The turn ending, and tool batches").
+function failureKind(status: number | undefined): string {
+  if (status === 429) return "rate_limit";
+  if (status === 401 || status === 403) return "authentication_failed";
+  if (status === 402) return "billing_error";
+  if (status === 400) return "invalid_request";
+  if (status === 404) return "model_not_found";
+  if (status !== undefined && status >= 500 && status <= 599) return "server_error";
+  return "unknown";
+}
+// The window's line for an error that ends the turn, without its `✗ ` mark (tui/App.tsx, onError), for StopFailure's
+// last_assistant_message (release 8e plan, step 10; Q9).
+const lineOf = (e: ErrorEvent) => (e.kind === "shortening" ? e.message : `${e.kind}: ${e.message}`);
 // Claude Code's hooks reference, "Stop input": Stop or SubagentStop blocks in a row, with no tool call between, before the
 // turn ends anyway (release 8b plan, "Numbers in this plan").
 const MAX_BLOCKS = 8;
@@ -764,6 +777,8 @@ export class Session {
       let answeredBy = lead;
       let turn = await this.#request(lead, signal);
       if (!turn) return;
+      // The lead's request failed: StopFailure by its HTTP status (release 8e plan, step 10).
+      if ("failed" in turn) return this.#stopFailure(failureKind(turn.failed.status), lineOf(turn.failed), turn.failed.message, signal);
       // A "too long" answer, or a reply that filled the window, is never stored: the history is shortened and the request
       // sent once more (plan, choices 20 and 21). Too long again, or not saved so not shortened, the turn ends: a "too long"
       // answer with the line, or as it came when the request's size or the window is not known; a reply that filled the
@@ -778,17 +793,23 @@ export class Session {
           }
           if (r !== "unsaved") return this.#say(lead, cannot(r.problem));
         }
+        // StopFailure, once shortened or in a session not saved (Q22): the reply filled the window, max_output_tokens;
+        // still too long, invalid_request, only once a shortening was made for this request (Q8).
         if (!("tooLong" in turn)) {
-          bus.emit("error", { kind: "max_tokens", attempted: `response from ${lead.id}`, message: turn.cutOff!.detail, lead: lead.id });
-          return;
+          const shown = { kind: "max_tokens", attempted: `response from ${lead.id}`, message: turn.cutOff!.detail, lead: lead.id } as const;
+          bus.emit("error", shown);
+          return this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
         }
         const line = await this.#tooLong(lead, window, signal);
         if (signal?.aborted) return;
         if (line) this.#say(lead, line);
-        else this.#failed(lead, turn.tooLong);
+        const last = line || lineOf(this.#failed(lead, turn.tooLong));
+        if (shortened) await this.#stopFailure("invalid_request", last, errorText(turn.tooLong), signal);
         return;
       }
       const rescue = this.#fallback;
+      // The lead's refusal, which StopFailure is sent when the fallback refuses too (Q21).
+      let first: ErrorEvent | undefined;
       if (turn.cutOff?.kind === "refusal" && rescue) {
         // The refused reply is discarded, never stored, so the history stays append-only.
         const refused = { kind: "refusal", attempted: `response from ${lead.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
@@ -796,22 +817,27 @@ export class Session {
         const rescued = await this.#request(rescue, signal);
         // The rescue's "too long" answer is reported as it came: only the lead's request is shortened for.
         if (rescued && "tooLong" in rescued) this.#failed(rescue, rescued.tooLong);
-        turn = rescued && !("tooLong" in rescued) ? rescued : undefined;
+        turn = rescued && !("tooLong" in rescued) && !("failed" in rescued) ? rescued : undefined;
         // A rescued refusal is reported only as the rescue, so the status line does not count it as an error.
         if (!turn || turn.cutOff?.kind === "refusal") bus.emit("error", refused);
         else bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
-        if (!turn) return;
+        // The fallback's request failed or was too long: StopFailure with the lead's refusal (Q21); a stop fires nothing.
+        if (!turn) return this.#stopFailure("unknown", lineOf(refused), refused.message, signal);
+        first = refused;
       }
       if (turn.cutOff?.kind === "refusal") {
         // Never stored, on any path: the output may be empty or half-written, and an empty assistant
         // message makes every later Anthropic request fail, with no way to remove it.
-        bus.emit("error", { kind: "refusal", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
-        return;
+        const shown = { kind: "refusal", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
+        bus.emit("error", shown);
+        const refusal = first ?? shown;
+        return this.#stopFailure("unknown", lineOf(refusal), refusal.message, signal);
       }
       if (turn.cutOff?.kind === "window") {
         // Only the rescue's comes here, the lead's having been shortened for above: never stored either, it ends the turn.
-        bus.emit("error", { kind: "max_tokens", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
-        return;
+        const shown = { kind: "max_tokens", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
+        bus.emit("error", shown);
+        return this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
       }
       // Reported only now, so a model that still refused is never shown as having answered.
       for (const f of turn.fallbacks ?? []) {
@@ -830,11 +856,15 @@ export class Session {
 
       const calls = turn.parts.filter((p) => p.type === "tool_call");
       if (turn.cutOff) {
-        bus.emit("error", { kind: turn.cutOff.kind, attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
+        const shown = { kind: turn.cutOff.kind, attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id };
+        bus.emit("error", shown);
         // Every tool call needs a result before the next request, even ones we refuse to run.
         if (calls.length) {
           this.#push({ role: "user", parts: calls.map((c) => result(c, `${CUT_OFF}${turn.cutOff!.detail}).`, true)) });
         }
+        // StopFailure for a true output limit alone, by the provider's mark; another early stop is in none of the
+        // design's rows and fires nothing (release 8e plan, step 10; Q8; "Early stop").
+        if (turn.cutOff.limit) await this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
         return;
       }
       if (calls.length === 0) {
@@ -932,7 +962,9 @@ export class Session {
 
   // One request. Its usage is reported even if the reply is then discarded, because it is billed. A "too long" answer is
   // handed back as it came, with nothing said, for the turn to shorten the history (release 8a plan, choice 20).
-  async #request(provider: Provider, signal?: AbortSignal): Promise<Turn | { tooLong: unknown } | undefined> {
+  // A failure is handed back as it was shown, for StopFailure, and undefined only for a stop, wherever it came (release
+  // 8e plan, step 10).
+  async #request(provider: Provider, signal?: AbortSignal): Promise<Turn | { tooLong: unknown } | { failed: ErrorEvent } | undefined> {
     const { bus } = this.opts;
     const refused = this.#refusedPictures.has(provider.id);
     const req = this.#req(provider, signal);
@@ -960,24 +992,30 @@ export class Session {
       if (signal?.aborted) return undefined;
       // Before the pictures question, so a too-long 400 never asks it (choice 20).
       if (provider.tooLong?.(err)) return { tooLong: err };
-      const status = this.#failed(provider, err);
+      const failed = this.#failed(provider, err);
       // A 400 does not say whether the pictures caused it, so the user is asked, after seeing the provider's words; y
       // leaves them out for this provider from now on, the conversation keeping them (release 6 design, "When the
       // provider refuses"). It is whichever provider was sent the request, the fallback included, as its id is the one
       // marked. A request already without pictures asks nothing, so a second refusal ends the turn.
       const pictures = !refused && this.messages.some((m) => m.parts.some((p) => p.type === "image"));
       const question = "Send again without the pictures";
-      if (status === 400 && pictures && (await this.opts.ask?.(question, undefined, undefined, true))) {
-        this.#refusedPictures.add(provider.id);
-        bus.emit("note", `Pictures are left out for ${provider.id} from now on.`);
-        return this.#request(provider, signal);
+      if (failed.status === 400 && pictures) {
+        const again = await this.opts.ask?.(question, undefined, undefined, true);
+        // Ctrl-C there answers no and stops the turn: a stop, not this failure (release 8e plan, step 10).
+        if (signal?.aborted) return undefined;
+        if (again) {
+          this.#refusedPictures.add(provider.id);
+          bus.emit("note", `Pictures are left out for ${provider.id} from now on.`);
+          return this.#request(provider, signal);
+        }
       }
-      return undefined;
+      return { failed };
     }
   }
 
-  // A request's failure as the provider gave it; its HTTP status, for the pictures question.
-  #failed(provider: Provider, err: unknown): unknown {
+  // A request's failure as the provider gave it, as it was shown; its HTTP status is for the pictures question and
+  // StopFailure.
+  #failed(provider: Provider, err: unknown): ErrorEvent {
     // The SDKs' `APIError` and chatgpt.ts's ProviderError carry the HTTP status; anything else has none.
     const status: unknown = (err as { status?: unknown } | null | undefined)?.status;
     const error = {
@@ -986,8 +1024,23 @@ export class Session {
       message: errorText(err),
       lead: this.#lead.id,
     };
-    this.opts.bus.emit("error", typeof status === "number" ? { ...error, status } : error);
-    return status;
+    const shown: ErrorEvent = typeof status === "number" ? { ...error, status } : error;
+    this.opts.bus.emit("error", shown);
+    return shown;
+  }
+
+  // StopFailure in place of Stop when a provider's error ends the lead's turn (release 8e plan, step 10; design, "The
+  // turn ending, and tool batches"), matched on `error`, sent the provider's message and `last`, the window's line for
+  // that end without its mark, the same in -p (Q9). Waited for, as Stop is, its answer ignored (answer.ts). Not for a
+  // subagent, and nothing once the user has stopped the turn, wherever the stop came.
+  async #stopFailure(error: string, last: string, details: string, signal?: AbortSignal): Promise<void> {
+    const { hooks } = this.opts;
+    if (!hooks || this.opts.subagent || signal?.aborted) return;
+    try {
+      await hooks.fire("StopFailure", { error, error_details: details, last_assistant_message: last }, { match: error, signal });
+    } catch (err) {
+      if (!signal?.aborted) throw err;
+    }
   }
 
   // The request the conversation makes now to `provider`, as it is sent, measured and counted.

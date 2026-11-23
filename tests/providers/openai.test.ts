@@ -140,6 +140,13 @@ describe("fromOpenAI", () => {
     const turn = fromOpenAI(completion({ content: null, refusal: "I can't help with that." }), "openai");
     expect(turn.cutOff).toEqual({ kind: "refusal", detail: "I can't help with that." });
   });
+
+  // Release 8e plan, step 10: the output limit is marked as a true one, for StopFailure's max_output_tokens; a refusal is
+  // not.
+  it("marks a reply that hit the output limit as a true output limit, and a filtered one not", () => {
+    expect(fromOpenAI(completion({ content: "par" }, "length"), "openai").cutOff).toStrictEqual({ kind: "max_tokens", detail: "The response hit the output limit", limit: true });
+    expect(fromOpenAI(completion({ content: "" }, "content_filter"), "openai").cutOff).toStrictEqual({ kind: "refusal", detail: "The provider's content filter stopped the response" });
+  });
 });
 
 describe("after /lead to Anthropic", () => {

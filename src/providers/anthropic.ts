@@ -110,7 +110,7 @@ export function fromAnthropic(msg: BetaMessage): Turn {
     );
     if (declined.length) turn.declined = declined;
   }
-  if (msg.stop_reason === "max_tokens") turn.cutOff = { kind: "max_tokens", detail: "The response hit the output limit" };
+  if (msg.stop_reason === "max_tokens") turn.cutOff = { kind: "max_tokens", detail: "The response hit the output limit", limit: true };
   if (msg.stop_reason === "model_context_window_exceeded") turn.cutOff = { kind: "window", detail: "The conversation filled the context window" };
   if (msg.stop_reason === "refusal") turn.cutOff = { kind: "refusal", detail: `The model declined (category: ${msg.stop_details?.category ?? "none given"})` };
   return turn;

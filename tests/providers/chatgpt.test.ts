@@ -189,11 +189,31 @@ describe("fromStream", () => {
 
   it("marks a reply cut short, by the length limit or OpenAI's content filter, and a refusal", async () => {
     const short = (reason: string) => ({ type: "response.incomplete", response: { usage, incomplete_details: { reason } } }) as unknown as ResponseStreamEvent;
-    expect((await fromStream(events(done(text), short("max_output_tokens")), tools)).cutOff).toEqual({ kind: "max_tokens", detail: "The response reached its length limit" });
+    expect((await fromStream(events(done(text), short("max_output_tokens")), tools)).cutOff).toEqual({ kind: "max_tokens", detail: "The response reached its length limit", limit: true });
     expect((await fromStream(events(short("max_messages")), tools)).cutOff).toEqual({ kind: "max_tokens", detail: 'The response stopped early, for a reason OpenAI gives as "max_messages"' });
     expect((await fromStream(events(short("content_filter")), tools)).cutOff).toEqual({ kind: "refusal", detail: "OpenAI's content filter stopped the response" });
     const refused = { ...text, content: [{ type: "refusal", refusal: "No." }] };
     expect((await fromStream(events(done(refused), completed), tools)).cutOff).toEqual({ kind: "refusal", detail: "No." });
+  });
+
+  // Release 8e plan, step 10 (Codex round 3, point 8; the user's decision "Early stop"): only a reply cut short at the
+  // output limit carries the mark that StopFailure's max_output_tokens is keyed on; one stopped early for any other reason
+  // does not. Both keep today's kind and words.
+  it("marks only a reply cut short at the output limit as a true output limit, keeping both kinds and words", async () => {
+    const short = (reason: string) => ({ type: "response.incomplete", response: { usage, incomplete_details: { reason } } }) as unknown as ResponseStreamEvent;
+    expect((await fromStream(events(done(text), short("max_output_tokens")), tools)).cutOff).toStrictEqual({
+      kind: "max_tokens", detail: "The response reached its length limit", limit: true,
+    });
+    expect((await fromStream(events(short("max_messages")), tools)).cutOff).toStrictEqual({
+      kind: "max_tokens", detail: 'The response stopped early, for a reason OpenAI gives as "max_messages"',
+    });
+    const unnamed = { type: "response.incomplete", response: { usage } } as unknown as ResponseStreamEvent;
+    expect((await fromStream(events(unnamed), tools)).cutOff).toStrictEqual({
+      kind: "max_tokens", detail: 'The response stopped early, for a reason OpenAI gives as "unknown"',
+    });
+    expect((await fromStream(events(short("content_filter")), tools)).cutOff).toStrictEqual({
+      kind: "refusal", detail: "OpenAI's content filter stopped the response",
+    });
   });
 });
 

@@ -192,7 +192,7 @@ export async function fromStream(events: AsyncIterable<ResponseStreamEvent>, too
     usage: { input: (usage?.input_tokens ?? 0) - cached - written, output: usage?.output_tokens ?? 0, cacheRead: cached, cacheWrite: written },
   };
   if (incomplete === "content_filter") turn.cutOff = { kind: "refusal", detail: "OpenAI's content filter stopped the response" };
-  else if (incomplete === "max_output_tokens") turn.cutOff = { kind: "max_tokens", detail: "The response reached its length limit" };
+  else if (incomplete === "max_output_tokens") turn.cutOff = { kind: "max_tokens", detail: "The response reached its length limit", limit: true };
   else if (incomplete) turn.cutOff = { kind: "max_tokens", detail: `The response stopped early, for a reason OpenAI gives as "${incomplete}"` };
   if (refusal) turn.cutOff = { kind: "refusal", detail: refusal };
   return turn;
