@@ -2348,6 +2348,21 @@ process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => {
       expect(atSecond).toEqual({ lead: "fake:a", at: T1 });
       expect(session.lastReply).toEqual({ lead: "fake:a", at: T3 });
     });
+
+    // The user's choice (step 12's review): /clear and /resume start with none until the new conversation's first lead
+    // reply; /branch, the same messages up to the branch point, keeps it. Each is a load, as queue.ts makes it.
+    it.each([
+      ["/clear", false, () => []],
+      ["/resume", false, () => [typed("an older question"), { role: "assistant" as const, parts: [{ type: "text" as const, text: "an older answer" }] }]],
+      ["/branch", true, (s: Session) => [...s.messages]],
+    ] as const)("after %s, keepRuns %s, keeps the time only for a branch", async (how, keepRuns, messages) => {
+      clock(T1);
+      const { session } = await setup(new Lead("fake:a", [reply("one")]));
+      await session.send("hi");
+      const conversation: Conversation = { id: "s2", messages: messages(session), system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 };
+      session.load(conversation, keepRuns ? { keepRuns } : {});
+      expect(session.lastReply).toEqual(how === "/branch" ? { lead: "fake:a", at: T1 } : undefined);
+    });
   });
 });
 

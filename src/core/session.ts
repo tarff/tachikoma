@@ -426,6 +426,9 @@ export class Session {
     // is sent none, as a launch's is (the user's choice, 2026-11-10; final review); /branch's too, as a fork's launch
     // sends none.
     if (!this.opts.subagent) this.opts.hooks?.forgetPrompt();
+    // Nor its lead's last reply time, which a /clear or /resume's conversation was never cached under; /branch's, the same
+    // messages up to the branch point, keeps it (release 8e plan, step 12; the user's choice at its review).
+    if (!opts.keepRuns) this.#lastReply = undefined;
     this.calls.splice(0, this.calls.length, ...c.calls);
     // Its MCP tools loaded through tool_search, so a resume and /branch keep them and /clear starts with none (release 8c
     // plan, choice 41).

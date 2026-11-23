@@ -84,6 +84,10 @@ describe("switchFields", () => {
       expect(at(T + MINUTES_5 + 1)).toBe(false);
     });
 
+    it("is false when the clock was set back before the reply's time", () => {
+      expect(at(T - 1)).toBe(false);
+    });
+
     it("is false when the lead is not an Anthropic model", () => {
       const lead = "openrouter:anthropic/claude-opus-5-5";
       expect(at(T + 1, { from: lead, lastReply: { lead, at: T } })).toBe(false);

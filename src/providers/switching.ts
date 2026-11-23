@@ -41,13 +41,15 @@ export function switchFields(s: {
 }) {
   const rates = PRICES[s.to];
   const last = s.lastReply;
+  // How long ago the reply came: below 0 when the clock was set back since, which is never warm (step 12's review).
+  const ago = last ? Date.now() - last.at : -1;
   return {
     from_model: modelName(s.from),
     to_model: modelName(s.to),
     requested_model: s.source === "command" ? s.requested : null,
     source: s.source,
     context_tokens: s.contextTokens,
-    prompt_cache_warm: parseLead(s.from).kind === "anthropic" && last?.lead === s.from && Date.now() - last.at < WARM_MS,
+    prompt_cache_warm: parseLead(s.from).kind === "anthropic" && last?.lead === s.from && ago >= 0 && ago < WARM_MS,
     cache_ttl: "5m" as const,
     estimated_cache_write_usd: rates ? (s.contextTokens * rates.cacheWrite) / 1_000_000 : null,
     ...(rates && { pricing: "catalog" as const }),
