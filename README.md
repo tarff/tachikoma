@@ -1535,9 +1535,9 @@ Event by event:
 - **PreModelSwitch** runs before the switch, so a stopped switch makes no shortening to fit a
   smaller window. While it runs the working line shows, a prompt you type waits, and Esc stops
   the hook and the switch, saying nothing. Deny wins over ask, and ask over allow.
-  - **Exit code 2, `"decision": "block"`, a deny, or a hook that is not `async` running out of
-    time** stops the switch, and the lead stays: `The switch to <model> was stopped by a hook:
-    <reason>.` (with none, `The switch to <model> was stopped by a hook.`).
+  - **A hook that is not `async` and exits with code 2, answers `"decision": "block"`, denies, or
+    runs out of time** stops the switch, and the lead stays: `The switch to <model> was stopped by
+    a hook: <reason>.` (with none, `The switch to <model> was stopped by a hook.`).
     For a settings-file switch the line adds
     `settings.json still names it.`, and the next launch uses it. A time-out shows its red line too.
   - **ask** puts `A hook asks: <reason>. Switch to <model>?` (with none, `A hook asks. Switch to
