@@ -40,8 +40,9 @@ const NEXT_LAUNCH: readonly (typeof LIVE)[number][] = ["mode", "sandbox", "netwo
 // waits, a newer one taking its place, and is decided once the one before has applied or been kept out, against what is
 // in force by then. `leave`, as the window starts to close (queue.ts, leave), ends the hooks still deciding, as a stop
 // ends a hook, and throws away the read being decided and the one waiting, saying nothing; a read after it that a hook
-// would decide fires none and applies nothing, and one no hook decides applies at once, as before (Codex review of 8e,
-// round 2, the user's choice). `stop`, at the window's close, does that and takes no read after it.
+// would decide fires none and applies nothing, its grey line saying so (round 3), and one no hook decides applies at
+// once, as before (Codex review of 8e, round 2, the user's choice). `stop`, at the window's close, does that and takes
+// no read after it.
 export const configChanges = (ui: UI, fns: () => Pick<Fns, "note" | "onSettings">) => {
   const file = path.join(settingsDir(ui.home), SETTINGS);
   const stopped = new AbortController();
@@ -72,7 +73,8 @@ export const configChanges = (ui: UI, fns: () => Pick<Fns, "note" | "onSettings"
   const take = (read: Loaded, isFirst: boolean) => {
     const fires = !("problem" in read) && (!isFirst || inForce(read)) && (ui.hooks?.has("ConfigChange", "user_settings") ?? false);
     if (!fires) return fns().onSettings(read);
-    if (stopped.signal.aborted) return; // leaving (leave, below)
+    // Leaving (leave, below): a line of its own, as a blocked change's (Codex review of 8e, round 3, the user's choice).
+    if (stopped.signal.aborted) return fns().note(gray("This settings change was not applied, as the window is closing."));
     deciding = true;
     void decide(read)
       .catch((err) => {

@@ -15144,6 +15144,7 @@ const hookEntry = (event: string, command: string) => ({ [event]: [{ hooks: [{ t
 describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_000 }, () => {
   const FROM = "(from settings.json)";
   const STOPPED = "A ConfigChange hook stopped this settings change";
+  const CLOSING = "This settings change was not applied, as the window is closing.";
   const SIZE = (n: string) => `autoCompactWindow is now ${n} ${FROM}`;
   const PINNED = (mode: string) => `"mode" changes in settings.json take effect at the next launch; the mode stays ${mode}`;
   const LEFT_OUT = "FileChanged: Tachikoma doesn't watch files for hooks";
@@ -15401,6 +15402,26 @@ describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_00
     end();
     await expectExited(app);
     expect(session.autoCompact).toBeNull();
+  });
+
+  // Codex review of 8e, round 3 (the user's choice): a save a ConfigChange hook would decide, made once leaving has
+  // started, is not applied and fires no hook, and says so once.
+  it("says once that a save made after /exit starts leaving was not applied, with a ConfigChange hook, firing none", async () => {
+    let end!: () => void;
+    const runs = configRuns(
+      (r) => (r.event === "SessionEnd" ? new Promise<Ran>((resolve) => (end = () => resolve(ran()))) : ran()),
+      ["ConfigChange", "SessionEnd"],
+    );
+    const ending: Hook = { event: "SessionEnd", matcher: { all: true }, command: "on-end", async: false, where: "" };
+    const { app, session, hand } = await launch("{}", { hooks: [configHook(), ending] });
+    await type(app, "/exit");
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, CLOSING);
+    await tick();
+    expect([times(app, CLOSING), runs.map((r) => r.event), session.autoCompact]).toEqual([1, ["SessionEnd"], null]);
+    end();
+    await expectExited(app);
   });
 
   // Codex review of 8e, round 2 (the user's choice): leaving ends only ConfigChange's deciding; with no ConfigChange hook
