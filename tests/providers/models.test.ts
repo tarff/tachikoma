@@ -1,9 +1,9 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LoginStore } from "../../src/auth/store.js";
 import { listModels } from "../../src/providers/models.js";
+import { tempDir } from "../helpers.js";
 
 // The system keychain is never asked here: keys are kept in this map instead.
 const keys = vi.hoisted(() => new Map<string, string>());
@@ -34,7 +34,7 @@ function providers(routes: Record<string, (auth: string | null) => Response | Pr
 }
 
 function emptyData() {
-  vi.stubEnv("TACHI_DATA_DIR", path.join(mkdtempSync(path.join(tmpdir(), "tachi-models-")), "data"));
+  vi.stubEnv("TACHI_DATA_DIR", path.join(tempDir("tachi-models-"), "data"));
 }
 
 describe("listModels", () => {

@@ -1,10 +1,10 @@
-import { existsSync, type FSWatcher, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, type FSWatcher, mkdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { type KeysLoaded, readKeybindings } from "../src/keybindings.js";
 import { type Loaded, readSettings, settingsDir } from "../src/settings.js";
 import { changes, watchSettings } from "../src/settingsWatch.js";
+import { tempDir } from "./helpers.js";
 
 // Each folder watch the watcher starts, kept so a test can make one report an error; otherwise node:fs's own. With
 // `refuse` set, the next watch throws it instead, as Linux's limit on watches would.
@@ -21,7 +21,7 @@ vi.mock("node:fs", async (original) => {
   return { ...fs, watch };
 });
 
-const temp = () => mkdtempSync(path.join(tmpdir(), "tachi-watch-"));
+const temp = () => tempDir("tachi-watch-");
 const fileOf = (home: string) => path.join(settingsDir(home), "settings.json");
 const keysOf = (home: string) => path.join(settingsDir(home), "keybindings.json");
 // What a keys file read gives, as the problems and the key Ctrl+T is, so two reads can be compared.

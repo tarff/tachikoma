@@ -1,14 +1,14 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { accountCommand, type LoginIO, loginArgs, signIn, signOut } from "../../src/auth/chatgpt.js";
 import { LoginError, LoginStore } from "../../src/auth/store.js";
+import { tempDir } from "../helpers.js";
 import { FakeOpenAI } from "./fake-openai.js";
 
 async function setup(warn: (line: string) => void = () => {}) {
   const fake = await FakeOpenAI.start();
-  const store = new LoginStore(path.join(mkdtempSync(path.join(tmpdir(), "tachi-login-")), "data"), warn);
+  const store = new LoginStore(path.join(tempDir("tachi-login-"), "data"), warn);
   const said: string[] = [];
   const io: LoginIO = { say: (l) => said.push(l), openBrowser: fake.browser };
   const opts = { issuer: fake.issuer };
@@ -465,7 +465,7 @@ describe("accountCommand", () => {
     ["login", "Sign-in was cancelled."],
     ["logout", "Sign-out was cancelled."],
   ] as const)("says the %s was cancelled at Ctrl-C", async (verb, message) => {
-    vi.stubEnv("TACHI_DATA_DIR", path.join(mkdtempSync(path.join(tmpdir(), "tachi-login-")), "data"));
+    vi.stubEnv("TACHI_DATA_DIR", path.join(tempDir("tachi-login-"), "data"));
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed")); // never reaches OpenAI
     onTestFinished(() => {
       vi.unstubAllEnvs();

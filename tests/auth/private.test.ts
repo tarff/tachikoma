@@ -1,10 +1,10 @@
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, fsyncSync, linkSync, mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, fsyncSync, linkSync, mkdirSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { PrivateFileError, privateDir, readPrivate, writePrivate } from "../../src/auth/private.js";
 import { commandEnv, system32 } from "../../src/exec/env.js";
+import { tempDir } from "../helpers.js";
 
 // A write that fails part way (a full disk) is made to fail by flushing.
 vi.mock("node:fs", async (importOriginal) => {
@@ -29,7 +29,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const windows = process.platform === "win32";
-const temp = () => path.join(mkdtempSync(path.join(tmpdir(), "tachi-private-")), "data");
+const temp = () => path.join(tempDir("tachi-private-"), "data");
 
 // Every SID in a path's permissions, read as SIDs, so none is left out. Windows PowerShell starts here, as below, with
 // the environment tachi gives it (commandEnv), so under PowerShell 7 it loads its own modules (the CI trial).
