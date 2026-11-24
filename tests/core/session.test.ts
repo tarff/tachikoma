@@ -4751,6 +4751,31 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(s.lead.seen[2]!.at(-1)!.parts).toEqual([{ type: "text", text: "next" }]);
   });
 
+  // Codex review 5 of 8e, point 1: a background answer that comes while the hook runs stays waiting when the batch ends
+  // the turn, so it still starts a turn of its own.
+  it("leaves a background answer that came while the hook ran waiting when the batch ends the turn, so it still wakes the lead", async () => {
+    const worker = new Held("fake:w");
+    const go = path.join(await folder(), "go");
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background: true }), reply("noted")];
+    const s = await setup({ mode: "never", says: [batchSays(block("wait for it"), { go })], turns, worker });
+    const sending = s.session.send("go");
+    try {
+      await vi.waitFor(() => expect(batches(s)).toHaveLength(1), { timeout: 10_000 });
+      while (!worker.asked.length) await pause(20);
+      worker.answer("found it");
+      await s.tasks!.all[0]!.done;
+    } finally {
+      writeFileSync(go, "");
+    }
+    expect(await sending).toEqual({ stopped: "wait for it" });
+    expect([s.tasks!.wakes(), s.session.messages[2]!.parts.some((p) => p.type === "text" && p.from === "tasks")]).toEqual([true, false]);
+    await s.session.send("");
+    expect(s.lead.seen[1]!.at(-1)!.parts.slice(1)).toEqual([
+      hookText("PostToolBatch", "wait for it"),
+      { type: "text", text: "Background task t1 (look) finished:\nfound it", from: "tasks" },
+    ]);
+  });
+
   it("drops a PostToolBatch block's reason at a /clear", async () => {
     const s = await setup({ mode: "never", says: [batchSays(block("Lint first"))], turns: shellCall("echo hi") });
     expect(await s.session.send("go")).toEqual({ stopped: "Lint first" });

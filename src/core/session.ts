@@ -1063,7 +1063,10 @@ export class Session {
       }
       const batch = hooks && hooked ? await this.#postToolBatch(hooks, calls, entries, results, signal) : undefined;
       if (batch) this.#hookText.push(...batch.context);
-      const rest = [...this.#hookParts(), ...this.#switchParts(), ...this.#waiting(), ...this.#notes()];
+      // A batch that ends the turn leaves what waits for the lead waiting, so a background answer that came meanwhile
+      // still starts a turn of its own (Codex review 5 of 8e, point 1).
+      const ends = batch !== undefined && (batch.stop ?? batch.block) !== undefined;
+      const rest = [...this.#hookParts(), ...this.#switchParts(), ...(ends ? [] : this.#waiting()), ...this.#notes()];
       if (!hooked) {
         this.#push({ ...message, parts: [...message.parts, ...rest] });
         grown();
