@@ -76,7 +76,11 @@ export type Line<M = SavedMessage> =
   // The end of a typed turn, by its number among the prompts, and that turn's saved record, written once every entry of
   // it is in the palace (8d plan, step 22; Q22). An older Tachikoma skips both, counting them as damaged lines (Q17).
   | { t: "turn"; at: string; n: number }
-  | { t: "saved"; at: string; n: number };
+  | { t: "saved"; at: string; n: number }
+  // Parts of the last message line, saved after it: what a tool round's results message takes once its PostToolBatch hook
+  // has answered, the results saved before (Codex review 3 of 8e, point 1, the user's choice). A read adds them back to
+  // that message; an older Tachikoma skips the line, counting it as damaged, as it does turn and saved.
+  | { t: "joined"; at: string; message: M };
 
 // Omit on a union keeps only the shared fields, so each variant is omitted on its own, as boxWorkspace.ts:106 does.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -228,8 +232,8 @@ const own = (p: SavedMessage["parts"][number]) =>
 export function readTranscript(file: string, pictures: string): Read | { problem: string } {
   try {
     const rows = parse(readFileSync(file, "utf8"));
-    const lines = rows.filter((l) => l !== undefined);
-    const damaged = rows.length - lines.length;
+    const { lines, dropped } = joinedIn(rows);
+    const damaged = rows.filter((l) => l === undefined).length + dropped;
     // The start line is written first, once (choice 4); without it there is no system prompt or tool list to go on.
     const start = rows[0];
     if (start?.t !== "start") return { problem: `${file} could not be read as a session (its first line is missing or damaged).` };
@@ -390,6 +394,32 @@ export function wholeLines(file: string): string {
   return text.slice(0, text.lastIndexOf("\n") + 1);
 }
 
+// The good lines, each joined line's parts added back to the last message line before it, as the live session holds that
+// message, so every read after sees the one line the session would have written without the wait (Codex review 3 of 8e,
+// point 1). Good lines of other kinds between them, as a saved or command-ended line written while the hook ran, are
+// passed over; a damaged line or another joined line between them, or no message line before it, drops it, counted as
+// damaged (`dropped`; the re-check, the user's choice (b)).
+function joinedIn(rows: (Line | undefined)[]): { lines: Line[]; dropped: number } {
+  const lines: Line[] = [];
+  let dropped = 0;
+  let last = -1; // the message line a joined line may fold into; none since a damaged or joined line
+  for (const l of rows) {
+    if (l === undefined || l.t === "joined") {
+      // Only a tool round's results message, as the session writes one before its joined line: a user message with a
+      // result in it (Codex review 4 of 8e, point 2, the user's choice).
+      const m = lines[last];
+      const results = m?.t === "message" && m.message.role === "user" && m.message.parts.some((p) => p.type === "tool_result");
+      if (l && results) lines[last] = { ...m, message: { ...m.message, parts: [...m.message.parts, ...l.message.parts] } };
+      else if (l) dropped++;
+      last = -1;
+      continue;
+    }
+    if (l.t === "message") last = lines.length;
+    lines.push(l);
+  }
+  return { lines, dropped };
+}
+
 // Each line in the file's order, undefined for a bad one: a killed process or a full disk can leave a half-written line,
 // which is skipped and counted, as the error log skips its own (choice 6).
 function parse(text: string): (Line | undefined)[] {
@@ -437,6 +467,7 @@ function valid(l: unknown): l is Line {
   if (r.t === "command") return strings("id", "command");
   if (r.t === "command-ended") return strings("id") && (r.state === "done" || r.state === "failed" || r.state === "stopped" || r.state === "lost");
   if (r.t === "turn" || r.t === "saved") return Number.isInteger(r.n) && (r.n as number) >= 1;
+  if (r.t === "joined") return isMessage(r.message);
   return false;
 }
 

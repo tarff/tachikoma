@@ -55,15 +55,20 @@ function tachi(...args: (string | Record<string, string>)[]) {
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
-// tachi(), without blocking: for a case whose model is a stand-in served by this test (release 7 plan, Task 10).
-function tachiLater(...args: (string | Record<string, string>)[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const { argv, options } = launch(args);
+// tachi(), without blocking: for a case whose model is a stand-in served by this test (release 7 plan, Task 10). A function
+// among the arguments is handed the error output so far each time more comes (release 8e plan, step 15's re-check).
+function tachiLater(...args: (string | Record<string, string> | ((stderr: string) => void))[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const watch = args.find((a) => typeof a === "function");
+  const { argv, options } = launch(args.filter((a): a is string | Record<string, string> => typeof a !== "function"));
   const child = spawn(process.execPath, argv, options);
   onTestFinished(() => void child.kill()); // a run still going when the test ends, as a failing one can leave it
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
-  child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+  child.stderr.setEncoding("utf8").on("data", (d: string) => {
+    stderr += d;
+    watch?.(stderr);
+  });
   child.stdin.end("x\n");
   return new Promise((resolve, reject) => {
     child.on("error", reject);
@@ -620,6 +625,59 @@ describe("tachi", { timeout: 15_000 }, () => {
     const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
     const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
     expect(r).toMatchObject({ code: 1, stdout: "done\n" });
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.messages.at(-1)).toMatchObject({ role: "tool", content: told });
+  });
+
+  // Release 8e plan, step 8 (Q7; Codex round 1, point 10; round 3, point 7): in -p a PermissionRequest hook runs where the
+  // call would be refused, and its deny fails the run as any refused call does, through the real wiring. The lead is a
+  // stand-in served on the loopback address, as above: it asks to read a file outside the project, beside it in the test's
+  // own folder, which -p refuses today as it would need approval, then answers. The hook leaves a marker file, so the test
+  // knows it ran. Its own limit: the run pays the -p start of about 7.5 s ("Before you start").
+  it.each([
+    ["a deny fails the run with exit code 1, the hook's message to the model and W1 on stderr", "deny", 1, "Error: not the notes", "note: A PermissionRequest hook refused read_file: not the notes\n"],
+    ["an allow reads the file and exits 0", "allow", 0, "     1\tmade-up notes", ""],
+  ] as const)("with -p, a PermissionRequest hook runs for a call -p would refuse: %s", { timeout: 60_000 }, async (_name, behavior, code, told, stderr) => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-permission-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    const notes = path.join(top, "elsewhere", "notes.txt");
+    mkdirSync(path.dirname(notes));
+    writeFileSync(notes, "made-up notes\n");
+    const marker = path.join(top, "hook-ran");
+    const decision = behavior === "deny" ? { behavior, message: "not the notes" } : { behavior };
+    const said = JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision } });
+    const script = path.join(top, "hook.cjs");
+    writeFileSync(script, `require("fs").writeFileSync(${JSON.stringify(marker)}, "");\nprocess.stdout.write(${JSON.stringify(said)});`);
+    const hooks = { PermissionRequest: [{ matcher: "Read", hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const sent: { messages: { role: string; content?: unknown }[] }[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const request = JSON.parse(body) as (typeof sent)[number];
+        sent.push(request);
+        const first = !request.messages.some((m) => m.role === "tool");
+        const call = { id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: notes }) } };
+        const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+        const choice = { index: 0, finish_reason: first ? "tool_calls" : "stop", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
+    expect(existsSync(marker)).toBe(true);
+    expect(r).toEqual({ code, stdout: "done\n", stderr });
     expect(sent).toHaveLength(2);
     expect(sent[1]!.messages.at(-1)).toMatchObject({ role: "tool", content: told });
   });
@@ -1245,6 +1303,100 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     onTestFinished(() => void (alive() && process.kill(pid)));
     for (let i = 0; alive() && i < 500; i++) await new Promise((resolve) => setTimeout(resolve, 20));
     expect(alive()).toBe(false);
+  });
+
+  // A stand-in model answering "done" to each request once `ready()` holds, looking every 20 ms.
+  async function answersWhen(ready: () => boolean) {
+    const server = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const answer = () => {
+          if (!ready()) return void setTimeout(answer, 20);
+          const message = { role: "assistant", content: "done" };
+          const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+          const body = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [{ index: 0, finish_reason: "stop", message }], usage };
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+        };
+        answer();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+  }
+
+  // Release 8e plan, step 15 (Codex round 1, point 7; round 2, point 8): the launch's InstructionsLoaded is not waited
+  // for, so a hook that never ends cannot keep the run going: it is stopped once the run is done, saying nothing. The hook
+  // is an ordinary one, not async; it writes its input and then its process id to files in the test's folder, and never
+  // ends. The stand-in model answers only once the id's file is there, so the hook is known to have started before the
+  // answer. Up to 10 s for Windows to end it, as above.
+  it("with -p, fires InstructionsLoaded at the launch without waiting for its hook, which is stopped once the run is done", async () => {
+    const { proj, data } = place();
+    writeFileSync(path.join(proj, "CLAUDE.md"), "Be brief.\n");
+    const pidFile = path.join(path.dirname(proj), "pid");
+    const inputFile = path.join(path.dirname(proj), "input.json");
+    const script = path.join(path.dirname(proj), "hook.cjs");
+    writeFileSync(
+      script,
+      `const fs = require("fs");
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.writeFileSync(${JSON.stringify(inputFile)}, text);
+  fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+});
+setInterval(() => {}, 1000);`,
+    );
+    const url = await answersWhen(() => existsSync(pidFile));
+    const hooks = { InstructionsLoaded: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const r = await tachiLater("-p", "hi", { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) });
+    expect(r).toEqual({ code: 0, stdout: "done\n", stderr: "" });
+    const input = JSON.parse(readFileSync(inputFile, "utf8")) as Record<string, unknown>;
+    expect(input).toMatchObject({ hook_event_name: "InstructionsLoaded", file_path: path.join(proj, "CLAUDE.md"), memory_type: "Project", load_reason: "session_start" });
+    expect("parent_file_path" in input).toBe(false);
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    onTestFinished(() => void (alive() && process.kill(pid)));
+    for (let i = 0; alive() && i < 500; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(alive()).toBe(false);
+  });
+
+  // Release 8e plan, step 15 (Q26): a launch into a saved session fires InstructionsLoaded only when the session gets the
+  // prompt just built: saved under another setup it does, under the same one it keeps its saved prompt and fires nothing.
+  // Both events' hook names a program not on PATH, so each fire says its red line as it is made, with no process started.
+  // The launch fires InstructionsLoaded before SessionStart, both through the same steps of Hooks.fire, so an
+  // InstructionsLoaded line is always written before SessionStart's (step 15's review: the user's choice, no timed wait).
+  // The stand-in model holds its answer until the run's error output, read as it comes, holds SessionStart's line, so
+  // neither run can end before then, and whether InstructionsLoaded's line is there is known.
+  it("with -p -r, fires InstructionsLoaded into a session saved under another setup, and not into one saved under the same", { timeout: 30_000 }, async () => {
+    const { proj, data, dir } = place();
+    writeFileSync(path.join(proj, "CLAUDE.md"), "Be brief.\n");
+    write(dir, "same", [start("same"), message("user", "first"), message("assistant", "one")]);
+    write(dir, "boxed", [{ ...start("boxed"), box: true, setup: { sandbox: "live", network: "off", git: "none" } }, message("user", "first"), message("assistant", "one")]);
+    const failed = (event: string) => `hook: ${event} hook failed: tachi-no-such-program could not start (not found on PATH)\n`;
+    let stderr = "";
+    const url = await answersWhen(() => stderr.includes(failed("SessionStart")));
+    const missing = [{ hooks: [{ type: "command", command: "tachi-no-such-program", args: [] }] }];
+    const env = { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks: { InstructionsLoaded: missing, SessionStart: missing } })) };
+    // The error output kept where the stand-in model reads it, as it comes.
+    const run = (id: string) => {
+      stderr = "";
+      return tachiLater("-p", "next", "-r", id, env, (so: string) => (stderr = so));
+    };
+    const boxed = await run("boxed");
+    expect(boxed).toMatchObject({ code: 0, stdout: "done\n" });
+    expect(boxed.stderr.endsWith(`${failed("InstructionsLoaded")}${failed("SessionStart")}`)).toBe(true);
+    const same = await run("same");
+    expect(same).toEqual({ code: 0, stdout: "done\n", stderr: `Resumed: first.\n${failed("SessionStart")}` });
   });
 
   // Task 6's quality review: a window cannot start without a terminal, so it is refused before a held session is copied.

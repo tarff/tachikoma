@@ -3,7 +3,7 @@ import { Box, Static, Text, useInput, usePaste } from "ink";
 import { useEffect, useRef } from "react";
 import { checkOffLine, type Given, type WindowSessions } from "../clilib.js";
 import type { Bus, ErrorEvent, Events } from "../core/bus.js";
-import { type Ask, type Mode, type Protection, visible } from "../core/permissions.js";
+import { type Ask, type Mode, type Owner, type Protection, visible } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import type { Tasks } from "../core/tasks.js";
@@ -22,10 +22,10 @@ import { SETTINGS, type Settings, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
 import { noted } from "../tools/files.js";
 import type { TodoItem } from "../tools/todo.js";
-import { characters, contextsOf, FROM, gray, isFile, type Question, SHORTEN_WORDS, STOPPING, visualSelection } from "./app/constants.js";
+import { characters, contextsOf, FROM, gray, isFile, type OpenForm, type Question, SHORTEN_WORDS, STOPPING, visualSelection } from "./app/constants.js";
 import { handover } from "./app/handover.js";
 import { keyRouting } from "./app/keyRouting.js";
-import { liveEdits } from "./app/liveEdits.js";
+import { configChanges, liveEdits } from "./app/liveEdits.js";
 import { mouse } from "./app/mouse.js";
 import { output } from "./app/output.js";
 import { pictureReads } from "./app/pictureReads.js";
@@ -198,6 +198,7 @@ export interface Fns {
   startFresh: QueueArea["startFresh"]; resume: QueueArea["resume"];
   pickSession: QueueArea["pickSession"]; closeSessions: QueueArea["closeSessions"]; branch: QueueArea["branch"];
   rename: QueueArea["rename"]; exportTo: QueueArea["exportTo"]; mcpAction: QueueArea["mcpAction"]; closeMcp: QueueArea["closeMcp"];
+  between: QueueArea["between"]; switchHooked: QueueArea["switchHooked"]; switchAllowed: QueueArea["switchAllowed"];
   readsEnded: PictureReadsArea["readsEnded"]; stopReads: PictureReadsArea["stopReads"];
   settle: PictureReadsArea["settle"]; newPicture: PictureReadsArea["newPicture"];
   imagePaste: PictureReadsArea["imagePaste"]; pastePictures: PictureReadsArea["pastePictures"];
@@ -244,7 +245,19 @@ export function App(props: AppProps) {
   ui.history.current ??= new History(ui.historyFile, (line) => fns.say(noticeLine({ text: line, color: "accent" }, ui.palette)));
 
   useEffect(() => {
-    ui.bindAsk((text, detail, owner, plain, warnings, note, oneRow) => {
+    // The window's question (permissions.ts, Ask); `page`, the open form a server's page request asks for, which only the
+    // forms' visit below gives (release 8e plan, step 17).
+    const ask = (
+      text: string,
+      detail?: string,
+      owner?: Owner,
+      plain?: boolean,
+      warnings?: string[],
+      note?: string,
+      oneRow?: boolean,
+      tool?: string,
+      page?: OpenForm,
+    ): Promise<boolean> => {
       // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped, nor a
       // stopped subagent about anything.
       const signal = owner ? owner.signal : ui.abort.current?.signal;
@@ -306,6 +319,8 @@ export function App(props: AppProps) {
           ...(note !== undefined ? { note } : {}), // auto mode's pause, a row of the question's own (release 7 plan, Task 10)
           ...(note !== undefined && oneRow ? { oneRow: true as const } : {}),
           ...(call !== undefined ? { call } : {}),
+          ...(tool !== undefined && !plain ? { tool } : {}),
+          ...(page ? { page } : {}),
           answer: (ok, how) => {
             if (!open) return;
             open = false;
@@ -352,7 +367,8 @@ export function App(props: AppProps) {
         // Printed out, the view comes back at once, as on q, and the question shows (release 5 plan, Task 13).
         void latest.current.comeBack();
       });
-    });
+    };
+    ui.bindAsk(ask);
     // A message ending in its one tool call with a row of its own leaves that call's tool line the last said, for its
     // question's answer to go under (release 7 plan, choice 66). With more such calls than one, none does: an earlier call
     // that asks nothing prints nothing before the last one's question, and its result comes first, so each answer names its
@@ -477,7 +493,8 @@ export function App(props: AppProps) {
     ui.bus.on("memory", onMemory);
     // A server's forms (release 8c plan, Task 12; choice 29): each field asked in the prompt's place, as the detail view
     // closes and a printed-out view comes back for a question; a stop of the form's signal takes it away. A visit request
-    // is the window's own yes or no.
+    // is the window's own yes or no. The form open, its server's and its kind, is kept for Notification's wait, and its
+    // closing draws again, as a page's question stays up after it, of no notifying kind (release 8e plan, step 17).
     let fieldId = 0;
     const unbindForms = ui.mcp?.servers.forms.bind({
       field: (field, given, signal) =>
@@ -498,7 +515,16 @@ export function App(props: AppProps) {
           ui.setForm({ id, field, ...(given !== undefined && { given }), done });
           void latest.current.comeBack();
         }),
-      visit: (question, owner) => ui.asking.current?.(question, undefined, owner, true) ?? Promise.resolve(false),
+      visit: (question, owner) => ask(question, undefined, owner, true, undefined, undefined, undefined, undefined, ui.formOpen.current ?? undefined),
+      opened: (server, kind) => {
+        const open: OpenForm = { server, kind, closed: false };
+        ui.formOpen.current = open;
+        return () => {
+          open.closed = true;
+          if (ui.formOpen.current === open) ui.formOpen.current = null;
+          ui.rerender((n) => n + 1);
+        };
+      },
     });
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
@@ -513,14 +539,17 @@ export function App(props: AppProps) {
     // Each a notice, the red one a block without the grey dot, as a live edit's problem is (TUI design pass, Task 3's review).
     const launchLines: Line[] = [...warnings.map((w) => noticeLine(gray(w), ui.palette)), ...(off ? [{ text: off, color: "error" as const, block: true as const }] : [])];
     fns.say(...launchLines, ...ui.intro);
-    // A watch that cannot start leaves the session as the launch set it, and says so.
+    // A watch that cannot start leaves the session as the launch set it, and says so. Each read of the settings file is
+    // ConfigChange's to decide first, stopped where the watching stops (release 8e plan, step 16).
     let unwatch: (() => void) | undefined;
+    const settingsChanges = configChanges(ui, () => latest.current);
+    ui.settingsStop.current = settingsChanges.leave; // leaving ends its deciding, as it starts (queue.ts, leave)
     try {
       unwatch =
         ui.live &&
         watchSettings(
           ui.home,
-          (read) => latest.current.onSettings(read),
+          (read) => settingsChanges.deliver(read),
           (read) => latest.current.onKeys(read),
           // A live file's line, as an edit's, of its own (note; choice 35).
           () => latest.current.noteAlone(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} and ${KEYBINDINGS} are no longer watched this session`)),
@@ -547,9 +576,12 @@ export function App(props: AppProps) {
       ui.owner.end();
       ui.mouse?.off("mouse", onReport);
       unwatch?.();
+      settingsChanges.stop();
       clearInterval(minutes);
       clearTimeout(ui.first.current?.timer);
       clearTimeout(ui.chordTimer.current);
+      clearTimeout(ui.notifyWait.current?.timer); // no Notification after the window has closed (release 8e plan, step 17)
+      clearTimeout(ui.idleWait.current); // nor its idle_prompt (step 18)
       ui.bus.off("message", onMessage);
       ui.bus.off("error", onError);
       ui.bus.off("usage", onUsage);
@@ -590,6 +622,7 @@ export function App(props: AppProps) {
       const given = phaseInputs(ui.phaseRefs);
       if (given.printed) return; // as for keys, in keyRouting.ts; before clearCopied(), which pasteTo() cannot say
       ui.clearCopied();
+      ui.keyed(); // a paste starts Notification's wait again, as a key does (state.ts; release 8e plan, step 17)
       ui.notes.current = []; // a live edit's lines leave the hint row at a paste, keys pressed too (note, output.ts)
       fns.dropChords(); // a paste is text, which drops a waiting chord as text read together does (route)
       const to = pasteTo(given);
@@ -626,6 +659,9 @@ export function App(props: AppProps) {
 
   // Copy mode's leaving (queue.ts, leave): its line while the box stops, or a copy with nothing to review is removed
   // (choice 121), then the review in place of everything else, with the live table of keys (release 7 plan, Task 21).
+  // Either hides any question, form or page request still waiting, so Notification's wait for it ends (release 8e plan,
+  // step 17's review; Q25).
+  if ((ui.reviewing || ui.leaving.current) && ui.copy) ui.waitOn(null);
   if (ui.reviewing && ui.copy) {
     const { protection, onEnd, read } = ui.reviewing;
     return <Review copy={ui.copy.copy} bindings={ui.table} protection={protection} onEnd={onEnd} read={read} />;
@@ -643,6 +679,23 @@ export function App(props: AppProps) {
   // The model list, /resume's list of sessions or /mcp's of the MCP servers, drawn in the prompt's place, or a server's
   // form's field over them: the picker phase (phase.ts).
   const picking = ui.picker !== null || ui.sessions !== null || ui.mcpList || ui.form !== null;
+  // Notification's 6 s wait (release 8e plan, step 17; Q25) is for what the drawing below puts in the prompt's place, in its
+  // own order: a form's field, the form's; else the model list, /resume's list or /mcp's, none, whatever waits under it;
+  // else the first question waiting, by its kind, none for a plain question of its own or a closed form's page; else the
+  // prompt, none. Changed while drawing, as `copied` below.
+  const open = ui.formOpen.current;
+  const page = ui.question?.page;
+  ui.waitOn(
+    ui.form
+      ? open && { on: open, type: "elicitation_dialog", message: `${open.server} asks you to fill in a form` }
+      : ui.picker || ui.sessions || (ui.mcpList && ui.mcp)
+        ? null
+        : ui.question?.tool !== undefined
+          ? { on: ui.question, type: "permission_prompt", message: `Tachikoma needs your permission to use ${ui.question.tool}` }
+          : ui.question && page && !page.closed
+            ? { on: ui.question, type: "elicitation_url_dialog", message: `${page.server} asks you to open a page in your browser` }
+            : null,
+  );
   const menu = picking || ui.question || d ? null : fns.menuFor(prompt);
   // The open run's live row, above the working line where the prompt is drawn (release 8c plan, choice 67; Task 17): it
   // takes no click, and its seconds grow with the working line's redraws, every SPIN_MS while a turn runs. Its top line
@@ -919,10 +972,10 @@ export function App(props: AppProps) {
         // A server's form's field (release 8c plan, Task 12), in the lists' rows, over any of them that is open.
         ui.full ? (
           <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
-            <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={pickerRows + 1} columns={ui.columns} full />
+            <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={pickerRows + 1} columns={ui.columns} full pasted={ui.keyed} />
           </Box>
         ) : (
-          <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={ui.height - 3} columns={ui.columns} full={false} />
+          <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={ui.height - 3} columns={ui.columns} full={false} pasted={ui.keyed} />
         )
       ) : ui.picker ? (
         ui.full ? (

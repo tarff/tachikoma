@@ -60,6 +60,15 @@ describe("changes", () => {
     expect(step('{"mode": "project"}')).toEqual({ settings: { mode: "project" }, warnings: [] });
   });
 
+  // Release 8e plan, step 16 (Codex round 3, point 10): an empty text read between two of the same text is remembered,
+  // so the second is passed on again, and ConfigChange decides it again; with none between, it is not.
+  it("passes the same text on again after reading the file empty in between, and not with no empty read between", () => {
+    const step = from('{"mode": "ask"}');
+    expect(step("")).toBeNull();
+    expect(step('{"mode": "ask"}')).toEqual({ settings: { mode: "ask" }, warnings: [] });
+    expect(step('{"mode": "ask"}')).toBeNull();
+  });
+
   // As the launch reads them (settings.ts, entriesOf): a byte-order mark alone, or only spaces and line breaks.
   it("skips every text the launch calls empty, not only one with no characters", () => {
     const step = from('{"mode": "ask"}');

@@ -3,7 +3,7 @@ import type { Bus } from "../core/bus.js";
 import type { Mode } from "../core/permissions.js";
 import type { Servers } from "../mcp/servers.js";
 import type { Effort } from "../providers/anthropic.js";
-import { type Combined, canBlock, combine, commandOf, type Outcome, outcomeOf } from "./answer.js";
+import { type Combined, canBlock, combine, commandOf, decides, type Outcome, outcomeOf } from "./answer.js";
 import { type Event, type Hook, type HooksConfig, matches } from "./config.js";
 import { callHook, type Ran, runHook } from "./run.js";
 
@@ -28,9 +28,11 @@ export interface Run { event: Event; hook: Hook; ran: Ran; outcome: Outcome; mat
 // Each mode under its nearest Claude Code name (release 8b design, "What a hook is sent").
 export const MODE_NAMES: Record<Mode, string> = { ask: "default", project: "acceptEdits", auto: "auto", never: "bypassPermissions" };
 
-// Claude Code's hooks reference, "Common fields": a hook's time limit is its timeout, or 600 s, or 30 s at UserPromptSubmit.
+// Claude Code's hooks reference, "Common fields": a hook's time limit is its timeout, or 600 s, or 30 s at UserPromptSubmit,
+// and at PreModelSwitch and PostModelSwitch (release 8e design, "Time limits").
 const LIMIT = 600;
 const PROMPT_LIMIT = 30;
+const SHORT: readonly Event[] = ["UserPromptSubmit", "PreModelSwitch", "PostModelSwitch"];
 // The same: SessionEnd's hooks share 1.5 s, which a hook's own longer timeout raises, to 60 s at most.
 const END_LIMIT = 1.5;
 const END_MOST = 60;
@@ -38,15 +40,23 @@ const END_MOST = 60;
 // A hook's own time limit in seconds, as fire gives it; at SessionEnd, as when it runs alone, since a longer timeout among
 // the hooks run with it raises their shared 1.5 s (fire). /hooks lists it (release 8b plan, "Lines this plan adds").
 export const limitOf = (hook: Hook): number =>
-  hook.event === "SessionEnd" ? Math.min(END_MOST, hook.timeout ?? END_LIMIT) : (hook.timeout ?? (hook.event === "UserPromptSubmit" ? PROMPT_LIMIT : LIMIT));
+  hook.event === "SessionEnd" ? Math.min(END_MOST, hook.timeout ?? END_LIMIT) : (hook.timeout ?? (SHORT.includes(hook.event) ? PROMPT_LIMIT : LIMIT));
+
+// What a fire matches its hooks against, whether all of them run, and whether it is outside a turn (Hooks.fire).
+interface FireOptions {
+  match?: string;
+  every?: boolean;
+  outside?: boolean;
+}
 
 // Two entries are the same hook when every field of the entry is (release 8b design, "Running a hook"; review,
 // 2026-11-09, finding 3); its event, matcher and place are not fields of the entry.
 const entry = (h: Hook) => JSON.stringify([h.command, h.mcp, h.args, h.shell, h.timeout, h.async, h.onFailure, h.statusMessage]);
 
-// Whether `hook` runs at `event` for `match`; without one, only a hook that matches everything does.
-const runsFor = (hook: Hook, event: Event, match?: string) =>
-  hook.event === event && (match === undefined ? "all" in hook.matcher : matches(hook.matcher, match));
+// Whether `hook` runs at `event` for `match`; without one, only a hook that matches everything does. `every`: each of the
+// event's hooks runs, whatever its matcher (release 8e design, "Matchers": another provider's model at the switch events).
+const runsFor = (hook: Hook, event: Event, match?: string, every = false) =>
+  hook.event === event && (every || (match === undefined ? "all" in hook.matcher : matches(hook.matcher, match)));
 
 // Held by the lead's Hooks and every subagent's, so a live edit reaches them all, and a subagent, which has no prompt of
 // its own, sends the lead's prompt id. `left` stops the async hooks still running as Tachikoma exits, a subagent's
@@ -60,11 +70,23 @@ interface Shared {
   launched?: boolean;
 }
 
+// The runs of fires outside a turn, for the next lead turn to begin its list with (release 8e plan, step 4): `runs` those
+// answered so far; `list` the list of the turn that began with them, which those answering later join too; `into` the
+// runs they went back among when that turn's prompt started none (restoreRuns), or, after a load dropped that list, the
+// next turn's (newTurn).
+interface Next {
+  runs: Run[];
+  list?: Run[];
+  into?: Next;
+}
+
 export class Hooks {
   #shared: Shared;
   #where: Where;
   #bus: Bus;
   #runs: Run[] = [];
+  #next: Next = { runs: [] };
+  #began?: Next; // the outside runs the list now shown began with, at beginTurn
 
   constructor(config: HooksConfig, where: Where, bus: Bus) {
     this.#shared = { config, left: new AbortController() };
@@ -87,23 +109,64 @@ export class Hooks {
     this.#shared.servers = servers;
   }
 
-  // This turn's runs, each added once it has answered, an async hook's to the turn it started in. A subagent's are its own,
-  // as Ctrl+O lists the lead's turn.
+  // This turn's runs, each added once it has answered, an async hook's to the turn it started in, one fired outside a turn
+  // to the next turn's (release 8e plan, step 4). A subagent's are its own, as Ctrl+O lists the lead's turn.
   get runs(): Run[] {
     return this.#runs;
   }
 
-  // A new list of runs, at each lead turn before its UserPromptSubmit, a turn of background answers alone too, and at a
-  // load, so Ctrl+O lists exactly the runs of the turn it shows (Task 12's code review). A fire under way adds its runs
-  // to the list it began with. `carried`: the runs the new list begins with, SessionStart's at a fresh conversation's
-  // first turn (session.ts).
-  newTurn(carried: readonly Run[] = []): void {
-    this.#runs = [...carried];
+  // A new list of runs, at a load, so Ctrl+O lists exactly the runs of the turn it shows (Task 12's code review). A fire
+  // under way adds its runs to the list it began with. The runs fired outside a turn stay apart for the next turn
+  // (release 8e plan, step 4), those still to answer for a list this drops among them.
+  newTurn(): void {
+    this.#runs = [];
+    if (this.#began) {
+      delete this.#began.list;
+      this.#began.into = this.#next;
+      this.#began = undefined;
+    }
   }
 
-  // `runs` the list again, as a prompt a UserPromptSubmit hook blocked starts no turn (session.ts).
+  // The new list of runs at each lead turn before its UserPromptSubmit, a turn of background answers alone too: the runs
+  // fired outside a turn since the last began one, then `carried`, SessionStart's at a fresh conversation's first turn
+  // (session.ts); one of those fires still to answer joins this list (release 8e plan, step 4).
+  beginTurn(carried: readonly Run[] = []): void {
+    const outside = this.#next;
+    this.#next = { runs: [] };
+    // The last turn's list is no longer shown: those of its outside runs still to answer join this one (step 4's review).
+    if (this.#began) {
+      delete this.#began.list;
+      this.#began.into = outside;
+    }
+    this.#runs = [...outside.runs, ...carried];
+    outside.list = this.#runs;
+    this.#began = outside;
+  }
+
+  // `runs` the list again, as a prompt a UserPromptSubmit hook blocked starts no turn (session.ts); the runs fired outside a
+  // turn that the list it replaces began with go back apart, before those fired since, and those of them still to answer
+  // with them (release 8e plan, step 4).
   restoreRuns(runs: Run[]): void {
+    const outside = this.#began;
+    if (outside) {
+      delete outside.list;
+      outside.runs.push(...this.#next.runs);
+      this.#next.into = outside;
+      this.#next = outside;
+      this.#began = undefined;
+    }
     this.#runs = runs;
+  }
+
+  // Where a fire outside a turn puts its runs once they answer: among the next turn's, as #next is now (beginTurn).
+  #outside(): (...runs: Run[]) => void {
+    const at = this.#next;
+    return (...runs) => {
+      let next = at;
+      while (next.into) next = next.into;
+      next.runs.push(...runs);
+      next.list?.push(...runs);
+    };
   }
 
   // A subagent's: the same hooks, its own fields and bus.
@@ -140,17 +203,20 @@ export class Hooks {
   }
 
   // `match` is what the event's matchers are matched against: a tool's Claude Code name, SessionStart's source, and so
-  // on. Without one only a hook that matches everything runs; UserPromptSubmit's and Stop's always do (config.ts).
-  async fire(event: Event, fields: object, opts: { match?: string; signal?: AbortSignal } = {}): Promise<Combined> {
+  // on. Without one only a hook that matches everything runs; UserPromptSubmit's and Stop's always do (config.ts). With
+  // `every`, all of the event's hooks run (runsFor). `outside`: fired outside a turn, so its runs are listed with the next
+  // lead turn, not the last (release 8e design, "What the user sees"; #outside).
+  async fire(event: Event, fields: object, opts: FireOptions & { signal?: AbortSignal } = {}): Promise<Combined> {
     const { hooks, off } = this.#shared.config;
     // Claude Code skips mcp_tool hooks at the launch's SessionStart, without a line, as its servers are still connecting
     // (release 8c plan, choice 21): the window's first SessionStart, whatever its source, as -c, -r and --fork-session
-    // launch with another (cli.tsx).
-    const launch = event === "SessionStart" && !this.#shared.launched;
+    // launch with another (cli.tsx). The launch's InstructionsLoaded, fired before that SessionStart (cli.tsx), skips them
+    // so too (release 8e plan, step 15; Q14).
+    const launch = (event === "SessionStart" || event === "InstructionsLoaded") && !this.#shared.launched;
     if (event === "SessionStart") this.#shared.launched = true;
     const seen = new Set<string>();
     const picked = off ? [] : hooks.filter((h) => {
-      if (!runsFor(h, event, opts.match) || (launch && h.mcp)) return false;
+      if (!runsFor(h, event, opts.match, opts.every) || (launch && h.mcp)) return false;
       const key = entry(h);
       if (seen.has(key)) return false;
       seen.add(key);
@@ -160,6 +226,7 @@ export class Hooks {
     if (opts.signal?.aborted) throw new Error("Cancelled");
     const input = this.#input(event, fields);
     const runs = this.#runs;
+    const add = opts.outside ? this.#outside() : (...rs: Run[]) => void runs.push(...rs);
     // Read once, so a late async hook's failure names the model that led when it started, not one a /lead switch
     // put in since (Task 4's code review).
     const lead = this.#where.lead();
@@ -195,16 +262,18 @@ export class Hooks {
     // lost (Task 10's code review, following the user's choices for the window's exit); being waited for, they are stopped
     // with the rest, as a switch's Esc stops them (the user's choice, 2026-11-09: "Esc stops it"). The others are
     // stopped as Tachikoma exits (stopAsync), their Cancelled heard here, never an unhandled rejection.
+    // At the new events whose hooks decide, an allow, deny, ask, rewrite or retry is said in the block's line too
+    // (release 8e design).
     const end = event === "SessionEnd";
     const exiting = this.#shared.left.signal;
     const left: Promise<void>[] = [];
     for (const hook of picked.filter((h) => h.async)) {
       const done = run(hook, end ? opts.signal : exiting).then((r) => {
-        runs.push(r);
+        add(r);
         const c = combine(event, [r]);
         const command = commandOf(hook);
         const asked = c.stop !== undefined ? [`${command} asked to stop, but an "async" hook cannot stop`]
-          : c.block !== undefined ? [`${command} asked to block, but an "async" hook cannot block`] : [];
+          : decides(event, c) ? [`${command} asked to block, but an "async" hook cannot block`] : [];
         // Its lines may be said after the turn, and a listener that throws then must not become an unhandled rejection,
         // which would end Tachikoma. A bug before them still surfaces as one (Task 4's re-check).
         try {
@@ -219,10 +288,19 @@ export class Hooks {
     // takes both kinds, so a stop's Cancelled from either is heard, never an unhandled rejection.
     const sync = Promise.all(picked.filter((h) => !h.async).map((h) => run(h, opts.signal)));
     const [results] = await Promise.all([sync, end ? Promise.all(left) : undefined]);
-    runs.push(...results);
+    add(...results);
     const combined = combine(event, results);
     this.#say(event, lead, combined.failures, combined.messages);
     return combined;
+  }
+
+  // Fires `event` without the caller waiting (release 8e plan, step 4; Codex round 1, point 7): its hooks run under the
+  // stop that ends async hooks as Tachikoma exits (stopAsync), so none keeps a -p run or the window's exit waiting. That
+  // stop is heard and says nothing, and any other rejection is caught, never an unhandled one, the failure lines said
+  // inside it, as an async hook's are. The handle answers with the combined answer, or with none once it was stopped or
+  // went wrong; a caller may wait on it (PostModelSwitch).
+  fireAndLeave(event: Event, fields: object, opts: FireOptions = {}): Promise<Combined> {
+    return this.fire(event, fields, { ...opts, signal: this.#shared.left.signal }).catch(() => combine(event, []));
   }
 
   // The common fields, then the event's own (release 8b design, "What a hook is sent").

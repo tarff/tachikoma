@@ -13,11 +13,13 @@ import type { Memory } from "../memory/memory.js";
 import { LESSONS } from "../memory/paths.js";
 import type { Turn as SavedTurn } from "../memory/saver.js";
 import type { Cache } from "../providers/pictures.js";
+import { canonicalName, type LastReply } from "../providers/switching.js";
 import { lessonLabel, matchText } from "../tools/memory.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
-import type { Bus, ToolOutcome } from "./bus.js";
+import type { Bus, ErrorEvent, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
-import { type Ask, Declined, type PermissionGate, StoppedFirst, visible } from "./permissions.js";
+import type { InstructionFile } from "./instructions.js";
+import { type Ask, type Decision, Declined, type PermissionGate, StartAgain, StoppedFirst, visible } from "./permissions.js";
 import { dueNotes, isSetupNote, localDate, type Told, toldAfter } from "./setup.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
@@ -65,8 +67,32 @@ export function truncateLeaving(s: string, around: number): string {
 // plan, "Lines this plan adds").
 const NOT_RUN = "Not run: a hook stopped the turn.";
 const STOPPED = "Stopped: a hook stopped the turn.";
+// The sentence a PermissionDenied hook's retry adds to the judge's refusal (release 8e design, "The permission events").
+const RETRY = "A hook says you may try this again.";
 // The grey line for a hook's continue: false, with its stopReason when it gave one (the same).
 const stoppedTurn = (event: Event, reason: string) => (reason ? `A ${event} hook stopped the turn: ${reason}` : `A ${event} hook stopped the turn.`);
+// StopFailure's `error` for a failed request, by its HTTP status (release 8e design, "The turn ending, and tool batches").
+function failureKind(status: number | undefined): string {
+  if (status === 429) return "rate_limit";
+  if (status === 401 || status === 403) return "authentication_failed";
+  if (status === 402) return "billing_error";
+  if (status === 400) return "invalid_request";
+  if (status === 404) return "model_not_found";
+  if (status !== undefined && status >= 500 && status <= 599) return "server_error";
+  return "unknown";
+}
+// The window's line for an error that ends the turn, without its `✗ ` mark (tui/App.tsx, onError), for StopFailure's
+// last_assistant_message (release 8e plan, step 10; Q9).
+const lineOf = (e: ErrorEvent) => (e.kind === "shortening" ? e.message : `${e.kind}: ${e.message}`);
+// A line escaped as the window and -p show it, as tui/describe.ts's screen() escapes a line of prose: each line's control
+// characters as escapes, its tabs and line breaks kept (step 10's review, the user's choice, 2026-11-23). First its ending
+// white space is dropped when that holds a line break, as the window drops it (tui/describe.ts, withoutTrailingRows;
+// step 10's re-check, the user's choice).
+const asShown = (line: string) => {
+  const trimmed = line.trimEnd();
+  const text = line.slice(trimmed.length).includes("\n") ? trimmed : line;
+  return text.split(/\r?\n/).map((p) => visible(p, { tabs: true })).join("\n");
+};
 // Claude Code's hooks reference, "Stop input": Stop or SubagentStop blocks in a row, with no tool call between, before the
 // turn ends anyway (release 8b plan, "Numbers in this plan").
 const MAX_BLOCKS = 8;
@@ -86,6 +112,9 @@ const keptTooOften = (id: string | undefined) =>
 // The grey line for SessionStart's text left out of a shortening it would no longer let fit (release 8b plan, "Lines this
 // plan adds"; Task 11).
 const LEFT_OUT = "SessionStart hook text was left out: with it, the shortened conversation would not fit the model's window.";
+// How long a prompt's first request waits for PostModelSwitch's hooks, from when the window started sending the prompt:
+// Claude Code's "up to 5 seconds" (release 8e design, "Switching the lead model"; plan, step 14).
+const SWITCH_WAIT = 5_000;
 
 // The note from long-term memory in front of a conversation's first message (8d plan, step 24). Each of its two
 // searches asks for 100 hits, MemPalace's most and the only count steps 13 and 14 measured with (the user's choice
@@ -151,14 +180,22 @@ interface Round {
   pictures: Image[];
 }
 
+// A lead switch's PostModelSwitch hooks (Session.#switched; release 8e plan, step 14): `answered` once they have, and
+// `done` then, their text for the model and when they finished.
+interface Switched {
+  answered: Promise<void>;
+  done?: { text: { event: Event; text: string }[]; at: number };
+}
+
 export interface SessionOptions {
   lead: Provider;
   fallback?: Provider; // retries a turn the lead refused; chosen by the user, never by default
   tools: Tool[];
   system: string; // the starting value: Session.system is the conversation's (release 8a plan, choice 3)
   // The system prompt built afresh, the instruction files read again, for a shortening (release 8a plan, choice 3),
-  // with the date and setup it is built under (system prompt plan, Task 8).
-  systemNow?: (date: string, setup?: Setup) => Promise<string>;
+  // with the date and setup it is built under (system prompt plan, Task 8), and the files it put in (release 8e plan,
+  // step 15).
+  systemNow?: (date: string, setup?: Setup) => Promise<{ system: string; files: InstructionFile[] }>;
   id?: string; // the session's, as its transcript is named: a subagent's is its own, t1 and so on
   // Where each message is saved as it joins the history (release 8a design, "Saving sessions"); none, nothing is saved.
   transcript?: Transcript;
@@ -325,6 +362,17 @@ export class Session {
   #recallDue = false;
   // The turn's calls in the order of its replies, for the lesson ask at its end (8d plan, step 26); none without it.
   #called: Called[] | undefined;
+  // When the lead's own last conversation request got its reply, a refusal included, and which lead it was, for a
+  // switch's prompt_cache_warm (release 8e plan, step 12; Q11); never a judge's, a summary's or a fallback rescue's. A
+  // subagent's are its own session's. None before the first reply.
+  #lastReply: LastReply | undefined;
+  // The latest lead switch's PostModelSwitch hooks (release 8e plan, step 14). A later switch, or a load of another
+  // conversation, replaces or drops it, so an older switch's text, or one finishing after that, is never sent.
+  #switched: Switched | undefined;
+  // The size of the request the last makeRoom's shortening left, its characters times the lead's tokens per character,
+  // null with no rate yet; undefined when that makeRoom shortened nothing. /lead's PostModelSwitch context_tokens after a
+  // cut (release 8e plan, step 14's review; the user's choice).
+  #keptSize: number | null | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -359,11 +407,33 @@ export class Session {
     return this.#transcript;
   }
 
-  setLead(provider: Provider): void {
+  get lastReply(): LastReply | undefined {
+    return this.#lastReply;
+  }
+
+  get keptSize(): number | null | undefined {
+    return this.#keptSize;
+  }
+
+  // `switched`: the switch's fields, which a caller that switched the lead hands in, worked out before the change, so
+  // PostModelSwitch fires, not waited for, matched as PreModelSwitch is: on the new model's canonical name, every hook
+  // running for a model with none (release 8e plan, step 14; Q12). Without them nothing fires, as the lead is also set
+  // where nothing switched.
+  setLead(provider: Provider, switched?: object): void {
     this.#lead = provider;
     this.#transcript?.write({ t: "lead", lead: provider.id });
     this.opts.bus.emit("lead", provider.id);
     this.#saving();
+    const { hooks } = this.opts;
+    if (!switched || !hooks || this.opts.subagent) return;
+    const match = canonicalName(provider.id);
+    const fired = hooks.fireAndLeave("PostModelSwitch", switched, match === undefined ? { every: true } : { match });
+    const s: Switched = {
+      answered: fired.then((c) => {
+        s.done = { text: c.context, at: Date.now() };
+      }),
+    };
+    this.#switched = s;
   }
 
   // Takes a saved or new conversation in place of this one, as the judge, the subagents' worker and the screen hold this
@@ -393,6 +463,12 @@ export class Session {
     // is sent none, as a launch's is (the user's choice, 2026-11-10; final review); /branch's too, as a fork's launch
     // sends none.
     if (!this.opts.subagent) this.opts.hooks?.forgetPrompt();
+    // Nor its lead's last reply time, which a /clear or /resume's conversation was never cached under; /branch's, the same
+    // messages up to the branch point, keeps it (release 8e plan, step 12; the user's choice at its review).
+    if (!opts.keepRuns) this.#lastReply = undefined;
+    // Nor the last switch's PostModelSwitch text, sent or still to come, which belongs to the conversation the switch was
+    // made in, /branch's copy too (release 8e plan, step 14).
+    this.#switched = undefined;
     this.calls.splice(0, this.calls.length, ...c.calls);
     // Its MCP tools loaded through tool_search, so a resume and /branch keep them and /clear starts with none (release 8c
     // plan, choice 41).
@@ -415,12 +491,30 @@ export class Session {
 
   // The system prompt built afresh, for /clear and a shortening (release 8a plan, Task 7; system prompt plan, Task 8):
   // with today's date and the setup as found now, the instruction files read again, or without systemNow the starting
-  // one. Its date and setup go on the line that begins the new conversation.
-  async freshSystem(): Promise<{ system: string; date: string; setup?: Setup }> {
+  // one. Its date and setup go on the line that begins the new conversation. `files`: those the read put in, for
+  // InstructionsLoaded once the prompt is the conversation's; none without systemNow, which reads none (release 8e plan,
+  // step 15).
+  async freshSystem(): Promise<{ system: string; date: string; setup?: Setup; files: InstructionFile[] }> {
     const date = this.opts.setup?.today() ?? localDate();
     const setup = this.opts.setup?.now();
-    const system = this.opts.systemNow ? await this.opts.systemNow(date, setup) : this.opts.system;
-    return setup ? { system, date, setup } : { system, date };
+    const { system, files } = this.opts.systemNow ? await this.opts.systemNow(date, setup) : { system: this.opts.system, files: [] };
+    return setup ? { system, date, setup, files } : { system, date, files };
+  }
+
+  // InstructionsLoaded for each instruction file a fresh read put into the conversation's system prompt, once it is the
+  // conversation's (release 8e plan, step 15; Q26): at the launch and /clear `session_start`, after a shortening
+  // `compact`, an import `include` with its parent in place of either. Not waited for, so a slow hook cannot keep -p
+  // running, its answer ignored (step 4); `outside` a turn, as at the launch, /clear, /compact and /lead's shortening,
+  // its runs listed with the next turn. A subagent reads no files, so fires none (design). Before the window's first
+  // SessionStart, the launch's, its mcp_tool hooks are skipped without a line (Q14; hooks.ts).
+  instructionsLoaded(files: readonly InstructionFile[], reason: "session_start" | "compact", outside = true): void {
+    const { hooks } = this.opts;
+    if (!hooks || this.opts.subagent) return;
+    for (const f of files) {
+      const load_reason = f.parent === undefined ? reason : "include";
+      const fields = { file_path: f.path, memory_type: f.type, load_reason, ...(f.parent === undefined ? {} : { parent_file_path: f.parent }) };
+      void hooks.fireAndLeave("InstructionsLoaded", fields, { match: load_reason, outside });
+    }
   }
 
   // Hooks' text for the model to go with the next request, at the start of the next user message: SessionStart's (release
@@ -524,6 +618,7 @@ export class Session {
     // A turn running would go on with the history shortened under it, and one sent meanwhile likewise.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
+    this.#keptSize = undefined;
     try {
       if (!this.messages.length) return;
       this.#offer();
@@ -537,6 +632,9 @@ export class Session {
       if (!over) return;
       // SessionStart compact's model is `next`, the lead that reads its text once the switch is made (Task 11's code review).
       const r = await this.#shorten(lead, "between", then, signal, undefined, undefined, next.id);
+      // The kept request's size as its fit check worked it out (fit.ts, fits): the same request, the new prompt, the one
+      // kept message and this offer's tools, by the same lead's tokens per character (release 8e plan, step 14's review).
+      if (r === "done") this.#keptSize = this.#sizes.estimate(lead.id, characters(this.system, this.messages, this.#specs()));
       return r === "done" ? undefined : r === "unsaved" ? UNSAVED : r.problem;
     } finally {
       this.#running = false;
@@ -577,14 +675,16 @@ export class Session {
   // among its text (release 6 plan, Task 14). How the turn ended: `blocked`, a UserPromptSubmit hook's block, with its
   // reason, nothing sent or saved; `stopped`, a hook's continue: false, with its stopReason ("" when none), and `unsent`
   // when it came at UserPromptSubmit, nothing sent or saved either; nothing otherwise (release 8b plan, choice 17).
-  // `supply`: the MCP servers' parts for the prompt (release 8c plan, Task 13), the window's only.
-  async send(text: string | Part[], signal?: AbortSignal, supply?: Supply): Promise<Ended | void> {
+  // `supply`: the MCP servers' parts for the prompt (release 8c plan, Task 13), the window's only. `sent`: when the window
+  // started sending the prompt, from which its first request waits up to 5 s for PostModelSwitch's text (release 8e plan,
+  // step 14; Q23); without it, as for a turn of background answers alone, the turn takes only the text already there (Q24).
+  async send(text: string | Part[], signal?: AbortSignal, supply?: Supply, sent?: number): Promise<Ended | void> {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
     this.#called = this.opts.lessonAsk && !this.opts.subagent ? [] : undefined;
     try {
-      return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal, supply);
+      return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal, supply, sent);
     } finally {
       this.#running = false;
       this.#ended();
@@ -643,7 +743,7 @@ export class Session {
     if (!this.opts.subagent) this.opts.memory?.hand({ session: this.id, ...turn, record });
   }
 
-  async #turn(typed: Part[], signal?: AbortSignal, supply?: Supply): Promise<Ended | void> {
+  async #turn(typed: Part[], signal?: AbortSignal, supply?: Supply, sent?: number): Promise<Ended | void> {
     const { bus, hooks } = this.opts;
     // SessionStart's hooks answer first, so their text goes with this request; a stop meanwhile sends and saves nothing and
     // says nothing, as a stop during UserPromptSubmit's does, and their text waits for the next one (Task 10).
@@ -668,9 +768,10 @@ export class Session {
     // conversation's first turn begins it with SessionStart's runs that have answered, which Ctrl+O listed before the
     // first prompt; an async one that answers later goes to the list before it, a known limit. A prompt that starts no
     // turn, one a UserPromptSubmit hook blocks or leaves unsent, or the user stops while its hooks run, puts back the
-    // list Ctrl+O listed before, so it always shows one whole turn (the user's choices, 2026-11-10; final review).
+    // list Ctrl+O listed before, so it always shows one whole turn (the user's choices, 2026-11-10; final review). The runs
+    // fired outside a turn since begin it, and go back apart with that list (release 8e plan, step 4).
     const before = this.opts.subagent ? undefined : hooks?.runs;
-    if (before) hooks!.newTurn(this.messages.length ? [] : before.filter((r) => r.event === "SessionStart"));
+    if (before) hooks!.beginTurn(this.messages.length ? [] : before.filter((r) => r.event === "SessionStart"));
     // The user's own prompt only: a subagent's brief is the lead's (release 8b design, "The events"). Before anything is
     // kept, pushed or taken, so a block or a stop sends and saves nothing, and the waiting text stays for the next prompt.
     const prompted = words && !this.opts.subagent && hooks ? await this.#userPromptSubmit(hooks, words, signal) : [];
@@ -688,9 +789,21 @@ export class Session {
     // The note from long-term memory, searched with the typed words once a hook has let the prompt through (8d plan,
     // step 24); a stop meanwhile sends and saves nothing, as one while the hooks run does, and the note waits for the
     // next prompt.
+    const due = this.#recallDue;
     const recalled = words ? await this.#recall(words, signal) : [];
     if (!recalled) {
       if (before) hooks!.restoreRuns(before);
+      return;
+    }
+    // A prompt of the user's waits for the latest switch's PostModelSwitch hooks until 5 s after the window started sending
+    // it, and no longer, before anything is kept or taken, so a stop meanwhile ends the turn as one during UserPromptSubmit
+    // does, the text kept for the next request (release 8e plan, step 14). The time decides which text goes with this
+    // request, too: none from a hook that finished after it.
+    const by = words && sent !== undefined ? sent + SWITCH_WAIT : undefined;
+    if (by !== undefined && !(await this.#switchAnswered(by, signal))) {
+      if (before) hooks!.restoreRuns(before);
+      // The note is still due for the message that does go, as at a stop during the search (Codex review 3 of 8e, point 2).
+      this.#recallDue = due;
       return;
     }
     if (words && !this.opts.subagent) this.prompts.push(words);
@@ -700,9 +813,9 @@ export class Session {
     }
     const own: Part[] = [...typed, ...(supplied ?? []), ...prompted, ...this.#waiting()];
     if (!own.length) return;
-    // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message; the note
-    // from long-term memory goes in front of the prompt (8d plan, step 24).
-    const parts: Part[] = [...this.#hookParts(this.#nextText), ...recalled, ...own, ...this.#notes()];
+    // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message, a switch's
+    // after it (release 8e plan, step 14); the note from long-term memory goes in front of the prompt (8d plan, step 24).
+    const parts: Part[] = [...this.#hookParts(this.#nextText), ...this.#switchParts(by), ...recalled, ...own, ...this.#notes()];
     // The turn's request, kept for a shortening during the turn: after a first one it is no longer in the history.
     const asked: Message = { role: "user", parts };
     this.#push(asked);
@@ -761,6 +874,12 @@ export class Session {
       let answeredBy = lead;
       let turn = await this.#request(lead, signal);
       if (!turn) return;
+      if (!("failed" in turn) && !("tooLong" in turn)) this.#lastReply = { lead: lead.id, at: Date.now() };
+      // The lead's request failed: StopFailure by its HTTP status (release 8e plan, step 10). A subagent fires none, and at
+      // each of StopFailure's places here it does not call #stopFailure at all, so its ending keeps the timing it had
+      // before StopFailure (see the test-timing note above; step 13's review, the user).
+      const sub = this.opts.subagent;
+      if ("failed" in turn) return sub ? undefined : this.#stopFailure(failureKind(turn.failed.status), lineOf(turn.failed), turn.failed.message, signal);
       // A "too long" answer, or a reply that filled the window, is never stored: the history is shortened and the request
       // sent once more (plan, choices 20 and 21). Too long again, or not saved so not shortened, the turn ends: a "too long"
       // answer with the line, or as it came when the request's size or the window is not known; a reply that filled the
@@ -775,17 +894,23 @@ export class Session {
           }
           if (r !== "unsaved") return this.#say(lead, cannot(r.problem));
         }
+        // StopFailure, once shortened or in a session not saved (Q22): the reply filled the window, max_output_tokens;
+        // still too long, invalid_request, only once a shortening was made for this request (Q8).
         if (!("tooLong" in turn)) {
-          bus.emit("error", { kind: "max_tokens", attempted: `response from ${lead.id}`, message: turn.cutOff!.detail, lead: lead.id });
-          return;
+          const shown = { kind: "max_tokens", attempted: `response from ${lead.id}`, message: turn.cutOff!.detail, lead: lead.id } as const;
+          bus.emit("error", shown);
+          return sub ? undefined : this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
         }
         const line = await this.#tooLong(lead, window, signal);
         if (signal?.aborted) return;
         if (line) this.#say(lead, line);
-        else this.#failed(lead, turn.tooLong);
+        const last = line || lineOf(this.#failed(lead, turn.tooLong));
+        if (shortened && !sub) await this.#stopFailure("invalid_request", last, errorText(turn.tooLong), signal);
         return;
       }
       const rescue = this.#fallback;
+      // The lead's refusal, which StopFailure is sent when the fallback refuses too (Q21).
+      let first: ErrorEvent | undefined;
       if (turn.cutOff?.kind === "refusal" && rescue) {
         // The refused reply is discarded, never stored, so the history stays append-only.
         const refused = { kind: "refusal", attempted: `response from ${lead.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
@@ -793,22 +918,27 @@ export class Session {
         const rescued = await this.#request(rescue, signal);
         // The rescue's "too long" answer is reported as it came: only the lead's request is shortened for.
         if (rescued && "tooLong" in rescued) this.#failed(rescue, rescued.tooLong);
-        turn = rescued && !("tooLong" in rescued) ? rescued : undefined;
+        turn = rescued && !("tooLong" in rescued) && !("failed" in rescued) ? rescued : undefined;
         // A rescued refusal is reported only as the rescue, so the status line does not count it as an error.
         if (!turn || turn.cutOff?.kind === "refusal") bus.emit("error", refused);
         else bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
-        if (!turn) return;
+        // The fallback's request failed or was too long: StopFailure with the lead's refusal (Q21); a stop fires nothing.
+        if (!turn) return sub ? undefined : this.#stopFailure("unknown", lineOf(refused), refused.message, signal);
+        first = refused;
       }
       if (turn.cutOff?.kind === "refusal") {
         // Never stored, on any path: the output may be empty or half-written, and an empty assistant
         // message makes every later Anthropic request fail, with no way to remove it.
-        bus.emit("error", { kind: "refusal", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
-        return;
+        const shown = { kind: "refusal", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
+        bus.emit("error", shown);
+        const refusal = first ?? shown;
+        return sub ? undefined : this.#stopFailure("unknown", lineOf(refusal), refusal.message, signal);
       }
       if (turn.cutOff?.kind === "window") {
         // Only the rescue's comes here, the lead's having been shortened for above: never stored either, it ends the turn.
-        bus.emit("error", { kind: "max_tokens", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
-        return;
+        const shown = { kind: "max_tokens", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
+        bus.emit("error", shown);
+        return sub ? undefined : this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
       }
       // Reported only now, so a model that still refused is never shown as having answered.
       for (const f of turn.fallbacks ?? []) {
@@ -827,11 +957,15 @@ export class Session {
 
       const calls = turn.parts.filter((p) => p.type === "tool_call");
       if (turn.cutOff) {
-        bus.emit("error", { kind: turn.cutOff.kind, attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
+        const shown = { kind: turn.cutOff.kind, attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id };
+        bus.emit("error", shown);
         // Every tool call needs a result before the next request, even ones we refuse to run.
         if (calls.length) {
           this.#push({ role: "user", parts: calls.map((c) => result(c, `${CUT_OFF}${turn.cutOff!.detail}).`, true)) });
         }
+        // StopFailure for a true output limit alone, by the provider's mark; another early stop is in none of the
+        // design's rows and fires nothing (release 8e plan, step 10; Q8; "Early stop").
+        if (turn.cutOff.limit && !sub) await this.#stopFailure("max_output_tokens", lineOf(shown), shown.message, signal);
         return;
       }
       if (calls.length === 0) {
@@ -854,7 +988,7 @@ export class Session {
         kept = true;
         bus.emit("hook-note", keptGoing(id, c.block ?? ""), true);
         const said: Part[] = given.map((text) => ({ type: "text", text: `${FEEDBACK}\n${text}`, from: "hooks" }));
-        this.#push({ role: "user", parts: [...said, ...this.#waiting(), ...this.#notes()] });
+        this.#push({ role: "user", parts: [...said, ...this.#switchParts(), ...this.#waiting(), ...this.#notes()] });
         when = "during";
         shortened = false;
         continue;
@@ -906,14 +1040,39 @@ export class Session {
       } finally {
         signal?.removeEventListener("abort", join);
       }
-      this.#push({
-        role: "user",
-        parts: [...results, ...round.pictures, ...this.#hookParts(), ...this.#waiting(), ...this.#notes()],
-      });
-      // The set whenever a search grew it, after the results' line (release 8c plan, Task 6b).
-      if (this.opts.mcp && this.opts.mcp.loaded.size !== loaded) {
+      // PostToolBatch once every call has its result, before they are stored, unless the turn was already stopped (release
+      // 8e plan, step 11): under the turn's stop, as the reply's own is let go of above, and a stop that ends its hooks keeps
+      // nothing of them, the results stored all the same. Only when a hook would run, so the results are otherwise stored
+      // at once, as before.
+      // With one to wait for, the results are saved before it runs, so a crash meanwhile keeps them; what the message takes
+      // after them is taken once it has answered, as without one, and saved in a joined line, which a resume adds back
+      // (transcript.ts), the window told of the message once, whole, as before (Codex review 3 of 8e, point 1, the user's
+      // choice).
+      // The set whenever a search grew it, after the results' line (release 8c plan, Task 6b), so before the hook's wait
+      // too, as the results are (Codex review 4 of 8e, point 1).
+      const grown = () => {
+        if (!this.opts.mcp || this.opts.mcp.loaded.size === loaded) return;
         this.#transcript?.write({ t: "loaded", names: [...this.opts.mcp.loaded] });
         this.#saving();
+      };
+      const hooked = hooks?.has("PostToolBatch", "") && !round.stopped && !signal?.aborted;
+      const message: Message = { role: "user", parts: [...results, ...round.pictures] };
+      if (hooked) {
+        this.#push(message, false);
+        grown();
+      }
+      const batch = hooks && hooked ? await this.#postToolBatch(hooks, calls, entries, results, signal) : undefined;
+      if (batch) this.#hookText.push(...batch.context);
+      // A batch that ends the turn leaves what waits for the lead waiting, so a background answer that came meanwhile
+      // still starts a turn of its own (Codex review 5 of 8e, point 1).
+      const ends = batch !== undefined && (batch.stop ?? batch.block) !== undefined;
+      const rest = [...this.#hookParts(), ...this.#switchParts(), ...(ends ? [] : this.#waiting()), ...this.#notes()];
+      if (!hooked) {
+        this.#push({ ...message, parts: [...message.parts, ...rest] });
+        grown();
+      } else {
+        if (rest.length) this.#join(message, rest);
+        this.opts.bus.emit("message", message);
       }
       // Every call has its one result, saved, before the turn ends (design, review finding 1).
       if (round.stopped) {
@@ -922,6 +1081,17 @@ export class Session {
         return { stopped: reason };
       }
       if (signal?.aborted) return;
+      // A PostToolBatch block or continue: false ends the turn before the next request, with its line (W5), a subagent as
+      // 8b's hook stops end it (tasks.ts). The lead's reason, or with none the line the user saw (step 11's review, the
+      // user's choice), waits for the next request, its prompt's or a background answer's, as SessionStart's text does
+      // (Q29); a subagent keeps nothing.
+      const ended = batch && (batch.stop ?? batch.block);
+      if (ended !== undefined) {
+        const line = stoppedTurn("PostToolBatch", ended);
+        bus.emit("hook-note", line);
+        if (!this.opts.subagent) this.#nextText.push({ event: "PostToolBatch", text: ended || line });
+        return { stopped: ended };
+      }
       when = "during";
       shortened = false;
     }
@@ -929,7 +1099,9 @@ export class Session {
 
   // One request. Its usage is reported even if the reply is then discarded, because it is billed. A "too long" answer is
   // handed back as it came, with nothing said, for the turn to shorten the history (release 8a plan, choice 20).
-  async #request(provider: Provider, signal?: AbortSignal): Promise<Turn | { tooLong: unknown } | undefined> {
+  // A failure is handed back as it was shown, for StopFailure, and undefined only for a stop, wherever it came (release
+  // 8e plan, step 10).
+  async #request(provider: Provider, signal?: AbortSignal): Promise<Turn | { tooLong: unknown } | { failed: ErrorEvent } | undefined> {
     const { bus } = this.opts;
     const refused = this.#refusedPictures.has(provider.id);
     const req = this.#req(provider, signal);
@@ -957,24 +1129,30 @@ export class Session {
       if (signal?.aborted) return undefined;
       // Before the pictures question, so a too-long 400 never asks it (choice 20).
       if (provider.tooLong?.(err)) return { tooLong: err };
-      const status = this.#failed(provider, err);
+      const failed = this.#failed(provider, err);
       // A 400 does not say whether the pictures caused it, so the user is asked, after seeing the provider's words; y
       // leaves them out for this provider from now on, the conversation keeping them (release 6 design, "When the
       // provider refuses"). It is whichever provider was sent the request, the fallback included, as its id is the one
       // marked. A request already without pictures asks nothing, so a second refusal ends the turn.
       const pictures = !refused && this.messages.some((m) => m.parts.some((p) => p.type === "image"));
       const question = "Send again without the pictures";
-      if (status === 400 && pictures && (await this.opts.ask?.(question, undefined, undefined, true))) {
-        this.#refusedPictures.add(provider.id);
-        bus.emit("note", `Pictures are left out for ${provider.id} from now on.`);
-        return this.#request(provider, signal);
+      if (failed.status === 400 && pictures) {
+        const again = await this.opts.ask?.(question, undefined, undefined, true);
+        // Ctrl-C there answers no and stops the turn: a stop, not this failure (release 8e plan, step 10).
+        if (signal?.aborted) return undefined;
+        if (again) {
+          this.#refusedPictures.add(provider.id);
+          bus.emit("note", `Pictures are left out for ${provider.id} from now on.`);
+          return this.#request(provider, signal);
+        }
       }
-      return undefined;
+      return { failed };
     }
   }
 
-  // A request's failure as the provider gave it; its HTTP status, for the pictures question.
-  #failed(provider: Provider, err: unknown): unknown {
+  // A request's failure as the provider gave it, as it was shown; its HTTP status is for the pictures question and
+  // StopFailure.
+  #failed(provider: Provider, err: unknown): ErrorEvent {
     // The SDKs' `APIError` and chatgpt.ts's ProviderError carry the HTTP status; anything else has none.
     const status: unknown = (err as { status?: unknown } | null | undefined)?.status;
     const error = {
@@ -983,8 +1161,23 @@ export class Session {
       message: errorText(err),
       lead: this.#lead.id,
     };
-    this.opts.bus.emit("error", typeof status === "number" ? { ...error, status } : error);
-    return status;
+    const shown: ErrorEvent = typeof status === "number" ? { ...error, status } : error;
+    this.opts.bus.emit("error", shown);
+    return shown;
+  }
+
+  // StopFailure in place of Stop when a provider's error ends the lead's turn (release 8e plan, step 10; design, "The
+  // turn ending, and tool batches"), matched on `error`, sent the provider's message as it came and `last`, the window's
+  // line for that end without its mark, escaped as it is shown, the same in -p (Q9). Waited for, as Stop is, its answer
+  // ignored (answer.ts). Not for a subagent, and nothing once the user has stopped the turn, wherever the stop came.
+  async #stopFailure(error: string, last: string, details: string, signal?: AbortSignal): Promise<void> {
+    const { hooks } = this.opts;
+    if (!hooks || this.opts.subagent || signal?.aborted) return;
+    try {
+      await hooks.fire("StopFailure", { error, error_details: details, last_assistant_message: asShown(last) }, { match: error, signal });
+    } catch (err) {
+      if (!signal?.aborted) throw err;
+    }
   }
 
   // The request the conversation makes now to `provider`, as it is sent, measured and counted.
@@ -1179,6 +1372,9 @@ export class Session {
     // the model was told"), as a resume reads it from the line (transcript.ts).
     if (this.#told && fresh.setup) this.#told = toldAfter({ date: fresh.date, setup: fresh.setup }, message.parts);
     if (leftOut) bus.emit("hook-note", LEFT_OUT);
+    // The files read for the new prompt, now it is in force, saved (release 8e plan, step 15): in the turn that shortened,
+    // or outside one for /compact's and /lead's, made between turns.
+    this.instructionsLoaded(fresh.files, "compact", when === "between");
     // The next typed message gets the note from long-term memory (8d plan, step 24).
     this.#recallDue = true;
     bus.emit("shortened", r.summary);
@@ -1227,7 +1423,9 @@ export class Session {
     return res;
   }
 
-  async #execute(call: ToolCall, entry: { name: string; input: unknown }, round: Round, called: Called):
+  // `again`: the call starting again with a PermissionRequest hook's rewrite, whose gate has that event's record already
+  // asked, with no decision, so it is not fired a second time (release 8e plan, step 9).
+  async #execute(call: ToolCall, entry: { name: string; input: unknown }, round: Round, called: Called, again = false):
     Promise<[ToolResult, ToolOutcome]> {
     const { signal } = round;
     // A call a stop came before or during: the user's, or a hook's continue: false, in its own words (release 8b plan,
@@ -1252,14 +1450,17 @@ export class Session {
     let text: string;
     let ms: number;
     let pictures: Image[] = []; // this call's in the round, which a hook's replaced output drops (release 8c plan, choice 20)
+    const handed: { event: Event; text: string }[] = []; // this pass's PreToolUse text for the model, dropped on a restart
     try {
       // A stop while a PreToolUse hook runs kills it and rejects, so the call is cancelled below, as any stop (run.ts). The
       // call's own gate marks it asked when a question about it opens (Task 15); not once a stop came, as the window then
-      // drops the question unshown (App.tsx, bindAsk).
-      const own = this.opts.ctx.gate.noting(() => {
+      // drops the question unshown (App.tsx, bindAsk). Its questions carry the tool's Claude Code name, for the window's
+      // Notification (release 8e plan, step 17).
+      const noted = this.opts.ctx.gate.noting(() => {
         if (!signal.aborted) this.#asked(call.id);
-      });
-      const pre = hooks ? await this.#preToolUse(call, entry, hooks, own, signal) : { input: call.input, gate: own };
+      }, toClaude(entry, this.#hookPaths()).tool_name);
+      const own = again ? noted.deciding(null) : noted;
+      const pre = hooks ? await this.#preToolUse(call, entry, hooks, own, round, handed) : { input: call.input, gate: own };
       if ("stop" in pre) {
         round.stop("PreToolUse", pre.stop);
         return stopped(NOT_RUN);
@@ -1282,9 +1483,27 @@ export class Session {
       pictures = round.pictures.slice(before);
       ms = Date.now() - started;
     } catch (err) {
+      // A PermissionRequest hook's rewrite, from a PreToolUse hook's ask or the tool's own question, before anything ran:
+      // not a failure nor a refusal, and no result. The call starts again from the beginning with the new input, the
+      // record taking it first, saved before anything runs, as a PreToolUse rewrite's is; nothing of this pass is kept
+      // (release 8e plan, step 9), its PreToolUse text for the model included, the reply's other calls' text staying (the
+      // user's choice at step 9's review). Its grey lines were already said.
+      if (err instanceof StartAgain) {
+        const kept = this.#hookText.filter((t) => !handed.includes(t));
+        this.#hookText.splice(0, this.#hookText.length, ...kept);
+        entry.input = err.input;
+        this.#transcript?.write({ t: "rewritten", id: call.id, input: err.input });
+        this.#saving();
+        return this.#execute({ ...call, input: err.input }, entry, round, called, true);
+      }
       // Ctrl-C at a question declines it and stops the turn: the call was cancelled, not declined.
-      // Cut as a failure's is: a hook's question names the call with its whole input, a write's content included.
-      if (err instanceof Declined) return [result(call, truncate(err.message), true), signal.aborted ? "cancelled" : "declined"];
+      // Cut as a failure's is: a hook's question names the call with its whole input, a write's content included. The
+      // judge's refusal first goes to the PermissionDenied hooks, and a retry's sentence is kept whole after the cut.
+      if (err instanceof Declined) {
+        const retry = hooks && err.judged ? await this.#permissionDenied(hooks, call, entry, err.judged, round) : false;
+        const told = retry ? `${truncateLeaving(err.message, RETRY.length + 1)} ${RETRY}` : truncate(err.message);
+        return [result(call, told, true), signal.aborted ? "cancelled" : "declined"];
+      }
       // Not a failure, so not logged. A yes after the stop ran nothing, though the tool had started (Task 7's re-check).
       if (signal.aborted) return stopped(started === undefined || err instanceof StoppedFirst ? NOT_RUN : STOPPED);
       const error = errorText(err);
@@ -1341,6 +1560,61 @@ export class Session {
     return c;
   }
 
+  // PermissionDenied after auto mode's judge refused a call (release 8e plan, step 6; design, "The permission events"),
+  // sent the input that ran as PreToolUse's fields are built, the judge's reason as it gave it, and an MCP tool's server,
+  // matched on the tool's Claude Code name, under the reply's signal. Whether the refusal gets the retry sentence: only for
+  // the judge's own refusal, never when it could not be reached or its answer could not be read. False when a stop ended
+  // its hooks (run.ts), or anything else threw, said as #postToolUse says it.
+  async #permissionDenied(
+    hooks: Hooks,
+    call: ToolCall,
+    entry: { name: string; input: unknown },
+    judged: NonNullable<Declined["judged"]>,
+    round: Round,
+  ): Promise<boolean> {
+    let c: Combined;
+    try {
+      const { tool_name, tool_input } = toClaude(entry, this.#hookPaths());
+      const own = this.opts.tools.some((t) => t.spec.name === call.name);
+      const server = own ? undefined : this.#offered.find((o) => o.spec.name === call.name)?.server;
+      const fields = { tool_name, tool_input, tool_use_id: call.id, reason: judged.reason, ...(server !== undefined && { mcp_server: server }) };
+      c = await hooks.fire("PermissionDenied", fields, { match: tool_name, signal: round.signal });
+    } catch (err) {
+      if (round.signal.aborted) return false;
+      const message = `PermissionDenied hook failed: ${errorText(err)}`;
+      this.opts.bus.emit("error", { kind: "hook", attempted: "PermissionDenied hook", message, lead: this.#lead.id });
+      return false;
+    }
+    return c.retry === true && judged.noVerdict === undefined;
+  }
+
+  // PostToolBatch once a reply's calls all have results (release 8e plan, step 11; design, "The turn ending, and tool
+  // batches"), with no matcher, sent each call in Claude Code's names with the input that ran, its id, and the result
+  // the model reads as Tachikoma made it, the same whatever model leads (Q30), under the turn's signal. Undefined when a
+  // stop came, which keeps nothing of its hooks, or anything else threw, said as #postToolUse says it.
+  async #postToolBatch(
+    hooks: Hooks,
+    calls: ToolCall[],
+    entries: { name: string; input: unknown }[],
+    results: ToolResult[],
+    signal?: AbortSignal,
+  ): Promise<Combined | undefined> {
+    try {
+      const paths = this.#hookPaths();
+      const tool_calls = calls.map((call, i) => {
+        const { tool_name, tool_input } = toClaude(entries[i]!, paths);
+        return { tool_name, tool_input, tool_use_id: call.id, tool_response: results[i]!.output };
+      });
+      const c = await hooks.fire("PostToolBatch", { tool_calls }, { signal });
+      return signal?.aborted ? undefined : c;
+    } catch (err) {
+      if (signal?.aborted) return undefined;
+      const message = `PostToolBatch hook failed: ${errorText(err)}`;
+      this.opts.bus.emit("error", { kind: "hook", attempted: "PostToolBatch hook", message, lead: this.#lead.id });
+      return undefined;
+    }
+  }
+
   // The paths hooks are sent: the launch's, or without them ctx.root's on the host (SessionOptions.paths).
   #hookPaths(): Paths {
     return this.opts.paths ?? pathsFor(this.opts.ctx.root, null);
@@ -1350,6 +1624,38 @@ export class Session {
   // (release 8b plan, choice 6), taken so it goes into exactly one message.
   #hookParts(held = this.#hookText): Part[] {
     return held.splice(0).map(({ event, text }) => ({ type: "text", text: `${event} hook:\n${text}`, from: "hooks" }));
+  }
+
+  // The latest switch's PostModelSwitch text once its hooks have answered, by `by` when given, headed as hook text, taken
+  // whole so it goes into exactly one message: the turn's first, a tool round's results or a Stop hook's feedback,
+  // whichever the session builds next (release 8e plan, step 14). None from hooks that finished after `by`: it waits for
+  // the message after.
+  #switchParts(by = Infinity): Part[] {
+    const done = this.#switched?.done;
+    if (!done || done.at > by) return [];
+    this.#switched = undefined;
+    return this.#hookParts(done.text);
+  }
+
+  // The wait for the latest switch's PostModelSwitch hooks, until they answer or until `by`, whichever comes first; none
+  // when there are none still running or `by` has passed, a turn already stopped then going on as before step 14. False
+  // when the turn's stop came first.
+  #switchAnswered(by: number, signal?: AbortSignal): Promise<boolean> {
+    const s = this.#switched;
+    const left = by - Date.now();
+    if (!s || s.done || left <= 0) return Promise.resolve(true);
+    if (signal?.aborted) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const end = (went: boolean) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", stop);
+        resolve(went);
+      };
+      const stop = () => end(false);
+      const timer = setTimeout(() => end(true), left);
+      signal?.addEventListener("abort", stop, { once: true });
+      void s.answered.then(() => end(true));
+    });
   }
 
   // UserPromptSubmit before the prompt goes (release 8b plan, Task 8; design, "What a hook's answer does"), each prompt with
@@ -1412,18 +1718,22 @@ export class Session {
 
   // PreToolUse before a call (release 8b plan, Task 6; design, "Tool hooks"), matched on the tool's Claude Code name, under
   // the turn's signal. The input to run and the gate to run it with, or what the model is told of a refusal. The lines
-  // name the tool as the rest of the window does (choice 10).
+  // name the tool as the rest of the window does (choice 10). `handed` gets the text for the model it adds, which a
+  // PermissionRequest restart takes back (release 8e plan, step 9).
   async #preToolUse(
     call: ToolCall,
     entry: { name: string; input: unknown },
     hooks: Hooks,
     given: PermissionGate,
-    signal?: AbortSignal,
+    round: Round,
+    handed: { event: Event; text: string }[],
   ): Promise<{ input: unknown; gate: PermissionGate } | { refused: string } | { stop: string }> {
+    const { signal } = round;
     const paths = this.#hookPaths();
     const { tool_name, tool_input } = toClaude(call, paths);
     const c = await hooks.fire("PreToolUse", { tool_name, tool_input, tool_use_id: call.id }, { match: tool_name, signal });
     this.#hookText.push(...c.context);
+    handed.push(...c.context);
     // A continue: false stops the turn before the call runs; combine has dropped the rest of the answer (Task 6's build).
     if (c.stop !== undefined) return { stop: c.stop };
     const say = (line: string) => this.opts.bus.emit("hook-note", line);
@@ -1447,17 +1757,23 @@ export class Session {
       if ("problem" in back) return refused(`A PreToolUse hook's rewrite of ${call.name} could not be used (${back.problem}): ${commandOf(c.rewrite.from)}`);
       input = back.input;
     }
-    // The question names the call that would run, by its name and input, as Ctrl+O does (choice 15).
+    const own = this.opts.tools.some((t) => t.spec.name === call.name);
+    const offered = own ? undefined : this.#offered.find((o) => o.spec.name === call.name);
+    // The call's PermissionRequest decider, bound to the input that will run, before any question or -p refusal and before
+    // the copies below, so they share its one record (release 8e plan, step 8; Codex round 1, point 1). Only where one of
+    // its hooks matches the call, so a gate with none behaves as before.
     let gate = given;
+    const named = toClaude({ name: call.name, input }, paths);
+    if (hooks.has("PermissionRequest", named.tool_name)) gate = given.deciding(() => this.#permissionRequest(hooks, call, named, offered, round));
+    // The question names the call that would run, by its name and input, as Ctrl+O does (choice 15).
     if (c.decision === "ask") {
       // Where nobody can be asked, in never and -p, the refusal is a grey line too, as a deny's is (the user's choice,
       // 2026-11-09); an MCP call's, the request's own MCP tool, is asked in never (release 8c plan, choice 47), except
-      // a box server's while the box's network is off (8c-2a plan, choice 7).
-      const own = this.opts.tools.some((t) => t.spec.name === call.name);
-      const offered = own ? undefined : this.#offered.find((o) => o.spec.name === call.name);
-      const cannot = gate.hookCannotAsk(c.reason ?? "", offered !== undefined, offered?.boxNetwork === "off");
+      // a box server's while the box's network is off (8c-2a plan, choice 7). The decider comes first where the question
+      // would be put, -p included (release 8e plan, step 7).
+      const summary = `${call.name} ${JSON.stringify(input)}`;
+      const cannot = await gate.putHookAsk(summary, c.reason ?? "", offered !== undefined, offered?.boxNetwork === "off", signal);
       if (cannot !== undefined) return refused(cannot);
-      await gate.hookAsks(`${call.name} ${JSON.stringify(input)}`, c.reason ?? "");
       gate = gate.withHook({ asked: true });
     } else if (c.decision === "allow") gate = gate.withHook({ allow: true });
     // What runs is what the record keeps, saved before it runs (choice 16; design, review finding 4); the reply in the
@@ -1471,6 +1787,56 @@ export class Session {
       }
     }
     return { input, gate };
+  }
+
+  // PermissionRequest just before a question about a call, or in -p where it would be refused (release 8e plan, step 8;
+  // design, "The permission events"), sent the input that would run in Claude Code's names and an MCP tool's server,
+  // matched on the tool's Claude Code name, under the reply's signal, so a stop kills it and cancels the call (the gate).
+  // An allow is silent; a deny is said with W1, told to the gate for -p's exit code, and its interrupt ends the turn as a
+  // hook's continue: false does (W2, said as the round ends). An allow carrying a rewrite gives the new input, so the call
+  // starts again (step 9). A throw that is not a stop decides nothing, said as #permissionDenied says it.
+  async #permissionRequest(
+    hooks: Hooks,
+    call: ToolCall,
+    named: { tool_name: string; tool_input: unknown },
+    offered: Offered | undefined,
+    round: Round,
+  ): Promise<Decision> {
+    const say = (line: string) => this.opts.bus.emit("hook-note", line);
+    let c: Combined;
+    try {
+      const fields = { ...named, ...(offered !== undefined && { mcp_server: offered.server }) };
+      c = await hooks.fire("PermissionRequest", fields, { match: named.tool_name, signal: round.signal });
+    } catch (err) {
+      if (round.signal.aborted) throw err;
+      const message = `PermissionRequest hook failed: ${errorText(err)}`;
+      this.opts.bus.emit("error", { kind: "hook", attempted: "PermissionRequest hook", message, lead: this.#lead.id });
+      return undefined;
+    }
+    if (c.updatedPermissions) say("A PermissionRequest hook's updatedPermissions was ignored: Tachikoma has no permission rules.");
+    if (c.decision === "deny") {
+      const line = c.reason ? `A PermissionRequest hook refused ${call.name}: ${c.reason}` : `A PermissionRequest hook refused ${call.name}.`;
+      say(line);
+      this.opts.ctx.gate.hookRefused();
+      if (c.interrupt) round.stop("PermissionRequest", c.reason ?? "");
+      return { deny: c.reason || line };
+    }
+    if (c.decision !== "allow") return undefined;
+    if (!c.rewrite) return { allow: true };
+    // A rewrite is turned back into the tool's fields by 8b's rules, and the call starts again with it (#execute); one that
+    // cannot be used refuses the call, said and told as at PreToolUse (W3), and a later hook's is ignored (W4) (release 8e
+    // plan, step 9).
+    const back = fromClaude(call.name, c.rewrite.input, this.#hookPaths());
+    if ("problem" in back) {
+      const line = `A PermissionRequest hook's rewrite of ${call.name} could not be used (${back.problem}): ${commandOf(c.rewrite.from)}`;
+      say(line);
+      this.opts.ctx.gate.hookRefused();
+      return { deny: line };
+    }
+    for (const h of c.rewrite.ignored) {
+      say(`Two PermissionRequest hooks rewrote ${call.name}'s input; the first in the settings file was used, and ${commandOf(h)} was ignored.`);
+    }
+    return { input: back.input };
   }
 
   // A call the user is shown a question for, saved once (Task 15).
@@ -1537,12 +1903,23 @@ export class Session {
 
   // The line is written before the event, so every message is on disk before anything else sees it (release 8a plan,
   // choice 4). A failed write stops saving and never the turn (transcript.ts).
-  #push(message: Message): void {
+  // `tell`: false when the caller tells of it once the parts joined to it are in (the PostToolBatch round).
+  #push(message: Message, tell = true): void {
     for (const p of message.parts) if (p.type === "image") this.#lastPicture = Math.max(this.#lastPicture, p.id);
     this.messages.push(message);
     if (this.#told) this.#told = toldAfter(this.#told, message.parts);
     this.#transcript?.write({ t: "message", message });
-    this.opts.bus.emit("message", message);
+    if (tell) this.opts.bus.emit("message", message);
+    this.#saving();
+  }
+
+  // Parts the message last pushed takes after its line was written (the PostToolBatch round): added to it, and saved in a
+  // joined line, which a resume adds back to that message (transcript.ts; Codex review 3 of 8e, point 1).
+  #join(message: Message, parts: Part[]): void {
+    for (const p of parts) if (p.type === "image") this.#lastPicture = Math.max(this.#lastPicture, p.id);
+    message.parts.push(...parts);
+    if (this.#told) this.#told = toldAfter(this.#told, parts);
+    this.#transcript?.write({ t: "joined", message: { role: message.role, parts } });
     this.#saving();
   }
 

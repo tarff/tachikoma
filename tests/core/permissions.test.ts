@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Action, type Ask, Declined, type Mode, needsApproval, PermissionGate, visible } from "../../src/core/permissions.js";
+import { type Action, type Ask, type Decider, type Decision, Declined, type Mode, needsApproval, PermissionGate, StartAgain, StoppedFirst, visible } from "../../src/core/permissions.js";
 
 const act = (kind: Action["kind"], outside = false): Action => ({ kind, outside, summary: `${kind}${outside ? " outside" : ""}` });
 
@@ -118,6 +118,50 @@ describe("a subagent's gate", () => {
     expect(child.rules).toEqual({ add: [], off: [] });
     gate.rules = { add: ["make deploy"], off: ["installing software"] };
     expect(child.rules).toEqual({ add: ["make deploy"], off: ["installing software"] });
+  });
+});
+
+// Release 8e plan, step 5 (design, "The permission events"): the judge's refusal that reaches the session says which of
+// three it was, with the judge's reason as it gave it, apart from the escaped sentence the model reads. The sentence and
+// auto mode's pause are as before.
+describe("the judge's refusal", () => {
+  const ESC = String.fromCharCode(0x1b);
+  const verdicts = [
+    { allow: false, reason: `It pushes${ESC}[8m.` },
+    { allow: false, reason: "the judge could not be reached: offline", noVerdict: "unreachable" },
+    { allow: false, reason: "the judge's answer could not be read", noVerdict: "unreadable" },
+  ] as const;
+
+  it.each(verdicts)("carries which of three the judge's no was, with its reason as given, and words the refusal as before (%o)", async (verdict) => {
+    const gate = new PermissionGate("auto", async () => false, undefined, { judge: async () => verdict });
+    const err = await gate.require(act("read", true)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Declined);
+    expect((err as Declined).message).toBe(`The judge refused: ${visible(verdict.reason)}`);
+    expect((err as Declined).judged).toStrictEqual(verdict);
+  });
+
+  it("escapes only the sentence the model reads, not the reason it carries", async () => {
+    const gate = new PermissionGate("auto", async () => false, undefined, { judge: async () => verdicts[0] });
+    const err = (await gate.require(act("read", true)).catch((e: unknown) => e)) as Declined;
+    expect(err.message).toBe("The judge refused: It pushes\\u001b[8m.");
+    expect(err.judged?.reason).toBe(`It pushes${ESC}[8m.`);
+  });
+
+  it("counts a no with no verdict toward the pause as before, and a user's no carries no judge's result", async () => {
+    const notes: (string | undefined)[] = [];
+    let n = 0;
+    const gate = new PermissionGate("auto", async (_s, _d, _o, _p, _w, note) => (notes.push(note), false), undefined, {
+      judge: async () => verdicts[n++ % verdicts.length]!,
+    });
+    for (const verdict of verdicts) {
+      const err = (await gate.require(act("read", true)).catch((e: unknown) => e)) as Declined;
+      expect(err.judged).toStrictEqual(verdict);
+    }
+    const err = (await gate.require(act("read", true)).catch((e: unknown) => e)) as Declined;
+    expect(err).toBeInstanceOf(Declined);
+    expect(err.message).toBe("The user declined: read outside");
+    expect(err.judged).toBeUndefined();
+    expect([n, notes]).toEqual([3, ["Auto mode paused after 3 refusals; approving this resumes it."]]);
   });
 });
 
@@ -535,5 +579,277 @@ describe("a hook's question", () => {
     expect(headless.hookCannotAsk("Sure?")).toBe("Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask.");
     expect(headless.hookCannotAsk("")).toBe("Not allowed: a PreToolUse hook asked for this call to be approved, and -p cannot ask.");
     expect(gateIn("project", true).gate.hookCannotAsk("Sure?")).toBeUndefined();
+  });
+});
+
+// Release 8e plan, step 7 (design, "The permission events"; Q4, Q5, Q6): a gate for one call can be given a decider,
+// which stands in here for the PermissionRequest hooks the session fires (step 8). It is asked once for the call, just
+// before the first question about it, or in -p before the refusal the ask reports; never where the judge decides, nor
+// for never mode's refusals. The commands are text the gate reads; nothing here runs them.
+describe("the gate's PermissionRequest decider", () => {
+  const p = "Not allowed in -p mode, where nobody can approve it";
+  const gateIn = (mode: Mode, headless = false) => {
+    const log: string[] = [];
+    const notes: string[] = [];
+    const judged: string[] = [];
+    // In -p the ask is the launch's report of a refusal (cli.tsx), which says no.
+    const ask: Ask = async (summary, _detail, _owner, _plain, _warnings, note) => {
+      log.push(`asked: ${summary}`);
+      if (note) notes.push(note);
+      return !headless;
+    };
+    const judge = async (action: Action) => (judged.push(action.summary), { allow: false as const, reason: "No." });
+    const gate = new PermissionGate(mode, ask, headless ? p : undefined, { judge, headless });
+    const decider = (decision: Decision): Decider => async () => (log.push("decider"), decision);
+    return { gate, log, notes, judged, decider };
+  };
+  const push = "git push --force";
+  const run = (command: string): Action => ({ kind: "shell", outside: false, summary: `run: ${command}`, command });
+  const husky: Action = { kind: "write", outside: false, summary: "write /p/.husky/pre-commit", path: "/p/.husky/pre-commit", protectedPart: ".husky" };
+  const outsideWrite: Action = { kind: "write", outside: true, summary: "write /q/a.txt" };
+  const outsideRead: Action = { kind: "read", outside: true, summary: "read /q/a.txt" };
+  const mcp: Action = { kind: "mcp", outside: true, summary: 's: echo {"text":"hi"}', description: "Says it back" };
+  const PAUSED = "Auto mode paused after 3 refusals; approving this resumes it.";
+  const pausing = async (gate: PermissionGate) => {
+    for (let i = 0; i < 3; i++) await expect(gate.require(outsideRead)).rejects.toThrow("The judge refused: No.");
+  };
+
+  type Question = { name: string; mode: Mode; action: Action; paused?: boolean; headless?: boolean };
+  const questions: Question[] = [
+    { name: "ask mode's question", mode: "ask", action: { kind: "write", outside: false, summary: "write /p/a.txt" } },
+    { name: "project mode's question", mode: "project", action: run("echo hi") },
+    { name: "auto mode's question for a danger", mode: "auto", action: run(push) },
+    { name: "auto mode's question under a pause", mode: "auto", action: outsideRead, paused: true },
+    { name: "never mode's question for an MCP call", mode: "never", action: mcp },
+    { name: "-p's refusal", mode: "project", action: run("echo hi"), headless: true },
+  ];
+
+  it.each(questions)("with no decision, $name goes ahead as before, after the decider is asked", async (q) => {
+    const { gate, log, decider } = gateIn(q.mode, q.headless);
+    if (q.paused) await pausing(gate);
+    const call = gate.deciding(decider(undefined)).require(q.action);
+    if (q.headless) await expect(call).rejects.toThrow(new Declined(`${p}: ${q.action.summary}`));
+    else await call;
+    expect(log).toEqual(["decider", `asked: ${q.action.summary}`]);
+  });
+
+  it.each(questions)("on an allow, runs the call with no question in place of $name", async (q) => {
+    const { gate, log, decider } = gateIn(q.mode, q.headless);
+    if (q.paused) await pausing(gate);
+    await gate.deciding(decider({ allow: true })).require(q.action);
+    expect(log).toEqual(["decider"]);
+  });
+
+  it.each(questions)("on a deny, refuses the call with its words in place of $name", async (q) => {
+    const { gate, log, decider } = gateIn(q.mode, q.headless);
+    if (q.paused) await pausing(gate);
+    await expect(gate.deciding(decider({ deny: "A hook says no." })).require(q.action)).rejects.toThrow(new Declined("A hook says no."));
+    expect(log).toEqual(["decider"]);
+  });
+
+  it("on an allow, skips the dangerous-command warning, a protected path, a write outside the project, and -p's refusal of a danger", async () => {
+    for (const mode of ["ask", "project"] as const) {
+      const { gate, log, decider } = gateIn(mode);
+      for (const action of [run(push), husky, outsideWrite]) await gate.deciding(decider({ allow: true })).require(action);
+      expect([mode, log]).toEqual([mode, ["decider", "decider", "decider"]]);
+    }
+    const headless = gateIn("project", true);
+    await headless.gate.deciding(headless.decider({ allow: true })).require(run(push));
+    expect(headless.log).toEqual(["decider"]);
+  });
+
+  it("is never asked for never mode's own refusals, nor where never mode asks nothing, in the window or -p", async () => {
+    for (const headless of [false, true]) {
+      const { gate, log, decider } = gateIn("never", headless);
+      const call = () => gate.deciding(decider({ allow: true }));
+      await expect(call().require(run(push))).rejects.toThrow(/^Not allowed: this command matches the dangerous-command check/);
+      await expect(call().require(husky)).rejects.toThrow(/is a protected path \(\.husky\)/);
+      await expect(call().require(outsideWrite)).rejects.toThrow("Not allowed in never mode: write /q/a.txt, which is outside the project.");
+      await call().require(run("echo hi"));
+      await call().require({ ...mcp, outside: false, boxed: true });
+      expect([headless, log]).toEqual([headless, []]);
+    }
+  });
+
+  it("is never asked where auto mode's judge decides", async () => {
+    const { gate, log, judged, decider } = gateIn("auto");
+    for (const action of [outsideRead, husky, mcp]) {
+      await expect(gate.deciding(decider({ allow: true })).require(action)).rejects.toThrow("The judge refused: No.");
+    }
+    expect([log, judged]).toEqual([[], [outsideRead.summary, husky.summary, mcp.summary]]);
+  });
+
+  // A PreToolUse hook's ask, which the session puts before the tool runs (Codex round 1, point 1; round 2, point 2).
+  const NEVER = "Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).";
+  const HEADLESS = "Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask.";
+  type HookAsk = { name: string; mode: Mode; headless?: boolean; mcp?: boolean; boxed?: boolean; decided: boolean; refused?: string };
+  const hookAsks: HookAsk[] = [
+    { name: "ask mode, the decider asked, then the question", mode: "ask", decided: true },
+    { name: "-p, the decider asked, then refused with today's words", mode: "project", headless: true, decided: true, refused: HEADLESS },
+    { name: "never mode on a call not an MCP tool's, refused, the decider not asked", mode: "never", decided: false, refused: NEVER },
+    { name: "never mode on an MCP tool, the decider asked, then the question", mode: "never", mcp: true, decided: true },
+    { name: "never mode on a box server's tool with the network off, refused, the decider not asked", mode: "never", mcp: true, boxed: true, decided: false, refused: NEVER },
+    { name: "-p in never mode on an MCP tool, the decider asked, then refused with today's words", mode: "never", headless: true, mcp: true, decided: true, refused: HEADLESS },
+    { name: "-p in never mode on a call not an MCP tool's, never mode's refusal, the decider not asked", mode: "never", headless: true, decided: false, refused: NEVER },
+  ];
+
+  it.each(hookAsks)("puts a PreToolUse hook's ask with no decider exactly as before: $name", async (h) => {
+    const { gate, log } = gateIn(h.mode, h.headless);
+    expect(await gate.putHookAsk("shell {}", "Sure?", h.mcp, h.boxed)).toBe(h.refused);
+    expect(log).toEqual(h.refused === undefined ? ["asked: shell {}"] : []);
+  });
+
+  it.each(hookAsks)("puts a PreToolUse hook's ask with no decision: $name", async (h) => {
+    const { gate, log, notes, decider } = gateIn(h.mode, h.headless);
+    expect(await gate.deciding(decider(undefined)).putHookAsk("shell {}", "Sure?", h.mcp, h.boxed)).toBe(h.refused);
+    expect(log).toEqual([...(h.decided ? ["decider"] : []), ...(h.refused === undefined ? ["asked: shell {}"] : [])]);
+    expect(notes).toEqual(h.refused === undefined ? ["A hook asks: Sure?"] : []);
+  });
+
+  it.each(hookAsks)("runs a call whose PreToolUse ask the decider allows, where it is asked: $name", async (h) => {
+    const { gate, log, decider } = gateIn(h.mode, h.headless);
+    const refused = await gate.deciding(decider({ allow: true })).putHookAsk("shell {}", "Sure?", h.mcp, h.boxed);
+    expect([refused, log]).toEqual(h.decided ? [undefined, ["decider"]] : [h.refused, []]);
+  });
+
+  it("refuses a call whose PreToolUse ask the decider denies, with its words, asking nobody", async () => {
+    const { gate, log, decider } = gateIn("ask");
+    await expect(gate.deciding(decider({ deny: "No shells." })).putHookAsk("shell {}", "Sure?")).rejects.toThrow(new Declined("No shells."));
+    expect(log).toEqual(["decider"]);
+  });
+
+  // Codex round 3, point 1: one way out for a new input, from the gate's own question inside the tool and from a
+  // PreToolUse hook's ask before it, which step 9 takes.
+  it("raises its own signal to start the call again, carrying the new input, from its own question and from a hook's ask alike", async () => {
+    const input = { command: "echo safer" };
+    for (const headless of [false, true]) {
+      const { gate, log, judged, decider } = gateIn(headless ? "project" : "ask", headless);
+      const fromQuestion = await gate.deciding(decider({ input })).require(run(push)).catch((e: unknown) => e);
+      const fromHook = await gate.deciding(decider({ input })).putHookAsk("shell {}", "Sure?").catch((e: unknown) => e);
+      for (const err of [fromQuestion, fromHook]) {
+        expect(err).toBeInstanceOf(StartAgain);
+        expect((err as StartAgain).input).toBe(input);
+        expect(err).not.toBeInstanceOf(Declined);
+        expect(err).not.toBeInstanceOf(StoppedFirst);
+      }
+      expect([headless, log, judged]).toEqual([headless, ["decider", "decider"], []]);
+    }
+  });
+
+  // Q5: one record for the call, shared by the copy that notes a question was asked and the copies a PreToolUse allow
+  // or yes makes.
+  it("is asked once for a call across its gate's copies, its allow covering every later question", async () => {
+    const { gate, log, decider } = gateIn("ask");
+    const call = gate.noting(() => log.push("noted")).deciding(decider({ allow: true }));
+    expect(await call.putHookAsk("shell {}", "Sure?")).toBeUndefined();
+    await call.withHook({ asked: true }).require(run(push));
+    await call.withHook({ allow: true }).require(husky);
+    await call.require(outsideWrite);
+    expect(log).toEqual(["decider"]);
+  });
+
+  it("leaves every later question of a call to the user, without asking again, when it decided nothing", async () => {
+    const { gate, log, decider } = gateIn("ask");
+    const call = gate.noting(() => log.push("noted")).deciding(decider(undefined));
+    expect(await call.putHookAsk("shell {}", "Sure?")).toBeUndefined();
+    await call.withHook({ asked: true }).require(run(push));
+    await call.require(husky);
+    expect(log).toEqual(["decider", "noted", "asked: shell {}", "noted", `asked: run: ${push}`, "noted", `asked: ${husky.summary}`]);
+    // In -p, refused without asking again.
+    const headless = gateIn("project", true);
+    const call2 = headless.gate.deciding(headless.decider(undefined));
+    expect(await call2.putHookAsk("shell {}", "Sure?")).toBe(HEADLESS);
+    await expect(call2.require(run("echo hi"))).rejects.toThrow(new Declined(`${p}: run: echo hi`));
+    expect(headless.log).toEqual(["decider", "asked: run: echo hi"]);
+  });
+
+  // Step 9's call that starts again: its record is already asked, with no decision, so a decider the session's
+  // PreToolUse handling points it to afterwards is never asked.
+  it("never asks the decider of a gate made already asked, leaving its questions to the user, and re-points one not yet asked", async () => {
+    const { gate, log, decider } = gateIn("ask");
+    const again = gate.deciding(null).deciding(decider({ allow: true }));
+    expect(await again.putHookAsk("shell {}", "")).toBeUndefined();
+    await again.withHook({ asked: true }).require(run(push));
+    expect(log).toEqual(["asked: shell {}", `asked: run: ${push}`]);
+    const headless = gateIn("project", true);
+    await expect(headless.gate.deciding(null).deciding(headless.decider({ allow: true })).require(run("echo hi"))).rejects.toThrow(new Declined(`${p}: run: echo hi`));
+    expect(headless.log).toEqual(["asked: run: echo hi"]);
+    // A decider pointed again before it was asked: the later one is asked, once.
+    const first = gateIn("ask");
+    const seen: string[] = [];
+    const pointed = first.gate.deciding(async () => (seen.push("first"), { allow: true })).deciding(async () => (seen.push("second"), { allow: true }));
+    await pointed.require(run(push));
+    expect([seen, first.log]).toEqual([["second"], []]);
+  });
+
+  // The review of step 7: a call that starts again after a new input gets a record of its own, so it neither keeps the
+  // new input as its answer nor changes the old call's copies.
+  it("gives a gate made already asked from a call's gate a record of its own, so a new input is not raised again", async () => {
+    const { gate, log, decider } = gateIn("ask");
+    const call = gate.deciding(decider({ input: { command: "echo safer" } }));
+    await expect(call.require(run(push))).rejects.toBeInstanceOf(StartAgain);
+    await call.deciding(null).require(run(push));
+    expect(log).toEqual(["decider", `asked: run: ${push}`]);
+    await expect(call.withHook({ asked: true }).require(run(push))).rejects.toBeInstanceOf(StartAgain);
+  });
+
+  // Q6: only the user's own yes resumes auto mode.
+  it("runs one call it allows under auto mode's pause and leaves the pause, which the user's yes to the next question still lifts", async () => {
+    const { gate, log, notes, judged, decider } = gateIn("auto");
+    await pausing(gate);
+    await gate.deciding(decider({ allow: true })).require(outsideRead);
+    await gate.deciding(decider(undefined)).require(outsideRead); // still paused: the user is asked, and says yes
+    await expect(gate.require(outsideRead)).rejects.toThrow("The judge refused: No."); // resumed: the judge decides again
+    expect([log, notes, judged.length]).toEqual([["decider", "decider", "asked: read /q/a.txt"], [PAUSED], 4]);
+  });
+
+  // Codex review of 8e, point 1: a mode switched while the decider runs, by Shift+Tab, is the one the call is decided
+  // under, as a judge's answer is rechecked, and the decider is not asked again.
+  it.each([
+    { name: "decides nothing", decision: undefined },
+    { name: "allows", decision: { allow: true } as const },
+  ])("decides the call again under the mode switched to never while the decider runs, when it $name", async ({ decision }) => {
+    const { gate, log } = gateIn("ask");
+    const switching: Decider = async () => {
+      log.push("decider");
+      gate.mode = "never";
+      return decision;
+    };
+    const call = gate.deciding(switching);
+    await expect(call.require(run(push))).rejects.toThrow(/^Not allowed: this command matches the dangerous-command check/);
+    await call.require(run("echo hi"));
+    expect(log).toEqual(["decider"]);
+  });
+
+  // Codex review 2 of 8e, point 1: the same at a PreToolUse hook's ask, which never mode refuses.
+  it.each([
+    { name: "decides nothing", decision: undefined },
+    { name: "allows", decision: { allow: true } as const },
+  ])("refuses a PreToolUse hook's ask under the mode switched to never while the decider runs, when it $name", async ({ decision }) => {
+    const { gate, log } = gateIn("ask");
+    const switching: Decider = async () => {
+      log.push("decider");
+      gate.mode = "never";
+      return decision;
+    };
+    expect(await gate.deciding(switching).putHookAsk("shell {}", "Sure?")).toBe(NEVER);
+    expect(log).toEqual(["decider"]);
+  });
+
+  it("runs nothing when a stop comes while the decider runs, at its own question and at a hook's ask", async () => {
+    for (const ends of ["rejects", "decides nothing", "allows", "rewrites"] as const) {
+      const { gate, log } = gateIn("ask");
+      const stopping = (stop: AbortController) => async (): Promise<Decision> => {
+        stop.abort();
+        if (ends === "rejects") throw new Error("stopped");
+        if (ends === "decides nothing") return undefined;
+        return ends === "allows" ? { allow: true } : { input: {} };
+      };
+      const one = new AbortController();
+      await expect(gate.deciding(stopping(one)).require(run("echo hi"), one.signal)).rejects.toBeInstanceOf(StoppedFirst);
+      const two = new AbortController();
+      await expect(gate.deciding(stopping(two)).putHookAsk("shell {}", "", false, false, two.signal)).rejects.toBeInstanceOf(StoppedFirst);
+      expect([ends, log]).toEqual([ends, []]);
+    }
   });
 });

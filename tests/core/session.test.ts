@@ -3,12 +3,13 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
 import { privateDir } from "../../src/auth/private.js";
 import type { Events } from "../../src/core/bus.js";
 import { callText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
+import type { InstructionFile } from "../../src/core/instructions.js";
 import { type Ask, Declined, type Judge, PermissionGate } from "../../src/core/permissions.js";
 import { type Conversation, Session, truncateLeaving, UNSAVED } from "../../src/core/session.js";
 import { localDate, setupNote, type Told } from "../../src/core/setup.js";
@@ -27,8 +28,11 @@ import {
 } from "../../src/core/types.js";
 import { type Executor, MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
-import type { Event, Hook } from "../../src/hooks/config.js";
+import { type Event, type Hook, readHooks } from "../../src/hooks/config.js";
 import { Hooks, type Where } from "../../src/hooks/hooks.js";
+import { type Ran, runHook } from "../../src/hooks/run.js";
+import type { Offered } from "../../src/mcp/servers.js";
+import type { McpTools } from "../../src/mcp/tools.js";
 import { fitted, LIMITS } from "../../src/providers/pictures.js";
 import { judgeOf } from "../../src/safety/judge.js";
 import { shellTools } from "../../src/tools/commands.js";
@@ -36,6 +40,7 @@ import { delegateTool } from "../../src/tools/delegate.js";
 import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files.js";
 import { shellText } from "../../src/tools/shell.js";
 import { defineTool, type Tool, type ToolContext } from "../../src/tools/tool.js";
+import { screen, withoutTrailingRows } from "../../src/tui/describe.js";
 import { Pictures } from "../../src/tui/pictures.js";
 import { connect, type Hit, type Palace, type Scope } from "../../src/memory/client.js";
 import type { MemoryState } from "../../src/memory/memory.js";
@@ -43,6 +48,13 @@ import { LESSONS, WING } from "../../src/memory/paths.js";
 import { entriesOf, type Turn as SavedTurn } from "../../src/memory/saver.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, standInRun, tempContext, texts, usage } from "../helpers.js";
 import { readLog } from "../mcp/fake.js";
+
+// Hooks run as they are; the PostModelSwitch tests stand in for some events' runs (release 8e plan, step 14; standIn,
+// below), as tests/tui/app.test.tsx does.
+vi.mock("../../src/hooks/run.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/hooks/run.js")>();
+  return { ...real, runHook: vi.fn(real.runHook) };
+});
 
 const echo = defineTool("echo", "Echo text back", z.object({ text: z.string() }), async ({ text }) => text);
 const boom = defineTool("boom", "Always fails", z.object({}), async () => {
@@ -1142,7 +1154,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       lead,
       tools: [echo],
       system: "t",
-      systemNow: async () => "t, read again",
+      systemNow: async () => ({ system: "t, read again", files: [] }),
       ctx,
       bus,
       transcript,
@@ -1566,7 +1578,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
     const systemNow = async () => {
       stop.abort();
-      return "t, read again";
+      return { system: "t, read again", files: [] };
     };
     const { session, summaries, transcript } = await setup(lead, { systemNow });
     await session.send(big);
@@ -1714,7 +1726,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     // The instruction files are read again after PreCompact (system prompt plan, Task 9, decision 9), so once for a
     // stop at a hook after it; the shortening ends at the stop all the same.
     let reread = 0;
-    const systemNow = async () => (reread++, "t, read again");
+    const systemNow = async () => (reread++, { system: "t, read again", files: [] });
     const { session, errors, notes, summaries, transcript, inputs } = await setup(lead, { systemNow }, [{ event, code: "never" }]);
     await session.send(big);
     const stop = new AbortController();
@@ -1941,7 +1953,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   it("builds a shortening's prompt with today's date after a date change, sending no date note", async () => {
     const built: string[] = [];
-    const systemNow = async (date: string) => (built.push(date), "t, read again");
+    const systemNow = async (date: string) => (built.push(date), { system: "t, read again", files: [] });
     const lead = new Lead("fake:a", [summaryOf("S."), reply("ok")], 1_000_000);
     const { session, transcript } = await resumed(lead, told17, OFF, "2026-11-18", { systemNow });
     expect(await session.compact("")).toBeUndefined();
@@ -1970,7 +1982,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const control = await resumed(counts(new Lead("fake:a", [summaryOf("S.")], 2_000)), told17, LIVE_ON, "2026-11-17");
     expect(await control.session.compact("")).toBeUndefined();
     const lead = counts(new Lead("fake:a", [summaryOf("S."), reply("ok")], 2_000));
-    const systemNow = async () => `t${"y".repeat(2_000)}`;
+    const systemNow = async () => ({ system: `t${"y".repeat(2_000)}`, files: [] });
     const { session, transcript } = await resumed(lead, told17, LIVE_ON, "2026-11-17", { systemNow });
     // The summary's message with the note fits under the old prompt.
     const summary = "This conversation was shortened. A summary of everything before this point:\n\nS.";
@@ -2056,6 +2068,483 @@ process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => {
     expect(summaries).toEqual(["Many x."]);
     expect(texts(session.messages.at(-1)!)).toEqual(["done"]);
   });
+
+  // Release 8e plan, step 10 (design, "The turn ending, and tool batches"; Q8, Q9, Q21, Q22; "Early stop"): StopFailure in
+  // place of Stop when a provider's error ends the lead's turn, matched on `error`, sent the provider's message and the
+  // window's line without its `✗ ` mark. Nothing for a stop, a failed shortening, an unsaved session's "too long", an
+  // early stop that is not an output limit, or a subagent.
+  describe("StopFailure (release 8e plan, step 10)", () => {
+    const failure = (status?: number, words = `failed with ${status ?? "no status"}`) =>
+      Object.assign(new Error(words), status === undefined ? {} : { status });
+    const refusal = (p: string) => ({ ...reply(""), cutOff: { kind: "refusal" as const, detail: `${p} declined` } });
+    // The hooks' inputs, each as its event and the three fields StopFailure is sent.
+    const fired = (inputs: () => Record<string, unknown>[]) =>
+      inputs().map(({ hook_event_name, error, error_details, last_assistant_message }) => ({ hook_event_name, error, error_details, last_assistant_message }));
+    const failures = (inputs: () => Record<string, unknown>[]) => fired(inputs).filter((i) => i.hook_event_name === "StopFailure");
+    const once = (error: string, error_details: string, last_assistant_message: string) =>
+      [{ hook_event_name: "StopFailure", error, error_details, last_assistant_message }];
+    const both: Said[] = [{ event: "StopFailure" }, { event: "Stop" }];
+    // A request the user stops as it goes, rejecting as the SDK does.
+    const stopping = (stop: AbortController) => () => {
+      stop.abort();
+      throw new Error("Request was aborted.");
+    };
+
+    it.each([
+      [429, "rate_limit"], [401, "authentication_failed"], [403, "authentication_failed"], [402, "billing_error"],
+      [400, "invalid_request"], [404, "model_not_found"], [500, "server_error"], [503, "server_error"], [529, "server_error"],
+      [undefined, "unknown"],
+      // A status the design's table does not name is unknown too (the user's choice, 2026-11-23).
+      [413, "unknown"], [422, "unknown"],
+    ] as const)("fires StopFailure once, and not Stop, for a request failing with status %s, as %s", async (status, error) => {
+      const words = `failed with ${status ?? "no status"}`;
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [failure(status)]), {}, both);
+      await session.send("go");
+      expect(errors.map((e) => [e.kind, e.message])).toEqual([["provider", words]]);
+      expect(fired(inputs)).toEqual(once(error, words, `provider: ${words}`));
+    });
+
+    // Step 10's review (the user's choice, 2026-11-23): last_assistant_message is the line as the window shows it, escaped as
+    // tui/describe.ts's screen() escapes a line of prose; error_details is the provider's message as it came.
+    it("sends last_assistant_message escaped as the window shows it, and error_details as the provider gave it", async () => {
+      const words = "bad\u001b[31m red\tx\r\nnext";
+      const { session, inputs } = await setup(new Lead("fake:a", [failure(500, words)]), {}, both);
+      await session.send("go");
+      expect(fired(inputs)).toEqual(once("server_error", words, "provider: bad\\u001b[31m red\tx\nnext"));
+      expect(screen({ text: `provider: ${words}` }).text).toBe("provider: bad\\u001b[31m red\tx\nnext"); // the window's own escape
+    });
+
+    // Step 10's re-check (the user's choice, 2026-11-23): the window drops a line's ending white space when it holds a line
+    // break (tui/describe.ts, withoutTrailingRows), so the hook does too; error_details keeps it.
+    it("sends last_assistant_message without the ending line break the window drops, and error_details with it", async () => {
+      const words = "rate limited \r\n\n";
+      const { session, inputs } = await setup(new Lead("fake:a", [failure(429, words)]), {}, both);
+      await session.send("go");
+      expect(fired(inputs)).toEqual(once("rate_limit", words, "provider: rate limited"));
+      expect(screen(withoutTrailingRows({ text: `provider: ${words}` })).text).toBe("provider: rate limited"); // the window's own
+    });
+
+    it("runs only the StopFailure hooks whose matcher names the error", async () => {
+      const lead = new Lead("fake:a", [failure(429), failure(404)]);
+      const { session, inputs } = await setup(lead, {}, [{ event: "StopFailure", names: ["rate_limit", "server_error"] }]);
+      await session.send("one");
+      await session.send("two");
+      expect(failures(inputs).map((i) => i.error)).toEqual(["rate_limit"]);
+    });
+
+    it("shows no line for a StopFailure hook's exit code 2, its error output or its answer", async () => {
+      const stdout = JSON.stringify({ systemMessage: "seen", decision: "block", reason: "no" });
+      const { session, errors, notes, inputs } = await setup(new Lead("fake:a", [failure(500)]), {}, [{ event: "StopFailure", code: 2, stderr: "no", stdout }]);
+      await session.send("go");
+      expect(failures(inputs)).toHaveLength(1);
+      expect(errors.map((e) => e.kind)).toEqual(["provider"]);
+      expect(notes).toEqual([]);
+    });
+
+    it("fires nothing for a request the user stops", async () => {
+      const stop = new AbortController();
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [stopping(stop)]), {}, both);
+      await session.send("go", stop.signal);
+      expect([errors, fired(inputs)]).toEqual([[], []]);
+    });
+
+    it("fires nothing for a subagent's failed request", async () => {
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [failure(500)]), { subagent: true, id: "t1" }, [{ event: "StopFailure" }], { id: "t1" });
+      await session.send("go");
+      expect(errors.map((e) => e.kind)).toEqual(["provider"]);
+      expect(inputs()).toEqual([]);
+    });
+
+    describe("at the question whether to send again without the pictures", () => {
+      const look: Part[] = [{ type: "text", text: "look " }, { type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }];
+
+      it("fires nothing on yes when the request sent again succeeds", async () => {
+        const lead = new Lead("fake:a", [failure(400), reply("seen")]);
+        const { session, errors, inputs } = await setup(lead, { ask: async () => true }, both);
+        await session.send(look);
+        expect(errors.map((e) => e.status)).toEqual([400]);
+        expect(failures(inputs)).toEqual([]);
+      });
+
+      it("fires once on yes with the second failure, when the request sent again fails too", async () => {
+        const lead = new Lead("fake:a", [failure(400, "first"), failure(500, "second")]);
+        const { session, errors, inputs } = await setup(lead, { ask: async () => true }, both);
+        await session.send(look);
+        expect(errors.map((e) => e.message)).toEqual(["first", "second"]);
+        expect(fired(inputs)).toEqual(once("server_error", "second", "provider: second"));
+      });
+
+      it("fires once on no, with the failure", async () => {
+        const { session, inputs } = await setup(new Lead("fake:a", [failure(400)]), { ask: async () => false }, both);
+        await session.send(look);
+        expect(fired(inputs)).toEqual(once("invalid_request", "failed with 400", "provider: failed with 400"));
+      });
+
+      it("fires nothing on Ctrl-C, which answers no and stops the turn, though the failure's line was shown", async () => {
+        const stop = new AbortController();
+        const ask = async () => (stop.abort(), false);
+        const { session, errors, inputs } = await setup(new Lead("fake:a", [failure(400)]), { ask }, both);
+        await session.send(look, stop.signal);
+        expect(errors.map((e) => [e.kind, e.status])).toEqual([["provider", 400]]);
+        expect(fired(inputs)).toEqual([]);
+      });
+    });
+
+    // Q21: one event, sent the lead's refusal, though the fallback's own line is shown too.
+    it.each([
+      ["no fallback is set", undefined, [["refusal", "response from fake:a"]]],
+      ["the fallback's request fails", [failure(429)], [["provider", "request to fake:b"], ["refusal", "response from fake:a"]]],
+      ["the fallback's request is too long", [new TooLong("prompt is too long")], [["provider", "request to fake:b"], ["refusal", "response from fake:a"]]],
+      ["the fallback refuses too", [refusal("b")], [["refusal", "response from fake:a"], ["refusal", "response from fake:b"]]],
+    ] as const)("fires StopFailure once as unknown, with the lead's refusal, when %s", async (_, rescue, lines) => {
+      const more = rescue ? { fallback: new Lead("fake:b", [...rescue]) } : {};
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [refusal("a")]), more, both);
+      await session.send("go");
+      expect(errors.map((e) => [e.kind, e.attempted])).toEqual(lines);
+      expect(fired(inputs)).toEqual(once("unknown", "a declined", "refusal: a declined"));
+    });
+
+    it("fires nothing when the user stops the fallback's request after the lead's refusal", async () => {
+      const stop = new AbortController();
+      const fallback = new Lead("fake:b", [stopping(stop)]);
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [refusal("a")]), { fallback }, both);
+      await session.send("go", stop.signal);
+      expect(errors.map((e) => e.kind)).toEqual(["refusal"]); // shown as today
+      expect(fired(inputs)).toEqual([]);
+    });
+
+    it("fires StopFailure as invalid_request for a request still too long once shortened, with Tachikoma's line or the provider's", async () => {
+      const lined = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), summaryOf("Many x."), new TooLong("prompt is too long")], 1_000_000);
+      const a = await setup(lined, {}, both);
+      await a.session.send(big);
+      await a.session.send("now this");
+      expect(failures(a.inputs)).toEqual(once("invalid_request", "prompt is too long", tooLongLine(a.session, "fake:a", 1_000_000)));
+      const own = new Lead("fake:a", [reply("noted"), new TooLong("prompt is too long"), summaryOf("Many x."), new TooLong("prompt is too long: 9 > 8")]);
+      const b = await setup(own, {}, both);
+      await b.session.send(big);
+      await b.session.send("now this");
+      expect(failures(b.inputs)).toEqual(once("invalid_request", "prompt is too long: 9 > 8", "provider: prompt is too long: 9 > 8"));
+    });
+
+    it("fires nothing for an unsaved session the provider answers too long, nor when a summary request fails", async () => {
+      const unsaved = await setup(new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long")], 1_000_000), { transcript: await unsavable() }, both);
+      await unsaved.session.send(big);
+      await unsaved.session.send("now this");
+      expect(unsaved.errors.map((e) => e.kind)).toEqual(["saving", "shortening"]);
+      expect(failures(unsaved.inputs)).toEqual([]);
+      const summary = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "I can't summarise that." } };
+      const failed = await setup(new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), summary], 1_000_000), {}, both);
+      await failed.session.send(big);
+      await failed.session.send("now this");
+      expect(failed.errors.map((e) => e.kind)).toEqual(["shortening"]);
+      expect(failures(failed.inputs)).toEqual([]);
+    });
+
+    it("fires nothing when a PreCompact hook blocks the summary for a request the provider answers too long", async () => {
+      const block = JSON.stringify({ decision: "block", reason: "not now" });
+      const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long")], 1_000_000);
+      const { session, errors, inputs } = await setup(lead, {}, [{ event: "PreCompact", stdout: block }, { event: "StopFailure" }]);
+      await session.send(big);
+      await session.send("now this");
+      expect(lead.seen).toHaveLength(2); // no summary request
+      expect(errors.map((e) => [e.kind, e.message])).toEqual([
+        ["shortening", "The conversation could not be shortened (a PreCompact hook blocked it: not now); it is unchanged."],
+      ]);
+      expect(inputs().map((i) => i.hook_event_name)).toEqual(["PreCompact"]);
+    });
+
+    const windowLine = "max_tokens: The conversation filled the context window";
+    const filled = "The conversation filled the context window";
+    it("fires StopFailure as max_output_tokens for a reply that fills the window again once shortened", async () => {
+      const { session, inputs } = await setup(new Lead("fake:a", [measured("noted"), cutAtWindow, summaryOf("Many x."), cutAtWindow], 1_000_000), {}, both);
+      await session.send(big);
+      await session.send("now this");
+      expect(failures(inputs)).toEqual(once("max_output_tokens", filled, windowLine));
+    });
+
+    it("fires StopFailure as max_output_tokens for an unsaved session whose reply fills the window (Q22)", async () => {
+      const { session, errors, inputs } = await setup(new Lead("fake:a", [cutAtWindow]), { transcript: await unsavable() }, both);
+      await session.send("go");
+      expect(errors.map((e) => e.kind)).toEqual(["saving", "max_tokens"]);
+      expect(fired(inputs)).toEqual(once("max_output_tokens", filled, windowLine));
+    });
+
+    it("fires StopFailure as max_output_tokens for a fallback's reply that fills the window", async () => {
+      const { session, inputs } = await setup(new Lead("fake:a", [refusal("a")]), { fallback: new Lead("fake:b", [cutAtWindow]) }, both);
+      await session.send("go");
+      expect(fired(inputs)).toEqual(once("max_output_tokens", filled, windowLine));
+    });
+
+    // "Early stop": the ChatGPT provider's two cut-offs (tests/providers/chatgpt.test.ts), told apart by the mark alone.
+    it("fires StopFailure as max_output_tokens for a reply cut off at the output limit, and nothing for one stopped early for another reason", async () => {
+      const limit = { ...reply("par"), cutOff: { kind: "max_tokens" as const, detail: "The response reached its length limit", limit: true as const } };
+      const cut = await setup(new Lead("fake:a", [limit]), {}, both);
+      await cut.session.send("go");
+      expect(fired(cut.inputs)).toEqual(once("max_output_tokens", "The response reached its length limit", "max_tokens: The response reached its length limit"));
+      const detail = 'The response stopped early, for a reason OpenAI gives as "max_messages"';
+      const other = await setup(new Lead("fake:a", [{ ...reply("par"), cutOff: { kind: "max_tokens", detail } }]), {}, both);
+      await other.session.send("go");
+      expect(other.errors.map((e) => [e.kind, e.message])).toEqual([["max_tokens", detail]]);
+      expect(fired(other.inputs)).toEqual([]);
+    });
+  });
+
+  // Release 8e plan, step 12 (Q11): the time the lead's own conversation request got its reply, kept for a switch's
+  // prompt_cache_warm; never moved by a judge's, a summary's or a fallback rescue's request. `Date` alone is faked.
+  describe("the time of the lead's last reply (release 8e plan, step 12)", () => {
+    const T1 = Date.UTC(2026, 10, 23, 12);
+    const T2 = T1 + 60_000;
+    const T3 = T1 + 120_000;
+    const clock = (at: number) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      onTestFinished(() => void vi.useRealTimers());
+      vi.setSystemTime(at);
+    };
+    // A reply that comes at `at`: the provider takes that long to answer.
+    const replyAt = (at: number, turn: Turn) => () => {
+      vi.setSystemTime(at);
+      return turn;
+    };
+
+    it("is the lead's reply's time, with the lead, and none before the first reply", async () => {
+      clock(T1);
+      const { session } = await setup(new Lead("fake:a", [reply("one"), replyAt(T3, reply("two"))]));
+      expect(session.lastReply).toBeUndefined();
+      await session.send("hi");
+      expect(session.lastReply).toEqual({ lead: "fake:a", at: T1 });
+      await session.send("again");
+      expect(session.lastReply).toEqual({ lead: "fake:a", at: T3 });
+    });
+
+    it("is the lead's own refused reply's time when a fallback rescues it, the fallback's reply not moving it", async () => {
+      clock(T1);
+      const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+      const { session } = await setup(new Lead("fake:a", [refused]), { fallback: new Lead("fake:b", [replyAt(T2, reply("answered by b"))]) });
+      await session.send("go");
+      expect(texts(session.messages.at(-1)!)).toEqual(["answered by b"]);
+      expect(session.lastReply).toEqual({ lead: "fake:a", at: T1 });
+    });
+
+    it("is not moved by a summary's request", async () => {
+      clock(T1);
+      const { session, summaries } = await setup(new Lead("fake:a", [measured("noted"), replyAt(T2, summaryOf("Compacted."))], 1_000_000));
+      await session.send(big);
+      expect(await session.compact("")).toBeUndefined();
+      expect(summaries).toEqual(["Compacted."]);
+      expect(session.lastReply).toEqual({ lead: "fake:a", at: T1 });
+    });
+
+    it("is not moved by auto mode's judge's request", async () => {
+      clock(T1);
+      const judge: Provider = {
+        id: "fake:judge",
+        complete: async () => replyAt(T2, reply(JSON.stringify({ allow: false, reason: "It was not asked for." })))(),
+      };
+      const ctx = await tempContext();
+      let session: Session | undefined;
+      const gate = new PermissionGate("auto", async () => false, undefined, { root: ctx.root, headless: false, judge: judgeOf(judge, () => session!, "", new Bus()) });
+      let atSecond: unknown;
+      const lead = new Lead("fake:a", [
+        callTool("c1", "write_file", { path: path.join(top, "elsewhere", "a.txt"), content: "x" }),
+        () => {
+          atSecond = structuredClone(session!.lastReply);
+          return replyAt(T3, reply("done"))();
+        },
+      ]);
+      session = (await setup(lead, { tools: [writeFileTool], ctx: { ...ctx, gate } })).session;
+      await session.send("write it");
+      expect(session.messages[2]!.parts[0]).toMatchObject({ type: "tool_result", isError: true, output: expect.stringContaining("It was not asked for.") });
+      expect(atSecond).toEqual({ lead: "fake:a", at: T1 });
+      expect(session.lastReply).toEqual({ lead: "fake:a", at: T3 });
+    });
+
+    // The user's choice (step 12's review): /clear and /resume start with none until the new conversation's first lead
+    // reply; /branch, the same messages up to the branch point, keeps it. Each is a load, as queue.ts makes it.
+    it.each([
+      ["/clear", false, () => []],
+      ["/resume", false, () => [typed("an older question"), { role: "assistant" as const, parts: [{ type: "text" as const, text: "an older answer" }] }]],
+      ["/branch", true, (s: Session) => [...s.messages]],
+    ] as const)("after %s, keepRuns %s, keeps the time only for a branch", async (how, keepRuns, messages) => {
+      clock(T1);
+      const { session } = await setup(new Lead("fake:a", [reply("one")]));
+      await session.send("hi");
+      const conversation: Conversation = { id: "s2", messages: messages(session), system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 };
+      session.load(conversation, keepRuns ? { keepRuns } : {});
+      expect(session.lastReply).toEqual(how === "/branch" ? { lead: "fake:a", at: T1 } : undefined);
+    });
+  });
+
+  // Release 8e plan, step 15: InstructionsLoaded for each instruction file a fresh read put into the conversation's prompt,
+  // fired and not waited for (step 4). Its hooks' runs are stood in for, as step 14's are (runHook, mocked above); an
+  // mcp_tool hook's call is real.
+  describe("InstructionsLoaded (release 8e plan, step 15)", () => {
+    interface Stood { command: string; input: Record<string, unknown>; saved: boolean }
+    const ran = (stdout = "", code = 0, stderr = ""): Ran => ({ code, stdout, stderr, ms: 1 });
+    // Each run answers `answer` at once; `saved` is whether `transcript` then held a shortening's line.
+    function standIn(transcript?: Transcript, answer: Ran = ran()): Stood[] {
+      const runs: Stood[] = [];
+      const real = vi.mocked(runHook).getMockImplementation()!;
+      onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+      vi.mocked(runHook).mockImplementation(async (hook, input, opts) => {
+        const fields = input as Record<string, unknown>;
+        if (fields.hook_event_name !== "InstructionsLoaded") return real(hook, input, opts);
+        runs.push({ command: hook.command, input: fields, saved: transcript ? savedLines(transcript).some((l) => l.t === "shortened") : false });
+        return answer;
+      });
+      return runs;
+    }
+    const hook = (over: Partial<Hook> = {}): Hook => ({ event: "InstructionsLoaded", matcher: { all: true }, command: "loaded", async: false, where: "", ...over });
+    // The files a read put in: the user's CLAUDE.md, the project's, and an import of the project's.
+    const files = (): InstructionFile[] => {
+      const project = path.join(top, "proj", "CLAUDE.md");
+      return [
+        { path: path.join(top, "home", ".claude", "CLAUDE.md"), size: 4, type: "User" },
+        { path: project, size: 9, type: "Project" },
+        { path: path.join(top, "proj", "a.md"), size: 1, type: "Project", parent: project },
+      ];
+    };
+    // What each is sent of its own, by file.
+    const sent = (reason: string) => {
+      const [home, project, imported] = files();
+      return [
+        { file_path: home!.path, memory_type: "User", load_reason: reason },
+        { file_path: project!.path, memory_type: "Project", load_reason: reason },
+        { file_path: imported!.path, memory_type: "Project", load_reason: "include", parent_file_path: project!.path },
+      ];
+    };
+    const own = (runs: Stood[]) =>
+      runs.map(({ input: { file_path, memory_type, load_reason, ...rest } }) => ({
+        file_path,
+        memory_type,
+        load_reason,
+        ...("parent_file_path" in rest ? { parent_file_path: rest.parent_file_path } : {}),
+      }));
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+    const loadedRuns = (hooks: Hooks) => hooks.runs.filter((r) => r.event === "InstructionsLoaded");
+
+    // The lead's session, its hooks `given` and its prompt read again finding files() unless `found` is given.
+    async function loading(lead: Provider, given: Hook[], more: Partial<ConstructorParameters<typeof Session>[0]> = {}, found = files) {
+      const bus = new Bus();
+      const errors = collectErrors(bus);
+      const notes: string[] = [];
+      bus.on("hook-note", (line) => notes.push(line));
+      const ctx = await tempContext();
+      const where: Where = { sessionId: () => "s1", transcript: () => undefined, root: ctx.root, mode: () => "never", effort: () => undefined, lead: () => "fake:a" };
+      const hooks = new Hooks({ hooks: given, off: false, leftOut: [] }, where, bus);
+      let reads = 0;
+      const transcript = more.transcript ?? saving();
+      const session = new Session({
+        lead,
+        tools: [echo],
+        system: "t",
+        systemNow: async () => (reads++, { system: "t, read again", files: found() }),
+        ctx,
+        bus,
+        transcript,
+        hooks,
+        ...more,
+      });
+      return { session, hooks, errors, notes, transcript, reads: () => reads };
+    }
+
+    it("fires for each file as session_start, an import as include with its parent, outside a turn: listed with the next", async () => {
+      const { session, hooks, errors } = await loading(new Lead("fake:a", [reply("one")]), [hook()]);
+      const runs = standIn();
+      session.instructionsLoaded(files(), "session_start");
+      await settle();
+      expect(own(runs)).toEqual(sent("session_start"));
+      expect(runs.map((r) => r.input.hook_event_name)).toEqual(["InstructionsLoaded", "InstructionsLoaded", "InstructionsLoaded"]);
+      expect(loadedRuns(hooks)).toEqual([]);
+      await session.send("go");
+      expect(loadedRuns(hooks).map((r) => r.hook.command)).toEqual(["loaded", "loaded", "loaded"]);
+      expect(errors).toEqual([]);
+    });
+
+    it("fires as compact once a /compact's shortening is saved, its import as include, listed with the next turn", async () => {
+      const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted."), reply("next")], 1_000_000);
+      const { session, hooks, transcript } = await loading(lead, [hook()]);
+      const runs = standIn(transcript);
+      await session.send(big);
+      expect(runs).toEqual([]);
+      expect(await session.compact("")).toBeUndefined();
+      await settle();
+      expect(own(runs)).toEqual(sent("compact"));
+      expect(runs.map((r) => r.saved)).toEqual([true, true, true]);
+      expect(loadedRuns(hooks)).toEqual([]);
+      await session.send("go on");
+      expect(loadedRuns(hooks)).toHaveLength(3);
+    });
+
+    it("fires as compact once a turn's shortening is saved, listed with that turn", async () => {
+      const lead = new Lead("fake:a", [measured("noted"), summaryOf("The user sent many x."), reply("done")], 700);
+      const { session, hooks, transcript } = await loading(lead, [hook()]);
+      const runs = standIn(transcript);
+      await session.send(big);
+      await session.send("now this");
+      await settle();
+      expect(own(runs)).toEqual(sent("compact"));
+      expect(runs.map((r) => r.saved)).toEqual([true, true, true]);
+      expect(loadedRuns(hooks)).toHaveLength(3);
+    });
+
+    it.each([
+      ["its summary request fails", () => ({ turns: [measured("noted"), new Error("down")], transcript: undefined })],
+      ["its line cannot be written", () => {
+        const t = saving();
+        return { turns: [measured("noted"), summaryOf("Compacted.")], transcript: new FailsThere(t.file, t.pictures, { inherits: true }) };
+      }],
+    ])("fires nothing for a shortening whose files were read when %s", async (_how, given) => {
+      const { turns, transcript } = given();
+      const { session, reads } = await loading(new Lead("fake:a", turns, 1_000_000), [hook()], transcript ? { transcript } : {});
+      const runs = standIn();
+      await session.send(big);
+      expect(await session.compact("")).toBeDefined();
+      await settle();
+      expect([reads(), runs]).toEqual([1, []]);
+    });
+
+    it("runs only the hooks whose matcher names the load_reason", async () => {
+      const given = [hook({ command: "imports", matcher: { names: ["include"] } }), hook({ command: "starts", matcher: { names: ["session_start"] } })];
+      const { session } = await loading(new Lead("fake:a", []), given);
+      const runs = standIn();
+      session.instructionsLoaded(files(), "session_start");
+      await settle();
+      expect(runs.map((r) => [r.command, r.input.load_reason])).toEqual([["starts", "session_start"], ["starts", "session_start"], ["imports", "include"]]);
+    });
+
+    it("fires nothing for a subagent, at a call or at its shortening", async () => {
+      const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
+      const { session } = await loading(lead, [hook()], { subagent: true, id: "t1" });
+      const runs = standIn();
+      session.instructionsLoaded(files(), "session_start");
+      await session.send(big);
+      expect(await session.compact("")).toBeUndefined();
+      await settle();
+      expect(runs).toEqual([]);
+    });
+
+    it("shows no line for exit code 2, its error output or its answer", async () => {
+      const { session, errors, notes } = await loading(new Lead("fake:a", []), [hook()]);
+      const runs = standIn(undefined, ran(JSON.stringify({ systemMessage: "seen", decision: "block" }), 2, "nope"));
+      session.instructionsLoaded(files(), "session_start");
+      await settle();
+      expect([runs.length, errors, notes]).toEqual([3, [], []]);
+    });
+
+    // Q14: as 8c skips them at the launch's SessionStart, before the window's first SessionStart (hooks.ts); /clear's, after
+    // it, runs them, this one failing as its server is not running.
+    it("does not run an mcp_tool hook at the launch, saying nothing, and runs it at /clear", async () => {
+      const mcp = hook({ command: "", mcp: { server: "notes", tool: "look", input: {} } });
+      const { session, errors } = await loading(new Lead("fake:a", []), [mcp], {}, () => files().slice(1, 2));
+      session.instructionsLoaded(files().slice(1, 2), "session_start");
+      await settle();
+      expect(errors).toEqual([]);
+      session.start("startup");
+      session.instructionsLoaded(files().slice(1, 2), "session_start");
+      await vi.waitFor(() => expect(errors.map((e) => [e.kind, e.attempted])).toEqual([["hook", "InstructionsLoaded hook"]]));
+      expect(errors[0]!.message).toContain("notes is not running");
+    });
+  });
 });
 
 // Release 8b plan, Task 6 (design, "Tool hooks"; choices 10, 15 and 16): PreToolUse before each call, its answer against
@@ -2130,10 +2619,11 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   type Answers = (boolean | Promise<boolean>)[];
   // `judge` is auto mode's, which says no at once unless given. With `worker`, the lead has delegate, its subagents running
   // on that model with the lead's hooks, and the session has their Tasks. With `commands`, a stand-in executor, the lead's
-  // shell, shell_output and stop_task are the real ones (tools/commands.ts), their commands in those Tasks.
+  // shell, shell_output and stop_task are the real ones (tools/commands.ts), their commands in those Tasks. `mcp`, the
+  // session's MCP tools.
   async function setup(o: {
     mode: Mode5; says: Says[]; turns: Turn[]; answers?: Answers; transcript?: Transcript; root?: string; tools?: Tool[]; judge?: Judge;
-    inbox?: () => string[]; worker?: Provider; commands?: Executor;
+    inbox?: () => string[]; worker?: Provider; commands?: Executor; mcp?: McpTools;
   }) {
     const root = o.root ?? (await folder());
     const { script, seq, out } = await hookFolder();
@@ -2207,6 +2697,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       ...(tasks ? { tasks, inbox: () => tasks.take() } : {}),
       ...(o.transcript ? { transcript: o.transcript } : {}),
       ...(o.inbox ? { inbox: o.inbox } : {}),
+      ...(o.mcp ? { mcp: o.mcp } : {}),
     });
     // Whole lines only: the last piece is empty once the hook has written its line, or the part of it written so far.
     const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").slice(0, -1).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
@@ -3401,6 +3892,57 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(s.given.runs).toBe(last);
   });
 
+  // Release 8e plan, step 4 (design: runs outside a turn "are listed with the next turn"): a prompt a UserPromptSubmit hook
+  // blocks starts no turn, so the runs fired outside a turn before it are listed with the next real turn, one answering
+  // after the blocked prompt too; Ctrl+O lists the last turn's runs meanwhile, as before.
+  it("lists runs fired outside a turn with the next real turn, not a prompt a UserPromptSubmit hook blocked, a late one too", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const says: Says[] = [
+      { event: "UserPromptSubmit", stdout: "", seq: ["", block("no"), ""] },
+      { event: "Notification", stdout: "", names: ["idle_prompt"] },
+      { event: "Notification", stdout: "", names: ["auth_success"], go },
+    ];
+    const s = await setup({ mode: "never", root, says, turns: [reply("one"), reply("two")] });
+    const events = () => s.given.runs.map((r) => [r.event, ...(r.match ? [r.match] : [])]);
+    await s.session.send("go");
+    const last = s.given.runs;
+    await s.given.fire("Notification", {}, { match: "idle_prompt", outside: true });
+    const late = s.given.fireAndLeave("Notification", {}, { match: "auth_success", outside: true });
+    await until(() => s.inputs().length === 3);
+    expect(events()).toEqual([["UserPromptSubmit"]]);
+    expect(await s.session.send("again")).toEqual({ blocked: "no" });
+    expect(s.given.runs).toBe(last);
+    writeFileSync(go, "");
+    await late;
+    expect(events()).toEqual([["UserPromptSubmit"]]);
+    await s.session.send("third");
+    expect(events()).toEqual([["Notification", "idle_prompt"], ["Notification", "auth_success"], ["UserPromptSubmit"]]);
+  });
+
+  // /branch keeps the list Ctrl+O shows (the user's choice, 2026-11-10); a run fired outside a turn that answers after it
+  // stays out of that list and joins the next turn's (Codex round 2, point 11), a load in between too.
+  it("keeps a run fired outside a turn out of the list a /branch keeps, and lists it with the next turn, after a load too", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const says: Says[] = [{ event: "UserPromptSubmit", stdout: "" }, { event: "Notification", stdout: "", go }];
+    const s = await setup({ mode: "never", root, says, turns: [reply("one"), reply("two")] });
+    const events = () => s.given.runs.map((r) => r.event);
+    await s.session.send("go");
+    const last = s.given.runs;
+    const late = s.given.fireAndLeave("Notification", {}, { outside: true });
+    await until(() => s.inputs().length === 2);
+    s.session.load(fresh("s2", [...s.session.messages]), { keepRuns: true });
+    writeFileSync(go, "");
+    await late;
+    expect(s.given.runs).toBe(last);
+    expect(events()).toEqual(["UserPromptSubmit"]);
+    s.session.load(fresh("s3", [...s.session.messages]));
+    expect(events()).toEqual([]);
+    await s.session.send("more");
+    expect(events()).toEqual(["Notification", "UserPromptSubmit"]);
+  });
+
   // A switch's SessionEnd is sent the last prompt's id, as its conversation's, and the SessionStart after the load
   // none, as a launch's before any prompt.
   it.each(["clear", "resume"] as const)("sends the SessionEnd of a /%s the last prompt's id, and the SessionStart after it none", async (how) => {
@@ -3416,6 +3958,939 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(prompt!.prompt_id).toEqual(expect.any(String));
     expect(end!.prompt_id).toBe(prompt!.prompt_id);
     expect("prompt_id" in start!).toBe(false);
+  });
+
+  // Release 8e plan, step 6 (design, "The permission events"): PermissionDenied runs when auto mode's judge refuses a call,
+  // before the refusal goes back to the model, and a hook's retry adds the design's sentence to the judge's own refusal
+  // only, not when the judge could not be reached or its answer could not be read.
+  const denied = (fields: object) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionDenied", ...fields } });
+  const RETRY = "A hook says you may try this again.";
+  const NO: Judge = async () => ({ allow: false, reason: "It was not asked for." });
+  const deniedInputs = (s: { inputs: () => Record<string, unknown>[] }) => s.inputs().filter((i) => i.hook_event_name === "PermissionDenied");
+  // A stand-in MCP server's tool, which asks the gate as approveOf does (mcp/tools.ts).
+  const lookup: Offered = {
+    spec: { name: "mcp__docs__lookup", description: "Looks a word up", inputSchema: { type: "object" } },
+    server: "docs", tool: "lookup", connection: 1, definition: "{}", forJudge: "Looks a word up", forNote: "Looks a word up",
+  };
+  const docs: McpTools = {
+    loaded: new Set(),
+    offer: () => ({ defined: [lookup] }),
+    tool: (o) => ({
+      spec: o.spec,
+      run: async (input, ctx) => {
+        await ctx.gate.require({ kind: "mcp", outside: true, summary: `${o.server}: ${o.tool} ${JSON.stringify(input)}` }, ctx.signal);
+        return "found";
+      },
+    }),
+  };
+
+  it("fires PermissionDenied when the judge refuses a write, sent the input that ran in Claude Code's names and the judge's reason", async () => {
+    const elsewhere = await folder();
+    const asked = path.join(elsewhere, "a.txt");
+    const ran = path.join(elsewhere, "b.txt");
+    const says: Says[] = [{ stdout: rewrite({ file_path: ran, content: "x" }) }, { event: "PermissionDenied", stdout: "" }];
+    const s = await setup({ mode: "auto", says, turns: oneCall("write_file", { path: asked, content: "x" }), judge: NO });
+    await s.session.send("go");
+    expect([existsSync(asked), existsSync(ran)]).toEqual([false, false]);
+    const fired = { tool_name: "Write", tool_input: { file_path: ran, content: "x" }, tool_use_id: "c1", reason: "It was not asked for." };
+    expect(deniedInputs(s)).toEqual([expect.objectContaining(fired)]);
+    expect("mcp_server" in deniedInputs(s)[0]!).toBe(false);
+    expect([s.results(), s.outcomes, s.notes, s.errors]).toEqual([[{ output: "The judge refused: It was not asked for.", isError: true }], ["declined"], [], []]);
+  });
+
+  it("sends PermissionDenied an MCP tool's server as mcp_server", async () => {
+    const says: Says[] = [{ event: "PermissionDenied", stdout: "" }];
+    const s = await setup({ mode: "auto", says, turns: oneCall("mcp__docs__lookup", { word: "hi" }), judge: NO, mcp: docs });
+    await s.session.send("go");
+    const fired = { tool_name: "mcp__docs__lookup", tool_input: { word: "hi" }, tool_use_id: "c1", reason: "It was not asked for.", mcp_server: "docs" };
+    expect(deniedInputs(s)).toEqual([expect.objectContaining(fired)]);
+    expect(s.results()).toEqual([{ output: "The judge refused: It was not asked for.", isError: true }]);
+  });
+
+  it("adds the design's sentence to the judge's refusal when a PermissionDenied hook says the model may try again", async () => {
+    const says: Says[] = [{ event: "PermissionDenied", stdout: denied({ retry: true }) }];
+    const s = await setup({ mode: "auto", says, turns: shellCall("echo hi"), judge: NO });
+    await s.session.send("go");
+    expect([s.results(), s.outcomes, s.ran, s.notes, s.errors]).toEqual([
+      [{ output: `The judge refused: It was not asked for. ${RETRY}`, isError: true }], ["declined"], [], [], [],
+    ]);
+    const mcp = await setup({ mode: "auto", says, turns: oneCall("mcp__docs__lookup", { word: "hi" }), judge: NO, mcp: docs });
+    await mcp.session.send("go");
+    expect(mcp.results()).toEqual([{ output: `The judge refused: It was not asked for. ${RETRY}`, isError: true }]);
+  });
+
+  it.each([
+    ["could not be reached", { allow: false, reason: "the judge could not be reached: offline", noVerdict: "unreachable" }],
+    ["gave an answer that could not be read", { allow: false, reason: "the judge's answer could not be read", noVerdict: "unreadable" }],
+  ] as const)("fires PermissionDenied but adds no sentence for its retry when the judge %s", async (_name, verdict) => {
+    const says: Says[] = [{ event: "PermissionDenied", stdout: denied({ retry: true }) }];
+    const s = await setup({ mode: "auto", says, turns: shellCall("echo hi"), judge: async () => verdict });
+    await s.session.send("go");
+    expect(deniedInputs(s)).toEqual([expect.objectContaining({ tool_name: "Bash", reason: verdict.reason })]);
+    expect([s.results(), s.outcomes]).toEqual([[{ output: `The judge refused: ${verdict.reason}`, isError: true }], ["declined"]]);
+  });
+
+  // As at PostToolUse: a throw that is not a stop, here a listener of the hooks' lines, is said as a red line, and the
+  // model gets the judge's refusal unchanged, the hook's retry not read.
+  it("gives the judge's refusal unchanged when a listener of the hooks' lines throws at PermissionDenied, saying so", async () => {
+    const says: Says[] = [{ event: "PermissionDenied", stdout: JSON.stringify({ systemMessage: "hello", hookSpecificOutput: { hookEventName: "PermissionDenied", retry: true } }) }];
+    const s = await setup({ mode: "auto", says, turns: shellCall("echo hi"), judge: NO });
+    s.bus.on("hook-note", () => {
+      throw new Error("listener broke");
+    });
+    await s.session.send("go");
+    expect(deniedInputs(s)).toHaveLength(1);
+    expect([s.results(), s.outcomes]).toEqual([[{ output: "The judge refused: It was not asked for.", isError: true }], ["declined"]]);
+    expect(s.errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([["hook", "PermissionDenied hook", "PermissionDenied hook failed: listener broke"]]);
+  });
+
+  it("runs only the PermissionDenied hooks whose matcher names the refused tool", async () => {
+    const says: Says[] = [
+      { event: "PermissionDenied", names: ["Write"], stdout: denied({ retry: true }) },
+      { event: "PermissionDenied", names: ["Bash"], stdout: "" },
+    ];
+    const s = await setup({ mode: "auto", says, turns: shellCall("echo hi"), judge: NO });
+    await s.session.send("go");
+    expect(deniedInputs(s)).toEqual([expect.objectContaining({ tool_name: "Bash" })]);
+    expect(s.results()).toEqual([{ output: "The judge refused: It was not asked for.", isError: true }]);
+  });
+
+  it("still counts a refusal a PermissionDenied hook says may be tried again toward auto mode's pause", async () => {
+    const turns = [1, 2, 3, 4].map((n) => callTool(`c${n}`, "shell", { command: `echo ${n}` }));
+    const says: Says[] = [{ event: "PermissionDenied", stdout: denied({ retry: true }) }];
+    const s = await setup({ mode: "auto", says, turns: [...turns, reply("ok")], judge: NO });
+    await s.session.send("go");
+    expect(s.judged).toEqual(["run: echo 1", "run: echo 2", "run: echo 3"]);
+    expect(s.asked).toEqual([{ summary: "run: echo 4", note: "Auto mode paused after 3 refusals; approving this resumes it." }]);
+    expect(deniedInputs(s)).toHaveLength(3);
+  });
+
+  it("gives no red line for a PermissionDenied hook's exit code 2, and still reads a retry printed with it", async () => {
+    const plain = await setup({ mode: "auto", says: [{ event: "PermissionDenied", stdout: "nope", code: 2 }], turns: shellCall("echo hi"), judge: NO });
+    await plain.session.send("go");
+    expect([plain.results(), plain.notes, plain.errors]).toEqual([[{ output: "The judge refused: It was not asked for.", isError: true }], [], []]);
+    expect(deniedInputs(plain)).toHaveLength(1);
+    const retry = await setup({ mode: "auto", says: [{ event: "PermissionDenied", stdout: denied({ retry: true }), code: 2 }], turns: shellCall("echo hi"), judge: NO });
+    await retry.session.send("go");
+    expect([retry.results(), retry.errors]).toEqual([[{ output: `The judge refused: It was not asked for. ${RETRY}`, isError: true }], []]);
+  });
+
+  it("fires a subagent's PermissionDenied with its agent_id, and its retry reaches the subagent's model", async () => {
+    const root = await folder();
+    const elsewhere = path.join(await folder(), "a.txt");
+    writeFileSync(elsewhere, "A\n");
+    const { script, out } = await hookFolder();
+    const hook: Hook = { event: "PermissionDenied", matcher: { all: true }, command: process.execPath, args: [script, out, denied({ retry: true }), "0"], async: false, where: "" };
+    const bus = new Bus();
+    const gate = new PermissionGate("auto", async () => false, undefined, { root, headless: false, judge: NO });
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const worker = new FakeProvider("w", [callTool("c1", "read_file", { path: elsewhere }), reply("found it")]);
+    const tasks = new Tasks({
+      bus,
+      max: 8,
+      worker: () => worker,
+      system: "sub",
+      tools: [readFileTool],
+      ctx: { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate },
+      hooks: new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, bus),
+    });
+    expect(await tasks.start("look", { background: false }).done).toEqual({ state: "done", text: "found it" });
+    const inputs = readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+    const fired = { hook_event_name: "PermissionDenied", agent_id: "t1", agent_type: "Explore", tool_name: "Read", tool_input: { file_path: elsewhere }, tool_use_id: "c1" };
+    expect(inputs).toEqual([expect.objectContaining(fired)]);
+    const told = worker.seen[1]!.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [p.output] : [])));
+    expect(told).toEqual([`The judge refused: It was not asked for. ${RETRY}`]);
+  });
+
+  // Release 8e plan, step 8 (design, "The permission events"): PermissionRequest runs just before a question about a tool
+  // call, and in -p where the call would be refused, sent the input that would run; its allow runs the call unasked, its
+  // deny refuses it with W1, and its interrupt also ends the turn with W2. A rewrite is step 9's (below).
+  const permission = (decision: object) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision } });
+  const ALLOW = permission({ behavior: "allow" });
+  const requested = (s: { inputs: () => Record<string, unknown>[] }) => s.inputs().filter((i) => i.hook_event_name === "PermissionRequest");
+  const W1 = (tool: string, message?: string) => (message ? `A PermissionRequest hook refused ${tool}: ${message}` : `A PermissionRequest hook refused ${tool}.`);
+  // The question each mode puts: ask and project, and -p, for a plain command; auto for a danger; never for an MCP call.
+  // Each test makes its turns afresh, as the stand-in model uses them up.
+  const QUESTIONS = [
+    ["ask", () => shellCall("echo hi"), "shell", "ran echo hi"],
+    ["project", () => shellCall("echo hi"), "shell", "ran echo hi"],
+    ["auto", () => shellCall(push), "shell", `ran ${push}`],
+    ["never", () => oneCall("mcp__docs__lookup", { word: "hi" }), "mcp__docs__lookup", "found"],
+    ["-p", () => shellCall("echo hi"), "shell", "ran echo hi"],
+  ] as const;
+
+  it("sends PermissionRequest a shell call in Claude Code's names, with no tool_use_id and no mcp_server", async () => {
+    const s = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: ALLOW }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "Bash", tool_input: { command: "echo hi" } })]);
+    expect(["tool_use_id" in requested(s)[0]!, "mcp_server" in requested(s)[0]!]).toEqual([false, false]);
+    expect([s.ran, s.asked, s.notes, s.errors]).toEqual([["echo hi"], [], [], []]);
+  });
+
+  it("sends PermissionRequest a write's input as a PreToolUse hook rewrote it, and its allow writes the rewritten path unasked", async () => {
+    const root = await folder();
+    const b = path.join(root, "b.txt");
+    const says: Says[] = [{ stdout: rewrite({ file_path: b, content: "x" }) }, { event: "PermissionRequest", stdout: ALLOW }];
+    const s = await setup({ mode: "ask", root, says, turns: oneCall("write_file", { path: "a.txt", content: "x" }) });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "Write", tool_input: { file_path: b, content: "x" } })]);
+    expect([existsSync(path.join(root, "a.txt")), readFileSync(b, "utf8"), s.asked]).toEqual([false, "x", []]);
+  });
+
+  it("sends PermissionRequest an MCP call's input and its server as mcp_server", async () => {
+    const s = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: ALLOW }], turns: oneCall("mcp__docs__lookup", { word: "hi" }), mcp: docs });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "mcp__docs__lookup", tool_input: { word: "hi" }, mcp_server: "docs" })]);
+    expect([s.results(), s.asked]).toEqual([[{ output: "found", isError: false }], []]);
+  });
+
+  it("sends PermissionRequest the input a PreToolUse hook rewrote and asked about, in ask mode before the question", async () => {
+    const pre = rewrite({ command: "echo two" }, { permissionDecision: "ask", permissionDecisionReason: "Sure?" });
+    const s = await setup({ mode: "ask", says: [{ stdout: pre }, { event: "PermissionRequest", stdout: "" }], turns: shellCall("echo one"), answers: [true] });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "Bash", tool_input: { command: "echo two" } })]);
+    expect(s.asked).toEqual([{ summary: 'shell {"command":"echo two"}', note: "A hook asks: Sure?" }]);
+    expect(s.ran).toEqual(["echo two"]);
+  });
+
+  it("in -p, sends PermissionRequest the input a PreToolUse hook rewrote and asked about, and its allow runs the rewritten call", async () => {
+    const pre = rewrite({ command: "echo two" }, { permissionDecision: "ask", permissionDecisionReason: "Sure?" });
+    const s = await setup({ mode: "-p", says: [{ stdout: pre }, { event: "PermissionRequest", stdout: ALLOW }], turns: shellCall("echo one") });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "Bash", tool_input: { command: "echo two" } })]);
+    expect([s.ran, s.asked, s.refusals, s.notes]).toEqual([["echo two"], [], [], []]);
+  });
+
+  it("in never, fires PermissionRequest for a PreToolUse hook's ask on an MCP call, its allow running it, and not for one on a shell call", async () => {
+    const says: Says[] = [{ stdout: decide("ask") }, { event: "PermissionRequest", stdout: ALLOW }];
+    const mcp = await setup({ mode: "never", says, turns: oneCall("mcp__docs__lookup", { word: "hi" }), mcp: docs });
+    await mcp.session.send("go");
+    expect(requested(mcp)).toEqual([expect.objectContaining({ tool_name: "mcp__docs__lookup", mcp_server: "docs" })]);
+    expect([mcp.results(), mcp.asked]).toEqual([[{ output: "found", isError: false }], []]);
+    const shell = await setup({ mode: "never", says, turns: shellCall("echo hi") });
+    await shell.session.send("go");
+    const line = "Not allowed in never mode: a PreToolUse hook asked for this call to be approved.";
+    expect([requested(shell), shell.results(), shell.ran]).toEqual([[], [{ output: line, isError: true }], []]);
+  });
+
+  it.each(QUESTIONS)("in %s, a PermissionRequest allow runs the call with no question", async (mode, turns, _tool, output) => {
+    const s = await setup({ mode, says: [{ event: "PermissionRequest", stdout: ALLOW }], turns: turns(), mcp: docs });
+    await s.session.send("go");
+    expect([s.results(), s.asked, s.judged, s.notes, s.refusals, s.outcomes]).toEqual([[{ output, isError: false }], [], [], [], [], ["ok"]]);
+    expect(requested(s)).toHaveLength(1);
+  });
+
+  it.each(QUESTIONS)("in %s, a PermissionRequest deny refuses the call with its message to the model and W1, counted as a refusal", async (mode, turns, tool) => {
+    const s = await setup({ mode, says: [{ event: "PermissionRequest", stdout: permission({ behavior: "deny", message: "not this" }) }], turns: turns(), mcp: docs });
+    await s.session.send("go");
+    expect([s.results(), s.asked, s.ran, s.notes, s.refusals, s.outcomes]).toEqual([
+      [{ output: "not this", isError: true }], [], [], [W1(tool, "not this")], [1], ["declined"],
+    ]);
+  });
+
+  it.each(QUESTIONS)("in %s, a PermissionRequest deny with interrupt refuses the call and ends the turn, with W1 and W2", async (mode, turns, tool) => {
+    const says: Says[] = [{ event: "PermissionRequest", stdout: permission({ behavior: "deny", message: "stop here", interrupt: true }) }];
+    const s = await setup({ mode, says, turns: turns(), mcp: docs });
+    await s.session.send("go");
+    expect([s.results(), s.asked, s.ran, s.refusals]).toEqual([[{ output: "stop here", isError: true }], [], [], [1]]);
+    expect(s.notes).toEqual([W1(tool, "stop here"), "A PermissionRequest hook stopped the turn: stop here"]);
+    expect(s.lead.seen).toHaveLength(1); // the turn ended with the call's result: the model was not asked again
+  });
+
+  it.each(["ask", "-p"] as const)("in %s, a PermissionRequest allow runs a dangerous command with no question and no refusal", async (mode) => {
+    const s = await setup({ mode, says: [{ event: "PermissionRequest", stdout: ALLOW }], turns: shellCall(push) });
+    await s.session.send("go");
+    expect([s.ran, s.asked, s.refusals, s.notes]).toEqual([[push], [], [], []]);
+  });
+
+  it("puts the question as before when no PermissionRequest hook decides, and in -p refuses the call as before", async () => {
+    const asked = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: "" }], turns: shellCall("echo hi"), answers: [true] });
+    await asked.session.send("go");
+    expect([requested(asked).length, asked.asked, asked.ran]).toEqual([1, [{ summary: "run: echo hi" }], ["echo hi"]]);
+    const headless = await setup({ mode: "-p", says: [{ event: "PermissionRequest", stdout: "" }], turns: shellCall("echo hi") });
+    await headless.session.send("go");
+    expect(requested(headless)).toHaveLength(1);
+    expect([headless.results(), headless.ran, headless.notes]).toEqual([[{ output: `${P}: run: echo hi`, isError: true }], [], []]);
+  });
+
+  it("refuses the call when one PermissionRequest hook allows and another denies", async () => {
+    const says: Says[] = [{ event: "PermissionRequest", stdout: ALLOW }, { event: "PermissionRequest", names: ["Bash"], stdout: permission({ behavior: "deny", message: "no" }) }];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect([s.results(), s.ran, s.asked, s.notes]).toEqual([[{ output: "no", isError: true }], [], [], [W1("shell", "no")]]);
+  });
+
+  it("tells the model W1 for a PermissionRequest deny with no message, and says W2 with no reason for its interrupt", async () => {
+    const bare = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: permission({ behavior: "deny" }) }], turns: shellCall("echo hi") });
+    await bare.session.send("go");
+    expect([bare.results(), bare.notes]).toEqual([[{ output: W1("shell"), isError: true }], [W1("shell")]]);
+    const stopped = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: permission({ behavior: "deny", interrupt: true }) }], turns: shellCall("echo hi") });
+    await stopped.session.send("go");
+    expect([stopped.results(), stopped.notes]).toEqual([[{ output: W1("shell"), isError: true }], [W1("shell"), "A PermissionRequest hook stopped the turn."]]);
+  });
+
+  it("gives each call of the reply one result when a PermissionRequest deny's interrupt comes at the first", async () => {
+    const turns = [many(["c1", "shell", { command: "echo one" }], ["c2", "shell", { command: "echo two" }]), reply("ok")];
+    const s = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: permission({ behavior: "deny", message: "enough", interrupt: true }) }], turns });
+    await s.session.send("go");
+    expect(s.results()).toEqual([{ output: "enough", isError: true }, { output: NOT_RUN, isError: true }]);
+    expect([s.ran, s.asked, requested(s).length]).toEqual([[], [], 1]);
+  });
+
+  it("says a PermissionRequest hook's updatedPermissions was ignored, and still takes its allow", async () => {
+    const said = permission({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] });
+    const s = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: said }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect([s.ran, s.asked]).toEqual([["echo hi"], []]);
+    expect(s.notes).toEqual(["A PermissionRequest hook's updatedPermissions was ignored: Tachikoma has no permission rules."]);
+  });
+
+  it("decides nothing for a PermissionRequest hook's exit code 2, its deny unread and no line said", async () => {
+    const says: Says[] = [{ event: "PermissionRequest", stdout: permission({ behavior: "deny", message: "no" }), code: 2 }];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo hi"), answers: [true] });
+    await s.session.send("go");
+    expect([s.asked, s.ran, s.notes, s.errors]).toEqual([[{ summary: "run: echo hi" }], ["echo hi"], [], []]);
+  });
+
+  it("runs only the PermissionRequest hooks whose matcher names the tool", async () => {
+    const says: Says[] = [
+      { event: "PermissionRequest", names: ["Write"], stdout: permission({ behavior: "deny", message: "no" }) },
+      { event: "PermissionRequest", names: ["Bash"], stdout: ALLOW },
+    ];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(requested(s)).toEqual([expect.objectContaining({ tool_name: "Bash" })]);
+    expect([s.ran, s.asked]).toEqual([["echo hi"], []]);
+  });
+
+  it("cancels the call, asking nothing, when the turn is stopped while its PermissionRequest hook runs", async () => {
+    const root = await folder();
+    const abort = new AbortController();
+    const s = await setup({ mode: "ask", root, says: [{ event: "PermissionRequest", stdout: ALLOW, go: path.join(root, "never-made") }], turns: shellCall("echo hi") });
+    const sent = s.session.send("go", abort.signal);
+    while (!requested(s).length) await pause(20);
+    abort.abort();
+    await sent;
+    expect([s.results(), s.outcomes, s.ran, s.asked]).toEqual([[{ output: "Cancelled by the user.", isError: true }], ["cancelled"], [], []]);
+  });
+
+  it("fires a subagent's PermissionRequest with its agent_id, and its allow runs the subagent's call unasked", async () => {
+    const root = await folder();
+    const elsewhere = path.join(await folder(), "a.txt");
+    writeFileSync(elsewhere, "A\n");
+    const { script, out } = await hookFolder();
+    const hook: Hook = { event: "PermissionRequest", matcher: { all: true }, command: process.execPath, args: [script, out, ALLOW, "0"], async: false, where: "" };
+    const bus = new Bus();
+    const asked: string[] = [];
+    const gate = new PermissionGate("ask", async (summary) => (asked.push(summary), false), undefined, { root, headless: false });
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const worker = new FakeProvider("w", [callTool("c1", "read_file", { path: elsewhere }), reply("found it")]);
+    const tasks = new Tasks({
+      bus,
+      max: 8,
+      worker: () => worker,
+      system: "sub",
+      tools: [readFileTool],
+      ctx: { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate },
+      hooks: new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, bus),
+    });
+    expect(await tasks.start("look", { background: false }).done).toEqual({ state: "done", text: "found it" });
+    const inputs = readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+    const fired = { hook_event_name: "PermissionRequest", agent_id: "t1", agent_type: "Explore", tool_name: "Read", tool_input: { file_path: elsewhere } };
+    expect(inputs).toEqual([expect.objectContaining(fired)]);
+    expect(asked).toEqual([]);
+  });
+
+  // As at PermissionDenied: a throw that is not a stop, here a listener of the hooks' lines, is said as a red line, and the
+  // PermissionRequest hooks decide nothing, so the question goes ahead.
+  it("puts the question when a listener of the hooks' lines throws at PermissionRequest, saying so as a red line", async () => {
+    const said = JSON.stringify({ systemMessage: "hello", hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
+    const s = await setup({ mode: "ask", says: [{ event: "PermissionRequest", stdout: said }], turns: shellCall("echo hi"), answers: [true] });
+    s.bus.on("hook-note", () => {
+      throw new Error("listener broke");
+    });
+    await s.session.send("go");
+    expect(requested(s)).toHaveLength(1);
+    expect([s.asked, s.ran, s.outcomes]).toEqual([[{ summary: "run: echo hi" }], ["echo hi"], ["ok"]]);
+    expect(s.errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([["hook", "PermissionRequest hook", "PermissionRequest hook failed: listener broke"]]);
+  });
+
+  // Q6: a hook's allow under auto mode's pause runs that one call, and the pause stays: the next call is still put to the
+  // user with the pause's line, not handed to the judge.
+  it("leaves auto mode paused after a PermissionRequest allow under the pause", async () => {
+    const turns = [1, 2, 3, 4, 5].map((n) => callTool(`c${n}`, "shell", { command: `echo ${n}` }));
+    const s = await setup({ mode: "auto", says: [{ event: "PermissionRequest", stdout: "", seq: [ALLOW] }], turns: [...turns, reply("ok")], judge: NO });
+    await s.session.send("go");
+    expect(s.judged).toEqual(["run: echo 1", "run: echo 2", "run: echo 3"]);
+    expect(s.ran).toEqual(["echo 4"]);
+    expect(s.asked).toEqual([{ summary: "run: echo 5", note: "Auto mode paused after 3 refusals; approving this resumes it." }]);
+    expect(requested(s)).toHaveLength(2);
+  });
+
+  it("does not fire PermissionRequest for the question to send a request again without its pictures", async () => {
+    const { script, out } = await hookFolder();
+    const hook: Hook = { event: "PermissionRequest", matcher: { all: true }, command: process.execPath, args: [script, out, ALLOW, "0"], async: false, where: "" };
+    const bus = new Bus();
+    const ctx = await tempContext();
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root: ctx.root, mode: () => ctx.gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const lead = new FakeProvider("a", [Object.assign(new Error("failed with 400"), { status: 400 })]);
+    const asked: string[] = [];
+    const ask: Ask = async (summary) => (asked.push(summary), false);
+    const hooks = new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, bus);
+    const session = new Session({ lead, tools: [], system: "t", ctx, bus, ask, hooks });
+    const png = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }; // a stand-in, never read from disk
+    await session.send([{ type: "text", text: "look " }, { type: "image", id: 1, ...png }]);
+    expect(asked).toEqual(["Send again without the pictures"]);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  // Release 8e plan, step 9 (design, "The permission events"): a PermissionRequest allow with updatedInput starts the call
+  // again from the beginning with the new input, which its PreToolUse hooks run on and the tool resolves, checks and asks
+  // about as if the model had sent it; PermissionRequest is not run a second time, and nothing of the first pass is kept.
+  const rewriting = (updatedInput: object) => permission({ behavior: "allow", updatedInput });
+  const preInputs = (s: { inputs: () => Record<string, unknown>[] }) => s.inputs().filter((i) => i.hook_event_name === "PreToolUse");
+  async function recorded() {
+    const top = await folder();
+    const dir = path.join(top, "sessions", "project");
+    privateDir(dir);
+    const file = path.join(dir, "s1.jsonl");
+    return { file, transcript: new Transcript(file, path.join(dir, "s1", "pictures")) };
+  }
+  const rewrittenLines = (file: string) =>
+    readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => {
+      const line = JSON.parse(l) as Line;
+      return line.t === "rewritten" ? [line] : [];
+    });
+
+  it("starts the call again from the gate's own question on a PermissionRequest rewrite to another file: the PreToolUse hook sees the new input, the new path is written, the old one untouched, the record holding it", async () => {
+    const root = await folder();
+    const a = path.join(root, "a.txt");
+    const b = path.join(root, "b.txt");
+    const { file, transcript } = await recorded();
+    const says: Says[] = [{ stdout: "" }, { event: "PermissionRequest", stdout: rewriting({ file_path: b, content: "x" }) }];
+    const s = await setup({ mode: "ask", root, says, turns: oneCall("write_file", { path: "a.txt", content: "x" }), answers: [true], transcript });
+    await s.session.send("go");
+    expect(preInputs(s).map((i) => i.tool_input)).toEqual([{ file_path: a, content: "x" }, { file_path: b, content: "x" }]);
+    expect([existsSync(a), readFileSync(b, "utf8")]).toEqual([false, "x"]);
+    expect([s.asked, requested(s).length, s.results().length, s.outcomes, s.errors]).toEqual([[{ summary: `write ${b}` }], 1, 1, ["ok"], []]);
+    expect(s.session.calls).toEqual([{ name: "write_file", input: { path: b, content: "x" } }]);
+    expect(rewrittenLines(file)).toEqual([{ t: "rewritten", at: expect.any(String), id: "c1", input: { path: b, content: "x" } }]);
+  });
+
+  // The original file does not exist, so a read of it would have failed the call.
+  it("starts the call again from a PreToolUse hook's ask: one result, the original path never read, the PreToolUse hook run again on the new input, the record holding it", async () => {
+    const root = await folder();
+    const b = path.join(root, "b.txt");
+    writeFileSync(b, "B\n");
+    const { file, transcript } = await recorded();
+    const says: Says[] = [{ stdout: decide("ask", "Sure?") }, { event: "PermissionRequest", stdout: rewriting({ file_path: b }) }];
+    const s = await setup({ mode: "ask", root, says, turns: oneCall("read_file", { path: "a.txt" }), answers: [true], transcript });
+    await s.session.send("go");
+    expect([s.results(), s.outcomes, s.errors]).toEqual([[{ output: "     1\tB", isError: false }], ["ok"], []]);
+    expect(preInputs(s).map((i) => i.tool_input)).toEqual([{ file_path: path.join(root, "a.txt") }, { file_path: b }]);
+    expect(s.asked).toEqual([{ summary: `read_file ${JSON.stringify({ path: b })}`, note: "A hook asks: Sure?" }]);
+    expect(requested(s)).toHaveLength(1);
+    expect(s.session.calls).toEqual([{ name: "read_file", input: { path: b } }]);
+    expect(rewrittenLines(file)).toEqual([{ t: "rewritten", at: expect.any(String), id: "c1", input: { path: b } }]);
+  });
+
+  it("leaves no error line, no PostToolUseFailure run and no second start or end for a call a PermissionRequest rewrite started again", async () => {
+    const says: Says[] = [
+      { event: "PermissionRequest", stdout: rewriting({ command: "echo two" }) },
+      { event: "PostToolUseFailure", stdout: "" },
+      { event: "PostToolUse", stdout: "" },
+    ];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo one"), answers: [true] });
+    const starts: string[] = [];
+    s.bus.on("tool-start", (e) => starts.push(e.id));
+    await s.session.send("go");
+    expect([starts, s.outcomes, s.errors, s.ran, s.asked]).toEqual([["c1"], ["ok"], [], ["echo two"], [{ summary: "run: echo two" }]]);
+    expect(s.results()).toEqual([{ output: "ran echo two", isError: false }]);
+    const after = s.inputs().filter((i) => i.hook_event_name === "PostToolUse" || i.hook_event_name === "PostToolUseFailure");
+    expect(after).toEqual([expect.objectContaining({ hook_event_name: "PostToolUse", tool_input: { command: "echo two" } })]);
+  });
+
+  it("asks the user about a PermissionRequest rewrite to a protected path, not firing PermissionRequest a second time", async () => {
+    const root = await folder();
+    const npmrc = path.join(root, ".npmrc");
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ file_path: npmrc, content: "x" }) }];
+    const s = await setup({ mode: "ask", root, says, turns: oneCall("write_file", { path: "a.txt", content: "x" }), answers: [true] });
+    await s.session.send("go");
+    expect([s.asked, requested(s).length]).toEqual([[{ summary: `write ${npmrc}` }], 1]);
+    expect([readFileSync(npmrc, "utf8"), existsSync(path.join(root, "a.txt"))]).toEqual(["x", false]);
+  });
+
+  it("does not carry the first pass's PreToolUse allow into a call a PermissionRequest rewrite started again", async () => {
+    const says: Says[] = [{ stdout: "", seq: [decide("allow")] }, { event: "PermissionRequest", stdout: rewriting({ command: "echo hi" }) }];
+    const s = await setup({ mode: "ask", says, turns: shellCall(push), answers: [true] });
+    await s.session.send("go");
+    expect([s.asked, s.ran, preInputs(s).length, requested(s).length]).toEqual([[{ summary: "run: echo hi" }], ["echo hi"], 2, 1]);
+  });
+
+  it("keeps the last input in the record when the restart's PreToolUse hook rewrites a PermissionRequest rewrite again", async () => {
+    const { file, transcript } = await recorded();
+    const says: Says[] = [{ stdout: "", seq: ["", rewrite({ command: "echo three" })] }, { event: "PermissionRequest", stdout: rewriting({ command: "echo two" }) }];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo one"), answers: [true], transcript });
+    await s.session.send("go");
+    expect([s.ran, s.asked]).toEqual([["echo three"], [{ summary: "run: echo three" }]]);
+    expect(s.session.calls).toEqual([{ name: "shell", input: { command: "echo three" } }]);
+    expect(rewrittenLines(file).map((l) => l.input)).toEqual([{ command: "echo two" }, { command: "echo three" }]);
+  });
+
+  it.each(["ask", "-p"] as const)("in %s, refuses the call with W3 when a PermissionRequest rewrite cannot be used, counted as a refusal", async (mode) => {
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ command: "echo two", shell: "zsh" }) }];
+    const s = await setup({ mode, says, turns: shellCall("echo one") });
+    await s.session.send("go");
+    const line = `A PermissionRequest hook's rewrite of shell could not be used ("shell" is not a field Tachikoma can take): ${s.command(s.hooks[0]!)}`;
+    expect([s.results(), s.notes, s.outcomes, s.refusals, s.asked, s.ran]).toEqual([[{ output: line, isError: true }], [line], ["declined"], [1], [], []]);
+    expect(s.session.calls).toEqual([{ name: "shell", input: { command: "echo one" } }]);
+  });
+
+  it("uses the first of several PermissionRequest rewrites in the file, saying W4 for each one ignored", async () => {
+    const says: Says[] = ["first", "second", "third"].map((n) => ({ event: "PermissionRequest", stdout: rewriting({ command: `echo ${n}` }) }));
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo hi"), answers: [true] });
+    await s.session.send("go");
+    expect([s.ran, s.asked]).toEqual([["echo first"], [{ summary: "run: echo first" }]]);
+    const W4 = (h: Hook) => `Two PermissionRequest hooks rewrote shell's input; the first in the settings file was used, and ${s.command(h)} was ignored.`;
+    expect(s.notes).toEqual([W4(s.hooks[1]!), W4(s.hooks[2]!)]);
+    expect(requested(s)).toHaveLength(3); // each of the three hooks once: PermissionRequest fired once
+  });
+
+  it.each(["ask", "project"] as const)("in %s, a PermissionRequest rewrite of a write is asked about again, and the user's yes runs it", async (mode) => {
+    const elsewhere = await folder();
+    const a = path.join(elsewhere, "a.txt");
+    const b = path.join(elsewhere, "b.txt");
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ file_path: b, content: "x" }) }];
+    const s = await setup({ mode, says, turns: oneCall("write_file", { path: a, content: "x" }), answers: [true] });
+    await s.session.send("go");
+    expect(s.asked.map((q) => q.summary)).toEqual([expect.stringContaining(`write ${b}`)]);
+    expect([existsSync(a), readFileSync(b, "utf8"), requested(s).length, s.outcomes]).toEqual([false, "x", 1, ["ok"]]);
+  });
+
+  it("in auto, a PermissionRequest rewrite to another dangerous command is asked about, and one to an ordinary command goes to the judge", async () => {
+    const other = "git push --force origin main";
+    const danger = await setup({ mode: "auto", says: [{ event: "PermissionRequest", stdout: rewriting({ command: other }) }], turns: shellCall(push), answers: [true] });
+    await danger.session.send("go");
+    expect(danger.asked).toEqual([{ summary: `run: ${other}`, warnings: [`Danger: rewriting or deleting git history: ${other}`] }]);
+    expect([danger.ran, danger.judged, requested(danger).length]).toEqual([[other], [], 1]);
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ command: "echo hi" }) }];
+    const plain = await setup({ mode: "auto", says, turns: shellCall(push), judge: async () => ({ allow: true }) });
+    await plain.session.send("go");
+    expect([plain.judged, plain.asked, plain.ran, requested(plain).length]).toEqual([["run: echo hi"], [], ["echo hi"], 1]);
+  });
+
+  it("in never, a PermissionRequest rewrite of an MCP call is asked about again", async () => {
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ word: "bye" }) }];
+    const s = await setup({ mode: "never", says, turns: oneCall("mcp__docs__lookup", { word: "hi" }), mcp: docs, answers: [true] });
+    await s.session.send("go");
+    expect(s.asked.map((q) => q.summary)).toEqual(['docs: lookup {"word":"bye"}']);
+    expect([s.results(), requested(s).length]).toEqual([[{ output: "found", isError: false }], 1]);
+  });
+
+  it("in -p, refuses a PermissionRequest rewrite whose new input needs a question, and runs one that needs none", async () => {
+    const asks = await setup({ mode: "-p", says: [{ event: "PermissionRequest", stdout: rewriting({ command: "echo two" }) }], turns: shellCall("echo one") });
+    await asks.session.send("go");
+    expect([asks.results(), asks.ran, requested(asks).length]).toEqual([[{ output: `${P}: run: echo two`, isError: true }], [], 1]);
+    const root = await folder();
+    const b = path.join(root, "b.txt");
+    writeFileSync(b, "B\n");
+    const elsewhere = path.join(await folder(), "a.txt");
+    const none = await setup({ mode: "-p", root, says: [{ event: "PermissionRequest", stdout: rewriting({ file_path: b }) }], turns: oneCall("read_file", { path: elsewhere }) });
+    await none.session.send("go");
+    expect([none.results(), none.outcomes, requested(none).length]).toEqual([[{ output: "     1\tB", isError: false }], ["ok"], 1]);
+  });
+
+  // Fix round 1 (the user's choice at step 9's review): nothing of the first pass is kept, its PreToolUse hook's text for
+  // the model included; another call's text in the same reply stays, and the restart's own is sent once.
+  it("drops the first pass's PreToolUse text for the model on a PermissionRequest restart, keeping another call's and the restart's own", async () => {
+    const context = (text: string) => answer({ additionalContext: text });
+    const says: Says[] = [
+      { stdout: "", seq: [context("other call"), context("first pass"), context("restart")] },
+      { event: "PermissionRequest", stdout: "", seq: ["", rewriting({ command: "echo two" })] },
+    ];
+    const turns = [many(["c1", "shell", { command: "echo other" }], ["c2", "shell", { command: "echo one" }]), reply("ok")];
+    const s = await setup({ mode: "ask", says, turns, answers: [true, true] });
+    await s.session.send("go");
+    expect(s.ran).toEqual(["echo other", "echo two"]);
+    const parts = s.lead.seen[1]!.at(-1)!.parts;
+    expect(parts.filter((p) => p.type === "tool_result")).toEqual([
+      { type: "tool_result", callId: "c1", output: "ran echo other", isError: false },
+      { type: "tool_result", callId: "c2", output: "ran echo two", isError: false },
+    ]);
+    // In whatever order the two calls' texts landed: each once, the first pass's not at all.
+    const told = parts.filter((p) => p.type !== "tool_result");
+    expect(told).toHaveLength(2);
+    expect(told).toEqual(expect.arrayContaining([hookText("PreToolUse", "other call"), hookText("PreToolUse", "restart")]));
+  });
+
+  it("ends a call stopped during its PermissionRequest restart as cancelled, with no second restart", async () => {
+    let answerIt: (yes: boolean) => void = () => {};
+    const open = new Promise<boolean>((r) => (answerIt = r));
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ command: "echo two" }) }];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo one"), answers: [open] });
+    const abort = new AbortController();
+    const sent = s.session.send("go", abort.signal);
+    while (!s.asked.length) await pause(20);
+    abort.abort();
+    answerIt(false); // the window closes an open question as a no when the user stops
+    await sent;
+    // As any question a stop closes: the no's words, the call cancelled (#execute).
+    expect([s.results(), s.outcomes, s.ran, s.errors]).toEqual([[{ output: "The user declined: run: echo two", isError: true }], ["cancelled"], [], []]);
+    expect([s.asked, requested(s).length]).toEqual([[{ summary: "run: echo two" }], 1]);
+  });
+
+  it("starts a subagent's call again on a PermissionRequest rewrite in its own session, the lead's call unaffected", async () => {
+    const root = await folder();
+    const b = path.join(root, "b.txt");
+    writeFileSync(b, "B\n");
+    const elsewhere = path.join(await folder(), "a.txt");
+    const worker = new FakeProvider("w", [callTool("c1", "read_file", { path: elsewhere }), reply("found it")]);
+    const says: Says[] = [{ event: "PermissionRequest", stdout: rewriting({ file_path: b }) }];
+    const s = await setup({ mode: "ask", root, says, turns: [callTool("c1", "delegate", { description: "look", task: "find x" }), reply("ok")], worker });
+    await s.session.send("go");
+    const told = worker.seen[1]!.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [p.output] : [])));
+    expect(told).toEqual(["     1\tB"]);
+    expect(requested(s)).toEqual([expect.objectContaining({ agent_id: "t1", tool_name: "Read", tool_input: { file_path: elsewhere } })]);
+    expect([s.asked, s.errors]).toEqual([[], []]);
+    expect(s.session.calls).toEqual([{ name: "delegate", input: { description: "look", task: "find x" } }]);
+    expect(s.results()).toEqual([{ output: expect.stringContaining("found it"), isError: false }]);
+  });
+
+  it("gives a call started again from a PreToolUse hook's ask one start and one end, with no error line and no PostToolUseFailure run", async () => {
+    const says: Says[] = [
+      { stdout: decide("ask") },
+      { event: "PermissionRequest", stdout: rewriting({ command: "echo two" }) },
+      { event: "PostToolUseFailure", stdout: "" },
+      { event: "PostToolUse", stdout: "" },
+    ];
+    const s = await setup({ mode: "ask", says, turns: shellCall("echo one"), answers: [true] });
+    const starts: string[] = [];
+    s.bus.on("tool-start", (e) => starts.push(e.id));
+    await s.session.send("go");
+    expect([starts, s.outcomes, s.errors, s.ran, s.asked]).toEqual([["c1"], ["ok"], [], ["echo two"], [{ summary: 'shell {"command":"echo two"}', note: "A hook asks." }]]);
+    const after = s.inputs().filter((i) => i.hook_event_name === "PostToolUse" || i.hook_event_name === "PostToolUseFailure");
+    expect(after).toEqual([expect.objectContaining({ hook_event_name: "PostToolUse", tool_input: { command: "echo two" } })]);
+  });
+
+  // Release 8e plan, step 11 (design, "The turn ending, and tool batches"): PostToolBatch once every call of a reply has its
+  // result, before the results are stored; its block ends the turn, the reason going with the next request.
+  const batches = (s: Awaited<ReturnType<typeof setup>>) => s.inputs().filter((i) => i.hook_event_name === "PostToolBatch");
+  const batchSays = (stdout: string, more: Partial<Says> = {}): Says => ({ event: "PostToolBatch", stdout, ...more });
+
+  it("fires PostToolBatch with each call's Claude Code name, the input that ran, its id and the result the model reads", async () => {
+    const root = await folder();
+    const a = path.join(root, "a.txt");
+    const turns = [many(["c1", "shell", { command: "echo hi" }], ["c2", "write_file", { path: "a.txt", content: "one" }]), reply("ok")];
+    const says: Says[] = [{ names: ["Bash"], stdout: rewrite({ command: "echo rewritten" }) }, batchSays("")];
+    const s = await setup({ mode: "never", root, says, turns });
+    await s.session.send("go");
+    const [, wrote] = s.results();
+    expect(batches(s)).toEqual([expect.objectContaining({
+      tool_calls: [
+        { tool_name: "Bash", tool_input: { command: "echo rewritten" }, tool_use_id: "c1", tool_response: "ran echo rewritten" },
+        { tool_name: "Write", tool_input: { file_path: a, content: "one" }, tool_use_id: "c2", tool_response: wrote!.output },
+      ],
+    })]);
+    expect(batches(s)[0]).not.toHaveProperty("agent_id");
+  });
+
+  // Q30: Tachikoma's own result text, nothing put in front, whatever model leads.
+  it("sends a failed call's tool_response as its error text with nothing in front, the same for an Anthropic and an OpenAI lead", async () => {
+    const failed = shellText({ code: 1, signal: null, stdout: "", stderr: "it failed" });
+    const sent: unknown[] = [];
+    for (const id of ["anthropic:claude-sonnet-4-5", "openai:gpt-5"]) {
+      const s = await setup({ mode: "never", says: [batchSays("")], turns: [] });
+      const turns = [many(["c1", "shell", { command: "echo hi" }], ["c2", "shell", { command: "fail" }]), reply("ok")];
+      s.session.setLead(Object.defineProperty(new FakeProvider("x", turns), "id", { value: id }));
+      await s.session.send("go");
+      sent.push(batches(s)[0]!.tool_calls);
+    }
+    const calls = [
+      { tool_name: "Bash", tool_input: { command: "echo hi" }, tool_use_id: "c1", tool_response: "ran echo hi" },
+      { tool_name: "Bash", tool_input: { command: "fail" }, tool_use_id: "c2", tool_response: failed },
+    ];
+    expect(sent).toEqual([calls, calls]);
+  });
+
+  it("sends a refused call's tool_response as its refusal", async () => {
+    const s = await setup({ mode: "ask", says: [batchSays("")], turns: shellCall("echo no"), answers: [false] });
+    await s.session.send("go");
+    expect(batches(s).map((i) => i.tool_calls)).toEqual([[
+      { tool_name: "Bash", tool_input: { command: "echo no" }, tool_use_id: "c1", tool_response: "The user declined: run: echo no" },
+    ]]);
+  });
+
+  it("fires PostToolBatch once per reply with calls, after the reply's last PostToolUse", async () => {
+    const turns = [many(["c1", "shell", { command: "echo one" }], ["c2", "shell", { command: "echo two" }]), callTool("c3", "shell", { command: "echo three" }), reply("ok")];
+    const s = await setup({ mode: "never", says: [{ event: "PostToolUse", stdout: "" }, batchSays("")], turns });
+    await s.session.send("go");
+    expect(s.inputs().map((i) => i.hook_event_name)).toEqual(["PostToolUse", "PostToolUse", "PostToolBatch", "PostToolUse", "PostToolBatch"]);
+    expect(batches(s).map((i) => (i.tool_calls as { tool_use_id: string }[]).map((c) => c.tool_use_id))).toEqual([["c1", "c2"], ["c3"]]);
+  });
+
+  it("puts a PostToolBatch hook's additionalContext in the results' message, headed, after the tool hooks' text", async () => {
+    const says: Says[] = [
+      { event: "PostToolUse", stdout: after("PostToolUse", { additionalContext: "after it ran" }) },
+      batchSays(after("PostToolBatch", { additionalContext: "batch checked" })),
+    ];
+    const s = await setup({ mode: "never", says, turns: shellCall("echo hi") });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([
+      { type: "tool_result", callId: "c1", output: "ran echo hi", isError: false },
+      hookText("PostToolUse", "after it ran"),
+      hookText("PostToolBatch", "batch checked"),
+    ]);
+    expect([s.notes, s.errors]).toEqual([[], []]);
+  });
+
+  // Codex review 3 of 8e, point 1 (the user's choice (b)): with a PostToolBatch hook, the results are saved before it
+  // answers, so a crash meanwhile keeps them; what the message takes after them is saved in a joined line, which a resume
+  // adds back to it, so the model is sent the same message, live and resumed.
+  describe("the results saved before PostToolBatch", () => {
+    const result = { type: "tool_result", callId: "c1", output: "ran echo hi", isError: false };
+    const savedLines = (file: string) => readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
+    async function saving(says: Says[], more: { turns?: Turn[]; mcp?: McpTools } = {}) {
+      const p = pathsOf(path.join(await folder(), "s1.jsonl"));
+      const transcript = new Transcript(p.file, p.pictures);
+      transcript.write({ t: "start", v: 1, id: "s1", project: "p", lead: "fake:a", version: "0.8.0", print: false, system: "test", tools: [] });
+      const s = await setup({ mode: "never", says, turns: more.turns ?? shellCall("echo hi"), transcript, ...(more.mcp ? { mcp: more.mcp } : {}) });
+      return { ...s, p };
+    }
+
+    // Codex review 4 of 8e, point 1: the MCP tools a search loaded are saved with the results, before the hook's wait,
+    // so a crash meanwhile resumes with them offered; and once for the round.
+    it("saves the loaded line a tool search grew before the hook answers, once", async () => {
+      const go = path.join(await folder(), "go");
+      const found = new Set<string>();
+      const search = defineTool("tool_search", "Finds MCP tools", z.object({ query: z.string() }), async () => (found.add("mcp__docs__lookup"), "Loaded mcp__docs__lookup"));
+      const mcp: McpTools = { loaded: found, offer: () => ({ defined: [], search }), tool: () => { throw new Error("not offered"); } };
+      const s = await saving([batchSays("", { go })], { turns: oneCall("tool_search", { query: "docs" }), mcp });
+      const sending = s.session.send("go");
+      try {
+        await vi.waitFor(() => {
+          expect(batches(s)).toHaveLength(1);
+          expect(savedLines(s.p.file).slice(-2)).toMatchObject([{ t: "message", message: { role: "user" } }, { t: "loaded", names: ["mcp__docs__lookup"] }]);
+        }, { timeout: 10_000 });
+      } finally {
+        writeFileSync(go, "");
+      }
+      expect(await sending).toBeUndefined();
+      expect(savedLines(s.p.file).filter((l) => l.t === "loaded")).toHaveLength(1);
+    });
+
+    it("saves the results while the hook is still running, and its text after, in a joined line a resume adds back", async () => {
+      const go = path.join(await folder(), "go");
+      const s = await saving([batchSays(after("PostToolBatch", { additionalContext: "batch checked" }), { go })]);
+      const sending = s.session.send("go");
+      // The hook has its input and is held; the results' line is on disk by then. Let go whatever the checks find.
+      try {
+        await vi.waitFor(() => {
+          expect(batches(s)).toHaveLength(1);
+          expect(savedLines(s.p.file).at(-1)).toMatchObject({ t: "message", message: { role: "user", parts: [result] } });
+        }, { timeout: 10_000 });
+      } finally {
+        writeFileSync(go, "");
+      }
+      expect(await sending).toBeUndefined();
+      expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([result, hookText("PostToolBatch", "batch checked")]);
+      const kinds = savedLines(s.p.file).map((l) => (l.t === "message" ? l.message.role : l.t));
+      expect(kinds).toEqual(["start", "user", "assistant", "user", "joined", "assistant"]);
+      expect(savedLines(s.p.file).find((l) => l.t === "joined")).toMatchObject({ message: { role: "user", parts: [hookText("PostToolBatch", "batch checked")] } });
+      const r = readTranscript(s.p.file, s.p.pictures);
+      if ("problem" in r) throw new Error(r.problem);
+      expect([r.messages, r.damaged]).toEqual([s.session.messages, 0]);
+    });
+
+    it.each<[string, Says[]]>([
+      ["no PostToolBatch hook, with a tool hook's text", [{ event: "PostToolUse", stdout: after("PostToolUse", { additionalContext: "after it ran" }) }]],
+      ["a PostToolBatch hook that adds nothing", [batchSays("")]],
+    ])("writes no joined line with %s, the results' line as before", async (_how, says) => {
+      const s = await saving(says);
+      await s.session.send("go");
+      const saved = savedLines(s.p.file);
+      expect(saved.map((l) => l.t)).toEqual(["start", "message", "message", "message", "message"]);
+      expect(saved[3]).toEqual({ t: "message", at: expect.any(String), message: s.session.messages[2] });
+    });
+  });
+
+  it.each<[string, Says, string]>([
+    ["a decision block", batchSays(block("Lint first")), "Lint first"],
+    ["a continue: false", batchSays(stops("Enough")), "Enough"],
+    ["an exit code 2 with no error output", batchSays("", { code: 2 }), ""],
+    ["a decision block with no reason", batchSays(JSON.stringify({ decision: "block" })), ""],
+    ["a continue: false with no stopReason", batchSays(stops()), ""],
+  ])("ends the turn at a PostToolBatch hook's %s, the results stored, its reason going with the next prompt's request", async (_name, says, reason) => {
+    const s = await setup({ mode: "never", says: [says], turns: [callTool("c1", "shell", { command: "echo hi" }), reply("ok")] });
+    expect(await s.session.send("go")).toEqual({ stopped: reason });
+    expect(s.notes).toEqual([reason ? `A PostToolBatch hook stopped the turn: ${reason}` : "A PostToolBatch hook stopped the turn."]);
+    expect([s.results(), s.session.messages.length, s.lead.seen.length]).toEqual([[{ output: "ran echo hi", isError: false }], 3, 1]);
+    expect(await s.session.send("again")).toBeUndefined();
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([
+      { type: "tool_result", callId: "c1", output: "ran echo hi", isError: false },
+      // With no reason, the line the user saw (step 11's review, the user's choice).
+      hookText("PostToolBatch", reason || "A PostToolBatch hook stopped the turn."),
+      { type: "text", text: "again" },
+    ]);
+  });
+
+  // Q29: the reason goes with whichever request is next, a turn a background answer starts included, once; the
+  // background subagent keeps running past the turn's end.
+  it("sends a PostToolBatch block's reason with the turn a background subagent's answer starts, and not again with the typed prompt after", async () => {
+    const worker = new Held("fake:w");
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background: true }), reply("noted"), reply("ok")];
+    const s = await setup({ mode: "never", says: [batchSays(block("wait for it"))], turns, worker });
+    expect(await s.session.send("go")).toEqual({ stopped: "wait for it" });
+    expect([s.notes, s.lead.seen.length, s.tasks!.all.map((t) => t.state)]).toEqual([["A PostToolBatch hook stopped the turn: wait for it"], 1, ["running"]]);
+    while (!worker.asked.length) await pause(20);
+    worker.answer("found it");
+    await s.tasks!.all[0]!.done;
+    await s.session.send("");
+    const woke = s.lead.seen[1]!.at(-1)!.parts;
+    expect(woke.slice(1)).toEqual([hookText("PostToolBatch", "wait for it"), { type: "text", text: "Background task t1 (look) finished:\nfound it", from: "tasks" }]);
+    await s.session.send("next");
+    expect(s.lead.seen[2]!.at(-1)!.parts).toEqual([{ type: "text", text: "next" }]);
+  });
+
+  // Codex review 5 of 8e, point 1: a background answer that comes while the hook runs stays waiting when the batch ends
+  // the turn, so it still starts a turn of its own.
+  it("leaves a background answer that came while the hook ran waiting when the batch ends the turn, so it still wakes the lead", async () => {
+    const worker = new Held("fake:w");
+    const go = path.join(await folder(), "go");
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background: true }), reply("noted")];
+    const s = await setup({ mode: "never", says: [batchSays(block("wait for it"), { go })], turns, worker });
+    const sending = s.session.send("go");
+    try {
+      await vi.waitFor(() => expect(batches(s)).toHaveLength(1), { timeout: 10_000 });
+      while (!worker.asked.length) await pause(20);
+      worker.answer("found it");
+      await s.tasks!.all[0]!.done;
+    } finally {
+      writeFileSync(go, "");
+    }
+    expect(await sending).toEqual({ stopped: "wait for it" });
+    expect([s.tasks!.wakes(), s.session.messages[2]!.parts.some((p) => p.type === "text" && p.from === "tasks")]).toEqual([true, false]);
+    await s.session.send("");
+    expect(s.lead.seen[1]!.at(-1)!.parts.slice(1)).toEqual([
+      hookText("PostToolBatch", "wait for it"),
+      { type: "text", text: "Background task t1 (look) finished:\nfound it", from: "tasks" },
+    ]);
+  });
+
+  it("drops a PostToolBatch block's reason at a /clear", async () => {
+    const s = await setup({ mode: "never", says: [batchSays(block("Lint first"))], turns: shellCall("echo hi") });
+    expect(await s.session.send("go")).toEqual({ stopped: "Lint first" });
+    s.session.load(fresh("s2"));
+    await s.session.send("next");
+    expect(s.lead.seen[1]).toEqual([{ role: "user", parts: [{ type: "text", text: "next" }] }]);
+  });
+
+  // Q28: with onFailure "block" a failure is a block; without it, the red line alone and the turn goes on.
+  it.each([true, false])("ends the turn at a PostToolBatch hook that cannot start only with onFailure block (%s)", async (strict) => {
+    const root = await folder();
+    const s = await setup({ mode: "never", root, says: [], turns: shellCall("echo hi") });
+    const missing: Hook = {
+      // With args, so it is started with no shell, as SCRIPT's hooks are, and cannot start.
+      event: "PostToolBatch", matcher: { all: true }, command: path.join(root, "no-such-program"), args: [], async: false, where: '"PostToolBatch"',
+      ...(strict ? { onFailure: "block" as const } : {}),
+    };
+    s.given.set({ hooks: [missing], off: false, leftOut: [] });
+    const ended = await s.session.send("go");
+    const words = /^.*no-such-program could not start \(.+\)$/;
+    if (strict) {
+      expect(ended).toEqual({ stopped: expect.stringMatching(words) });
+      expect([s.notes, s.errors, s.lead.seen.length]).toEqual([[expect.stringMatching(/^A PostToolBatch hook stopped the turn: .*no-such-program could not start/)], [], 1]);
+    } else {
+      expect(ended).toBeUndefined();
+      expect([s.notes, s.lead.seen.length]).toEqual([[], 2]);
+      expect(s.errors.map((e) => e.message)).toEqual([expect.stringMatching(/^PostToolBatch hook failed: .*no-such-program could not start \(.+\)$/)]);
+    }
+  });
+
+  it("runs a PostToolBatch hook whose settings entry names a matcher, the matcher ignored", async () => {
+    const s = await setup({ mode: "never", says: [batchSays("")], turns: shellCall("echo hi") });
+    const h = s.hooks[0]!;
+    const read = readHooks('settings.json: "hooks"', { PostToolBatch: [{ matcher: "NoSuchTool", hooks: [{ type: "command", command: h.command, args: h.args }] }] }, []);
+    s.given.set({ hooks: read, off: false, leftOut: [] });
+    await s.session.send("go");
+    expect(batches(s)).toHaveLength(1);
+  });
+
+  it("fires no PostToolBatch after a PreToolUse hook's continue: false, nor after the user's stop", async () => {
+    const halted = await setup({ mode: "never", says: [{ stdout: stops("halt") }, batchSays("")], turns: shellCall("echo hi") });
+    expect(await halted.session.send("go")).toEqual({ stopped: "halt" });
+    expect(halted.inputs().map((i) => i.hook_event_name)).toEqual(["PreToolUse"]);
+    const stop = new AbortController();
+    const stopping = defineTool("stopping", "Stops the turn while it runs", z.object({}), (_input, c) =>
+      new Promise((_ok, no) => {
+        c.signal?.addEventListener("abort", () => no(new Error("killed")));
+        stop.abort();
+      }));
+    const cancelled = await setup({ mode: "never", says: [batchSays("")], turns: [callTool("c1", "stopping", {})], tools: [stopping] });
+    await cancelled.session.send("go", stop.signal);
+    expect([cancelled.results(), cancelled.inputs()]).toEqual([[{ output: "Cancelled by the user.", isError: true }], []]);
+  });
+
+  // Codex round 1, point 3: a stop while the batch hook runs ends it, and the results are stored all the same.
+  it("stores every call's one result when the user stops the turn while a PostToolBatch hook runs, saying nothing, the next request pairing them", async () => {
+    const root = await folder();
+    const says = [batchSays(block("late"), { go: path.join(root, "never-made") })];
+    const turns = [many(["c1", "shell", { command: "echo one" }], ["c2", "shell", { command: "echo two" }]), reply("again")];
+    const s = await setup({ mode: "never", root, says, turns });
+    const abort = new AbortController();
+    const sent = s.session.send("go", abort.signal);
+    for (let i = 0; !batches(s).length; i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
+    abort.abort();
+    expect(await sent).toBeUndefined();
+    const answered = [
+      { type: "tool_result", callId: "c1", output: "ran echo one", isError: false },
+      { type: "tool_result", callId: "c2", output: "ran echo two", isError: false },
+    ];
+    expect([s.session.messages.length, s.session.messages[2]!.parts, s.notes, s.errors, s.lead.seen.length]).toEqual([3, answered, [], [], 1]);
+    await s.session.send("next");
+    expect(s.lead.seen[1]!.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(s.lead.seen[1]![1]!.parts.map((p) => (p.type === "tool_call" ? p.id : p.type))).toEqual(["c1", "c2"]);
+    expect(s.lead.seen[1]![2]!.parts).toEqual([...answered, { type: "text", text: "next" }]);
+  });
+
+  it("ends a subagent at its PostToolBatch hook's block while the lead's delegate call waits, the lead going on", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const worker = new FakeProvider("w", [callTool("w1", "read_file", { path: "a.txt" }), reply("found it")]);
+    const s = await setup({ mode: "never", root, says: [batchSays("", { seq: [block("enough"), ""] })], turns: [look, reply("ok")], worker });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect(s.results()).toEqual([{ output: "t1 was stopped by a hook: enough", isError: false }]);
+    expect([s.tasks!.all.map((t) => t.state), worker.seen.length, s.lead.seen.length, s.errors]).toEqual([["stopped"], 1, 2, []]);
+    expect(s.notes).toEqual(["t1: A PostToolBatch hook stopped the turn: enough"]);
+    expect(batches(s)).toEqual([
+      expect.objectContaining({ agent_id: "t1", tool_calls: [expect.objectContaining({ tool_name: "Read", tool_use_id: "w1" })] }),
+      expect.objectContaining({ tool_calls: [expect.objectContaining({ tool_name: "Agent", tool_use_id: "c1" })] }),
+    ]);
+    // Nothing of the subagent's stop waits for the lead's next request.
+    expect(s.lead.seen[1]!.at(-1)!.parts.filter((p) => p.type !== "tool_result")).toEqual([]);
+  });
+
+  it("decides nothing for an async PostToolBatch hook's block, saying it cannot block", async () => {
+    const s = await setup({ mode: "never", says: [batchSays(block("no"))], turns: shellCall("echo hi") });
+    const hook = { ...s.hooks[0]!, async: true };
+    s.given.set({ hooks: [hook], off: false, leftOut: [] });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect([s.notes, s.lead.seen.length]).toEqual([[], 2]);
+    await until(() => s.errors.length > 0);
+    expect(s.errors.map((e) => e.message)).toEqual([`PostToolBatch hook failed: ${s.command(hook)} asked to block, but an "async" hook cannot block`]);
+  });
+
+  // Not in the plan's list: a throw from the hooks that is not a stop, as #postToolUse takes one.
+  it("stores the results and goes on, with a red line, when a listener of the hooks' lines throws at PostToolBatch", async () => {
+    const s = await setup({ mode: "never", says: [batchSays(JSON.stringify({ systemMessage: "checking", decision: "block", reason: "x" }))], turns: shellCall("echo hi") });
+    s.bus.on("hook-note", (line) => {
+      if (line === "PostToolBatch hook: checking") throw new Error("listener broke");
+    });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect([s.results(), s.lead.seen.length]).toEqual([[{ output: "ran echo hi", isError: false }], 2]);
+    expect(s.errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([["hook", "PostToolBatch hook", "PostToolBatch hook failed: listener broke"]]);
   });
 });
 
@@ -3552,10 +5027,10 @@ describe("Session, notes to the model", { timeout: 15_000 }, () => {
   it("builds the fresh prompt with today's date and the setup now, and gives them back", async () => {
     const session = new Session({
       lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
-      systemNow: async (date, setup) => `built ${date} ${setup?.sandbox}`,
+      systemNow: async (date, setup) => ({ system: `built ${date} ${setup?.sandbox}`, files: [] }),
       setup: { now: () => LIVE_ON, today: () => "2026-11-18", root: host.root, platform: host.platform },
     });
-    const built = { system: "built 2026-11-18 live", date: "2026-11-18", setup: LIVE_ON };
+    const built = { system: "built 2026-11-18 live", date: "2026-11-18", setup: LIVE_ON, files: [] };
     expect(await session.freshSystem()).toEqual(built);
     const plain = new Session({
       lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx: await tempContext(), bus: new Bus(),
@@ -4636,5 +6111,392 @@ describe("Session, the lesson ask", { timeout: 15_000 }, () => {
       [reply("A lesson.")], { more: { subagent: true } });
     await s.session.send("go");
     expect(s.asks()).toEqual([]);
+  });
+});
+
+// Release 8e plan, step 14: PostModelSwitch, fired when a caller hands setLead the switch's fields, its text going with the
+// next request, a prompt's first one waiting for it up to 5 s from when the window started sending the prompt. The runs of
+// the events named to standIn are stood in, each answering when the test says, so a fake clock can time them.
+describe("Session, PostModelSwitch (release 8e plan, step 14)", { timeout: 15_000 }, () => {
+  interface Stood { event: string; command: string; input: Record<string, unknown>; finish: (r?: Ran) => void }
+  function standIn(...events: string[]): Stood[] {
+    const runs: Stood[] = [];
+    const real = vi.mocked(runHook).getMockImplementation()!;
+    onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+    vi.mocked(runHook).mockImplementation((hook, input, opts) => {
+      const fields = input as Record<string, unknown>;
+      const event = String(fields.hook_event_name);
+      if (!events.includes(event)) return real(hook, input, opts);
+      return new Promise<Ran>((resolve, reject) => {
+        opts.signal?.addEventListener("abort", () => reject(new Error("Cancelled")), { once: true });
+        runs.push({ event, command: hook.command, input: fields, finish: (r = ran()) => resolve(r) });
+      });
+    });
+    return runs;
+  }
+  const ran = (stdout = "", code = 0, stderr = ""): Ran => ({ code, stdout, stderr, ms: 1 });
+  const hook = (over: Partial<Hook> = {}): Hook => ({ event: "PostModelSwitch", matcher: { all: true }, command: "after", async: false, where: "", ...over });
+  // What a caller hands setLead (queue.ts, from switchFields), passed on as it is.
+  const FIELDS = {
+    from_model: "a", to_model: "b", requested_model: "fake:b", source: "command", context_tokens: 0, prompt_cache_warm: false, cache_ttl: "5m",
+    estimated_cache_write_usd: null,
+  };
+  const hookText = (text: string, event = "PostModelSwitch") => ({ type: "text", text: `${event} hook:\n${text}`, from: "hooks" });
+  const said = (text: string) => ({ type: "text", text });
+  const task = (text: string) => ({ type: "text", text, from: "tasks" });
+  const conversation = (id: string, messages: Message[] = []): Conversation => ({ id, messages, system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+  // How many of `messages` hold `text` as a part.
+  const holding = (messages: Message[], text: string) => messages.filter((m) => m.parts.some((p) => p.type === "text" && p.text === text)).length;
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  // The session leads with fake:a; `hooks` are its hooks, a PostModelSwitch hook named "after" unless given.
+  async function setup(o: { hooks?: Hook[]; inbox?: () => string[]; recall?: ConstructorParameters<typeof Session>[0]["recall"] } = {}) {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const notes: string[] = [];
+    bus.on("hook-note", (line) => notes.push(line));
+    const ctx = await tempContext();
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root: ctx.root, mode: () => "never", effort: () => undefined, lead: () => session.lead.id };
+    const hooks = new Hooks({ hooks: o.hooks ?? [hook()], off: false, leftOut: [] }, where, bus);
+    const session: Session = new Session({ lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx, bus, hooks, ...(o.inbox ? { inbox: o.inbox } : {}), ...(o.recall ? { recall: o.recall } : {}) });
+    return { session, hooks, errors, notes };
+  }
+  // setTimeout's and Date's clock faked; the function moves it on by `ms`, then lets what that started run (setImmediate is
+  // not faked).
+  function clock() {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], now: Date.UTC(2026, 10, 23, 12) });
+    onTestFinished(() => void vi.useRealTimers());
+    return async (ms = 0) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      await settle();
+    };
+  }
+  // Until `check` holds, letting what is under way run, the clock left as it is.
+  async function until(check: () => boolean) {
+    for (let i = 0; i < 50 && !check(); i++) await settle();
+    expect(check()).toBe(true);
+  }
+
+  it("fires nothing when the lead is set without a switch's fields", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    s.session.setLead(new FakeProvider("b", []));
+    await settle();
+    expect(runs).toEqual([]);
+  });
+
+  it("fires with the fields handed in, matched on the new model's canonical name, every hook running for a model with none", async () => {
+    const s = await setup({ hooks: [hook({ command: "haiku", matcher: { names: ["claude-haiku-4-5"] } }), hook({ command: "opus", matcher: { names: ["claude-opus-5-5"] } })] });
+    const runs = standIn("PostModelSwitch");
+    const named = (id: string) => Object.assign(new FakeProvider("x", []), { id });
+    s.session.setLead(named("anthropic:claude-haiku-4-5-20251001"), FIELDS);
+    expect(runs.map((r) => r.command)).toEqual(["haiku"]);
+    expect(runs[0]!.input).toEqual(expect.objectContaining({ hook_event_name: "PostModelSwitch", ...FIELDS }));
+    s.session.setLead(named("openai:gpt-5.5"), FIELDS);
+    expect(runs.slice(1).map((r) => r.command)).toEqual(["haiku", "opus"]);
+  });
+
+  it.each([
+    ["plain output", ran("b leads now")],
+    ["additionalContext", ran(JSON.stringify({ hookSpecificOutput: { hookEventName: "PostModelSwitch", additionalContext: "b leads now" } }))],
+  ])("sends the text of a hook that finishes just under 5 s after the send with that request: %s", async (_how, answer) => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(4_999);
+    expect(b.seen).toEqual([]);
+    runs[0]!.finish(answer);
+    await sent;
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([hookText("b leads now"), said("go")]);
+  });
+
+  it("sends the request without the text of a hook still running 5 s after the send, and the next request carries it", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one"), reply("two")]);
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(4_999);
+    expect(b.seen).toEqual([]);
+    await wait(1);
+    expect(b.seen).toHaveLength(1);
+    await sent;
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
+    await wait(1);
+    runs[0]!.finish(ran("b leads now"));
+    await wait();
+    await s.session.send("again", undefined, undefined, Date.now());
+    expect(b.seen[1]!.at(-1)!.parts).toEqual([hookText("b leads now"), said("again")]);
+  });
+
+  // Codex review 3 of 8e, point 2: the note from long-term memory, found before a stop ends the wait for the switch's
+  // hooks, is still due, so the next prompt sent is searched for and carries it.
+  it("keeps the note from long-term memory due for the next prompt when a stop ends the wait for the switch's hooks", async () => {
+    const searched: string[] = [];
+    const hit: Hit = { text: "a missing lock file", wing: WING, room: "r", label: "tachikoma session a, turn 1", distance: 0, date: "2026-11-24" };
+    const palace = { searchTwo: async (query: string) => (searched.push(query), { is: "found", hits: [hit] }) } as unknown as Palace;
+    const s = await setup({ recall: { memory: { on: () => true, palace }, room: "r", timeout: 1_000 } });
+    s.session.start("startup");
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    const stop = new AbortController();
+    const first = s.session.send("lock file", stop.signal, undefined, Date.now());
+    await wait(1_000);
+    expect([searched, b.seen]).toEqual([["lock file"], []]);
+    stop.abort();
+    await first;
+    runs[0]!.finish();
+    await wait();
+    await s.session.send("lock file", undefined, undefined, Date.now());
+    expect(searched).toEqual(["lock file", "lock file"]);
+    expect(b.seen[0]!.at(-1)!.parts.map((p) => (p.type === "text" ? p.from : p.type))).toEqual(["memory", undefined]);
+  });
+
+  it("waits only the rest of the 5 s after a UserPromptSubmit hook that took 3 s", async () => {
+    const s = await setup({ hooks: [hook(), hook({ event: "UserPromptSubmit", command: "prompt" })] });
+    const runs = standIn("PostModelSwitch", "UserPromptSubmit");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait();
+    expect(runs.map((r) => r.event)).toEqual(["PostModelSwitch", "UserPromptSubmit"]);
+    await wait(3_000);
+    runs[1]!.finish();
+    await wait(1_999);
+    expect(b.seen).toEqual([]);
+    await wait(1);
+    expect(b.seen).toHaveLength(1);
+    await sent;
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
+  });
+
+  it.each([
+    ["5.5 s, after the 5 s: the first request goes without it, and the second carries it", 5_500, false],
+    ["4 s, within the 5 s: the first request carries it", 4_000, true],
+  ])("waits for nothing after a UserPromptSubmit hook that took 6 s, the switch's hook finishing at %s", async (_when, at, first) => {
+    const s = await setup({ hooks: [hook(), hook({ event: "UserPromptSubmit", command: "prompt" })] });
+    const runs = standIn("PostModelSwitch", "UserPromptSubmit");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one"), reply("two")]);
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(at);
+    runs[0]!.finish(ran("b leads now"));
+    await wait(6_000 - at);
+    runs[1]!.finish();
+    await wait();
+    expect(b.seen).toHaveLength(1);
+    await sent;
+    expect(b.seen[0]!.at(-1)!.parts).toEqual(first ? [hookText("b leads now"), said("go")] : [said("go")]);
+    const again = s.session.send("again", undefined, undefined, Date.now());
+    await until(() => runs.length === 3);
+    runs[2]!.finish();
+    await again;
+    expect(b.seen[1]!.at(-1)!.parts).toEqual(first ? [said("again")] : [hookText("b leads now"), said("again")]);
+  });
+
+  it("puts the text of a hook that finishes once the first request has gone in its tool round's results message, and in no later request", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new Held("fake:b");
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(5_000);
+    expect(b.asked).toHaveLength(1);
+    runs[0]!.finish(ran("b leads now"));
+    await wait();
+    b.answer(callTool("c1", "echo", { text: "ping" }));
+    await until(() => b.asked.length === 2);
+    expect(b.asked[1]!.messages.at(-1)!.parts).toEqual([{ type: "tool_result", callId: "c1", output: "ping", isError: false }, hookText("b leads now")]);
+    b.answer("done");
+    await sent;
+    const again = s.session.send("again", undefined, undefined, Date.now());
+    await until(() => b.asked.length === 3);
+    b.answer("ok");
+    await again;
+    expect(b.asked[2]!.messages.at(-1)!.parts).toEqual([said("again")]);
+    expect(holding(b.asked[2]!.messages, "PostModelSwitch hook:\nb leads now")).toBe(1);
+  });
+
+  it("puts the text of a hook that finishes once the first request has gone in the message carrying a Stop hook's feedback, once", async () => {
+    const s = await setup({ hooks: [hook(), hook({ event: "Stop", command: "stop" })] });
+    const runs = standIn("PostModelSwitch", "Stop");
+    const wait = clock();
+    const b = new Held("fake:b");
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(5_000);
+    expect(b.asked).toHaveLength(1);
+    runs[0]!.finish(ran("b leads now"));
+    b.answer("first");
+    await until(() => runs.length === 2);
+    runs[1]!.finish(ran(JSON.stringify({ decision: "block", reason: "keep going" })));
+    await until(() => b.asked.length === 2);
+    expect(b.asked[1]!.messages.at(-1)!.parts).toEqual([{ type: "text", text: "Stop hook feedback:\nkeep going", from: "hooks" }, hookText("b leads now")]);
+    b.answer("second");
+    await until(() => runs.length === 3);
+    runs[2]!.finish();
+    await sent;
+    expect(holding(s.session.messages, "PostModelSwitch hook:\nb leads now")).toBe(1);
+  });
+
+  it("keeps the text of a hook that finishes during a turn that makes no further request for the next turn's first request", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new Held("fake:b");
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("go", undefined, undefined, Date.now());
+    await wait(5_000);
+    runs[0]!.finish(ran("b leads now"));
+    await wait();
+    b.answer("one");
+    await sent;
+    const again = s.session.send("again", undefined, undefined, Date.now());
+    await until(() => b.asked.length === 2);
+    b.answer("two");
+    await again;
+    expect(b.asked[1]!.messages.at(-1)!.parts).toEqual([hookText("b leads now"), said("again")]);
+  });
+
+  it("ends the turn when Esc comes during the wait, sending and keeping nothing, the background answer and the text waiting for the next", async () => {
+    const waiting = ["t1 finished"];
+    const s = await setup({ inbox: () => waiting.splice(0) });
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    const listed = s.hooks.runs;
+    const stop = new AbortController();
+    const sent = s.session.send("go", stop.signal, undefined, Date.now());
+    await wait(1_000);
+    stop.abort();
+    expect(await sent).toBeUndefined();
+    expect([b.seen, s.session.prompts, s.session.messages, waiting]).toEqual([[], [], [], ["t1 finished"]]);
+    expect(s.hooks.runs).toBe(listed);
+    runs[0]!.finish(ran("b leads now"));
+    await wait();
+    await s.session.send("again", undefined, undefined, Date.now());
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([hookText("b leads now"), said("again"), task("t1 finished")]);
+    expect(s.session.prompts).toEqual(["again"]);
+  });
+
+  it("sends a turn of background answers alone with the text already there, and does not wait for a hook still running (Q24)", async () => {
+    const waiting = ["t1 finished"];
+    const s = await setup({ inbox: () => waiting.splice(0) });
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one"), reply("two")]);
+    s.session.setLead(b, FIELDS);
+    const sent = s.session.send("", undefined, undefined, Date.now());
+    await wait();
+    expect(b.seen).toHaveLength(1);
+    await sent;
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([task("t1 finished")]);
+    runs[0]!.finish(ran("b leads now"));
+    await wait();
+    waiting.push("t2 finished");
+    await s.session.send("", undefined, undefined, Date.now());
+    expect(b.seen[1]!.at(-1)!.parts).toEqual([hookText("b leads now"), task("t2 finished")]);
+  });
+
+  it.each([
+    ["after the newer one's", false],
+    ["before the newer switch is made", true],
+  ])("sends only the newer of two switches' text, the older one's hook finishing %s", async (_when, early) => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", []);
+    const c = new FakeProvider("c", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    if (early) runs[0]!.finish(ran("b leads now"));
+    await settle();
+    s.session.setLead(c, { ...FIELDS, from_model: "b", to_model: "c", requested_model: "fake:c" });
+    runs[1]!.finish(ran("c leads now"));
+    await settle();
+    if (!early) runs[0]!.finish(ran("b leads now"));
+    await settle();
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect(c.seen[0]!.at(-1)!.parts).toEqual([hookText("c leads now"), said("go")]);
+  });
+
+  it.each([
+    ["/clear", "finishes after it", false],
+    ["/resume", "finishes after it", false],
+    ["/branch", "finishes after it", false],
+    ["/clear", "had finished before it", true],
+    ["/resume", "had finished before it", true],
+    ["/branch", "had finished before it", true],
+  ])("drops the text of a hook that %s %s, as another conversation's", async (load, _when, early) => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    if (early) runs[0]!.finish(ran("b leads now"));
+    await settle();
+    if (load === "/clear") s.session.load(conversation("s2"));
+    else if (load === "/resume") s.session.load(conversation("s3", [{ role: "user", parts: [said("old") as Part] }, { role: "assistant", parts: [said("older") as Part] }]));
+    else s.session.load(conversation(s.session.id, [...s.session.messages]), { keepRuns: true });
+    if (!early) runs[0]!.finish(ran("b leads now"));
+    await settle();
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
+    expect(holding(b.seen[0]!, "PostModelSwitch hook:\nb leads now")).toBe(0);
+  });
+
+  it("says a hook's exit 2 as its red line, and sends nothing of it", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    runs[0]!.finish(ran("not read", 2, "nope"));
+    await settle();
+    expect(s.errors.map((e) => e.message)).toEqual(["PostModelSwitch hook failed: after exited with code 2: nope"]);
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
+  });
+
+  it('says only the red line of a hook with "onFailure": "block" that cannot start, the lead switched all the same (Q28)', async () => {
+    const s = await setup({ hooks: [hook({ onFailure: "block" })] });
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    runs[0]!.finish({ code: null, stdout: "", stderr: "", ms: 1, failed: "start", startError: "ENOENT" });
+    await settle();
+    expect([s.errors.map((e) => e.message), s.notes]).toEqual([["PostModelSwitch hook failed: after could not start (ENOENT)"], []]);
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect([s.session.lead, b.seen[0]!.at(-1)!.parts]).toEqual([b, [said("go")]]);
+  });
+
+  it("sends nothing of an async hook's text", async () => {
+    const s = await setup({ hooks: [hook({ async: true })] });
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    runs[0]!.finish(ran("from an async hook"));
+    await settle();
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
+  });
+
+  it("stops a hook still running when Tachikoma exits, saying nothing", async () => {
+    const s = await setup();
+    const runs = standIn("PostModelSwitch");
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    expect(runs).toHaveLength(1);
+    s.hooks.stopAsync();
+    await settle();
+    expect([s.errors, s.notes]).toEqual([[], []]);
+    await s.session.send("go", undefined, undefined, Date.now());
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([said("go")]);
   });
 });

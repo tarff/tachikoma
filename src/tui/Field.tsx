@@ -35,6 +35,7 @@ export function Field({
   rows,
   columns,
   full,
+  pasted,
 }: {
   asked: Asked;
   bindings: Bindings; // the table of keys, for the names the hint gives Select's keys
@@ -42,6 +43,9 @@ export function Field({
   rows: number; // the rows it may draw, as the App's frame gives them
   columns: number; // the width the pick's menu is drawn at (Menu.tsx)
   full: boolean;
+  // Told of each paste, which the App's own paste handler does not get while a field is up, so it starts Notification's
+  // wait again as a key does (release 8e plan, step 17).
+  pasted?: () => void;
 }) {
   const { palette } = useContext(ThemeContext);
   const { field, given } = asked;
@@ -73,6 +77,7 @@ export function Field({
     answer(!pick ? s.text : marks ? picked().map((o) => o.value) : chosen ? [chosen.value] : []);
   };
   usePaste((text) => {
+    pasted?.();
     add(text);
     redraw((n) => n + 1);
   });

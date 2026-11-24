@@ -92,6 +92,7 @@ export const keyRouting = (ui: UI, fns: Fns) => {
     const h = ui.happening(() => fns.menuFor(ui.editor.current) !== null);
     if (h.phase.kind === "ended" || h.phase.kind === "review" || h.phase.kind === "printed") return; // printed out: a key read with the `[` that printed the view out
     ui.clearCopied();
+    ui.keyed(); // a key starts Notification's wait again (state.ts; release 8e plan, step 17)
     ui.notes.current = []; // a live edit's lines leave the hint row at the next key (note, output.ts)
     // /resume's list is the picker phase too, but has no field, so its letters are Select's, as in tachi -r's (PR #10's review);
     // so is /mcp's (release 8c plan, Task 10). A server's form, drawn over them, is a field (Task 12).

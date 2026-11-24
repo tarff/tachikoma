@@ -9,7 +9,8 @@ import type { Ran } from "./run.js";
 export type Outcome =
   | { kind: "ok"; json?: Record<string, unknown>; text?: string }
   | { kind: "block"; reason: string; json?: Record<string, unknown> }
-  | { kind: "failed"; line: string }; // the red line's words after "<Event> hook failed: "
+  | { kind: "failed"; line: string; cancels?: true }; // the red line's words after "<Event> hook failed: "; `cancels`,
+  // a PreModelSwitch time-out, which also cancels the switch in the line's words (release 8e plan, step 3, Q13)
 
 export interface Combined {
   stop?: string; // continue:false, its stopReason ("" when none)
@@ -20,6 +21,9 @@ export interface Combined {
   context: { event: Event; text: string }[]; // for the model, in file order, each cut (release 8b plan, choice 7)
   messages: string[]; // systemMessage, each cut
   instructions: string[]; // PreCompact's plain output, for the summary request (Task 11), each cut
+  interrupt?: boolean; // PermissionRequest: the deny that decides said interrupt: true (release 8e plan, step 2)
+  updatedPermissions?: boolean; // PermissionRequest: a hook gave updatedPermissions, which is ignored with a line
+  retry?: boolean; // PermissionDenied: a hook said retry: true
   output?: unknown; // PostToolUse's updatedToolOutput
   mcpOutput?: unknown; // PostToolUse's updatedMCPToolOutput, for an MCP call alone (release 8c plan, choice 20)
   elicitation?: { action: Elicited; content?: Record<string, unknown> }; // Elicitation's and ElicitationResult's (choice 35)
@@ -38,20 +42,40 @@ const AFTER: readonly Event[] = ["PostToolUse", "PostToolUseFailure"];
 // A server's forms' events (release 8c plan, choice 35): a hook answers the form with `action` and `content`, and exit 2
 // is a decline. There is no model text to add and the form's call goes on, so continue and additionalContext are not read.
 const FORMS: readonly Event[] = ["Elicitation", "ElicitationResult"];
-// Where continue and stopReason are ignored: no turn to end, or Claude Code discards them (design).
-const NO_CONTINUE: readonly Event[] = ["SessionStart", "SessionEnd", "SubagentStart", "PreCompact", "PostCompact", ...FORMS];
+// Release 8e design: at these the whole answer is ignored, as in Claude Code; only the runner's own failures are lines.
+const IGNORED: readonly Event[] = ["Notification", "StopFailure", "InstructionsLoaded"];
+const PERMISSION_EVENTS: readonly Event[] = ["PermissionRequest", "PermissionDenied"];
+// Release 8e plan, step 3: where exit 2 and decision "block" block, and onFailure "block" makes a failure a block, as
+// at BLOCKING's; PreModelSwitch's block is a deny, as PreToolUse's is. Its own list, apart from the wait below (Q28).
+const NEW_BLOCKING: readonly Event[] = ["PreModelSwitch", "PostToolBatch", "ConfigChange"];
+// Where continue and stopReason are ignored: no turn to end, or Claude Code discards them (design). At the new events
+// only where the design names them, PostToolBatch alone (release 8e plan, Q2; ConfigChange, D9).
+const NO_CONTINUE: readonly Event[] = ["SessionStart", "SessionEnd", "SubagentStart", "PreCompact", "PostCompact", ...FORMS, ...PERMISSION_EVENTS,
+  "PreModelSwitch", "PostModelSwitch", "ConfigChange"];
 // Where decision "block" and reason are read; PreToolUse reads decision's old values too.
-const DECISION: readonly Event[] = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SubagentStop", "PreCompact"];
-const NO_CONTEXT: readonly Event[] = ["SessionEnd", "PreCompact", "PostCompact", ...FORMS];
+const DECISION: readonly Event[] = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SubagentStop", "PreCompact",
+  ...NEW_BLOCKING];
+const NO_CONTEXT: readonly Event[] = ["SessionEnd", "PreCompact", "PostCompact", ...FORMS, ...PERMISSION_EVENTS, "PreModelSwitch", "ConfigChange"];
+// Where systemMessage is not read: ConfigChange discards it (release 8e plan, D9).
+const NO_MESSAGE: readonly Event[] = ["ConfigChange"];
 // Where plain output on exit 0 is kept: text for the model, or at PreCompact the summary's added instructions.
-const PLAIN: readonly Event[] = ["SessionStart", "UserPromptSubmit", "PreCompact"];
+const PLAIN: readonly Event[] = ["SessionStart", "UserPromptSubmit", "PreCompact", "PostModelSwitch"];
 const PERMISSIONS = ["allow", "deny", "ask", "defer"] as const;
 // A form's answers, in the order the first wins among several hooks, as deny wins over ask and allow (choice 35).
 const ACTIONS = ["decline", "cancel", "accept"] as const;
+// Release 8e design: where an async hook's allow, deny, ask, rewrite or retry is a try to decide, as a block is
+// everywhere.
+const DECIDING: readonly Event[] = [...PERMISSION_EVENTS, ...NEW_BLOCKING];
 
-// The events at which an mcp_tool hook waits for its server while it starts (choice 21): those whose hooks can block, and
-// the forms', where exit 2 declines.
-export const canBlock = (event: Event) => BLOCKING.includes(event) || FORMS.includes(event);
+// The events at which an mcp_tool hook waits for its server while it starts (choice 21): those whose hooks can block,
+// the forms', where exit 2 declines, and the new events whose hooks decide (release 8e plan, step 3), its own rule.
+const WAITS: readonly Event[] = [...BLOCKING, ...FORMS, "PermissionRequest", ...NEW_BLOCKING];
+export const canBlock = (event: Event) => WAITS.includes(event);
+
+// Whether an answer tries to decide what a hook without async would: a block, or at the new deciding events an allow,
+// deny, ask, rewrite or retry, which an async hook cannot (release 8e design; hooks.ts says so).
+export const decides = (event: Event, c: Combined) =>
+  c.block !== undefined || (DECIDING.includes(event) && (c.decision !== undefined || c.rewrite !== undefined || c.retry === true));
 
 // Claude Code's hooks reference, "JSON output": text a hook hands over is capped at 10,000 characters. The marker is a
 // long tool output's (truncate, session.ts); Claude Code saves the rest to a file instead (release 8b plan, choice 7).
@@ -98,7 +122,8 @@ export function outcomeOf(event: Event, hook: Hook, ran: Ran, platform: NodeJS.P
   // Windows without Git Bash a PreToolUse hook run by a shell with onFailure not set (Claude Code's rule; design), which
   // an mcp_tool hook is not.
   const shelled = !hook.args && !hook.mcp && platform === "win32" && !(bash ?? gitBash() !== null);
-  const strict = BLOCKING.includes(event) && (hook.onFailure === "block" || (event === "PreToolUse" && hook.onFailure === undefined && shelled));
+  const strict = (BLOCKING.includes(event) || NEW_BLOCKING.includes(event))
+    && (hook.onFailure === "block" || (event === "PreToolUse" && hook.onFailure === undefined && shelled));
   // A block's reason is the failure's own words, so a timeout's block says it ran out of time; only a hook that exited
   // (or was ended by a signal) with error output gives that output's first line (the user's choice at Task 3's review).
   const failure = (words: string, error = ""): Outcome => {
@@ -107,6 +132,9 @@ export function outcomeOf(event: Event, hook: Hook, ran: Ran, platform: NodeJS.P
   };
   const exited = (words: string) => failure(words, firstLine(ran.stderr));
   if (ran.failed === "start") return failure(`could not start (${ran.startError})`);
+  // Release 8e plan, step 3 (Q13): a PreModelSwitch hook out of time is its red line and a cancel, onFailure or not; an
+  // async one decides nothing, so its time-out is a failure alone.
+  if (ran.failed === "time" && event === "PreModelSwitch" && !hook.async) return { kind: "failed", line: `${command} ran out of time after ${ran.limit} s`, cancels: true };
   if (ran.failed === "time") return failure(`ran out of time after ${ran.limit} s`);
   // An mcp_tool hook's (release 8c plan, choice 21): a server it could not call fails as a hook that could not start does;
   // an isError answer is a failed hook that never blocks, Claude Code's rule, its line ending with the text's first line.
@@ -115,17 +143,22 @@ export function outcomeOf(event: Event, hook: Hook, ran: Ran, platform: NodeJS.P
     const first = firstLine(ran.reason ?? "");
     return { kind: "failed", line: `${command} answered an error${first ? `: ${first}` : ""}` };
   }
+  // Release 8e plan, step 2: at Notification, StopFailure and InstructionsLoaded nothing else is read; at PermissionRequest
+  // exit 2 does nothing and its JSON is not read (Q3); at PermissionDenied exit codes and error output give no line, and
+  // only its JSON is read.
+  if (IGNORED.includes(event) || (event === "PermissionRequest" && ran.code === 2)) return { kind: "ok" };
+  const coded = event !== "PermissionDenied";
   const answer = read(event, ran.stdout);
   const json = "json" in answer ? { json: answer.json } : {};
   // At a form's events exit 2 is a decline, whatever was printed (choice 35), which combine reads from the block.
-  if (ran.code === 2) {
-    if (BLOCKING.includes(event) || AFTER.includes(event) || FORMS.includes(event)) {
+  if (ran.code === 2 && coded) {
+    if (BLOCKING.includes(event) || AFTER.includes(event) || FORMS.includes(event) || NEW_BLOCKING.includes(event)) {
       return { kind: "block", reason: ran.stderr.trim().replace(/\r\n/g, "\n"), ...json };
     }
     return exited("exited with code 2");
   }
   if ("error" in answer) return failure(`printed JSON that could not be read (${answer.error})`);
-  if (ran.code !== 0 && (strict || "text" in answer)) {
+  if (coded && ran.code !== 0 && (strict || "text" in answer)) {
     if (ran.code !== null) return exited(`exited with code ${ran.code}`);
     return exited(ran.signal ? `was ended by signal ${ran.signal}` : "was ended by an unknown signal");
   }
@@ -161,7 +194,7 @@ function check(event: Event, json: Record<string, unknown>): string | undefined 
     o[name] != null && !ok(o[name]) ? `${JSON.stringify(name)} must be ${what}` : undefined;
   const text = (v: unknown) => typeof v === "string";
   const wrong = [
-    field(json, "systemMessage", text, TEXT),
+    NO_MESSAGE.includes(event) ? undefined : field(json, "systemMessage", text, TEXT),
     ...(NO_CONTINUE.includes(event) ? [] : [field(json, "continue", (v) => typeof v === "boolean", "true or false"), field(json, "stopReason", text, TEXT)]),
     ...(DECISION.includes(event)
       ? [field(json, "decision", (v) => v === "approve" || v === "block", '"approve" or "block"'), field(json, "reason", text, TEXT)]
@@ -180,10 +213,25 @@ function check(event: Event, json: Record<string, unknown>): string | undefined 
       field(specific, "permissionDecisionReason", text, TEXT),
       field(specific, "updatedInput", isObject, "an object"),
     ] : []),
+    // Claude Code's hooks reference: allow, deny and ask as PreToolUse writes them (release 8e plan, D3).
+    ...(event === "PreModelSwitch" ? [
+      field(specific, "permissionDecision", (v) => v === "allow" || v === "deny" || v === "ask", '"allow", "deny" or "ask"'),
+      field(specific, "permissionDecisionReason", text, TEXT),
+    ] : []),
     ...(FORMS.includes(event) ? [
       field(specific, "action", (v) => (ACTIONS as readonly unknown[]).includes(v), '"accept", "decline" or "cancel"'),
       field(specific, "content", isObject, "an object"),
     ] : []),
+    // Claude Code's hooks reference: PermissionRequest's decision is an object with behavior and the fields beside it;
+    // updatedPermissions is only noted as given, so its shape is not looked at (release 8e plan, step 2, D1 and D2).
+    ...(event === "PermissionRequest" ? [field(specific, "decision", isObject, "an object")] : []),
+    ...(event === "PermissionRequest" && isObject(specific.decision) ? [
+      field(specific.decision, "behavior", (v) => v === "allow" || v === "deny", '"allow" or "deny"'),
+      field(specific.decision, "message", text, TEXT),
+      field(specific.decision, "interrupt", (v) => typeof v === "boolean", "true or false"),
+      field(specific.decision, "updatedInput", isObject, "an object"),
+    ] : []),
+    ...(event === "PermissionDenied" ? [field(specific, "retry", (v) => typeof v === "boolean", "true or false")] : []),
   ].find(Boolean);
 }
 
@@ -199,6 +247,7 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
   for (const { hook, outcome } of results) {
     if (outcome.kind === "failed") {
       c.failures.push(cut(outcome.line));
+      if (outcome.cancels && decided.deny === undefined) decided.deny = cut(outcome.line);
       continue;
     }
     const json = outcome.json ?? {};
@@ -207,26 +256,46 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
       const action = outcome.kind === "block" ? "decline" : (specific.action as Elicited | undefined);
       if (action && elicited[action] === undefined) elicited[action] = action === "accept" && isObject(specific.content) ? { content: specific.content } : {};
     }
-    if (typeof json.systemMessage === "string") c.messages.push(cut(json.systemMessage));
+    if (!NO_MESSAGE.includes(event) && typeof json.systemMessage === "string") c.messages.push(cut(json.systemMessage));
     if (!NO_CONTINUE.includes(event) && json.continue === false && c.stop === undefined) c.stop = cut((json.stopReason as string | undefined) ?? "");
     const reason = (json.reason as string | undefined) ?? "";
-    if (event === "PreToolUse") {
+    if (event === "PreToolUse" || event === "PreModelSwitch") {
       // Claude Code reads permissionDecision only inside hookSpecificOutput; decision's old values approve and block stand
-      // for allow and deny. An exit 2 is a deny the fields cannot undo.
+      // for allow and deny. An exit 2 is a deny the fields cannot undo. PreModelSwitch reads permissionDecision as
+      // PreToolUse writes it, with no defer and no rewrite, and of the top-level decision only "block" (release 8e plan,
+      // step 3, D3; an "approve" there is ignored, the user's choice at the step's review).
       const said = outcome.kind === "block" ? "deny" : (specific.permissionDecision as (typeof PERMISSIONS)[number] | undefined);
-      const old = json.decision === "approve" ? "allow" : json.decision === "block" ? "deny" : undefined;
-      const decision = said ?? old;
-      const why = outcome.kind === "block" ? outcome.reason : said ? ((specific.permissionDecisionReason as string | undefined) ?? "") : reason;
+      const old = json.decision === "approve" && event === "PreToolUse" ? "allow" : json.decision === "block" ? "deny" : undefined;
+      // At PreModelSwitch a top-level block cancels whatever permissionDecision says beside it, as a deny wins over ask
+      // and allow (design, "PreModelSwitch cancels on ..."; Codex review 2 of 8e, point 2); PreToolUse is as before.
+      const blocks = event === "PreModelSwitch" && old === "deny" && said !== "deny";
+      const decision = blocks ? old : said ?? old;
+      const why = outcome.kind === "block" ? outcome.reason : said && !blocks ? ((specific.permissionDecisionReason as string | undefined) ?? "") : reason;
       if (decision === "defer") c.deferred = true;
       else if (decision && decided[decision] === undefined) decided[decision] = cut(why);
-      if (specific.updatedInput != null) {
+      if (event === "PreToolUse" && specific.updatedInput != null) {
         if (c.rewrite) c.rewrite.ignored.push(hook);
         else c.rewrite = { input: specific.updatedInput, from: hook, ignored: [] };
       }
+    } else if (event === "PermissionRequest") {
+      // Release 8e plan, step 2: deny over allow, the first in the file giving the message; any deny's interrupt: true ends
+      // the turn, as any hook's continue: false does (the user's choice at the step's review). The first allow's
+      // updatedInput is the rewrite, the others named as ignored, as at PreToolUse.
+      const d = isObject(specific.decision) ? specific.decision : {};
+      const behavior = d.behavior as "allow" | "deny" | undefined;
+      if (behavior && decided[behavior] === undefined) decided[behavior] = cut((d.message as string | undefined) ?? "");
+      if (behavior === "deny" && d.interrupt === true) c.interrupt = true;
+      if (behavior === "allow" && d.updatedInput != null) {
+        if (c.rewrite) c.rewrite.ignored.push(hook);
+        else c.rewrite = { input: d.updatedInput, from: hook, ignored: [] };
+      }
+      if (d.updatedPermissions != null) c.updatedPermissions = true;
+    } else if (event === "PermissionDenied") {
+      if (specific.retry === true) c.retry = true;
     } else {
       const blocked = outcome.kind === "block" ? outcome.reason : DECISION.includes(event) && json.decision === "block" ? reason : undefined;
       if (blocked !== undefined && AFTER.includes(event)) toModel(blocked);
-      else if (blocked !== undefined && BLOCKING.includes(event) && c.block === undefined) c.block = cut(blocked);
+      else if (blocked !== undefined && (BLOCKING.includes(event) || NEW_BLOCKING.includes(event)) && c.block === undefined) c.block = cut(blocked);
     }
     if (!NO_CONTEXT.includes(event) && typeof specific.additionalContext === "string") toModel(specific.additionalContext);
     if (event === "PostToolUse" && specific.updatedToolOutput != null && !("output" in c)) c.output = specific.updatedToolOutput;
@@ -240,7 +309,9 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
   if (decision) {
     c.decision = decision;
     c.reason = decided[decision];
-    if (decision === "deny") c.block = c.reason;
+    if (decision === "deny" && (event === "PreToolUse" || event === "PreModelSwitch")) c.block = c.reason;
+    // A rewrite beside a deny is dropped: the call is refused (release 8e plan, step 2).
+    if (decision === "deny" && event === "PermissionRequest") delete c.rewrite;
   }
   const action = ACTIONS.find((a) => elicited[a] !== undefined);
   if (action) c.elicitation = { action, ...elicited[action] };

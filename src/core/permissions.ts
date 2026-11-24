@@ -74,8 +74,20 @@ export function visible(text: string, opts: { tabs?: boolean } = {}): string {
   );
 }
 
-// Thrown when the user says no. The model is told; it is not logged as an error.
-export class Declined extends Error {}
+// Thrown when the user says no. The model is told; it is not logged as an error. `judged`: set only on auto mode's judge's
+// refusal, its no as the judge gave it, which says which of three it was and holds the reason unescaped, apart from the
+// sentence the model reads (release 8e plan, step 5). Kept in a private field, so a refusal still compares as before by
+// its words alone.
+export class Declined extends Error {
+  readonly #judged: Extract<Verdict, { allow: false }> | undefined;
+  constructor(message?: string, judged?: Extract<Verdict, { allow: false }>) {
+    super(message);
+    this.#judged = judged;
+  }
+  get judged(): Extract<Verdict, { allow: false }> | undefined {
+    return this.#judged;
+  }
+}
 
 // Thrown for a yes given after the turn was stopped, or a stop while the judge decides, so the session tells the model
 // the call was not run, not stopped while it ran (release 8b plan, Task 7's re-check).
@@ -83,6 +95,27 @@ export class StoppedFirst extends Error {
   constructor() {
     super("The turn was stopped before the call ran.");
   }
+}
+
+// Raised when the call's PermissionRequest decider gives it a new input (release 8e plan, step 7; Codex round 3, point 1):
+// the call starts again from the beginning with it (step 9). Neither a no nor a yes after a stop, and not a failure: the
+// gate asks nothing and runs nothing after it, from its own question inside the tool and from a PreToolUse hook's ask
+// before it alike. It carries the new input and nothing else.
+export class StartAgain extends Error {
+  constructor(readonly input: unknown) {
+    super();
+  }
+}
+
+// The PermissionRequest decider of one call (release 8e plan, step 7; design, "The permission events"), which its maker
+// (the session, step 8) binds to the call and the input that would run, so the gate hands it nothing: no decision, an
+// allow, a deny with the words the model is told, or a new input.
+export type Decision = { allow: true } | { deny: string } | { input: unknown } | undefined;
+export type Decider = () => Promise<Decision>;
+// The call's one record of it, shared by every copy of the call's gate: its decider, and its answer once asked (Q5).
+interface Request {
+  decide?: Decider;
+  answer?: Promise<Decision>;
 }
 
 // Who asks a question, when it is not the lead's turn: a subagent's name, its stop signal, and how to
@@ -97,8 +130,9 @@ export interface Owner {
 // pictures" (release 6 plan, Task 18), so it is asked without "Allow" before it. `warnings`: the red lines above it, one
 // per danger the dangerous-command check found, escaped (release 7 plan, Task 8). `note`: a grey line said with it, auto
 // mode's pause (Task 10). `oneRow`: the note is cut to one screen row in every view, as an MCP call's description is
-// (release 8c plan, choice 47); another wraps outside full screen, as before.
-export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean, warnings?: string[], note?: string, oneRow?: boolean) => Promise<boolean>;
+// (release 8c plan, choice 47); another wraps outside full screen, as before. `tool`: a question about a tool call, its
+// tool's name as hooks see it, Claude Code's (Bash), for the window's Notification (release 8e plan, step 17; Q17).
+export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean, warnings?: string[], note?: string, oneRow?: boolean, tool?: string) => Promise<boolean>;
 
 // Auto mode's judge, which cli.tsx gives the gate (release 7 plan, Task 10; safety/judge.ts, judgeOf). `own` is what a
 // subagent's gate adds: its own session's calls, which follow the lead's, and its bus, so the judge's spend and errors
@@ -163,6 +197,9 @@ export class PermissionGate {
   #version = 0;
   // Set on a gate made for one call a PreToolUse hook allowed, or whose question the user said yes to (withHook).
   #hook: { allow: true } | { asked: true } | undefined;
+  // Set on a gate for one call given its PermissionRequest decider (deciding), and passed on to the call's copies
+  // (noting, withHook), so the decider is asked once for the call (release 8e plan, step 7; Q5).
+  #request: Request | undefined;
   // A subagent's gate's owner (for), which an MCP call passes on, so a form its server asks for meanwhile is headed with
   // the subagent's id (release 8c plan, choice 29).
   #owner: Owner | undefined;
@@ -211,7 +248,7 @@ export class PermissionGate {
   // A subagent's gate: the lead's mode, rules, protection and auto mode's counts, questions that name the subagent, and
   // what it adds for the judge (Own).
   for(owner: Owner, own?: Own): PermissionGate {
-    const ask: Ask = (summary, detail, _owner, plain, warnings, note, oneRow) => this.ask(summary, detail, owner, plain, warnings, note, oneRow);
+    const ask: Ask = (summary, detail, _owner, plain, warnings, note, oneRow, tool) => this.ask(summary, detail, owner, plain, warnings, note, oneRow, tool);
     const gate = new PermissionGate(this.#mode, ask, this.refusal, this.options);
     gate.#parent = this;
     gate.#owner = owner;
@@ -233,22 +270,66 @@ export class PermissionGate {
     if (this.#own) gate.#own = this.#own;
     gate.#owner = this.#owner;
     gate.#hook = h;
+    gate.#request = this.#request;
     return gate;
   }
 
   // A gate for one call, which tells `asked` as it puts the user a question for it, its own or a PreToolUse hook's, and
   // otherwise this gate (release 8c plan, Task 15). Not in -p, where the ask only reports a refusal and nobody is asked.
-  noting(asked: () => void): PermissionGate {
-    const ask: Ask = (...a) => {
+  // Each of its questions carries `tool`, the call's tool's name as hooks see it (Ask; release 8e plan, step 17).
+  noting(asked: () => void, tool?: string): PermissionGate {
+    const ask: Ask = (summary, detail, owner, plain, warnings, note, oneRow) => {
       if (!this.options.headless) asked();
-      return this.ask(...a);
+      return this.ask(summary, detail, owner, plain, warnings, note, oneRow, tool);
     };
     const gate = new PermissionGate(this.#mode, ask, this.refusal, this.options);
     gate.#parent = this.#parent ?? this;
     if (this.#own) gate.#own = this.#own;
     gate.#owner = this.#owner;
     gate.#hook = this.#hook;
+    gate.#request = this.#request;
     return gate;
+  }
+
+  // A gate for one call with its PermissionRequest decider (release 8e plan, step 7), asked just before the first
+  // question about the call, or in -p before the refusal its ask reports (Q4); on a gate that already has the call's
+  // record, that record pointed to `decide`, so one already asked is not asked again. Null: a call that starts again
+  // (step 9), with a record of its own, asked, with no decision, so no decider given it later is asked, and neither the
+  // old call's answer nor its copies carry over.
+  deciding(decide: Decider | null): PermissionGate {
+    const gate = new PermissionGate(this.#mode, this.ask, this.refusal, this.options);
+    gate.#parent = this.#parent ?? this;
+    if (this.#own) gate.#own = this.#own;
+    gate.#owner = this.#owner;
+    gate.#hook = this.#hook;
+    if (decide === null) gate.#request = { answer: Promise.resolve(undefined) };
+    else {
+      gate.#request = this.#request ?? {};
+      gate.#request.decide = decide;
+    }
+    return gate;
+  }
+
+  // The call's PermissionRequest decider, asked once for the call (Q5): every copy of the call's gate shares its answer,
+  // so an allow covers each later question, and no decision leaves them to the user, or in -p to its refusal. True: an
+  // allow, and the question is skipped. A deny refuses with its words; a new input starts the call again (StartAgain). A
+  // stop while it runs cancels the call, whatever it answered, a deny aside, and puts no question: Esc kills the hook
+  // and cancels the call (design), as a yes after a stop runs nothing.
+  async #decided(signal?: AbortSignal): Promise<boolean> {
+    const request = this.#request;
+    if (!request) return false;
+    request.answer ??= request.decide ? request.decide() : Promise.resolve(undefined);
+    const decision = await request.answer.catch((err: unknown) => {
+      throw signal?.aborted ? new StoppedFirst() : err;
+    });
+    if (decision === undefined) {
+      if (signal?.aborted) throw new StoppedFirst();
+      return false;
+    }
+    if ("deny" in decision) throw new Declined(decision.deny);
+    if (signal?.aborted) throw new StoppedFirst();
+    if ("input" in decision) throw new StartAgain(decision.input);
+    return true;
   }
 
   // Where a PreToolUse hook's ask cannot be put, in never and headless, where nobody can answer it, the words of the
@@ -257,8 +338,33 @@ export class PermissionGate {
   // as the gate asks about such a call there (release 8c plan, choice 47); `boxed`, it is a box server's with the box's
   // network off, which the gate does not ask about in never, so its hook's ask is refused there (8c-2a plan, choice 7).
   hookCannotAsk(reason: string, mcp = false, boxed = false): string | undefined {
-    if (this.mode === "never" && (!mcp || boxed)) return hookNeverRefusal(reason);
+    if (this.#hookNever(mcp, boxed)) return hookNeverRefusal(reason);
     if (this.options.headless) return hookHeadlessRefusal(reason);
+    return undefined;
+  }
+
+  // Never mode's refusal of a PreToolUse hook's ask (hookCannotAsk), which comes before the PermissionRequest decider.
+  #hookNever(mcp: boolean, boxed: boolean): boolean {
+    return this.mode === "never" && (!mcp || boxed);
+  }
+
+  // A PreToolUse hook's ask with the call's PermissionRequest decider (release 8e plan, step 7; Codex round 1, point 1;
+  // round 2, point 2): never mode's refusal first, its decider unasked; then the decider, wherever the question would be
+  // put, -p included, before its refusal (Q4); then as hookCannotAsk and hookAsks. The refusal's words where the call
+  // cannot be put to the user, which the session says; undefined when it may run, by the decider's allow or the user's
+  // yes, and runs with withHook({ asked: true }). A no or the decider's deny throws Declined, its new input StartAgain.
+  async putHookAsk(summary: string, reason: string, mcp = false, boxed = false, signal?: AbortSignal): Promise<string | undefined> {
+    if (this.#hookNever(mcp, boxed)) return hookNeverRefusal(reason);
+    // A change of the mode or the rules while the decider ran has the ask put again under what is in force now, its
+    // answer kept for the call, as require() does (Codex review 2 of 8e, point 1).
+    const top = this.#parent ?? this;
+    const version = top.#version;
+    const allowed = await this.#decided(signal);
+    if (top.#version !== version) return this.putHookAsk(summary, reason, mcp, boxed, signal);
+    if (allowed) return undefined;
+    const cannot = this.hookCannotAsk(reason, mcp, boxed);
+    if (cannot !== undefined) return cannot;
+    await this.hookAsks(summary, reason);
     return undefined;
   }
 
@@ -308,6 +414,14 @@ export class PermissionGate {
     // The question has one grey row: under a pause, the pause's line, as approving resumes auto mode; else an MCP call's
     // tool's own words, cut to one screen row (choice 47).
     const note = pause === null ? descriptionNote(action.note) : `Auto mode paused after ${pause.count} refusals; approving this resumes it.`;
+    // The call's PermissionRequest decider first, here and headless before the ask's refusal (release 8e plan, step 7). Its
+    // allow skips the question, its red lines and -p's refusal of a danger, and lifts no pause: only the user's yes does
+    // (Q6). A change of the mode or the rules while it ran, as while the judge decides, has the call decided again under
+    // what is in force now, its answer kept for the call, so it is not asked again (Codex review of 8e, point 1).
+    const version = top.#version;
+    const allowed = await this.#decided(signal);
+    if (top.#version !== version) return this.require(action, signal);
+    if (allowed) return;
     const yes = await this.ask(shown, action.detail, undefined, undefined, warnings, note, pause === null && action.kind === "mcp");
     // Headless, the ask is the launch's report of a refusal (cli.tsx), so the run fails and says so; a danger is
     // refused whatever it answers.
@@ -350,6 +464,6 @@ export class PermissionGate {
       if (top.#pause) top.#pause.count = count;
       else top.#pause = { count };
     }
-    throw new Declined(`The judge refused: ${visible(verdict.reason)}`);
+    throw new Declined(`The judge refused: ${visible(verdict.reason)}`, verdict);
   }
 }

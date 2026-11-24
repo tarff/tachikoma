@@ -137,7 +137,7 @@ describe("judge", () => {
     ];
     for (const text of unreadable) {
       const j = new FakeProvider("judge", [reply(text)]);
-      expect(await judge(j, input, new AbortController().signal, new Bus()), text).toEqual({ allow: false, reason: "the judge's answer could not be read" });
+      expect(await judge(j, input, new AbortController().signal, new Bus()), text).toEqual({ allow: false, reason: "the judge's answer could not be read", noVerdict: "unreadable" });
     }
   });
 
@@ -149,7 +149,7 @@ describe("judge", () => {
     for (const cutOff of cutOffs) {
       const j = new FakeProvider("judge", [{ ...reply('{"allow": true}'), cutOff }]);
       const verdict = await judge(j, input, new AbortController().signal, new Bus());
-      expect(verdict, cutOff.kind).toEqual({ allow: false, reason: "the judge's answer could not be read" });
+      expect(verdict, cutOff.kind).toEqual({ allow: false, reason: "the judge's answer could not be read", noVerdict: "unreadable" });
     }
   });
 
@@ -164,8 +164,38 @@ describe("judge", () => {
     const bus = new Bus();
     const errors = collectErrors(bus);
     const j = new FakeProvider("judge", [new Error("rate limited")]);
-    expect(await judge(j, input, new AbortController().signal, bus)).toEqual({ allow: false, reason: "the judge could not be reached: rate limited" });
+    expect(await judge(j, input, new AbortController().signal, bus)).toEqual({
+      allow: false,
+      reason: "the judge could not be reached: rate limited",
+      noVerdict: "unreachable",
+    });
     expect(errors).toEqual([{ kind: "judge", attempted: "request to fake:judge", message: "rate limited", lead: "fake:judge" }]);
+  });
+
+  // Release 8e plan, step 5 (design, "The permission events"): a no says which of three it was, so PermissionDenied's
+  // retry counts only for the judge's own verdict. A refusal carries no mark; the other two say why there was no verdict.
+  it("says whether a no was the judge's verdict, or the judge could not be reached, or its answer could not be read", async () => {
+    const refused = new FakeProvider("judge", [reply('{"allow": false, "reason": "It pushes."}')]);
+    expect(await judge(refused, input, new AbortController().signal, new Bus())).toStrictEqual({ allow: false, reason: "It pushes." });
+    const unreachable = new FakeProvider("judge", [new Error("offline")]);
+    expect(await judge(unreachable, input, new AbortController().signal, new Bus())).toStrictEqual({
+      allow: false,
+      reason: "the judge could not be reached: offline",
+      noVerdict: "unreachable",
+    });
+    const unreadable = new FakeProvider("judge", [reply("Sure, go ahead.")]);
+    expect(await judge(unreadable, input, new AbortController().signal, new Bus())).toStrictEqual({
+      allow: false,
+      reason: "the judge's answer could not be read",
+      noVerdict: "unreadable",
+    });
+    const cut = { kind: "max_tokens", detail: "The response hit the output limit" } as const;
+    const cutOff = new FakeProvider("judge", [{ ...reply('{"allow": false, "reason": "It pushes."}'), cutOff: cut }]);
+    expect(await judge(cutOff, input, new AbortController().signal, new Bus())).toStrictEqual({
+      allow: false,
+      reason: "the judge's answer could not be read",
+      noVerdict: "unreadable",
+    });
   });
 
   it("rejects with the abort, giving no verdict and reporting no error, when the signal stops the request", async () => {

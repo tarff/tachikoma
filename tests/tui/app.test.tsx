@@ -30,6 +30,7 @@ import { projectFile } from "../../src/core/datadir.js";
 import { attachErrorLog } from "../../src/core/errorlog.js";
 import { exportText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
+import type { InstructionFile } from "../../src/core/instructions.js";
 import { MEMORY_LINE } from "../../src/core/prompt.js";
 import { listSessions, openSession } from "../../src/core/sessions.js";
 import { INSTRUCTIONS } from "../../src/core/shorten.js";
@@ -49,6 +50,7 @@ import { editFileTool } from "../../src/tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import type { Event as HookEvent, Hook, HooksConfig } from "../../src/hooks/config.js";
 import { Hooks } from "../../src/hooks/hooks.js";
+import { type Ran, runHook } from "../../src/hooks/run.js";
 import { readKeybindings } from "../../src/keybindings.js";
 import { History } from "../../src/tui/history.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
@@ -57,7 +59,7 @@ import { OpenAIProvider } from "../../src/providers/openai.js";
 import { judgeOf } from "../../src/safety/judge.js";
 import { dangers, NO_RULES } from "../../src/safety/rules.js";
 import type { Manifest } from "../../src/sandbox/snapshot.js";
-import { readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
+import { type Loaded, readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
@@ -89,6 +91,25 @@ vi.mock("node:fs", async (original) => {
     return (fs.readFileSync as (...args: unknown[]) => unknown)(file, ...rest);
   }) as typeof fs.readFileSync;
   return { ...fs, readFileSync };
+});
+// Hooks run as they are; the switch tests stand in for the runs of PreModelSwitch's and PostModelSwitch's (switchRuns,
+// below), as tests/hooks/hooks.test.ts stands in for runHook.
+vi.mock("../../src/hooks/run.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/hooks/run.js")>();
+  return { ...real, runHook: vi.fn(real.runHook) };
+});
+// The settings watcher's callbacks for each home it watches, so a ConfigChange test can hand the window a read straight,
+// as the watcher hands it one (release 8e plan, step 16); the watcher itself runs as it is.
+const watchers = vi.hoisted(() => new Map<string, { on: (read: Loaded) => void; begin?: () => void }>());
+vi.mock("../../src/settingsWatch.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/settingsWatch.js")>();
+  return {
+    ...real,
+    watchSettings: (...args: Parameters<typeof real.watchSettings>) => {
+      watchers.set(args[0], { on: args[1], begin: args[4] });
+      return real.watchSettings(...args);
+    },
+  };
 });
 
 // Wait until the screen shows `text`; the session runs real file I/O in the background.
@@ -167,6 +188,7 @@ async function mount(
     historyFile?: string;
     past?: string[]; // the project's prompts from earlier sessions
     newLead?: Provider; // what /lead and the picker make
+    makeLead?: (spec: string) => Provider; // what /lead, the picker and the file's lead make of the words, in newLead's place
     rows?: number; // the terminal's height
     intro?: AppProps["intro"]; // the start line
     restored?: boolean; // the window opens on a restored conversation, as -c and -r open one
@@ -200,6 +222,7 @@ async function mount(
     mcp?: (bus: Bus) => { servers: Servers; project?: ServerConfig[] };
     theme?: Theme; // the look and palette, as cli.tsx gives them; the dark full one when not given (TUI design pass, Task 7)
     memory?: AppProps["memory"]; // long-term memory in the window (8d plan, step 28); none when not given
+    instructions?: InstructionFile[]; // the files the instruction files' read again puts in (release 8e plan, step 15); none when not given
   } = {},
 ) {
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
@@ -256,7 +279,8 @@ async function mount(
     lead,
     tools,
     system: "t",
-    systemNow: async () => "t, read again", // the instruction files read again (release 8a plan, choice 3)
+    // The instruction files read again (release 8a plan, choice 3), and those they put in (release 8e plan, step 15).
+    systemNow: async () => ({ system: "t, read again", files: opts.instructions ?? [] }),
     ctx: { ...ctx, gate },
     bus,
     pictures,
@@ -304,7 +328,7 @@ async function mount(
       makeProvider={(spec) => {
         opts.made?.push(spec);
         if (opts.leadFails) throw new Error(opts.leadFails);
-        return opts.newLead ?? new FakeProvider("b", []);
+        return opts.makeLead?.(spec) ?? opts.newLead ?? new FakeProvider("b", []);
       }}
       login={opts.login ?? (async () => {})}
       listModels={async (signal, warn) => {
@@ -10618,6 +10642,119 @@ describe("App's live settings", () => {
       vi.useRealTimers();
     }
   });
+
+  // Release 8e plan, step 13: PreModelSwitch decides a lead the file names before it applies, sent "command" and the file's
+  // value (switchRuns, at the end of this file).
+  it("sends a lead the file names to PreModelSwitch as \"command\" with the file's value, and applies it once allowed (release 8e plan, step 13)", async () => {
+    const runs = switchRuns();
+    const { app, session, write } = await watching([], {}, { hooks: [switchHook()] });
+    write({ lead: "ollama:b" });
+    await sees(app, `lead is now fake:b ${FROM}`);
+    expect(preRuns(runs).map((r) => switchFieldsOf(r.input))).toEqual([{
+      from_model: "a", to_model: "b", requested_model: "ollama:b", source: "command", context_tokens: 0, prompt_cache_warm: false,
+      cache_ttl: "5m", estimated_cache_write_usd: null,
+    }]);
+    expect(session.lead.id).toBe("fake:b");
+  });
+
+  it.each([
+    ["a deny", decided("deny", "Too costly"), "The switch to fake:b was stopped by a hook: Too costly. settings.json still names it."],
+    ["an ask, a deny here", decided("ask", "Costly"), "The switch to fake:b was stopped by a hook: Costly. settings.json still names it."],
+    ["a deny with no reason (W6)", decided("deny"), "The switch to fake:b was stopped by a hook. settings.json still names it."],
+  ])("keeps the lead on a lead the file names that a hook's %s stops, saying the file still names it (release 8e plan, step 13)", async (_how, answer, line) => {
+    switchRuns(() => answer);
+    const { app, session, write } = await watching([], {}, { hooks: [switchHook()] });
+    write({ lead: "ollama:b" });
+    await sees(app, line);
+    expect(session.lead.id).toBe("fake:a");
+    expect(flat(app)).not.toContain("lead is now");
+    expect(flat(app)).not.toContain("Switch to fake:b?");
+  });
+
+  // PostModelSwitch neither (release 8e plan, step 14).
+  it("fires nothing for a lead the file names that already leads, and still says the lead is now that model (release 8e plan, step 13; Q31)", async () => {
+    const runs = switchRuns();
+    const { app, write } = await watching([], {}, { newLead: new FakeProvider("a", []), hooks: [switchHook(), postHook()] });
+    write({ lead: "fake:a" });
+    await sees(app, `lead is now fake:a ${FROM}`);
+    expect(runs).toEqual([]);
+  });
+
+  it.each([
+    ["allowed, to the new lead", ran(), "from b"],
+    ["stopped, to the old lead", decided("deny", "No"), "still a"],
+  ])("holds a prompt typed while a hook decides the file's lead until it has decided, then sends it (release 8e plan, step 13): %s", async (_how, answer, said) => {
+    let decide!: () => void;
+    const runs = switchRuns(() => new Promise<Ran>((resolve) => (decide = () => resolve(answer))));
+    const lead = new FakeProvider("a", [reply("still a")]);
+    const b = new FakeProvider("b", [reply("from b")]);
+    const { app, session, write } = await watching([], {}, { lead, newLead: b, hooks: [switchHook()] });
+    write({ lead: "ollama:b" });
+    await vi.waitFor(() => expect(runs).toHaveLength(1), WATCHED);
+    await type(app, "next");
+    await tick();
+    expect([lead.seen.length, b.seen.length, session.messages.length]).toEqual([0, 0, 0]);
+    decide();
+    await until(app, said);
+    expect(lead.seen.length + b.seen.length).toBe(1);
+  });
+
+  // Step 13's review (the user): the first, allowed once the file names another, is not applied; the newest is decided
+  // from the lead as it was.
+  it.each([
+    ["allowed", "fake:d", ran(), `lead is now fake:d ${FROM}`],
+    ["stopped", "fake:a", decided("deny", "No"), "The switch to fake:d was stopped by a hook: No. settings.json still names it."],
+  ])("decides a lead the file names twice during a slow decision after that one, the newest alone (release 8e plan, step 13), %s: the lead ends %s", async (_how, id, last, line) => {
+    let go!: () => void;
+    const runs = switchRuns(() => (runs.length === 1 ? new Promise<Ran>((resolve) => (go = () => resolve(ran()))) : last));
+    const { app, session, where, write } = await watching([], {}, { makeLead: (spec) => new FakeProvider(spec.split(":")[1]!, []), hooks: [switchHook()] });
+    const read = readsOf(where);
+    write({ lead: "ollama:b" });
+    await vi.waitFor(() => expect(runs).toHaveLength(1), WATCHED);
+    await read(() => write({ lead: "ollama:c" }));
+    await read(() => write({ lead: "ollama:d" }));
+    go();
+    await sees(app, line);
+    expect(preRuns(runs).map((r) => [r.input.requested_model, r.input.from_model])).toEqual([["ollama:b", "a"], ["ollama:d", "a"]]);
+    expect(session.lead.id).toBe(id);
+    expect(flat(app)).not.toContain("lead is now fake:b");
+    expect(flat(app)).not.toContain("fake:c");
+  });
+
+  // Step 13's review (the user): a hook's allow applies the file's lead only while the file still names it. No switch is
+  // made, so no PostModelSwitch fires (release 8e plan, step 14).
+  it("keeps the lead when the file's lead line is removed while a hook decides it, and the hook then allows (release 8e plan, step 13)", async () => {
+    let allow!: () => void;
+    const runs = switchRuns(() => new Promise<Ran>((resolve) => (allow = () => resolve(ran()))));
+    const { app, session, where, write } = await watching([], {}, { hooks: [switchHook(), postHook()] });
+    write({ lead: "ollama:b" });
+    await vi.waitFor(() => expect(runs).toHaveLength(1), WATCHED);
+    await readsOf(where)(() => write({}));
+    await sees(app, '"lead" was removed from settings.json; the lead stays fake:a');
+    allow();
+    await tick();
+    await tick();
+    expect(session.lead.id).toBe("fake:a");
+    expect(flat(app)).not.toContain(`lead is now fake:b ${FROM}`);
+    expect(runs.map((r) => r.event)).toEqual(["PreModelSwitch"]);
+  });
+
+  // Release 8e plan, step 14: PostModelSwitch once a lead the file names applies, sent "command" and the file's value,
+  // after its PreModelSwitch hook when there is one.
+  it.each([
+    ["with no PreModelSwitch hook", [] as string[]],
+    ["after an allowing PreModelSwitch hook", ["PreModelSwitch"]],
+  ])("fires PostModelSwitch once a lead the file names applies, %s (release 8e plan, step 14)", async (_how, first) => {
+    const runs = switchRuns();
+    const { app, write } = await watching([], {}, { hooks: [...(first.length ? [switchHook()] : []), postHook()] });
+    write({ lead: "ollama:b" });
+    await sees(app, `lead is now fake:b ${FROM}`);
+    await vi.waitFor(() => expect(runs.map((r) => r.event)).toEqual([...first, "PostModelSwitch"]), WATCHED);
+    expect(switchFieldsOf(runs.at(-1)!.input)).toEqual({
+      from_model: "a", to_model: "b", requested_model: "ollama:b", source: "command", context_tokens: 0, prompt_cache_warm: false,
+      cache_ttl: "5m", estimated_cache_write_usd: null,
+    });
+  });
 });
 
 // Release 7 plan, Task 21: in copy mode, leaving stops the box, and once Docker reports it gone the review opens in the
@@ -11026,6 +11163,114 @@ describe("App's sessions", () => {
     await type(app, "go on");
     await until(app, "a again");
     expect(rowOf(first.session.id)?.lead).toBe("fake:a");
+  });
+
+  // Release 8e plan, step 13: PreModelSwitch is for the switches the user asks for, not a resumed session's saved lead.
+  it("fires no PreModelSwitch when /resume switches to the resumed session's saved lead (release 8e plan, step 13)", async () => {
+    const runs = switchRuns();
+    await earlier("lead a's own session");
+    const { app, session } = await saved([], { lead: new FakeProvider("b", []), newLead: new FakeProvider("a", []), hooks: [switchHook()] });
+    await type(app, "/resume");
+    await until(app, "lead a's own session");
+    await press(app, "\r");
+    await until(app, "lead is now fake:a");
+    expect([session.lead.id, runs]).toEqual(["fake:a", []]);
+  });
+
+  // Release 8e plan, step 14: PostModelSwitch after /resume into a session with another lead, as "resume", its context number
+  // 0 as the status line's is then ("Resume size"), and its text goes with the resumed conversation's next request.
+  it("fires PostModelSwitch as \"resume\" when /resume switches to the resumed session's saved lead, its text reaching that conversation (release 8e plan, step 14)", async () => {
+    const runs = switchRuns(() => ran("a leads again"));
+    await earlier("lead a's session, for the switch");
+    const a = new FakeProvider("a", [reply("a again")]);
+    const { app } = await saved([], { lead: new FakeProvider("b", [reply("b says")]), newLead: a, hooks: [postHook()] });
+    await type(app, "hi");
+    await until(app, "b says");
+    await type(app, "/resume");
+    await until(app, "lead a's session, for the switch");
+    await press(app, "\r");
+    await until(app, "lead is now fake:a");
+    await waitFor(() => runs.length === 1);
+    expect(switchFieldsOf(runs[0]!.input)).toEqual({
+      from_model: "b", to_model: "a", requested_model: null, source: "resume", context_tokens: 0, prompt_cache_warm: false, cache_ttl: "5m",
+      estimated_cache_write_usd: null,
+    });
+    await type(app, "go on");
+    await until(app, "a again");
+    expect(a.seen[0]!.map(texts)).toEqual([["lead a's session, for the switch"], ["noted"], ["PostModelSwitch hook:\na leads again", "go on"]]);
+  });
+
+  it("fires no PostModelSwitch when /resume opens a session led by the model leading now (release 8e plan, step 14)", async () => {
+    const runs = switchRuns();
+    await earlier("lead a's session, kept as it was");
+    const { app, session } = await saved([], { hooks: [postHook()] });
+    await type(app, "/resume");
+    await until(app, "lead a's session, kept as it was");
+    await press(app, "\r");
+    await until(app, "Resumed: lead a's session, kept as it was.");
+    await tick();
+    expect([session.lead.id, runs]).toEqual(["fake:a", []]);
+  });
+
+  // Release 8e plan, step 15: InstructionsLoaded's runs, stood in for as switchRuns stands in for the switch events', each
+  // answering at once; an mcp_tool hook's call is real.
+  const loadedRuns = () => {
+    const runs: Record<string, unknown>[] = [];
+    const real = vi.mocked(runHook).getMockImplementation()!;
+    onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+    vi.mocked(runHook).mockImplementation(async (hook, input, opts) => {
+      const fields = input as Record<string, unknown>;
+      if (fields.hook_event_name !== "InstructionsLoaded") return real(hook, input, opts);
+      runs.push(fields);
+      return ran();
+    });
+    return runs;
+  };
+  const loadedHook: Hook = { event: "InstructionsLoaded", matcher: { all: true }, command: "loaded", async: false, where: "" };
+
+  it("fires InstructionsLoaded at /clear for each file read again, once the new conversation is loaded, an mcp_tool hook too (release 8e plan, step 15)", async () => {
+    const runs = loadedRuns();
+    const project = path.join(dir, "CLAUDE.md"); // named only: nothing reads it
+    const imported = path.join(dir, "a.md");
+    const instructions: InstructionFile[] = [{ path: project, size: 3, type: "Project" }, { path: imported, size: 1, type: "Project", parent: project }];
+    const mcpHook: Hook = { ...loadedHook, command: "", mcp: { server: "notes", tool: "look", input: {} } };
+    const { app, session } = await saved([], { hooks: [loadedHook, mcpHook], instructions });
+    const old = session.id;
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    await waitFor(() => runs.length === 2);
+    expect(session.id).not.toBe(old);
+    expect(runs.map((r) => [r.session_id, r.file_path, r.memory_type, r.load_reason, r.parent_file_path])).toEqual([
+      [session.id, project, "Project", "session_start", undefined],
+      [session.id, imported, "Project", "include", project],
+    ]);
+    await until(app, "InstructionsLoaded hook failed:");
+    expect(bare(stripVTControlCharacters(app.lastFrame()!))).toContain(bare("notes is not running"));
+  });
+
+  it("fires no InstructionsLoaded at /resume into a session saved under another setup, nor at /branch, though each loads the launch's prompt; /clear after fires (release 8e plan, step 15)", async () => {
+    const first = await earlier("remember plum");
+    const file = fileOf(first.session.id);
+    const [head, ...rest] = readFileSync(file, "utf8").split("\n");
+    const boxed = { ...JSON.parse(head!), box: true, setup: { sandbox: "live", network: "off", git: "none" } };
+    writeFileSync(file, [JSON.stringify(boxed), ...rest].join("\n"));
+    const runs = loadedRuns();
+    const instructions: InstructionFile[] = [{ path: path.join(dir, "CLAUDE.md"), size: 3, type: "Project" }];
+    const { app, session } = await saved([], { hooks: [loadedHook], instructions, prompt: "The launch's prompt." });
+    await type(app, "/resume");
+    await until(app, "remember plum");
+    await press(app, "\r");
+    await until(app, "Resumed: remember plum.");
+    expect([session.id, session.system]).toEqual([first.session.id, "The launch's prompt."]);
+    await type(app, "/branch");
+    await until(app, "Branched:");
+    expect(session.system).toBe("The launch's prompt.");
+    await tick();
+    expect(runs).toEqual([]);
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    await waitFor(() => runs.length === 1);
+    expect([runs[0]!.session_id, runs[0]!.load_reason]).toEqual([session.id, "session_start"]);
   });
 
   it("keeps the window's lead when a resumed session's saved lead cannot be made, saying so", async () => {
@@ -12234,7 +12479,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // Choice 25: the list, printed once into the conversation, as /tasks prints its list. Each hook by its name, its matcher
   // when not every value, and its own timeout (the user's choice, 2026-11-10, terminal checklist).
   it("lists the hooks in force on /hooks, by event, each by its name, with the ones left out", async () => {
-    const leftOut = ['"Notification" is not an event Tachikoma runs hooks at; its hooks were left out'];
+    const leftOut = ['"TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out'];
     const hook = (event: HookEvent, matcher: Hook["matcher"], command: string, more: Partial<Hook> = {}): Hook => ({
       event, matcher, command, async: false, where: JSON.stringify(event), ...more,
     });
@@ -12282,8 +12527,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   it.each([
     ["none in force", { hooks: [], off: false, leftOut: [] }, `No hooks in force. They go in "hooks" in ${shownFile()}.`],
-    ["only left-out ones", { hooks: [], off: false, leftOut: ['"Notification" is not an event Tachikoma runs hooks at; its hooks were left out'] },
-      `No hooks in force. They go in "hooks" in ${shownFile()}.\nLeft out:\n  "Notification" is not an event Tachikoma runs hooks at; its hooks were left out`],
+    ["only left-out ones", { hooks: [], off: false, leftOut: ['"TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out'] },
+      `No hooks in force. They go in "hooks" in ${shownFile()}.\nLeft out:\n  "TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out`],
     ["hooks turned off", { hooks: [{ event: "Stop", matcher: { all: true }, command: "x", async: false, where: '"Stop"' }], off: true, leftOut: [] },
       `Hooks are off: "disableAllHooks" is true in ${shownFile()}.`],
   ] as [string, HooksConfig, string][])("says so on /hooks with %s", async (_name, config, said) => {
@@ -12573,8 +12818,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     writeFileSync(where, "{}");
     const { app } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} }, hooks: [] });
     const audit = { type: "command", command: "node", args: [path.join(home, "audit.js")], if: "Bash(*)" };
-    writeFileSync(where, JSON.stringify({ hooks: { Notification: [{ hooks: [{ type: "command", command: "x" }] }], Stop: [{ hooks: [audit] }] } }));
-    const warning = '"Notification" is not an event Tachikoma runs hooks at; its hooks were left out';
+    writeFileSync(where, JSON.stringify({ hooks: { TeammateIdle: [{ hooks: [{ type: "command", command: "x" }] }], Stop: [{ hooks: [audit] }] } }));
+    const warning = '"TeammateIdle" is not an event Tachikoma runs hooks at; its hooks were left out';
     const unchecked = '"Stop" has a hook with "if", which Tachikoma cannot check, so it was left out: ';
     await untilSlowly(() => squashed(app.lastFrame()!).includes(squashed(`settings.json: "hooks": ${unchecked}node ${audit.args[0]}`)));
     expect(squashed(app.lastFrame()!)).toContain(squashed(`settings.json: "hooks": ${warning}`));
@@ -12582,6 +12827,36 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     // The user's choice, 2026-11-10, terminal checklist: the left-out row names the hook as /hooks does; the warning above
     // keeps its whole command.
     expect(app.lastFrame()).toContain(`No hooks in force. They go in "hooks" in ${shownFile()}.\nLeft out:\n  ${warning}\n  ${unchecked}node audit.js\n`);
+  });
+
+  // Release 8e plan, step 1 (Q1, Q32): FileChanged and CwdChanged's own warnings, after the entry's name above the prompt
+  // and alone in /hooks's left-out rows; a value that is not a list under one of the nine events 8e adds is refused, and
+  // the settings in force kept.
+  it("says FileChanged's and CwdChanged's own warnings at a live edit and on /hooks, and refuses a Notification that is not a list (release 8e plan, step 1)", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    onTestFinished(() => removeTree(home));
+    const where = path.join(settingsDir(home), "settings.json");
+    mkdirSync(settingsDir(home), { recursive: true });
+    writeFileSync(where, "{}");
+    const { app, hooks } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} }, hooks: [] });
+    const stop = [{ hooks: [{ type: "command", command: "x" }] }];
+    writeFileSync(where, JSON.stringify({ hooks: { FileChanged: stop, CwdChanged: "anything", Stop: stop } }));
+    const file = "FileChanged: Tachikoma doesn't watch files for hooks, so this event never happens; its hooks were left out.";
+    const cwd = "CwdChanged: Tachikoma's working folder never changes, as each command starts in the project folder, so this event never " +
+      "happens; its hooks were left out.";
+    await untilSlow(app, "Hooks changed: 1 hook at 1 event.");
+    expect(squashed(app.lastFrame()!)).toContain(squashed(`settings.json: "hooks": ${file}`));
+    expect(squashed(app.lastFrame()!)).toContain(squashed(`settings.json: "hooks": ${cwd}`));
+    await type(app, "/hooks");
+    const shown = squashed(app.lastFrame()!.slice(app.lastFrame()!.lastIndexOf("Hooks in force")));
+    expect(shown).toContain(squashed(`Stop\n  x\nLeft out:\n  ${file}\n  ${cwd}\n`));
+    writeFileSync(where, JSON.stringify({ hooks: { Notification: "anything" } }));
+    await untilSlow(app, "the last good settings still apply");
+    expect(squashed(app.lastFrame()!)).toContain(
+      squashed('settings.json: "hooks": "Notification" must be a list, such as [{"matcher": "Bash", "hooks": [{"type": "command", ' +
+        '"command": "check.sh"}]}] (got "anything"); the last good settings still apply'),
+    );
+    expect(hooks!.config.hooks.map((h) => [h.event, h.command])).toEqual([["Stop", "x"]]);
   });
 });
 
@@ -14209,5 +14484,1875 @@ describe("long-term memory in the window", () => {
     const off = await mount([], { memory: settings });
     await tick();
     expect(off.app.lastFrame()).not.toContain("memory");
+  });
+});
+
+// Release 8e plan, step 13: the runs of the two switch events' hooks stood in, so no child process starts and a fake clock
+// can time them; every other event's hooks run as they are. `answer` gives each run's Ran, or a promise of one, from what
+// it was sent and the time limit it was given; a stop of the run rejects it, as a stopped hook's run rejects (run.ts).
+// Each run is listed, in the order they started.
+interface SwitchRun { event: string; command: string; input: Record<string, unknown>; limit: number }
+function switchRuns(answer: (run: SwitchRun) => Ran | Promise<Ran> = () => ran()): SwitchRun[] {
+  const runs: SwitchRun[] = [];
+  const real = vi.mocked(runHook).getMockImplementation()!;
+  onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+  vi.mocked(runHook).mockImplementation((hook, input, opts) => {
+    const fields = input as Record<string, unknown>;
+    const event = String(fields.hook_event_name);
+    if (event !== "PreModelSwitch" && event !== "PostModelSwitch") return real(hook, input, opts);
+    const run = { event, command: hook.command, input: fields, limit: opts.limit };
+    runs.push(run);
+    return new Promise<Ran>((resolve, reject) => {
+      opts.signal?.addEventListener("abort", () => reject(new Error("Cancelled")), { once: true });
+      void Promise.resolve(answer(run)).then(resolve, reject);
+    });
+  });
+  return runs;
+}
+const ran = (stdout = "", code = 0, stderr = ""): Ran => ({ code, stdout, stderr, ms: 1 });
+// A PreModelSwitch hook's allow, deny or ask, with its reason when given.
+const decided = (permissionDecision: string, permissionDecisionReason?: string) =>
+  ran(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreModelSwitch", permissionDecision, ...(permissionDecisionReason === undefined ? {} : { permissionDecisionReason }) } }));
+const switchHook = (over: Partial<Hook> = {}): Hook => ({ event: "PreModelSwitch", matcher: { all: true }, command: "check-switch", async: false, where: "", ...over });
+const preRuns = (runs: SwitchRun[]) => runs.filter((r) => r.event === "PreModelSwitch");
+// The fields a switch hook is sent beyond the common ones (release 8e plan, step 12), those it was sent.
+const SWITCH_FIELDS = ["from_model", "to_model", "requested_model", "source", "context_tokens", "prompt_cache_warm", "cache_ttl", "estimated_cache_write_usd", "pricing"];
+const switchFieldsOf = (input: Record<string, unknown>) => Object.fromEntries(SWITCH_FIELDS.filter((k) => k in input).map((k) => [k, input[k]]));
+
+// Release 8e plan, step 13: PreModelSwitch before `/lead <model>` and a pick from the model list; the settings file's lead
+// is in "App's live settings", /resume in "App's sessions".
+describe("App's PreModelSwitch hooks (release 8e plan, step 13)", { timeout: 60_000 }, () => {
+  // A long line wraps, and Ink can carry the space it broke at onto the next row.
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " ");
+  const sees = (app: ReturnType<typeof render>, text: string) => vi.waitFor(() => expect(flat(app)).toContain(text), WATCHED);
+  // A real hook's Node process may take a few seconds to start while other tests run: up to 10 s.
+  async function slowly(check: () => boolean) {
+    for (let i = 0; i < 200 && !check(); i++) await tick();
+    expect(check()).toBe(true);
+  }
+  const models: ModelGroup[] = [{ provider: "fake", models: ["a", "b"] }];
+  // The model list opened with /model, and the model `down` rows below the first picked with Enter, as the user picks one.
+  async function pickFrom(app: ReturnType<typeof render>, down: number) {
+    await type(app, "/model");
+    await until(app, "● fake:a");
+    await tick(); // the picker starts reading keys just after it first appears
+    for (let i = 0; i < down; i++) await press(app, "\u001b[B");
+    await press(app, "\r");
+  }
+  // A stand-in model named `id`, answering with `turns`.
+  const named = (id: string, turns: Turn[] = []) => Object.assign(new FakeProvider("x", turns), { id });
+  const STOPPED = "The switch to fake:b was stopped by a hook";
+
+  it("refuses a /lead model that cannot be made with today's line, before any hook runs", async () => {
+    const runs = switchRuns();
+    const { app, session } = await mount([], { leadFails: "no such model", hooks: [switchHook()] });
+    await type(app, "/lead nothing:x");
+    await until(app, "no such model");
+    expect([runs, session.lead.id]).toEqual([[], "fake:a"]);
+  });
+
+  it("sends a real hook a /lead switch's fields, matched on the new model's canonical name, then switches, and the next prompt goes to the new lead", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-switch-"));
+    onTestFinished(() => removeTree(dir));
+    const file = path.join(dir, "input.json");
+    const script = path.join(dir, "hook.cjs");
+    writeFileSync(script, `let s = "";\nprocess.stdin.on("data", (d) => (s += d)).on("end", () => require("fs").writeFileSync(${JSON.stringify(file)}, s));\n`);
+    const opus = named("anthropic:claude-opus-5-5", [reply("from opus")]);
+    // 1,200 + 5,000 + 800 + 34: the status line's context number after this reply.
+    const lead = new FakeProvider("a", [{ ...reply("one"), usage: { input: 1200, output: 34, cacheRead: 5000, cacheWrite: 800 } }]);
+    const hooks = [switchHook({ matcher: { names: ["claude-opus-5-5"] }, command: process.execPath, args: [script] })];
+    const { app, session } = await mount([], { lead, newLead: opus, hooks });
+    await type(app, "hi");
+    await until(app, "one");
+    await type(app, "/lead anthropic:claude-opus-5-5");
+    await slowly(() => session.lead === opus);
+    const sent = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    expect(sent.hook_event_name).toBe("PreModelSwitch");
+    // 7,034 tokens at claude-opus-5-5's 5 USD a million for a cache write.
+    expect(switchFieldsOf(sent)).toEqual({
+      from_model: "a", to_model: "claude-opus-5-5", requested_model: "anthropic:claude-opus-5-5", source: "command", context_tokens: 7034,
+      prompt_cache_warm: false, cache_ttl: "5m", estimated_cache_write_usd: 0.03517, pricing: "catalog",
+    });
+    await type(app, "next");
+    await until(app, "from opus");
+    expect(opus.seen).toHaveLength(1);
+  });
+
+  it("sends a pick from the model list as \"picker\" with no requested model, then leads with it, and the next prompt goes to it", async () => {
+    const runs = switchRuns();
+    const b = new FakeProvider("b", [reply("from b")]);
+    const { app, session } = await mount([], { models, newLead: b, hooks: [switchHook()] });
+    await pickFrom(app, 1);
+    await until(app, "lead is now fake:b");
+    expect(preRuns(runs).map((r) => switchFieldsOf(r.input))).toEqual([{
+      from_model: "a", to_model: "b", requested_model: null, source: "picker", context_tokens: 0, prompt_cache_warm: false, cache_ttl: "5m",
+      estimated_cache_write_usd: null,
+    }]);
+    await type(app, "next");
+    await until(app, "from b");
+    expect([session.lead.id, b.seen.length]).toEqual(["fake:b", 1]);
+  });
+
+  it.each([
+    ["exit code 2", ran("", 2, "Too costly")],
+    ['"decision": "block"', ran(JSON.stringify({ decision: "block", reason: "Too costly" }))],
+    ["a deny", decided("deny", "Too costly")],
+  ])("keeps the lead on a /lead that a hook's %s stops, saying so, shortening nothing, and the next prompt goes to the lead", async (_how, answer) => {
+    switchRuns(() => answer);
+    let looked = 0;
+    const b: Provider = { id: "fake:b", complete: async () => reply("from b"), contextWindow: async () => (looked++, 1) };
+    const lead = new FakeProvider("a", [reply("one"), reply("still a")]);
+    const { app, session } = await mount([], { lead, newLead: b, hooks: [switchHook()] });
+    await type(app, "hi");
+    await until(app, "one");
+    await type(app, "/lead fake:b");
+    await until(app, `${STOPPED}: Too costly.`);
+    await type(app, "again");
+    await until(app, "still a");
+    expect([session.lead.id, looked, lead.seen.length]).toEqual(["fake:a", 0, 2]);
+    expect(app.lastFrame()).not.toContain("lead is now");
+  });
+
+  it("keeps the lead on a pick from the model list that a hook stops, saying so", async () => {
+    switchRuns(() => decided("deny", "Too costly"));
+    const lead = new FakeProvider("a", [reply("still a")]);
+    const { app, session } = await mount([], { lead, models, hooks: [switchHook()] });
+    await pickFrom(app, 1);
+    await until(app, `${STOPPED}: Too costly.`);
+    await type(app, "again");
+    await until(app, "still a");
+    expect(session.lead.id).toBe("fake:a");
+    expect(app.lastFrame()).not.toContain("lead is now");
+  });
+
+  it("makes a /lead with an empty conversation wait for its hook, between turns, what is typed waiting in the queue", async () => {
+    let allow!: () => void;
+    const runs = switchRuns(() => new Promise<Ran>((resolve) => (allow = () => resolve(ran()))));
+    const b = new FakeProvider("b", [reply("from b")]);
+    const { app, session } = await mount([], { newLead: b, hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await waitFor(() => runs.length === 1);
+    expect(app.lastFrame()).toContain("Esc to stop");
+    await type(app, "hello");
+    expect([session.lead.id, session.messages]).toEqual(["fake:a", []]);
+    allow();
+    await until(app, "from b");
+    expect(session.lead.id).toBe("fake:b");
+    expect(app.lastFrame()).toMatch(/lead is now fake:b[\s\S]*from b/);
+  });
+
+  it("leaves the reason off the stopped switch's line and off the question when the hook gives none (W6)", async () => {
+    const answers = [decided("deny"), decided("ask")];
+    switchRuns(() => answers.shift()!);
+    const { app, session } = await mount([], { hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, `${STOPPED}.`);
+    await type(app, "/lead fake:b");
+    await until(app, "A hook asks. Switch to fake:b? [y/n]");
+    await press(app, "n");
+    await until(app, "A hook asks. Switch to fake:b: no");
+    expect(session.lead.id).toBe("fake:a");
+  });
+
+  it.each([
+    ["yes", "y", "fake:b"],
+    ["no", "n", "fake:a"],
+  ])("puts a hook's ask on /lead to the user as the window's question, and on %s the lead is as the answer says", async (said, key, id) => {
+    switchRuns(() => decided("ask", "Costly"));
+    const { app, session } = await mount([], { hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, "A hook asks: Costly. Switch to fake:b? [y/n]");
+    await press(app, key);
+    await until(app, `A hook asks: Costly. Switch to fake:b: ${said}`);
+    await tick();
+    expect(session.lead.id).toBe(id);
+    expect(app.lastFrame()!.includes("lead is now fake:b")).toBe(id === "fake:b");
+  });
+
+  // Step 13's review (the user): as Esc answers no, Ctrl-C cancels the question and the switch.
+  it("cancels the hook's question and keeps the lead on Ctrl-C", async () => {
+    switchRuns(() => decided("ask", "Costly"));
+    const lead = new FakeProvider("a", [reply("still a")]);
+    const { app, session } = await mount([], { lead, hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, "A hook asks: Costly. Switch to fake:b? [y/n]");
+    await press(app, "\u0003"); // Ctrl-C
+    await until(app, "A hook asks: Costly. Switch to fake:b: no (cancelled)");
+    await gone(app, "Esc to stop");
+    await type(app, "again");
+    await until(app, "still a");
+    expect(session.lead.id).toBe("fake:a");
+    expect(app.lastFrame()).not.toContain("lead is now");
+  });
+
+  // Step 13's review (the user): a reason with its own full stop, or ! or ?, gets none added.
+  it.each([
+    ["the stop line", decided("deny", "Too costly."), `${STOPPED}: Too costly.`],
+    ["the question", decided("ask", "Costly!"), "A hook asks: Costly! Switch to fake:b? [y/n]"],
+  ])("adds no full stop after a hook's reason that ends in one, in %s", async (_where, answer, line) => {
+    switchRuns(() => answer);
+    const { app } = await mount([], { hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, line);
+    expect(app.lastFrame()).not.toMatch(/[.!?]\./);
+  });
+
+  // Step 13's review (the user): a hook counts only if it would run for this switch, as fire picks (Q12), so a switch no
+  // hook decides is made at once, with no working line.
+  it.each([
+    ["an Anthropic model it does not match: no working line", "anthropic:claude-opus-5-5", false],
+    ["another provider's model, which runs every hook: the working line", "openai:gpt-5.5", true],
+  ])("counts a hook whose matcher names claude-haiku-4-5 on a /lead to %s", async (_to, id, counted) => {
+    const runs = switchRuns(() => new Promise<Ran>((resolve) => setTimeout(() => resolve(ran()), 300)));
+    const { app } = await mount([], { newLead: named(id), hooks: [switchHook({ matcher: { names: ["claude-haiku-4-5"] } })] });
+    await type(app, "/lead x");
+    await until(app, `lead is now ${id}`);
+    expect([runs.length, app.frames.some((f) => f.includes("Esc to stop"))]).toEqual([counted ? 1 : 0, counted]);
+  });
+
+  // PostModelSwitch neither (release 8e plan, step 14).
+  it("fires nothing when /lead or a pick names the model already leading, and still says the lead is now that model (Q31)", async () => {
+    const runs = switchRuns();
+    const { app } = await mount([], { models, newLead: new FakeProvider("a", []), hooks: [switchHook(), postHook()] });
+    await type(app, "/lead fake:a");
+    await until(app, "lead is now fake:a");
+    await pickFrom(app, 0);
+    await waitFor(() => app.lastFrame()!.split("lead is now fake:a").length === 3);
+    expect(runs).toEqual([]);
+  });
+
+  it("fires nothing for another spelling that the provider factory makes into the model already leading (Q31)", async () => {
+    const runs = switchRuns();
+    const made: string[] = [];
+    const { app, session } = await mount([], { made, newLead: new FakeProvider("a", []), hooks: [switchHook(), postHook()] });
+    await type(app, "/lead fake:A");
+    await until(app, "lead is now fake:a");
+    expect([made, runs, session.lead.id]).toEqual([["fake:A"], [], "fake:a"]);
+  });
+
+  it("runs a hook whose matcher is the undated name on a /lead to the dated name, and switches, as the two ids differ", async () => {
+    const runs = switchRuns();
+    const dated = named("anthropic:claude-haiku-4-5-20251001");
+    const hooks = [
+      switchHook({ command: "haiku", matcher: { names: ["claude-haiku-4-5"] } }),
+      switchHook({ command: "opus", matcher: { names: ["claude-opus-5-5"] } }),
+    ];
+    const { app, session } = await mount([], { lead: named("anthropic:claude-haiku-4-5"), newLead: dated, hooks });
+    await type(app, "/lead anthropic:claude-haiku-4-5-20251001");
+    await until(app, "lead is now anthropic:claude-haiku-4-5-20251001");
+    expect(runs.map((r) => [r.command, r.input.from_model, r.input.to_model])).toEqual([["haiku", "claude-haiku-4-5", "claude-haiku-4-5-20251001"]]);
+    expect(session.lead).toBe(dated);
+  });
+
+  it("runs every hook, whatever its matcher, on a /lead to another provider's model, which has no canonical name", async () => {
+    const runs = switchRuns();
+    const hooks = [
+      switchHook({ command: "named", matcher: { names: ["claude-opus-5-5"] } }),
+      switchHook({ command: "pattern", matcher: { regex: /^nothing$/ } }),
+    ];
+    const { app } = await mount([], { newLead: named("openai:gpt-5.5"), hooks });
+    await type(app, "/lead openai:gpt-5.5");
+    await until(app, "lead is now openai:gpt-5.5");
+    expect(runs.map((r) => r.command).sort()).toEqual(["named", "pattern"]);
+  });
+
+  // The status line's number reflects the fallback's reply, which rescued the turn; the cache's warmth is timed from the
+  // lead's own refused reply. Their sizes and times differ, so neither can stand in for the other.
+  it("sends the status line's context number, the fallback's reply's, and times the cache's warmth from the lead's own reply", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    onTestFinished(() => void vi.useRealTimers());
+    const at = Date.UTC(2026, 10, 23, 12);
+    const minutes = (n: number) => at + n * 60_000;
+    const lead: Provider = {
+      id: "anthropic:claude-opus-5-5",
+      complete: async () => {
+        vi.setSystemTime(at);
+        return { ...reply(""), usage: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0 }, cutOff: { kind: "refusal", detail: "declined" } };
+      },
+    };
+    const rescue: Provider = {
+      id: "fake:f",
+      complete: async () => {
+        vi.setSystemTime(minutes(2));
+        return { ...reply("rescued"), usage: { input: 7000, output: 34, cacheRead: 0, cacheWrite: 0 } };
+      },
+    };
+    const runs = switchRuns(() => decided("deny", "Not now"));
+    const { app, session } = await mount([], { lead, hooks: [switchHook()] });
+    session.setFallback(rescue);
+    await type(app, "one");
+    await until(app, "rescued");
+    vi.setSystemTime(minutes(4)); // 4 minutes after the lead's reply, 2 after the fallback's
+    await type(app, "/lead fake:b");
+    await until(app, `${STOPPED}: Not now.`);
+    vi.setSystemTime(minutes(6)); // 6 minutes after the lead's reply, 4 after the fallback's
+    await type(app, "/lead fake:b");
+    await waitFor(() => runs.length === 2);
+    expect(runs.map((r) => [r.input.context_tokens, r.input.prompt_cache_warm])).toEqual([[7034, true], [7034, false]]);
+  });
+
+  it("keeps the lead, saying nothing and shortening nothing, when Esc stops a /lead's hook, and goes on after", async () => {
+    const runs = switchRuns(() => new Promise<Ran>(() => {}));
+    let looked = 0;
+    const b: Provider = { id: "fake:b", complete: async () => reply("from b"), contextWindow: async () => (looked++, 1) };
+    const lead = new FakeProvider("a", [reply("one"), reply("still a")]);
+    const { app, session } = await mount([], { lead, newLead: b, hooks: [switchHook()] });
+    await type(app, "hi");
+    await until(app, "one");
+    await type(app, "/lead fake:b");
+    await waitFor(() => runs.length === 1);
+    await press(app, "\u001b"); // Esc
+    await gone(app, "Esc to stop");
+    await type(app, "again");
+    await until(app, "still a");
+    expect([session.lead.id, looked]).toEqual(["fake:a", 0]);
+    expect(app.lastFrame()).not.toContain("stopped by a hook");
+    expect(app.lastFrame()).not.toContain("lead is now");
+  });
+
+  it("keeps the lead when Esc stops the shortening after an allowing hook, the hook having run once and PostModelSwitch never", async () => {
+    const runs = switchRuns();
+    let window = 0;
+    let summarising = false;
+    const turns: ((req: CompletionRequest) => Promise<Turn>)[] = [
+      async (req) => {
+        window = characters(req.system, [], req.tools) + 1000; // the prompt does not fit the new lead's window, a summary would
+        return { ...reply("noted"), usage: { ...usage, input: characters(req.system, req.messages, req.tools) } };
+      },
+      (req) =>
+        new Promise((_, reject) => {
+          summarising = true;
+          req.signal?.addEventListener("abort", () => reject(new Error("Request was aborted.")), { once: true });
+        }),
+      async () => reply("still fake:a"),
+    ];
+    const lead: Provider = { id: "fake:a", complete: (req) => turns.shift()!(req) };
+    const newLead: Provider = { id: "fake:b", complete: async () => reply("hi"), contextWindow: async () => window };
+    const hooks = [switchHook(), switchHook({ event: "PostModelSwitch", command: "after" })];
+    const { app, session } = await mount([], { lead, newLead, save: true, hooks });
+    await session.send("x".repeat(2000));
+    await type(app, "/lead fake:b");
+    await waitFor(() => summarising);
+    await press(app, "\u001b"); // Esc
+    await type(app, "and now");
+    await until(app, "still fake:a");
+    expect(session.lead.id).toBe("fake:a");
+    expect(runs.map((r) => r.event)).toEqual(["PreModelSwitch"]);
+    expect(app.lastFrame()).not.toContain("was not made the lead");
+  });
+
+  const UNSTARTED: Ran = { code: null, stdout: "", stderr: "", ms: 1, failed: "start", startError: "ENOENT" };
+
+  it('stops the switch with the grey line when a hook with "onFailure": "block" cannot start (Q28)', async () => {
+    switchRuns(() => UNSTARTED);
+    const { app, session } = await mount([], { hooks: [switchHook({ onFailure: "block" })] });
+    await type(app, "/lead fake:b");
+    await sees(app, `${STOPPED}: check-switch could not start (ENOENT).`);
+    expect(session.lead.id).toBe("fake:a");
+    expect(app.lastFrame()).not.toContain("hook failed");
+  });
+
+  it("says the red line and switches when a hook without onFailure cannot start (Q28)", async () => {
+    switchRuns(() => UNSTARTED);
+    const { app, session } = await mount([], { hooks: [switchHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    expect(flat(app)).toContain("✗ PreModelSwitch hook failed: check-switch could not start (ENOENT)");
+    expect(session.lead.id).toBe("fake:b");
+    expect(app.lastFrame()).not.toContain("stopped by a hook");
+  });
+
+  it("stops the switch when a hook runs out of time at 30 s, saying both the red time-out line and the grey line (Q13)", async () => {
+    const runs = switchRuns((r) => new Promise<Ran>((resolve) => setTimeout(() => resolve({ ...ran("", 0), code: null, failed: "time", limit: r.limit }), r.limit * 1000)));
+    const { app, session } = await mount([], { hooks: [switchHook()] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // The clock moved on by `ms`, then one turn of the event loop (setImmediate is not faked), in which the screen is drawn.
+    const wait = async (ms: number) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    try {
+      app.stdin.write("/lead fake:b");
+      await wait(0);
+      app.stdin.write("\r");
+      for (let i = 0; i < 40 && !runs.length; i++) await wait(0);
+      expect(runs.map((r) => r.limit)).toEqual([30]);
+      await wait(29_999);
+      expect(app.lastFrame()).not.toContain("stopped by a hook");
+      expect(app.lastFrame()).toContain("Esc to stop");
+      await wait(1);
+      expect(flat(app)).toContain("✗ PreModelSwitch hook failed: check-switch ran out of time after 30 s");
+      expect(flat(app)).toContain(`${STOPPED}: check-switch ran out of time after 30 s.`);
+      expect(session.lead.id).toBe("fake:a");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets an async hook decide nothing: its deny is said as a block it cannot make, and the switch is made", async () => {
+    switchRuns(() => decided("deny", "Too costly"));
+    const { app, session } = await mount([], { hooks: [switchHook({ async: true })] });
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await sees(app, 'PreModelSwitch hook failed: check-switch asked to block, but an "async" hook cannot block');
+    expect(session.lead.id).toBe("fake:b");
+    expect(app.lastFrame()).not.toContain("stopped by a hook");
+  });
+});
+
+// Release 8e plan, step 14: a PostModelSwitch hook, and its text as the model is sent it.
+const postHook = (over: Partial<Hook> = {}): Hook => switchHook({ event: "PostModelSwitch", command: "after", ...over });
+const postText = (text: string) => ({ type: "text", text: `PostModelSwitch hook:\n${text}`, from: "hooks" });
+
+// Release 8e plan, step 14: PostModelSwitch after `/lead <model>` and a pick from the model list; the settings file's lead
+// is in "App's live settings", /resume in "App's sessions", and the model already leading in step 13's tests above.
+describe("App's PostModelSwitch hooks (release 8e plan, step 14)", { timeout: 60_000 }, () => {
+  const models: ModelGroup[] = [{ provider: "fake", models: ["a", "b"] }];
+  // The model list opened with /model, and the model `down` rows below the first picked with Enter, as the user picks one.
+  async function pickFrom(app: ReturnType<typeof render>, down: number) {
+    await type(app, "/model");
+    await until(app, "● fake:a");
+    await tick(); // the picker starts reading keys just after it first appears
+    for (let i = 0; i < down; i++) await press(app, "\u001b[B");
+    await press(app, "\r");
+  }
+  // A stand-in model named `id`.
+  const named = (id: string) => Object.assign(new FakeProvider("x", []), { id });
+  // The fields of a switch from fake:a to fake:b with nothing priced or cached, `over` changing some.
+  const toB = (over: object = {}) => ({
+    from_model: "a", to_model: "b", requested_model: "fake:b", source: "command", context_tokens: 0, prompt_cache_warm: false, cache_ttl: "5m",
+    estimated_cache_write_usd: null, ...over,
+  });
+
+  it("fires PostModelSwitch after a /lead with the switch's fields and a 30 s limit, its text going with the next prompt's request", async () => {
+    const runs = switchRuns(() => ran("b leads now"));
+    const lead = new FakeProvider("a", [reply("one")]);
+    const b = new FakeProvider("b", [reply("from b")]);
+    const { app } = await mount([], { lead, newLead: b, hooks: [postHook()] });
+    await type(app, "hi");
+    await until(app, "one");
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await waitFor(() => runs.length === 1);
+    // 10 + 5: the stand-in's usage, the status line's context number after its reply.
+    expect([runs[0]!.event, runs[0]!.limit, switchFieldsOf(runs[0]!.input)]).toEqual(["PostModelSwitch", 30, toB({ context_tokens: 15 })]);
+    await type(app, "next");
+    await until(app, "from b");
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([postText("b leads now"), { type: "text", text: "next" }]);
+  });
+
+  it("fires PostModelSwitch after a pick from the model list as \"picker\", with no requested model", async () => {
+    const runs = switchRuns();
+    const { app, session } = await mount([], { models, newLead: new FakeProvider("b", []), hooks: [postHook()] });
+    await pickFrom(app, 1);
+    await until(app, "lead is now fake:b");
+    await waitFor(() => runs.length === 1);
+    expect(switchFieldsOf(runs[0]!.input)).toEqual(toB({ requested_model: null, source: "picker" }));
+    expect(session.lead.id).toBe("fake:b");
+  });
+
+  // Step 14's review (the user): after a cut, the size is the estimate the fit check works out for the kept request, its
+  // characters times the old lead's tokens per character, and the cache write is priced from it; with no rate yet for the
+  // old lead, there is none, and no cache write either. The new lead is claude-opus-5-5, 5 USD a million for a cache write.
+  // `rate`: the old lead's reply reports this many tokens a character of its request, 0 reporting none, so it gives no
+  // rate, and the old lead counts exactly instead, as Anthropic does, so the conversation is still shortened.
+  it.each([
+    ["a rate of 2 tokens a character: the kept request's estimate", 2],
+    ["no rate yet: no size and no cache write", 0],
+  ])("sends PostModelSwitch, after a /lead that shortened the conversation to fit, %s", async (_how, rate) => {
+    const runs = switchRuns();
+    let window = 0;
+    let size = 0;
+    let tools: CompletionRequest["tools"] = [];
+    const turns: ((req: CompletionRequest) => Promise<Turn>)[] = [
+      async (req) => {
+        // The prompt does not fit the new lead's window, a summary does, at the rate it is measured by.
+        window = (rate || 1) * characters(req.system, [], req.tools) + 1000;
+        size = characters(req.system, req.messages, req.tools);
+        tools = req.tools;
+        return { ...reply("noted"), usage: { ...usage, input: rate * size } };
+      },
+      async () => reply("the summary"),
+    ];
+    const lead: Provider = {
+      id: "fake:a",
+      complete: (req) => turns.shift()!(req),
+      ...(rate ? {} : { countTokens: async (req: CompletionRequest) => characters(req.system, req.messages, req.tools) }),
+    };
+    const newLead: Provider = { id: "anthropic:claude-opus-5-5", complete: async () => reply("hi"), contextWindow: async () => window };
+    const { app, session } = await mount([], { lead, newLead, save: true, hooks: [switchHook(), postHook()] });
+    await session.send("x".repeat(2000));
+    await type(app, "/lead anthropic:claude-opus-5-5");
+    await until(app, "lead is now anthropic:claude-opus-5-5");
+    await waitFor(() => runs.length === 2);
+    expect(turns).toEqual([]); // the summary was asked for
+    expect(session.messages).toHaveLength(1); // the kept request's one message
+    const opus = (tokens: number | null) => toB({
+      to_model: "claude-opus-5-5", requested_model: "anthropic:claude-opus-5-5", context_tokens: tokens,
+      ...(tokens === null ? {} : { estimated_cache_write_usd: (tokens * 5) / 1_000_000, pricing: "catalog" }),
+    });
+    const kept = rate ? rate * characters(session.system, session.messages, tools) : null;
+    expect(runs.map((r) => [r.event, switchFieldsOf(r.input)])).toEqual([
+      ["PreModelSwitch", opus(rate * size + usage.output)],
+      ["PostModelSwitch", opus(kept)],
+    ]);
+  });
+
+  // The status line's number reflects the fallback's reply, which rescued the turn; the cache's warmth is timed from the
+  // lead's own refused reply: 4 minutes after it warm, 6 minutes after it not, though the fallback's came 2 minutes later.
+  it.each([
+    [4, true],
+    [6, false],
+  ])("sends PostModelSwitch, %i minutes after a turn a fallback rescued, the fallback's reply's size and a cache warm: %s", async (after, warm) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    onTestFinished(() => void vi.useRealTimers());
+    const at = Date.UTC(2026, 10, 23, 12);
+    const lead: Provider = {
+      id: "anthropic:claude-opus-5-5",
+      complete: async () => {
+        vi.setSystemTime(at);
+        return { ...reply(""), usage: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0 }, cutOff: { kind: "refusal", detail: "declined" } };
+      },
+    };
+    const rescue: Provider = {
+      id: "fake:f",
+      complete: async () => {
+        vi.setSystemTime(at + 2 * 60_000);
+        return { ...reply("rescued"), usage: { input: 7000, output: 34, cacheRead: 0, cacheWrite: 0 } };
+      },
+    };
+    const runs = switchRuns();
+    const { app, session } = await mount([], { lead, hooks: [postHook()] });
+    session.setFallback(rescue);
+    await type(app, "one");
+    await until(app, "rescued");
+    vi.setSystemTime(at + after * 60_000);
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await waitFor(() => runs.length === 1);
+    expect(switchFieldsOf(runs[0]!.input)).toEqual(toB({ from_model: "claude-opus-5-5", context_tokens: 7034, prompt_cache_warm: warm }));
+  });
+
+  it("fires PostModelSwitch on a /lead from a dated Anthropic name to its undated one, as the two ids differ (Q31)", async () => {
+    const runs = switchRuns();
+    const undated = named("anthropic:claude-haiku-4-5");
+    const hooks = [postHook({ matcher: { names: ["claude-haiku-4-5"] } })];
+    const { app, session } = await mount([], { lead: named("anthropic:claude-haiku-4-5-20251001"), newLead: undated, hooks });
+    await type(app, "/lead anthropic:claude-haiku-4-5");
+    await until(app, "lead is now anthropic:claude-haiku-4-5");
+    await waitFor(() => runs.length === 1);
+    expect(runs.map((r) => [r.event, r.input.from_model, r.input.to_model])).toEqual([["PostModelSwitch", "claude-haiku-4-5-20251001", "claude-haiku-4-5"]]);
+    expect(session.lead).toBe(undated);
+  });
+
+  it.each([
+    ["a deny stops", decided("deny", "No"), "", "The switch to fake:b was stopped by a hook: No."],
+    ["a question answered no to stops", decided("ask", "Sure"), "n", "A hook asks: Sure. Switch to fake:b: no"],
+  ])("fires no PostModelSwitch after a /lead %s", async (_how, answer, key, line) => {
+    const runs = switchRuns((r) => (r.event === "PreModelSwitch" ? answer : ran()));
+    const { app, session } = await mount([], { hooks: [switchHook(), postHook()] });
+    await type(app, "/lead fake:b");
+    if (key) {
+      await until(app, "Switch to fake:b? [y/n]");
+      await press(app, key);
+    }
+    await until(app, line);
+    await tick();
+    expect([session.lead.id, runs.map((r) => r.event)]).toEqual(["fake:a", ["PreModelSwitch"]]);
+  });
+
+  it("fires PostModelSwitch after PreModelSwitch on a /lead whose hook's question is answered yes", async () => {
+    const runs = switchRuns((r) => (r.event === "PreModelSwitch" ? decided("ask", "Sure") : ran()));
+    const { app, session } = await mount([], { hooks: [switchHook(), postHook()] });
+    await type(app, "/lead fake:b");
+    await until(app, "A hook asks: Sure. Switch to fake:b? [y/n]");
+    await press(app, "y");
+    await until(app, "lead is now fake:b");
+    await waitFor(() => runs.length === 2);
+    expect([session.lead.id, runs.map((r) => r.event)]).toEqual(["fake:b", ["PreModelSwitch", "PostModelSwitch"]]);
+  });
+
+  it("fires no PostModelSwitch at the launch, nor when a fallback answers a turn the lead refused", async () => {
+    const runs = switchRuns();
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const { app, session } = await mount([refused], { save: true, hooks: [postHook()] });
+    session.setFallback(new FakeProvider("f", [reply("rescued")]));
+    await type(app, "one");
+    await until(app, "rescued");
+    await tick();
+    expect([session.lead.id, runs]).toEqual(["fake:a", []]);
+  });
+
+  // Q23: a prompt that waited in the queue is sent from when it leaves it, so its 5 s start then. Only Date is faked: the
+  // hook finishes 4.999 s after the prompt left the queue, 10.999 s after its Enter, and its text still goes with it.
+  it("gives a prompt that waited in the queue longer than 5 s its full 5 s from when it leaves the queue (Q23)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    onTestFinished(() => void vi.useRealTimers());
+    const at = Date.UTC(2026, 10, 23, 12);
+    vi.setSystemTime(at);
+    const answers: ((t: Turn) => void)[] = [];
+    const lead: Provider = { id: "fake:a", complete: () => new Promise((resolve) => void answers.push(resolve)) };
+    const b = new FakeProvider("b", [reply("from b")]);
+    let finish!: () => void;
+    const runs = switchRuns(() => new Promise<Ran>((resolve) => (finish = () => resolve(ran("b leads now")))));
+    const { app, session } = await mount([], { lead, newLead: b, hooks: [postHook()] });
+    const sent: (number | undefined)[] = [];
+    const send = session.send.bind(session);
+    session.send = (text, signal, supply, from) => (sent.push(from), send(text, signal, supply, from));
+    await type(app, "first");
+    await waitFor(() => answers.length === 1);
+    await type(app, "/lead fake:b");
+    await type(app, "second");
+    vi.setSystemTime(at + 6_000);
+    answers[0]!(reply("one"));
+    await waitFor(() => runs.length === 1 && sent.length === 2);
+    expect(sent).toEqual([at, at + 6_000]);
+    vi.setSystemTime(at + 10_999);
+    finish();
+    await until(app, "from b");
+    expect(b.seen[0]!.at(-1)!.parts).toEqual([postText("b leads now"), { type: "text", text: "second" }]);
+  });
+});
+
+// Release 8e plan, step 16: the runs of the hooks at `events` stood in, as switchRuns stands in for the switch events',
+// ConfigChange's unless given; every other event's hooks run as they are. Each run is listed, in the order they started,
+// with whether a stop ended it.
+interface HookRun { event: string; command: string; input: Record<string, unknown>; stopped: boolean }
+function configRuns(answer: (run: HookRun) => Ran | Promise<Ran> = () => ran(), events = ["ConfigChange"]): HookRun[] {
+  const runs: HookRun[] = [];
+  const real = vi.mocked(runHook).getMockImplementation()!;
+  onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+  vi.mocked(runHook).mockImplementation((hook, input, opts) => {
+    const fields = input as Record<string, unknown>;
+    const event = String(fields.hook_event_name);
+    if (!events.includes(event)) return real(hook, input, opts);
+    const run = { event, command: hook.command, input: fields, stopped: false };
+    runs.push(run);
+    return new Promise<Ran>((resolve, reject) => {
+      opts.signal?.addEventListener("abort", () => ((run.stopped = true), reject(new Error("Cancelled"))), { once: true });
+      void Promise.resolve(answer(run)).then(resolve, reject);
+    });
+  });
+  return runs;
+}
+const configHook = (over: Partial<Hook> = {}): Hook => ({ event: "ConfigChange", matcher: { all: true }, command: "check-config", async: false, where: "", ...over });
+// A "hooks" entry as the user writes it in the settings file, one command hook at `event`.
+const hookEntry = (event: string, command: string) => ({ [event]: [{ hooks: [{ type: "command", command }] }] });
+
+// Release 8e plan, step 16: ConfigChange decides a change of the settings file before any of it applies. The window's
+// reads are handed to it straight (hand), as the watcher hands them, or come through the real watcher, one write a step.
+describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_000 }, () => {
+  const FROM = "(from settings.json)";
+  const STOPPED = "A ConfigChange hook stopped this settings change";
+  const CLOSING = "This settings change was not applied, as the window is closing.";
+  const SIZE = (n: string) => `autoCompactWindow is now ${n} ${FROM}`;
+  const PINNED = (mode: string) => `"mode" changes in settings.json take effect at the next launch; the mode stays ${mode}`;
+  const LEFT_OUT = "FileChanged: Tachikoma doesn't watch files for hooks";
+  const LEED = 'settings.json: "leed" is not a setting; it was left out';
+  // A long line wraps, and Ink can carry the space it broke at onto the next row.
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " ");
+  const sees = (app: ReturnType<typeof render>, text: string) => vi.waitFor(() => expect(flat(app)).toContain(text), WATCHED);
+  // How often the conversation says `text`, above the prompt: the hint row under it shows an edit's last line too.
+  const times = (app: ReturnType<typeof render>, text: string) => {
+    const f = flat(app);
+    return f.slice(0, f.lastIndexOf("›")).split(text).length - 1;
+  };
+  const json = (o: object) => JSON.stringify(o);
+
+  // A window whose settings file holds `text` (none when null) at the watcher's first read and whose launch read
+  // `launched` (that text, or {} with none, unless given), the hooks in force the launch's file's then `hooks` (a
+  // ConfigChange hook unless given). `hand` gives the window a read of a text straight; `write` writes the file;
+  // `read` writes it and waits until the watcher has read it (app's live settings, readsOf).
+  async function launch(
+    text: string | null,
+    o: { launched?: string; given?: Given; hooks?: Hook[]; mount?: Parameters<typeof mount>[1] } = {},
+  ) {
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    onTestFinished(() => removeTree(home));
+    const where = path.join(settingsDir(home), "settings.json");
+    mkdirSync(settingsDir(home), { recursive: true });
+    if (text !== null) writeFileSync(where, text);
+    const loaded = readSettings(o.launched ?? text ?? "{}");
+    if ("problem" in loaded) throw new Error(loaded.problem);
+    const hooks = { hooks: [...(loaded.settings.hooks ?? []), ...(o.hooks ?? [configHook()])], off: false, leftOut: loaded.hooksLeftOut ?? [] };
+    const m = await mount([], { ...o.mount, home, live: { loaded, given: o.given ?? {} }, hooks });
+    const hand = (t: string) => {
+      const w = watchers.get(home)!;
+      w.begin?.();
+      w.on(readSettings(t));
+    };
+    const write = (t: string) => writeFileSync(where, t);
+    const readOf = (file: string) => async (t: string) => {
+      const before = reads.get(file) ?? 0;
+      writeFileSync(file, t);
+      await vi.waitFor(() => expect(reads.get(file) ?? 0).toBeGreaterThan(before), WATCHED);
+    };
+    return { ...m, hooks: m.hooks!, home, where, hand, write, read: readOf(where), readOf };
+  }
+
+  it.each([
+    ["exit code 2", ran("", 2, "Not now"), `${STOPPED}: Not now.`],
+    ['"decision": "block" with no reason (W7)', ran(json({ decision: "block" })), `${STOPPED}.`],
+  ])("keeps a whole change a ConfigChange hook's %s blocks out: the settings, hooks, warnings and left-out rows in force stay, with its line", async (_how, answer, line) => {
+    // The launch's warnings and left-out row in force; the blocked save drops them, so had it applied, the next save,
+    // which brings them back, would say them again (step 16's review, the user).
+    const runs = configRuns(() => (runs.length === 1 ? answer : ran()));
+    const launched = { leed: 1, hooks: hookEntry("FileChanged", "x") };
+    const { app, session, hooks, hand } = await launch(json(launched));
+    const before = structuredClone(hooks.config);
+    expect(before.leftOut).toHaveLength(1);
+    hand(json({ autoCompactWindow: 200000, hooks: hookEntry("Stop", "y") }));
+    await sees(app, line);
+    await tick();
+    expect(runs).toHaveLength(1);
+    expect(session.autoCompact).toBeNull();
+    expect(hooks.config).toEqual(before);
+    for (const said of ["autoCompactWindow is now", "Hooks changed"]) expect(flat(app)).not.toContain(said);
+    hand(json({ ...launched, autoCompactWindow: 300000 }));
+    await sees(app, SIZE("300,000"));
+    expect(runs).toHaveLength(2);
+    expect(hooks.config.leftOut).toEqual(before.leftOut);
+    for (const said of [LEED, LEFT_OUT]) expect(flat(app)).not.toContain(said);
+  });
+
+  // Step 16's review (the user): a broken read is never held behind a decision nor replaced by a newer save.
+  it("says a broken read's red line at once while a ConfigChange hook decides another save, then decides the good save after", async () => {
+    let go!: () => void;
+    const runs = configRuns(() => (runs.length === 1 ? new Promise<Ran>((resolve) => (go = () => resolve(ran()))) : ran()));
+    const { app, session, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    hand('{"mode": ');
+    await sees(app, "settings.json is not valid JSON");
+    expect(flat(app)).toContain("the last good settings still apply");
+    hand(json({ autoCompactWindow: 200000 }));
+    await tick();
+    expect([runs.length, session.autoCompact]).toEqual([1, null]);
+    go();
+    await sees(app, SIZE("200,000"));
+    expect(flat(app).indexOf(SIZE("100,000"))).toBeLessThan(flat(app).indexOf(SIZE("200,000")));
+    expect([runs.length, session.autoCompact]).toEqual([2, 200_000]);
+  });
+
+  it("compares the next save after a blocked one with the settings in force, not with the blocked one", async () => {
+    let n = 0;
+    configRuns(() => (n++ === 0 ? ran("", 2, "No") : ran()));
+    const { app, session, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, `${STOPPED}: No.`);
+    hand(json({ autoCompactWindow: 200000, scrollSpeed: 5 }));
+    await sees(app, SIZE("200,000"));
+    await sees(app, `scrollSpeed is now 5 ${FROM}`);
+    expect(session.autoCompact).toBe(200_000);
+  });
+
+  it("applies a change its ConfigChange hook allows as before, the hook sent source user_settings and the file's path", async () => {
+    const runs = configRuns();
+    const { app, session, where, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, SIZE("200,000"));
+    expect(session.autoCompact).toBe(200_000);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.input).toMatchObject({ hook_event_name: "ConfigChange", source: "user_settings", file_path: where });
+    expect(flat(app)).not.toContain(STOPPED);
+  });
+
+  // Q28: onFailure "block" makes a failure a block, with the failure as its reason; without it, its red line.
+  it.each([
+    ['with onFailure "block", kept out, the failure its reason', { onFailure: "block" as const }, true],
+    ["without onFailure, its red line, and the change applies", {}, false],
+  ])("treats a ConfigChange hook that cannot start %s", async (_how, over, kept) => {
+    configRuns(() => ({ code: null, stdout: "", stderr: "", ms: 1, failed: "start", startError: "spawn check-config ENOENT" }));
+    const { app, session, hand } = await launch("{}", { hooks: [configHook(over)] });
+    hand(json({ autoCompactWindow: 200000 }));
+    if (kept) {
+      await sees(app, `${STOPPED}: check-config could not start (spawn check-config ENOENT).`);
+      expect(session.autoCompact).toBeNull();
+      expect(flat(app)).not.toContain("ConfigChange hook failed");
+    } else {
+      await sees(app, "ConfigChange hook failed: check-config could not start (spawn check-config ENOENT)");
+      await sees(app, SIZE("200,000"));
+      expect(flat(app)).not.toContain(STOPPED);
+    }
+  });
+
+  // D9: ConfigChange discards systemMessage and continue.
+  it.each([
+    ["blocked", ran(json({ decision: "block", reason: "No", systemMessage: "Seen it" })), `${STOPPED}: No.`],
+    ["allowed", ran(json({ systemMessage: "Seen it", continue: false, stopReason: "Halt" })), SIZE("200,000")],
+  ])("shows no line for a ConfigChange hook's systemMessage, the change %s, and its continue does nothing", async (_how, answer, line) => {
+    configRuns(() => answer);
+    const { app, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, line);
+    await tick();
+    expect(flat(app)).not.toContain("Seen it");
+    expect(flat(app)).not.toContain("Halt");
+  });
+
+  it("decides a save made while a ConfigChange hook decides the last once that one is decided, the newer landing last", async () => {
+    let go!: () => void;
+    const runs = configRuns(() => (runs.length === 1 ? new Promise<Ran>((resolve) => (go = () => resolve(ran()))) : ran()));
+    const { app, session, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    await tick();
+    expect([runs.length, session.autoCompact]).toEqual([1, null]);
+    go();
+    await sees(app, SIZE("200,000"));
+    expect(flat(app).indexOf(SIZE("100,000"))).toBeLessThan(flat(app).indexOf(SIZE("200,000")));
+    expect([runs.length, session.autoCompact]).toEqual([2, 200_000]);
+  });
+
+  it("keeps only the newest of the saves made while a ConfigChange hook decides, the middle one never decided nor applied", async () => {
+    let go!: () => void;
+    const runs = configRuns(() => (runs.length === 1 ? new Promise<Ran>((resolve) => (go = () => resolve(ran()))) : ran()));
+    const { app, session, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    hand(json({ autoCompactWindow: 300000 }));
+    go();
+    await sees(app, SIZE("300,000"));
+    await tick();
+    expect(flat(app)).toContain(SIZE("100,000"));
+    expect(flat(app)).not.toContain("200,000");
+    expect([runs.length, session.autoCompact]).toEqual([2, 300_000]);
+  });
+
+  it("has a change that removes its own ConfigChange hook decided by that hook, and the next change runs no hook", async () => {
+    const runs = configRuns();
+    const { app, session, hand } = await launch(json({ hooks: hookEntry("ConfigChange", "check-config") }), { hooks: [] });
+    hand("{}");
+    await sees(app, "Hooks changed: none in force.");
+    expect(runs).toHaveLength(1);
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, SIZE("200,000"));
+    expect(runs).toHaveLength(1);
+    expect(session.autoCompact).toBe(200_000);
+  });
+
+  it("lets an async ConfigChange hook decide nothing: the change applies, with 8b's line", async () => {
+    configRuns(() => ran("", 2, "No"));
+    const { app, session, hand } = await launch("{}", { hooks: [configHook({ async: true })] });
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, SIZE("200,000"));
+    await sees(app, 'ConfigChange hook failed: check-config asked to block, but an "async" hook cannot block');
+    expect(session.autoCompact).toBe(200_000);
+    expect(flat(app)).not.toContain(STOPPED);
+  });
+
+  it.each([
+    ["user_settings picks the hook", "user_settings", 1],
+    ["another value does not", "project_settings", 0],
+  ])("matches a ConfigChange hook on its source: a matcher %s", async (_how, name, n) => {
+    const runs = configRuns(() => ran("", 2, "No"));
+    const { app, hand } = await launch("{}", { hooks: [configHook({ matcher: { names: [name] } })] });
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, n ? `${STOPPED}: No.` : SIZE("200,000"));
+    expect(runs).toHaveLength(n);
+  });
+
+  // Codex round 3, point 3: the window's close ends the deciding, and nothing it would have done happens after.
+  it("ends a ConfigChange hook still deciding when the window closes, applying neither that save nor the one waiting, saying nothing", async () => {
+    const unhandled: unknown[] = [];
+    const heard = (err: unknown) => void unhandled.push(err);
+    process.on("unhandledRejection", heard);
+    onTestFinished(() => void process.off("unhandledRejection", heard));
+    let go!: () => void;
+    const runs = configRuns(() => new Promise<Ran>((resolve) => (go = () => resolve(ran()))));
+    const { app, session, hand } = await launch("{}");
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    app.unmount();
+    await waitFor(() => runs[0]!.stopped);
+    go();
+    await tick();
+    await tick();
+    expect([runs.length, session.autoCompact]).toEqual([1, null]);
+    const all = app.frames.join("\n");
+    for (const said of ["autoCompactWindow is now", STOPPED]) expect(all).not.toContain(said);
+    expect(unhandled).toEqual([]);
+  });
+
+  // Codex review of 8e, point 2: the deciding ends as leaving starts, not only once the window has closed, so nothing
+  // applies while SessionEnd's hooks still run.
+  it("ends a ConfigChange hook still deciding once /exit starts leaving, while SessionEnd's hook runs, applying no save then", async () => {
+    let go!: () => void;
+    let end!: () => void;
+    const runs = configRuns(
+      (r) => new Promise<Ran>((resolve) => (r.event === "SessionEnd" ? (end = () => resolve(ran())) : (go = () => resolve(ran())))),
+      ["ConfigChange", "SessionEnd"],
+    );
+    const ending: Hook = { event: "SessionEnd", matcher: { all: true }, command: "on-end", async: false, where: "" };
+    const { app, session, hand } = await launch("{}", { hooks: [configHook(), ending] });
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    await type(app, "/exit");
+    await waitFor(() => runs.some((r) => r.event === "SessionEnd"));
+    expect(runs[0]!.stopped).toBe(true);
+    go();
+    hand(json({ autoCompactWindow: 300000 }));
+    await tick();
+    await tick();
+    expect([runs.map((r) => r.event), session.autoCompact]).toEqual([["ConfigChange", "SessionEnd"], null]);
+    end();
+    await expectExited(app);
+    expect(session.autoCompact).toBeNull();
+  });
+
+  // Codex review of 8e, round 3 (the user's choice): a save a ConfigChange hook would decide, made once leaving has
+  // started, is not applied and fires no hook, and says so once.
+  it("says once that a save made after /exit starts leaving was not applied, with a ConfigChange hook, firing none", async () => {
+    let end!: () => void;
+    const runs = configRuns(
+      (r) => (r.event === "SessionEnd" ? new Promise<Ran>((resolve) => (end = () => resolve(ran()))) : ran()),
+      ["ConfigChange", "SessionEnd"],
+    );
+    const ending: Hook = { event: "SessionEnd", matcher: { all: true }, command: "on-end", async: false, where: "" };
+    const { app, session, hand } = await launch("{}", { hooks: [configHook(), ending] });
+    await type(app, "/exit");
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, CLOSING);
+    await tick();
+    expect([times(app, CLOSING), runs.map((r) => r.event), session.autoCompact]).toEqual([1, ["SessionEnd"], null]);
+    end();
+    await expectExited(app);
+  });
+
+  // Codex review of 8e, round 4 (the user's choice): a save made once leaving has started, while the stopped hook has
+  // not yet ended, says so too, rather than waiting behind it to be dropped.
+  it("says once that a save made while a stopped ConfigChange hook ends was not applied, firing none", async () => {
+    let settle!: () => void;
+    let end!: () => void;
+    const runs: HookRun[] = [];
+    const real = vi.mocked(runHook).getMockImplementation()!;
+    onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+    vi.mocked(runHook).mockImplementation((hook, input, opts) => {
+      const fields = input as Record<string, unknown>;
+      const event = String(fields.hook_event_name);
+      if (event !== "ConfigChange" && event !== "SessionEnd") return real(hook, input, opts);
+      const run = { event, command: hook.command, input: fields, stopped: false };
+      runs.push(run);
+      // A stopped hook ends only when told, as a killed command ends a moment after its stop.
+      opts.signal?.addEventListener("abort", () => void (run.stopped = true), { once: true });
+      return new Promise<Ran>((resolve, reject) => {
+        if (event === "SessionEnd") end = () => resolve(ran());
+        else settle = () => reject(new Error("Cancelled"));
+      });
+    });
+    const ending: Hook = { event: "SessionEnd", matcher: { all: true }, command: "on-end", async: false, where: "" };
+    const { app, session, hand } = await launch("{}", { hooks: [configHook(), ending] });
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    await type(app, "/exit");
+    await waitFor(() => runs.some((r) => r.event === "SessionEnd"));
+    expect(runs[0]!.stopped).toBe(true);
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, CLOSING);
+    settle();
+    await tick();
+    await tick();
+    expect([times(app, CLOSING), runs.map((r) => r.event), session.autoCompact]).toEqual([1, ["ConfigChange", "SessionEnd"], null]);
+    end();
+    await expectExited(app);
+  });
+
+  // Codex review 5 of 8e, point 2: an effort saved while a PreModelSwitch hook decides a switch is the new lead's too,
+  // whichever way the switch was asked for: /lead, or the file's lead.
+  it.each(["/lead", "the file's lead"])("gives the new lead of a switch by %s the effort saved while its PreModelSwitch hook decided", async (how) => {
+    class Effortful extends FakeProvider {
+      effort: Provider["effort"];
+      setEffort(effort: Provider["effort"]) {
+        this.effort = effort;
+      }
+    }
+    const b = new Effortful("b", []);
+    let go!: () => void;
+    const runs = configRuns(() => new Promise<Ran>((resolve) => (go = () => resolve(ran()))), ["PreModelSwitch"]);
+    const switchHook: Hook = { event: "PreModelSwitch", matcher: { all: true }, command: "check-switch", async: false, where: "" };
+    const { app, session, hand } = await launch("{}", { hooks: [switchHook], mount: { newLead: b } });
+    if (how === "/lead") await type(app, "/lead ollama:b");
+    else hand(json({ lead: "ollama:b" }));
+    await waitFor(() => runs.length === 1);
+    hand(json({ ...(how === "/lead" ? {} : { lead: "ollama:b" }), effort: "low" }));
+    await sees(app, `effort is now low ${FROM}`);
+    expect(b.effort).toBeUndefined();
+    go();
+    await vi.waitFor(() => expect(session.lead).toBe(b), WATCHED);
+    expect(b.effort).toBe("low");
+  });
+
+  // Codex review of 8e, round 2 (the user's choice): leaving ends only ConfigChange's deciding; with no ConfigChange hook
+  // in force, a save still applies at once, as before.
+  it("still applies at once a save made after /exit starts leaving, while SessionEnd's hook runs, with no ConfigChange hook", async () => {
+    let end!: () => void;
+    const runs = configRuns(() => new Promise<Ran>((resolve) => (end = () => resolve(ran()))), ["SessionEnd"]);
+    const ending: Hook = { event: "SessionEnd", matcher: { all: true }, command: "on-end", async: false, where: "" };
+    const { app, session, hand } = await launch("{}", { hooks: [ending] });
+    await type(app, "/exit");
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    await vi.waitFor(() => expect(session.autoCompact).toBe(200_000), WATCHED);
+    end();
+    await expectExited(app);
+  });
+
+  // Codex round 3, point 10: the watcher hands a text on again after it read the file empty (settingsWatch.test.ts).
+  it("decides a text handed in again again: a blocked one is blocked again, an applied one applies nothing new", async () => {
+    const runs = configRuns(() => (runs.length <= 2 ? ran("", 2, "No") : ran()));
+    const { app, session, hand } = await launch("{}");
+    const blocked = json({ autoCompactWindow: 100000 });
+    hand(blocked);
+    await sees(app, `${STOPPED}: No.`);
+    hand(blocked);
+    await waitFor(() => runs.length === 2 && times(app, `${STOPPED}: No.`) === 2);
+    const allowed = json({ autoCompactWindow: 200000 });
+    hand(allowed);
+    await sees(app, SIZE("200,000"));
+    hand(allowed);
+    await waitFor(() => runs.length === 4);
+    await tick();
+    expect(times(app, SIZE("200,000"))).toBe(1);
+    expect(session.autoCompact).toBe(200_000);
+  });
+
+  // Codex round 1, point 4: ConfigChange first, by the hooks in force before the save; the switch then by the new ones.
+  it.each([
+    ["blocked, neither applies and no PreModelSwitch hook runs", ran("", 2, "No"), ["ConfigChange"]],
+    ["allowed, the new hooks apply and the save's PreModelSwitch hook decides the switch", ran(), ["ConfigChange", "PreModelSwitch"]],
+  ])("decides a save that changes both the hooks and the lead by ConfigChange first: %s", async (_how, answer, events) => {
+    const runs = configRuns((r) => (r.event === "ConfigChange" ? answer : ran()), ["ConfigChange", "PreModelSwitch"]);
+    const { app, session, hooks, hand } = await launch("{}");
+    hand(json({ lead: "ollama:b", hooks: { ...hookEntry("ConfigChange", "check-config"), ...hookEntry("PreModelSwitch", "check-switch") } }));
+    if (events.length === 1) {
+      await sees(app, `${STOPPED}: No.`);
+      await tick();
+      expect(session.lead.id).toBe("fake:a");
+      expect(hooks.config.hooks.map((h) => h.event)).toEqual(["ConfigChange"]);
+    } else {
+      await sees(app, `lead is now fake:b ${FROM}`);
+      expect(hooks.config.hooks.map((h) => h.event)).toEqual(["ConfigChange", "PreModelSwitch"]);
+      expect(runs.at(-1)!.command).toBe("check-switch");
+    }
+    expect(runs.map((r) => r.event)).toEqual(events);
+  });
+
+  // What the watcher delivers, through the real watcher (Q16, Q27), one write a step.
+  it("fires nothing for the launch's own text at the watcher's first read", async () => {
+    const runs = configRuns();
+    await launch(json({ autoCompactWindow: 200000 }));
+    await tick();
+    expect(runs).toEqual([]);
+  });
+
+  it.each([
+    ["an entry that takes effect in this session", json({ autoCompactWindow: 200000 }), SIZE("200,000")],
+    ["only a hook left out, a new left-out row and its warning", json({ hooks: hookEntry("FileChanged", "x") }), LEFT_OUT],
+    ["only a new warning", json({ leed: 1 }), LEED],
+  ])("fires ConfigChange once for an edit made before the watch started that changes %s (Q27)", async (_how, text, line) => {
+    const runs = configRuns();
+    const { app } = await launch(text, { launched: "{}" });
+    await sees(app, line);
+    await tick();
+    expect(runs).toHaveLength(1);
+  });
+
+  it.each([
+    ["only its spacing", '{ "maxTasks" : 3 }', '{"maxTasks": 3}', {}, null],
+    ['only "mode", which waits for the next launch', json({ mode: "project" }), "{}", {}, PINNED("ask")],
+    ['only "lead", in a window launched with --lead', json({ lead: "ollama:b" }), "{}", { lead: "--lead" }, `settings.json's "lead" was left as --lead set it for this session`],
+  ])("fires nothing for an edit made before the watch started that changes %s, saying what it says today (Q27)", async (_how, text, launched, given, line) => {
+    const runs = configRuns();
+    const { app } = await launch(text, { launched, given });
+    if (line) await sees(app, line);
+    await tick();
+    expect(runs).toEqual([]);
+  });
+
+  // Step 16's review (the user): a first read's dangerousCommands counts only where it tightens the check in force, as a
+  // loosening waits for the next launch (applyEntry).
+  it.each([
+    ["adds a rule, fires once", "{}", { add: ["make deploy"] }, 'rule "make deploy" added; it applies now.', 1],
+    ["switches a kind back on, fires once", json({ dangerousCommands: { off: ["installing software"] } }), {}, '"installing software" switched back on; it applies now.', 1],
+    ["only switches a kind off, fires nothing", "{}", { off: ["installing software"] }, '"installing software" switched off;', 0],
+    ["only removes a rule, fires nothing", json({ dangerousCommands: { add: ["make deploy"] } }), {}, 'your rule "make deploy" removed;', 0],
+  ])("for an edit made before the watch started whose dangerousCommands %s (Q27)", async (_how, launched, rules, line, n) => {
+    const runs = configRuns();
+    const { app } = await launch(json({ dangerousCommands: rules }), { launched });
+    await sees(app, `settings.json: dangerous-command check: ${line}`);
+    await tick();
+    expect(runs).toHaveLength(n);
+  });
+
+  it.each([
+    ['"mode"', json({ mode: "project" }), {}, PINNED("ask")],
+    ['"lead" in a window launched with --lead', json({ lead: "ollama:b" }), { lead: "--lead" }, `settings.json's "lead" was left as --lead set it for this session`],
+    ["only the spacing", '{ }', {}, null],
+  ])("fires ConfigChange for a later save that changes %s (Q16)", async (_how, text, given, line) => {
+    const runs = configRuns();
+    const { app, write } = await launch("{}", { given });
+    write(text);
+    await vi.waitFor(() => expect(runs).toHaveLength(1), WATCHED);
+    if (line) await sees(app, line);
+  });
+
+  it.each([
+    ["an entry that takes effect in this session, fires once", json({ autoCompactWindow: 200000 }), 1],
+    ["only {}, fires nothing", "{}", 0],
+  ])("for a settings file first made after the launch, with %s, and the next save fires", async (_how, text, n) => {
+    const runs = configRuns();
+    const { app, read } = await launch(null);
+    await read(text);
+    if (n) await sees(app, SIZE("200,000"));
+    await tick();
+    expect(runs).toHaveLength(n);
+    await read(json({ autoCompactWindow: 300000 }));
+    await sees(app, SIZE("300,000"));
+    expect(runs).toHaveLength(n + 1);
+  });
+
+  it("fires nothing for a file broken at the watcher's first read, which gets its red line, and fires for the good save after", async () => {
+    const runs = configRuns();
+    const { app, write } = await launch('{"mode": ', { launched: "{}" });
+    await sees(app, "settings.json is not valid JSON");
+    expect(runs).toEqual([]);
+    write(json({ mode: "project" }));
+    await sees(app, PINNED("ask"));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("fires nothing for a blocked text saved again in place", async () => {
+    const runs = configRuns(() => ran("", 2, "No"));
+    const { app, write, read } = await launch("{}");
+    const text = json({ autoCompactWindow: 200000 });
+    write(text);
+    await sees(app, `${STOPPED}: No.`);
+    await read(text);
+    await tick();
+    expect(runs).toHaveLength(1);
+    expect(times(app, `${STOPPED}: No.`)).toBe(1);
+  });
+
+  it("fires nothing and applies nothing for an empty save alone, nor for an edit of keybindings.json", async () => {
+    const runs = configRuns();
+    const { app, session, home, read, readOf } = await launch(json({ autoCompactWindow: 200000 }));
+    await read("");
+    await tick();
+    await readOf(path.join(settingsDir(home), "keybindings.json"))('{"bindings": []}');
+    await tick();
+    expect(runs).toEqual([]);
+    expect(flat(app)).not.toContain("autoCompactWindow is now");
+    expect(session.autoCompact).toBeNull();
+  });
+});
+
+// Release 8e plan, step 17: Notification once a question, a server's form or its page request has waited 6 s on screen
+// (Q25), the clock faked from before it comes up and the hooks' runs stood in (configRuns). A tool question is put as the
+// gate puts one, with its tool's Claude Code name (permissions.ts, Ask), or comes from a real call; a form and a page
+// request come through the forms code, as their Server hands them to it, with no server running.
+describe("App's Notification hooks (release 8e plan, step 17)", { timeout: 60_000 }, () => {
+  const notifyHook = (over: Partial<Hook> = {}): Hook => ({ event: "Notification", matcher: { all: true }, command: "notify", async: false, where: "", ...over });
+  // The fields each Notification run was sent beyond the common ones, in the order they ran.
+  const fired = (runs: HookRun[]) =>
+    runs.filter((r) => r.event === "Notification").map((r) => ({ message: r.input.message, title: r.input.title, notification_type: r.input.notification_type }));
+  const tool = (name: string) => ({ message: `Tachikoma needs your permission to use ${name}`, title: "Tachikoma", notification_type: "permission_prompt" });
+  const formIn = (server: string) => ({ message: `${server} asks you to fill in a form`, title: "Tachikoma", notification_type: "elicitation_dialog" });
+  const pageIn = (server: string) => ({ message: `${server} asks you to open a page in your browser`, title: "Tachikoma", notification_type: "elicitation_url_dialog" });
+  const ONE = { type: "object", properties: { name: { type: "string", title: "Name" } } };
+  const formOf = (requestedSchema: object = ONE) => ({ mode: "form" as const, message: "About you", requestedSchema }) as Parameters<Servers["forms"]["answer"]>[1];
+  const PAGE = { mode: "url" as const, message: "Sign there", elicitationId: "e1", url: "https://example.com/x" };
+  const PAGE_ASKED = "Open it? [y/n]";
+  const BASH_ASKED = "Allow run: echo hi? [y/n]";
+
+  // The clock faked while `body` runs: `wait` moves it on by `ms`, then lets one turn of the event loop draw the screen
+  // (setImmediate is not faked); `keys` writes each key so, a lone Esc after the 20 ms Ink waits to tell it from the start
+  // of a longer key (Ink's App.js); `shows` waits so for `text`.
+  async function clocked(body: () => Promise<void>) {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await body();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+  const wait = async (ms = 0) => {
+    await vi.advanceTimersByTimeAsync(ms);
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+  async function keys(app: ReturnType<typeof render>, ...ks: string[]) {
+    for (const k of ks) {
+      app.stdin.write(k);
+      await wait(k === "\u001b" ? 20 : 0);
+    }
+  }
+  async function shows(app: ReturnType<typeof render>, text: string) {
+    for (let i = 0; i < 100 && !app.lastFrame()!.includes(text); i++) await wait();
+    expect(app.lastFrame()).toContain(text);
+  }
+
+  // A window with `hooks` (one Notification hook matching every kind unless given), the runs at Notification and `events`
+  // stood in, each answered by `answer`, and MCP servers' forms: none started, or one fake server with `server`. `bash`
+  // puts the lead's tool question for `echo hi`, as the gate puts it; `request`, a server's form or page request, and
+  // `cancel` is its server's cancel of it.
+  async function notifying(
+    o: { hooks?: Hook[]; events?: string[]; answer?: (run: HookRun) => Ran | Promise<Ran>; server?: boolean; mount?: Parameters<typeof mount>[1] } = {},
+  ) {
+    const runs = configRuns(o.answer ?? (() => ran()), ["Notification", ...(o.events ?? [])]);
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-notify-"));
+    const configs: ServerConfig[] = [];
+    if (o.server) {
+      const entry = { kind: "stdio" as const, command: process.execPath, args: [await fakeServer(dir)], env: {} };
+      configs.push({ name: "s", safe: "s", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "", entry, asWritten: entry });
+    }
+    let made: Servers | undefined;
+    onTestFinished(async () => {
+      await made?.stopAll();
+      await removeTree(dir);
+    });
+    const mcp = (bus: Bus) => {
+      made = new Servers(configs, { root: dir, env: process.env, bus, answers: launchAnswers, network: "none", lead: () => "fake:a", openBrowser: () => {} });
+      return { servers: made };
+    };
+    const m = await mount([], { ...o.mount, hooks: o.hooks ?? [notifyHook()], mcp });
+    const bash = (owner?: Owner) => m.ask("run: echo hi", undefined, owner, undefined, [], undefined, undefined, "Bash");
+    const request = (form: Parameters<Servers["forms"]["answer"]>[1]) => {
+      const server = new AbortController();
+      return { answer: m.mcp!.servers.forms.answer("s", form, { signal: server.signal }), cancel: () => server.abort() };
+    };
+    return { ...m, runs, bash, request };
+  }
+
+  it.each([
+    ["the lead's tool question", (w: Awaited<ReturnType<typeof notifying>>) => void w.bash(), BASH_ASKED, tool("Bash")],
+    ["a server's form", (w: Awaited<ReturnType<typeof notifying>>) => void w.request(formOf()), "Name (optional):", formIn("s")],
+    ["a server's page request", (w: Awaited<ReturnType<typeof notifying>>) => void w.request(PAGE), PAGE_ASKED, pageIn("s")],
+  ])("fires Notification once for %s that has waited 6 s on screen, with its fields, and nothing just before", async (_what, put, asked, fields) => {
+    const w = await notifying();
+    await clocked(async () => {
+      put(w);
+      await shows(w.app, asked);
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([fields]);
+      expect(w.runs[0]!.input).toMatchObject({ hook_event_name: "Notification" });
+      await wait(60_000); // once for the quiet stretch
+      expect(fired(w.runs)).toHaveLength(1);
+    });
+  });
+
+  it("names Bash in the message for the lead's shell call, Claude Code's name for the shell tool (Q17)", async () => {
+    const lead = new FakeProvider("a", [callTool("c1", "shell", { command: "echo hi" }), reply("done")]);
+    const w = await notifying({ mount: { lead } });
+    await clocked(async () => {
+      await keys(w.app, "go", "\r");
+      await shows(w.app, BASH_ASKED);
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await keys(w.app, "n");
+      await shows(w.app, "done");
+    });
+  });
+
+  it("fires for a subagent's question too, naming its tool", async () => {
+    const elsewhere = path.join(tmpdir(), "tachi-notify-elsewhere.txt"); // never read: the question is declined
+    const lead = new FakeProvider("a", [callTool("c1", "delegate", { description: "look", task: "look" }), reply("done")]);
+    const worker = new FakeProvider("w", [callTool("w1", "read_file", { path: elsewhere }), reply("found")]);
+    const w = await notifying({ mount: { lead, worker } });
+    await clocked(async () => {
+      await keys(w.app, "go", "\r");
+      await shows(w.app, "Allow t1 (look) to read");
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([tool("Read")]);
+      await keys(w.app, "n");
+      await shows(w.app, "done");
+    });
+  });
+
+  it("starts the wait again at a key: a key at 5 s moves the firing to 11 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      void w.bash();
+      await shows(w.app, BASH_ASKED);
+      await wait(5_000);
+      await keys(w.app, "x"); // a key that answers nothing
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+    });
+  });
+
+  it("fires nothing for a question answered at 5 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      const answer = w.bash();
+      await shows(w.app, BASH_ASKED);
+      await wait(5_000);
+      await keys(w.app, "y");
+      expect(await answer).toBe(true);
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+    });
+  });
+
+  it("fires for a subagent's question queued behind the lead's 6 s after it comes up, not 6 s after it was asked (Q25)", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      void w.bash();
+      void w.ask("read /c", undefined, asker("t1 (look)").owner, undefined, [], undefined, undefined, "Read");
+      await shows(w.app, BASH_ASKED);
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await wait(2_000);
+      await keys(w.app, "y");
+      await shows(w.app, "Allow t1 (look) to read /c? [y/n]");
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([tool("Bash"), tool("Read")]);
+    });
+  });
+
+  it("fires only permission_prompt for a tool question with a page request queued behind it, then elicitation_url_dialog 6 s after the page request comes up", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      void w.bash();
+      const page = w.request(PAGE);
+      await shows(w.app, BASH_ASKED);
+      await wait(10_000);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await keys(w.app, "y");
+      await shows(w.app, PAGE_ASKED);
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([tool("Bash"), pageIn("s")]);
+      await keys(w.app, "n");
+      expect(await page.answer).toEqual({ action: "decline" });
+    });
+  });
+
+  it("fires elicitation_dialog, and no permission_prompt, for a form's field drawn over a waiting tool question, which then gets a fresh 6 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      void w.bash();
+      const form = w.request(formOf());
+      await shows(w.app, "Name (optional):");
+      await wait(8_000);
+      expect(fired(w.runs)).toEqual([formIn("s")]);
+      await keys(w.app, "Ada\r");
+      expect(await form.answer).toEqual({ action: "accept", content: { name: "Ada" } });
+      await shows(w.app, BASH_ASKED);
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([formIn("s")]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([formIn("s"), tool("Bash")]);
+    });
+  });
+
+  // Each list drawn in the prompt's place, open before the question comes and closed with Esc.
+  const lists: [string, () => Promise<Awaited<ReturnType<typeof notifying>>>, string][] = [
+    [
+      "the model list",
+      async () => {
+        const w = await notifying({ mount: { models: [{ provider: "fake", models: ["a", "b"] }] } });
+        await type(w.app, "/model");
+        await until(w.app, "● fake:a");
+        await tick(); // the picker starts reading keys just after it first appears
+        return w;
+      },
+      "● fake:a",
+    ],
+    [
+      "/resume's list",
+      async () => {
+        const sessions = path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "sessions");
+        const earlier = await mount([reply("noted")], { save: true, sessions });
+        await type(earlier.app, "remember apple");
+        await until(earlier.app, "noted");
+        earlier.app.unmount();
+        const w = await notifying({ mount: { save: true, sessions } });
+        await type(w.app, "/resume");
+        await until(w.app, "Saved sessions in this folder, newest first:");
+        return w;
+      },
+      "Saved sessions in this folder, newest first:",
+    ],
+    [
+      "/mcp's list",
+      async () => {
+        const w = await notifying({ server: true });
+        await type(w.app, "/mcp");
+        await until(w.app, "MCP servers, from");
+        return w;
+      },
+      "MCP servers, from",
+    ],
+  ];
+
+  it.each(lists)("fires nothing for a tool question under %s, however long it is open, and gives it a fresh 6 s once it closes", async (_list, open, heading) => {
+    const w = await open();
+    await clocked(async () => {
+      void w.bash();
+      await wait();
+      expect(w.app.lastFrame()).toContain(heading);
+      expect(w.app.lastFrame()).not.toContain(BASH_ASKED);
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+      await keys(w.app, "\u001b");
+      await shows(w.app, BASH_ASKED);
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+    });
+  });
+
+  it("fires nothing for a page request under the model list, and gives it a fresh 6 s once the list closes", async () => {
+    const w = await lists[0]![1]();
+    await clocked(async () => {
+      const page = w.request(PAGE);
+      await wait();
+      expect(w.app.lastFrame()).toContain("● fake:a");
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+      await keys(w.app, "\u001b");
+      await shows(w.app, PAGE_ASKED);
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([pageIn("s")]);
+      await keys(w.app, "n");
+      expect(await page.answer).toEqual({ action: "decline" });
+    });
+  });
+
+  it("fires once for a form of three fields, with the server's name, for one quiet stretch: moving to the next field fires nothing by itself", async () => {
+    const w = await notifying();
+    const schema = { type: "object", properties: { a: { type: "string", title: "A" }, b: { type: "string", title: "B" }, c: { type: "string", title: "C" } } };
+    await clocked(async () => {
+      const form = w.request(formOf(schema));
+      await shows(w.app, "A (optional):");
+      await wait(3_000);
+      await keys(w.app, "1\r");
+      await shows(w.app, "B (optional):");
+      await wait(3_000);
+      await keys(w.app, "2\r");
+      await shows(w.app, "C (optional):");
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([formIn("s")]);
+      await keys(w.app, "3\r");
+      expect(await form.answer).toEqual({ action: "accept", content: { a: "1", b: "2", c: "3" } });
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([formIn("s")]);
+    });
+  });
+
+  it("starts the wait again at a paste into a form's field: a paste at 5 s moves the firing to 11 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      const form = w.request(formOf());
+      await shows(w.app, "Name (optional):");
+      await wait(5_000);
+      await keys(w.app, "\u001b[200~Ada\u001b[201~");
+      await shows(w.app, "Name (optional): Ada");
+      await wait(5_999);
+      expect(fired(w.runs)).toEqual([]);
+      await wait(1);
+      expect(fired(w.runs)).toEqual([formIn("s")]);
+      await keys(w.app, "\r");
+      expect(await form.answer).toEqual({ action: "accept", content: { name: "Ada" } });
+    });
+  });
+
+  it("fires nothing for a page request the user declines at 5 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      const page = w.request(PAGE);
+      await shows(w.app, PAGE_ASKED);
+      await wait(5_000);
+      await keys(w.app, "\u001b");
+      expect(await page.answer).toEqual({ action: "decline" });
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+    });
+  });
+
+  // Codex round 2, point 7; round 3, point 6: the page request's question is not taken away by its server's cancel, so
+  // it stays up until answered, as before this step; from the cancel on it is a question of no notifying kind.
+  it("fires nothing for a page request its server cancels at 3 s, its question left unanswered on screen past 6 s and 12 s", async () => {
+    const w = await notifying();
+    await clocked(async () => {
+      const page = w.request(PAGE);
+      await shows(w.app, PAGE_ASKED);
+      await wait(3_000);
+      page.cancel();
+      await wait(); // the screen is drawn again for the closing, in the next turn of the event loop
+      await wait(3_500);
+      expect(fired(w.runs)).toEqual([]);
+      expect(w.app.lastFrame()).toContain(PAGE_ASKED);
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([]);
+      expect(w.app.lastFrame()).toContain(PAGE_ASKED);
+      await keys(w.app, "y");
+      expect(await page.answer).toEqual({ action: "cancel" });
+    });
+  });
+
+  it("fires nothing for a form an Elicitation hook answers, as it never opens", async () => {
+    const accept = { hookSpecificOutput: { hookEventName: "Elicitation", action: "accept", content: { name: "Hook" } } };
+    const fill: Hook = { event: "Elicitation", matcher: { all: true }, command: "fill", async: false, where: "" };
+    const w = await notifying({ hooks: [notifyHook(), fill], events: ["Elicitation"], answer: (r) => (r.event === "Elicitation" ? ran(JSON.stringify(accept)) : ran()) });
+    await clocked(async () => {
+      expect(await w.request(formOf()).answer).toEqual({ action: "accept", content: { name: "Hook" } });
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+      expect(w.app.lastFrame()).not.toContain("Name (optional):");
+    });
+  });
+
+  it("fires nothing for \"Send again without the pictures\" nor for PreModelSwitch's question", async () => {
+    const w = await notifying({
+      hooks: [notifyHook(), switchHook()],
+      events: ["PreModelSwitch"],
+      answer: (r) => (r.event === "PreModelSwitch" ? decided("ask", "Sure") : ran()),
+    });
+    await clocked(async () => {
+      const again = w.ask("Send again without the pictures", undefined, undefined, true); // as the session asks it
+      await shows(w.app, "Send again without the pictures? [y/n]");
+      await wait(60_000);
+      await keys(w.app, "n");
+      expect(await again).toBe(false);
+      await keys(w.app, "/lead fake:b", "\r");
+      await shows(w.app, "A hook asks: Sure. Switch to fake:b? [y/n]");
+      await wait(60_000);
+      await keys(w.app, "n");
+      expect(fired(w.runs)).toEqual([]);
+    });
+  });
+
+  it("runs only the hooks whose matcher names the kind; auth_success, which Tachikoma never sends, matches nothing and warns nothing", async () => {
+    const w = await notifying({
+      hooks: [
+        notifyHook({ matcher: { names: ["elicitation_dialog"] }, command: "forms" }),
+        notifyHook({ matcher: { names: ["permission_prompt"] }, command: "tools" }),
+        notifyHook({ matcher: { names: ["auth_success"] }, command: "signed-in" }),
+      ],
+    });
+    await clocked(async () => {
+      void w.bash();
+      await shows(w.app, BASH_ASKED);
+      await wait(6_000);
+      expect(w.runs.map((r) => r.command)).toEqual(["tools"]);
+      await wait();
+      expect(w.app.lastFrame()).not.toContain("auth_success");
+      expect(w.app.lastFrame()).not.toContain("✗");
+    });
+  });
+
+  // Step 17's review: copy mode's leaving line, and its review after it, are drawn in place of everything, so a question
+  // under them is not on screen. Ctrl-D twice leaves from a question while no lead turn runs (keyRouting.ts, twice), as at
+  // a background subagent's; the box's stop never ends here, so the leaving line stays up.
+  it("fires nothing for a question hidden by copy mode's leaving line, left from with Ctrl-D twice", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-notify-copy-"));
+    onTestFinished(() => removeTree(dir));
+    const manifest: Manifest = { session: "s1", pid: process.pid, root: dir, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
+    const copy: NonNullable<AppProps["copy"]> = {
+      copy: { session: "s1", folder: path.join(dir, "s1"), manifest },
+      stop: () => new Promise(() => {}),
+      protection: async () => ({ hooks: [], files: [] }),
+      ended: () => {},
+    };
+    const w = await notifying({ mount: { copy } });
+    await clocked(async () => {
+      void w.bash(asker("t1 (look)").owner);
+      await shows(w.app, "Allow t1 (look) to run: echo hi? [y/n]");
+      await wait(1_000);
+      await keys(w.app, "\u0004", "\u0004");
+      await shows(w.app, "Stopping the box...");
+      await wait(60_000);
+      expect(fired(w.runs)).toEqual([]);
+    });
+  });
+
+  it("shows no line for a systemMessage in a Notification hook's answer, which is ignored", async () => {
+    const w = await notifying({ answer: () => ran(JSON.stringify({ systemMessage: "Heard you" })) });
+    await clocked(async () => {
+      void w.bash();
+      await shows(w.app, BASH_ASKED);
+      await wait(6_000);
+      expect(fired(w.runs)).toEqual([tool("Bash")]);
+      await wait();
+      expect(w.app.lastFrame()).not.toContain("Heard you");
+    });
+  });
+
+  // Release 8e plan, step 18: idle_prompt, about 60 s after the lead's turn ends, however it ended (Q18), unless a key, a
+  // new turn or the window's closing ended the wait first, or a background subagent is at work then. The turns and
+  // commands run under the faked clock, so a wait any of them started is the faked clock's.
+  describe("idle_prompt (release 8e plan, step 18)", () => {
+    const idle = { message: "Tachikoma is waiting for your input", title: "Tachikoma", notification_type: "idle_prompt" };
+    const gate: Hook = { event: "UserPromptSubmit", matcher: { all: true }, command: "gate", async: false, where: "" };
+    const BLOCK = JSON.stringify({ decision: "block", reason: "not yet" });
+    // Until the working line is gone: the turn has ended.
+    async function ended(app: ReturnType<typeof render>) {
+      for (let i = 0; i < 100 && app.lastFrame()!.includes("Working"); i++) await wait();
+      expect(app.lastFrame()).not.toContain("Working");
+    }
+    // A background command whose stand-in run never ends.
+    const never: Executor = {
+      exec: () => Promise.reject(new Error("exec is not used here")),
+      start: () => standInRun(new Promise<ExecResult>(() => {})),
+    };
+
+    it("fires once 60 s after a turn's end, nothing just before and nothing again at 120 s", async () => {
+      const w = await notifying({ mount: { lead: new FakeProvider("a", [reply("done")]) } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "done");
+        await ended(w.app);
+        await wait(59_999);
+        expect(fired(w.runs)).toEqual([]);
+        await wait(1);
+        expect(fired(w.runs)).toEqual([idle]);
+        expect(w.runs[0]!.input).toMatchObject({ hook_event_name: "Notification" });
+        await wait(60_000);
+        expect(fired(w.runs)).toEqual([idle]);
+      });
+    });
+
+    it.each<[string, Parameters<typeof notifying>[0], (w: Awaited<ReturnType<typeof notifying>>) => Promise<void>]>([
+      ["a turn that ended normally", { mount: { lead: new FakeProvider("a", [reply("done")]) } }, (w) => shows(w.app, "done")],
+      [
+        "a turn the user stopped",
+        { mount: { lead: hanging() } },
+        async (w) => {
+          await shows(w.app, "Working");
+          await keys(w.app, "\u001b");
+        },
+      ],
+      ["a turn a provider's error ended", { mount: { lead: new FakeProvider("a", [new Error("overloaded")]) } }, (w) => shows(w.app, "overloaded")],
+      [
+        "a prompt a UserPromptSubmit hook blocked",
+        { hooks: [notifyHook(), gate], events: ["UserPromptSubmit"], answer: (r) => (r.event === "UserPromptSubmit" ? ran(BLOCK) : ran()) },
+        (w) => shows(w.app, "A UserPromptSubmit hook blocked the prompt: not yet"),
+      ],
+    ])("starts the wait after %s", async (_how, o, end) => {
+      const w = await notifying(o);
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await end(w);
+        await ended(w.app);
+        await wait(59_999);
+        expect(fired(w.runs)).toEqual([]);
+        await wait(1);
+        expect(fired(w.runs)).toEqual([idle]);
+      });
+    });
+
+    // The turn of background answers starts at 30 s, with no key, and runs past the first wait's 60 s.
+    it("starts the wait again after a turn that only reads background answers, the first wait ended by that turn's start", async () => {
+      const worker = new Held("fake:w");
+      const lead = new Held("fake:a");
+      const answer = async (n: number, turn: Turn | string) => {
+        for (let i = 0; i < 100 && lead.asked.length < n; i++) await wait();
+        lead.answer(turn);
+      };
+      const w = await notifying({ mount: { lead, worker } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await answer(1, callTool("c1", "delegate", { description: "find x", task: "find x", background: true }));
+        await answer(2, "started it");
+        await shows(w.app, "started it");
+        await ended(w.app);
+        await wait(30_000);
+        worker.answer("found");
+        for (let i = 0; i < 100 && lead.asked.length < 3; i++) await wait();
+        await wait(60_000);
+        expect(fired(w.runs)).toEqual([]);
+        await answer(3, "t1 says found");
+        await shows(w.app, "t1 says found");
+        await ended(w.app);
+        await wait(59_999);
+        expect(fired(w.runs)).toEqual([]);
+        await wait(1);
+        expect(fired(w.runs)).toEqual([idle]);
+      });
+    });
+
+    it("fires nothing when a key comes 30 s after the turn's end", async () => {
+      const w = await notifying({ mount: { lead: new FakeProvider("a", [reply("done")]) } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "done");
+        await ended(w.app);
+        await wait(30_000);
+        await keys(w.app, "x");
+        await wait(120_000);
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
+
+    it("fires nothing from the first wait for a new prompt sent at 30 s, and starts a new wait after the second turn", async () => {
+      const w = await notifying({ mount: { lead: new FakeProvider("a", [reply("one"), reply("two")]) } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "one");
+        await ended(w.app);
+        await wait(30_000);
+        await keys(w.app, "again", "\r");
+        await shows(w.app, "two");
+        await ended(w.app);
+        await wait(59_999);
+        expect(fired(w.runs)).toEqual([]);
+        await wait(1);
+        expect(fired(w.runs)).toEqual([idle]);
+      });
+    });
+
+    // From a fresh window with no turn yet: each command sends the lead nothing, so starts no wait.
+    it.each<[string, Parameters<typeof notifying>[0], (w: Awaited<ReturnType<typeof notifying>>) => Promise<void>]>([
+      ["/hooks", {}, (w) => shows(w.app, "Notification")],
+      [
+        "the model list, read and closed",
+        { mount: { models: [{ provider: "fake", models: ["a", "b"] }] } },
+        async (w) => {
+          await shows(w.app, "● fake:a");
+          await wait(); // the picker starts reading keys just after it first appears
+          await keys(w.app, "\u001b");
+          await wait();
+          expect(w.app.lastFrame()).not.toContain("● fake:a");
+        },
+      ],
+      ["a sign-in command", { mount: { login: async (_a, _w, say) => say("Signed in (stood in)") } }, (w) => shows(w.app, "Signed in (stood in)")],
+      ["/compact", {}, (w) => shows(w.app, "Nothing to shorten")],
+      ["/lead", {}, (w) => shows(w.app, "lead is now fake:b")],
+    ])("fires nothing after %s in a window with no turn yet", async (what, o, done) => {
+      const w = await notifying(o);
+      const typed = { "/hooks": "/hooks", "the model list, read and closed": "/model", "a sign-in command": "/login", "/compact": "/compact", "/lead": "/lead fake:b" }[what]!;
+      await clocked(async () => {
+        await keys(w.app, typed, "\r");
+        await done(w);
+        await wait(120_000);
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
+
+    it("fires nothing while a background subagent is running at 60 s", async () => {
+      const lead = new FakeProvider("a", [callTool("c1", "delegate", { description: "find x", task: "find x", background: true }), reply("started it")]);
+      const w = await notifying({ mount: { lead, worker: new Held("fake:w") } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "started it");
+        await ended(w.app);
+        await wait(120_000);
+        expect(w.tasks.all[0]!.state).toBe("running");
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
+
+    it("fires all the same while a background command is running", async () => {
+      const lead = new FakeProvider("a", [callTool("c1", "shell", { command: "npm run dev", background: true }), reply("started")]);
+      const w = await notifying({ mount: { lead, executor: never, mode: "never" } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "started");
+        await ended(w.app);
+        await wait(60_000);
+        expect(w.tasks.all[0]!.state).toBe("running");
+        expect(fired(w.runs)).toEqual([idle]);
+      });
+    });
+
+    it("fires nothing before the first turn", async () => {
+      const w = await notifying();
+      await clocked(async () => {
+        await wait(120_000);
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
+
+    it("lists the run on Ctrl+O with the next turn", async () => {
+      const w = await notifying({ mount: { lead: new FakeProvider("a", [reply("one"), reply("two")]) } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "one");
+        await ended(w.app);
+        await wait(60_000);
+        expect(fired(w.runs)).toEqual([idle]);
+        await keys(w.app, "again", "\r");
+        await shows(w.app, "two");
+        await ended(w.app);
+        await keys(w.app, "\u000f");
+        await shows(w.app, "Last turn:");
+        const frame = stripVTControlCharacters(w.app.lastFrame()!).replace(/\s/g, "");
+        expect(frame.slice(frame.lastIndexOf("Lastturn:"))).toContain("◆Notificationhook");
+      });
+    });
+
+    it("fires nothing once the window has closed 30 s after the turn's end, leaving no timer", async () => {
+      const w = await notifying({ mount: { lead: new FakeProvider("a", [reply("done")]) } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "done");
+        await ended(w.app);
+        await wait(30_000);
+        w.app.unmount();
+        expect(vi.getTimerCount()).toBe(0);
+        await wait(60_000);
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
+
+    it("stops an idle_prompt hook still running as the window closes, with no line", async () => {
+      const w = await notifying({ answer: () => new Promise<Ran>(() => {}), mount: { lead: new FakeProvider("a", [reply("done")]) } });
+      const said: string[] = [];
+      w.bus.on("error", (e) => void said.push(e.message));
+      w.bus.on("hook-note", (line) => void said.push(line));
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "done");
+        await ended(w.app);
+        await wait(60_000);
+        expect(fired(w.runs)).toEqual([idle]);
+        expect(w.runs[0]!.stopped).toBe(false);
+        w.app.unmount();
+        w.hooks!.stopAsync(); // as cli.tsx does once Ink has ended
+        await wait();
+        expect(w.runs[0]!.stopped).toBe(true);
+        expect(said).toEqual([]);
+      });
+    });
+
+    // Leaving is the window closing: /exit, typed during a turn, runs as it ends, and copy mode's leaving line stays up
+    // while the box's stop never ends.
+    it("fires nothing while copy mode's leaving line is up after an /exit that waited for the turn", async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-idle-copy-"));
+      onTestFinished(() => removeTree(dir));
+      const manifest: Manifest = { session: "s1", pid: process.pid, root: dir, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
+      const copy: NonNullable<AppProps["copy"]> = {
+        copy: { session: "s1", folder: path.join(dir, "s1"), manifest },
+        stop: () => new Promise(() => {}),
+        protection: async () => ({ hooks: [], files: [] }),
+        ended: () => {},
+      };
+      const lead = new Held("fake:a");
+      const w = await notifying({ mount: { lead, copy } });
+      await clocked(async () => {
+        await keys(w.app, "go", "\r");
+        await shows(w.app, "Working");
+        await keys(w.app, "/exit", "\r");
+        lead.answer("done");
+        await shows(w.app, "Stopping the box...");
+        await wait(120_000);
+        expect(fired(w.runs)).toEqual([]);
+      });
+    });
   });
 });

@@ -1,11 +1,13 @@
+import path from "node:path";
 import { resolve } from "../../clilib.js";
 import { visible } from "../../core/permissions.js";
 import { errorText, type Provider } from "../../core/types.js";
 import { KEYBINDINGS, type KeysLoaded } from "../../keybindings.js";
 import { mergeServers } from "../../mcp/config.js";
+import { switchFields } from "../../providers/switching.js";
 import { NO_RULES } from "../../safety/rules.js";
 import { rules } from "../../sandbox/sites.js";
-import { hooksOf, type Loaded, SETTINGS, type Settings } from "../../settings.js";
+import { hooksOf, type Loaded, SETTINGS, type Settings, settingsDir } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { editorCommand } from "../external.js";
 import { start as vimStart } from "../vim.js";
@@ -22,6 +24,91 @@ const same = (a: unknown, b: unknown) => {
 // list is the same as an empty one (8c-2b plan, Step 3's review).
 const compared = (s: Settings, key: (typeof LIVE)[number]) =>
   key === "allowedSites" ? (s.allowedSites ?? []).map(rules.siteText).sort() : s[key];
+// What fixed an entry for this session, a flag or a variable, so an edit of it is left as that set it (onSettings).
+// VISUAL and EDITOR come before the file's editor, as a flag comes before an entry (external.ts, editorCommand).
+const fixedBy = (ui: UI, key: (typeof LIVE)[number]) =>
+  key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : ui.live?.given[key];
+// The entries whose edit only says it takes effect at the next launch (applyEntry).
+const NEXT_LAUNCH: readonly (typeof LIVE)[number][] = ["mode", "sandbox", "network", "judge", "allowedSites", "memory", "theme"];
+
+// ConfigChange before a read of the settings file applies (release 8e plan, step 16; design, "Notification,
+// InstructionsLoaded, ConfigChange"), `fns` the latest drawing's (App.tsx). Its hooks in force decide, sent the source and
+// the file's path; a block keeps the whole read out, with its line, so the settings in force, the warnings said, the
+// left-out rows and what the next read is compared with stay as they were. A broken read fires nothing, and neither
+// does the watcher's first read unless it changes something in force (Q27): an entry that takes effect in this session,
+// a warning or a left-out row; every later good read fires (Q16). One read is decided at a time: one made meanwhile
+// waits, a newer one taking its place, and is decided once the one before has applied or been kept out, against what is
+// in force by then. `leave`, as the window starts to close (queue.ts, leave), ends the hooks still deciding, as a stop
+// ends a hook, and throws away the read being decided and the one waiting, saying nothing; a read after it that a hook
+// would decide fires none and applies nothing, its grey line saying so (round 3), and one no hook decides applies at
+// once, as before (Codex review of 8e, round 2, the user's choice). `stop`, at the window's close, does that and takes
+// no read after it.
+export const configChanges = (ui: UI, fns: () => Pick<Fns, "note" | "onSettings">) => {
+  const file = path.join(settingsDir(ui.home), SETTINGS);
+  const stopped = new AbortController();
+  let closed = false;
+  let first = true;
+  let deciding = false;
+  let waiting: { read: Loaded; first: boolean } | undefined;
+  // The dangerous-command check counts only where the read tightens the rules in force, a rule added or a kind switched
+  // back on, as a loosening waits for the next launch (applyEntry; step 16's review, the user).
+  const tightens = (s: Settings) => {
+    const [r, after] = [ui.rules.current, s.dangerousCommands ?? NO_RULES];
+    return after.add.some((rule) => !r.add.includes(rule)) || r.off.some((kind) => !after.off.includes(kind));
+  };
+  const inForce = (read: Exclude<Loaded, { problem: string }>) =>
+    !same(read.warnings, ui.warned.current) ||
+    !same(read.hooksLeftOut ?? [], ui.hooks?.config.leftOut ?? []) ||
+    LIVE.some((key) => !NEXT_LAUNCH.includes(key) && !fixedBy(ui, key) &&
+      (key === "dangerousCommands" ? tightens(read.settings) : !same(compared(ui.fileNow.current, key), compared(read.settings, key))));
+  const decide = async (read: Loaded) => {
+    const c = await ui.hooks!.fire("ConfigChange", { source: "user_settings", file_path: file }, { match: "user_settings", outside: true, signal: stopped.signal });
+    if (stopped.signal.aborted) return;
+    ui.newEdit.current = true; // its lines are its own edit's, as the watcher's begin makes them (App.tsx)
+    if (c.block === undefined) return fns().onSettings(read);
+    // W7: none given, none said. A full stop after it unless it ends in one, as the switch's line (queue.ts).
+    const reason = c.block ? `: ${c.block}${/[.!?]$/.test(c.block) ? "" : "."}` : ".";
+    fns().note(gray(visible(`A ConfigChange hook stopped this settings change${reason}`, { tabs: true })));
+  };
+  const take = (read: Loaded, isFirst: boolean) => {
+    const fires = !("problem" in read) && (!isFirst || inForce(read)) && (ui.hooks?.has("ConfigChange", "user_settings") ?? false);
+    if (!fires) return fns().onSettings(read);
+    // Leaving (leave, below): a line of its own, as a blocked change's (Codex review of 8e, round 3, the user's choice).
+    if (stopped.signal.aborted) return fns().note(gray("This settings change was not applied, as the window is closing."));
+    deciding = true;
+    void decide(read)
+      .catch((err) => {
+        if (!stopped.signal.aborted) fns().note({ text: errorText(err), color: "error" });
+      })
+      .finally(() => {
+        deciding = false;
+        const next = waiting;
+        waiting = undefined;
+        if (next && !stopped.signal.aborted) take(next.read, next.first);
+      });
+  };
+  const deliver = (read: Loaded) => {
+    const isFirst = first;
+    first = false;
+    if (closed) return;
+    // A broken read applies nothing, so its red line is said at once, never held behind a decision nor replaced (step
+    // 16's review, the user).
+    if ("problem" in read) return fns().onSettings(read);
+    // Once leaving has started, none waits behind a stopped decision still ending: take says or applies it now (Codex
+    // review of 8e, round 4, the user's choice).
+    if (deciding && !stopped.signal.aborted) waiting = { read, first: isFirst };
+    else take(read, isFirst);
+  };
+  const leave = () => {
+    stopped.abort();
+    waiting = undefined;
+  };
+  const stop = () => {
+    closed = true;
+    leave();
+  };
+  return { deliver, leave, stop };
+};
 
 export const liveEdits = (ui: UI, fns: Fns) => {
   // A live edit of the settings file (release 6 design, "Live edits"): a broken file keeps the last good settings
@@ -39,8 +126,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     const now = resolve({}, {}, read.settings);
     for (const key of LIVE) {
       if (same(compared(before, key), compared(read.settings, key))) continue;
-      // VISUAL and EDITOR come before the file's editor, as a flag comes before an entry (external.ts, editorCommand).
-      const flag = key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : ui.live?.given[key];
+      const flag = fixedBy(ui, key);
       if (flag) fns.note(gray(`${SETTINGS}'s "${key}" was left as ${flag} set it for this session`));
       else fns.applyEntry(key, read.settings, now, before);
     }
@@ -189,17 +275,45 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       line(String(now.speed));
     }
   };
-  // The lead the file names, as /lead sets it, its line saying where it came from (onLead, App.tsx).
-  const fileLead = (spec: string) => {
+  // The lead the file names, as /lead sets it, its line saying where it came from (onLead, App.tsx). When PreModelSwitch's
+  // hooks decide it (queue.ts, switchHooked), they do first, between turns as /lead's shortening runs, the queue held
+  // meanwhile, and the lead is set before that ends; true then, and next() runs again once it is decided, sending what
+  // waited (release 8e plan, step 13). A switch they stop is not tried again until the file's lead changes again; one
+  // they allow is made only while the file still names it, so a lead line removed or changed meanwhile wins, its own
+  // line said already (step 13's review, the user).
+  const fileLead = (spec: string): boolean => {
     let provider: Provider;
     try {
       provider = fns.make(spec);
     } catch (err) {
-      return fns.note({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "error" });
+      fns.note({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "error" });
+      return false;
     }
-    ui.leadFromFile.current = true; // read by onLead while setLead runs: the bus calls its handlers at once
-    ui.session.setLead(provider);
-    ui.leadFromFile.current = false;
+    // With PostModelSwitch's fields, worked out as it is made, "command" and the file's value (release 8e plan, step 14),
+    // none when the model named leads already (Q31, told by the ids as queue.ts's switched tells it), so nothing fires.
+    const set = () => {
+      const lead = ui.session.lead;
+      const fields = provider.id === lead.id ? undefined : switchFields({
+        from: lead.id, to: provider.id, source: "command", requested: spec, contextTokens: ui.stats.context, lastReply: ui.session.lastReply,
+      });
+      // An effort saved while the hooks decided is the new lead's too, as make gives it (output.ts; Codex review 5 of 8e,
+      // point 2).
+      if (ui.effortNow.current) provider.setEffort?.(ui.effortNow.current.effort);
+      ui.leadFromFile.current = true; // read by onLead while setLead runs: the bus calls its handlers at once
+      ui.session.setLead(provider, fields);
+      ui.leadFromFile.current = false;
+    };
+    if (!fns.switchHooked(provider)) {
+      set();
+      return false;
+    }
+    void fns
+      .between(async (signal) => {
+        if ((await fns.switchAllowed(provider, "command", spec, signal, true)) && !signal.aborted && ui.fileNow.current.lead === spec) set();
+      })
+      .catch((err) => fns.note({ text: errorText(err), color: "error" }))
+      .finally(fns.next);
+    return true;
   };
   // Vim mode on, from INSERT, or off, leaving the text and cursor as they are (release 6 design's table), with its
   // line; `from` says the settings file asked. Asked to be what it is, it stays as it is.

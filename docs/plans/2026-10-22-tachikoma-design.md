@@ -56,6 +56,7 @@ learn from experience. The command is `tachi`.
 | Release 8, in four parts | 8a transcripts, resuming and shortening; 8b hooks; 8c the MCP client and the list of allowed sites; 8d memory and lessons. Each part has its own design and pull request; the release keeps its number | User, 2026-11-06 (options chosen: "Three parts", then "Own part, after 8a" for hooks) |
 | Hooks | Claude Code's hooks, in its format and with its event names, so scripts written for it work unchanged; read from `~/.tachikoma/settings.json` only, never a project's file. 8d's memory save before shortening is built in, not a hook | User, 2026-11-06 ("do a built in save but also we need hooks in general"; options chosen: "Claude Code's format", "Your settings file only") |
 | Hooks in 8b | Command hooks only, at 11 events; Claude Code's tool names and inputs; a hook's allow skips only the question and the judge, never the dangerous-command check, protected paths or never mode; in the sandbox hooks run on the host, with real paths in live link and the box's in copy mode; live edits; quiet unless a hook blocks or fails, with Ctrl+O and a read-only `/hooks`. The rest gets homes: 8c, 10, 14, and a new part 8e after 8d | User, 2026-11-09 (options chosen: "Core 11, commands", "Claude Code's", "Allow skips only the ask", "Real in live, box's in copy", "Live, with a line", "As Claude Code"); [release 8b design](2026-11-09-tachikoma-release-8b-design.md) |
+| Hooks in 8e | Nine more events: PermissionRequest, PermissionDenied, StopFailure, Notification (four "waiting on you" kinds, at moments Tachikoma gets for it), PreModelSwitch, PostModelSwitch, PostToolBatch, InstructionsLoaded (AGENTS.md included) and ConfigChange. A PermissionRequest hook's allow answers every approval question, the dangerous-command and protected-path warnings included. FileChanged and CwdChanged are left out with their own warnings: Tachikoma watches no files for hooks, and its working folder never changes | User, 2026-11-23 (options chosen: "9: the 8 + Notification", "The 'waiting on you' four", "Every question, as Claude Code", "Every file Tachikoma reads"); [release 8e design](2026-11-23-tachikoma-release-8e-design.md) |
 | Rewinding | Release 9: going back to an earlier message, with the files put back as they were then; every later release moves down one, to 15 | User, 2026-11-06 (option chosen: "Right after release 8"), after asking when the features left out of 8a would come |
 
 ## 1. Overall shape
@@ -927,8 +928,8 @@ Each release works on its own and can be shown.
    - 8c: MCP client, and the sandbox's list of allowed sites, which shares its address check
    - 8d: MemPalace in the uv environment behind the shared supervisor, with a save before each
      shortening; lessons from the error log, stored in the palace and recalled
-   - 8e: the ten hook events 8b leaves out that have a place in Tachikoma already
-     ([release 8b design](2026-11-09-tachikoma-release-8b-design.md), "Not in this release")
+   - 8e: nine of the hook events 8b leaves out; FileChanged and CwdChanged have no place in
+     Tachikoma and are not planned ([release 8e design](2026-11-23-tachikoma-release-8e-design.md))
 9. Rewinding: going back to an earlier message, with the files put back as they were then
 10. Skills: the loader, vendored superpowers, Tachikoma's own skills, and skills drafted from
     experience, saved on the user's yes

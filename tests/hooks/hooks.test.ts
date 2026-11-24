@@ -8,7 +8,7 @@ import type { Mode } from "../../src/core/permissions.js";
 import { gitBash } from "../../src/exec/env.js";
 import { combine } from "../../src/hooks/answer.js";
 import type { Event, Hook, HooksConfig } from "../../src/hooks/config.js";
-import { Hooks, MODE_NAMES, type Where } from "../../src/hooks/hooks.js";
+import { Hooks, MODE_NAMES, type Run, type Where } from "../../src/hooks/hooks.js";
 import { runHook } from "../../src/hooks/run.js";
 import type { Effort } from "../../src/providers/anthropic.js";
 import { Bus, collectErrors, removeTree } from "../helpers.js";
@@ -413,6 +413,77 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(errors.map((e) => e.message)).toEqual(["PreToolUse hook failed: check.sh exited with code 1: bad thing"]);
   });
 
+  // Release 8e design: at the five events whose hooks decide, an async hook's allow, deny, ask, rewrite, retry or block
+  // decides nothing and gets 8b's line.
+  it("says an async hook that tries to decide at PermissionRequest, PermissionDenied, PreModelSwitch, PostToolBatch and ConfigChange asked to block, and it decides nothing (release 8e plan, step 3)", async () => {
+    const p = await place();
+    const said = (event: Event, fields: object, top: object = {}) => JSON.stringify({ ...top, hookSpecificOutput: { hookEventName: event, ...fields } });
+    const tries: [Event, Hook][] = [
+      ["PermissionRequest", p.hook("allow", { event: "PermissionRequest", async: true }, { stdout: said("PermissionRequest", { decision: { behavior: "allow" } }) })],
+      ["PermissionRequest", p.hook("rewrite", { event: "PermissionRequest", async: true }, {
+        stdout: said("PermissionRequest", { decision: { behavior: "allow", updatedInput: { command: "ls" } } }) })],
+      ["PermissionRequest", p.hook("deny", { event: "PermissionRequest", async: true }, {
+        stdout: said("PermissionRequest", { decision: { behavior: "deny", message: "No", interrupt: true } }) })],
+      ["PermissionDenied", p.hook("retry", { event: "PermissionDenied", async: true }, { stdout: said("PermissionDenied", { retry: true }) })],
+      ["PreModelSwitch", p.hook("switch-allow", { event: "PreModelSwitch", async: true }, { stdout: said("PreModelSwitch", { permissionDecision: "allow" }) })],
+      ["PreModelSwitch", p.hook("switch-ask", { event: "PreModelSwitch", async: true }, { stdout: said("PreModelSwitch", { permissionDecision: "ask" }) })],
+      ["PreModelSwitch", p.hook("switch-exit2", { event: "PreModelSwitch", async: true }, { stderr: "no", code: 2 })],
+      ["PostToolBatch", p.hook("batch", { event: "PostToolBatch", async: true }, { stdout: JSON.stringify({ decision: "block", reason: "no" }) })],
+      ["ConfigChange", p.hook("config", { event: "ConfigChange", async: true }, { stderr: "no", code: 2 })],
+    ];
+    const { hooks, errors } = setup(p, tries.map(([, h]) => h));
+    for (const event of [...new Set(tries.map(([e]) => e))]) expect(await hooks.fire(event, {}), event).toEqual(empty(event));
+    while (hooks.runs.length < tries.length) await pause(20);
+    expect(errors.map((e) => e.message).sort()).toEqual(
+      tries.map(([event, h]) => `${event} hook failed: ${commandOf(h)} asked to block, but an "async" hook cannot block`).sort());
+  });
+
+  it("blocks nothing for an async hook with onFailure block that cannot start at the five events whose hooks decide, saying its failure alone (release 8e plan, step 3)", async () => {
+    const p = await place();
+    const events: Event[] = ["PermissionRequest", "PermissionDenied", "PreModelSwitch", "PostToolBatch", "ConfigChange"];
+    const missing = path.join(p.root, "no-such-program");
+    const { hooks, errors } = setup(p, events.map((event) => ({ ...p.hook(event, { event, async: true, onFailure: "block" }), command: missing, args: [] })));
+    for (const event of events) expect(await hooks.fire(event, {}), event).toEqual(empty(event));
+    while (hooks.runs.length < events.length) await pause(20);
+    expect(errors.map((e) => e.message.replace(/ \(.*\)$/, "")).sort()).toEqual(events.map((e) => `${e} hook failed: ${missing} could not start`).sort());
+  });
+
+  // Q13's cancel is a sync hook's: an async PreModelSwitch hook that runs out of time is a failure alone. The run stands in
+  // for the time-out, so nothing waits 30 s.
+  it("says an async PreModelSwitch hook's time-out as a failure alone, with no line that it asked to block (release 8e plan, step 3)", async () => {
+    const p = await place();
+    const realRun = vi.mocked(runHook).getMockImplementation()!;
+    onTestFinished(() => void vi.mocked(runHook).mockReset().mockImplementation(realRun));
+    vi.mocked(runHook).mockResolvedValueOnce({ code: null, stdout: "", stderr: "", ms: 30_000, failed: "time", limit: 30 });
+    const hook = p.hook("slow", { event: "PreModelSwitch", async: true });
+    const { hooks, errors } = setup(p, [hook]);
+    expect(await hooks.fire("PreModelSwitch", {})).toEqual(empty("PreModelSwitch"));
+    while (hooks.runs.length < 1) await pause(20);
+    expect(errors.map((e) => e.message)).toEqual([`PreModelSwitch hook failed: ${commandOf(hook)} ran out of time after 30 s`]);
+  });
+
+  // The user's choice at step 3's review: the old "approve" is PreToolUse's alone, so at PreModelSwitch it is no try to
+  // decide.
+  it("says nothing for an async PreModelSwitch hook that answers the old decision approve (release 8e plan, step 3)", async () => {
+    const p = await place();
+    const { hooks, errors } = setup(p, [p.hook("approve", { event: "PreModelSwitch", async: true }, { stdout: JSON.stringify({ decision: "approve" }) })]);
+    expect(await hooks.fire("PreModelSwitch", {})).toEqual(empty("PreModelSwitch"));
+    while (hooks.runs.length < 1) await pause(20);
+    expect(errors).toEqual([]);
+  });
+
+  it("hands back no text from an async PostModelSwitch hook, plain or additionalContext, and says nothing for it (release 8e plan, step 3)", async () => {
+    const p = await place();
+    const context = JSON.stringify({ hookSpecificOutput: { hookEventName: "PostModelSwitch", additionalContext: "ctx" } });
+    const { hooks, errors } = setup(p, [
+      p.hook("plain", { event: "PostModelSwitch", async: true }, { stdout: "Now on haiku" }),
+      p.hook("context", { event: "PostModelSwitch", async: true }, { stdout: context }),
+    ]);
+    expect(await hooks.fire("PostModelSwitch", {})).toEqual(empty("PostModelSwitch"));
+    while (hooks.runs.length < 2) await pause(20);
+    expect(errors).toEqual([]);
+  });
+
   // Claude Code's hooks reference, "Common fields".
   it("gives a hook without a timeout 30 s at UserPromptSubmit and 600 s elsewhere", async () => {
     const p = await place();
@@ -421,6 +492,28 @@ describe("Hooks", { timeout: 15_000 }, () => {
     await hooks.fire("UserPromptSubmit", {});
     await hooks.fire("PreToolUse", {});
     expect(vi.mocked(runHook).mock.calls.map((c) => c[2].limit)).toEqual([30, 600]);
+  });
+
+  // Release 8e design, "Time limits": Claude Code's 30 s at the two switch events, its usual 600 s at the other seven.
+  it("gives a hook without a timeout 30 s at PreModelSwitch and PostModelSwitch and 600 s at the other events release 8e adds (release 8e plan, step 1)", async () => {
+    const p = await place();
+    const events: Event[] = ["PermissionRequest", "PermissionDenied", "StopFailure", "Notification", "PreModelSwitch", "PostModelSwitch",
+      "PostToolBatch", "InstructionsLoaded", "ConfigChange"];
+    const { hooks } = setup(p, events.map((event) => p.hook(event, { event })));
+    vi.mocked(runHook).mockClear();
+    for (const event of events) await hooks.fire(event, {});
+    expect(vi.mocked(runHook).mock.calls.map((c) => c[2].limit)).toEqual([600, 600, 600, 600, 30, 30, 600, 600, 600]);
+  });
+
+  // Release 8e design, "Matchers": for another provider's model every PreModelSwitch and PostModelSwitch hook runs,
+  // whatever its matcher (steps 13 and 14 use this).
+  it("runs every hook of an event, whatever its matcher, when the caller asks for all of them (release 8e plan, step 1)", async () => {
+    const p = await place();
+    const { hooks } = setup(p, [p.hook("haiku", { event: "PreModelSwitch", matcher: { names: ["claude-haiku-4-5"] } }), p.hook("other")]);
+    await hooks.fire("PreModelSwitch", {}, { match: "llama3" });
+    expect(p.inputs("haiku")).toHaveLength(0);
+    await hooks.fire("PreModelSwitch", {}, { match: "llama3", every: true });
+    expect([p.inputs("haiku").length, p.inputs("other").length]).toEqual([1, 0]);
   });
 
   it("stops every hook it started when the turn stops, and rejects with Cancelled", async () => {
@@ -533,6 +626,142 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(await Promise.allSettled(vi.mocked(runHook).mock.results.map((r) => r.value))).toEqual([
       { status: "rejected", reason: new Error("Cancelled") },
     ]);
+  });
+
+  // Release 8e plan, step 4 (Codex round 1, point 7): a fire the caller does not wait for, its hooks under the stop that
+  // ends async hooks as Tachikoma exits, so none keeps a -p run or the window's exit waiting.
+  it("fires an event without the caller waiting, its handle answering with the combined answer once its hook ends", async () => {
+    const p = await place();
+    const go = path.join(p.root, "go");
+    const said = JSON.stringify({ hookSpecificOutput: { hookEventName: "PostModelSwitch", additionalContext: "now on haiku" } });
+    const { hooks, errors } = setup(p, [p.hook("h", { event: "PostModelSwitch" }, { go, stdout: said })]);
+    let done = false;
+    const handle = hooks.fireAndLeave("PostModelSwitch", {});
+    void handle.then(() => (done = true));
+    while (p.inputs("h").length < 1) await pause(20);
+    await pause(50);
+    expect([done, hooks.runs]).toEqual([false, []]);
+    writeFileSync(go, "");
+    expect((await handle).context).toEqual([{ event: "PostModelSwitch", text: "now on haiku" }]);
+    expect([hooks.runs.length, errors]).toEqual([1, []]);
+  });
+
+  it("ends a fire not waited for at stopAsync, saying nothing, its handle answering with no answer, no rejection unhandled", async () => {
+    const p = await place();
+    const never = path.join(p.root, "never");
+    const { hooks, errors, notes } = setup(p, [p.hook("h", { event: "PostModelSwitch" }, { go: never })]);
+    const unhandled: unknown[] = [];
+    const listen = (err: unknown) => void unhandled.push(err);
+    process.on("unhandledRejection", listen);
+    onTestFinished(() => void process.off("unhandledRejection", listen));
+    vi.mocked(runHook).mockClear();
+    const handle = hooks.fireAndLeave("PostModelSwitch", {});
+    while (p.inputs("h").length < 1) await pause(20);
+    hooks.stopAsync();
+    expect(await handle).toEqual(empty("PostModelSwitch"));
+    // One fired after the exit is never started.
+    expect(await hooks.fireAndLeave("PostModelSwitch", {})).toEqual(empty("PostModelSwitch"));
+    await pause(50);
+    expect([errors, notes, hooks.runs, unhandled, p.inputs("h").length]).toEqual([[], [], [], [], 1]);
+    expect(await Promise.allSettled(vi.mocked(runHook).mock.results.map((r) => r.value))).toEqual([
+      { status: "rejected", reason: new Error("Cancelled") },
+    ]);
+  });
+
+  it("says a failure in a fire not waited for as its red line, and catches a listener that throws", async () => {
+    const p = await place();
+    const failing = p.hook("h", { event: "PostModelSwitch" }, { stderr: "it broke", code: 1 });
+    const { hooks, bus, errors } = setup(p, [failing]);
+    const unhandled: unknown[] = [];
+    const listen = (err: unknown) => void unhandled.push(err);
+    process.on("unhandledRejection", listen);
+    onTestFinished(() => void process.off("unhandledRejection", listen));
+    await hooks.fireAndLeave("PostModelSwitch", {});
+    expect(errors.map((e) => e.message)).toEqual([`PostModelSwitch hook failed: ${commandOf(failing)} exited with code 1: it broke`]);
+    bus.on("error", () => {
+      throw new Error("a listener broke");
+    });
+    expect(await hooks.fireAndLeave("PostModelSwitch", {})).toEqual(empty("PostModelSwitch"));
+    await pause(50);
+    expect([errors.length, unhandled]).toEqual([2, []]);
+  });
+
+  // Release 8e plan, step 4 (design: runs outside a turn "are listed with the next turn"): a fire marked outside a turn
+  // keeps its runs apart, and the next lead turn's list begins with them; a load in between drops none of them.
+  it("lists a run fired outside a turn with the next turn, not the one before, through a load too, and a run inside with its own", async () => {
+    const p = await place();
+    const { hooks } = setup(p, [p.hook("note", { event: "Notification" }), p.hook("pre")]);
+    const events = () => hooks.runs.map((r) => r.event);
+    hooks.beginTurn();
+    await hooks.fire("PreToolUse", {});
+    await hooks.fire("Notification", {}, { outside: true });
+    await hooks.fireAndLeave("Notification", {}, { outside: true });
+    expect(events()).toEqual(["PreToolUse"]);
+    hooks.newTurn(); // a load
+    expect(events()).toEqual([]);
+    hooks.beginTurn();
+    expect(events()).toEqual(["Notification", "Notification"]);
+    await hooks.fire("PreToolUse", {});
+    expect(events()).toEqual(["Notification", "Notification", "PreToolUse"]);
+    const start: Run = { ...hooks.runs[2]!, event: "SessionStart" };
+    hooks.beginTurn();
+    expect(events()).toEqual([]);
+    // A fresh conversation's first turn: the runs fired outside it first, then SessionStart's it carries.
+    await hooks.fire("Notification", {}, { outside: true });
+    hooks.beginTurn([start]);
+    expect(events()).toEqual(["Notification", "SessionStart"]);
+  });
+
+  // A prompt that starts no turn puts the earlier list back (session.ts), and the runs the new list began with go back
+  // apart, a run fired outside a turn that answers after that too; one that answers during the next turn joins its list.
+  it("puts a turn's runs from outside it back apart when its prompt starts no turn, and lists a later answer with the next turn", async () => {
+    const p = await place();
+    const [go1, go2] = [path.join(p.root, "go1"), path.join(p.root, "go2")];
+    const note = (name: string, type: string, go?: string) => p.hook(name, { event: "Notification", matcher: { names: [type] } }, go ? { go } : {});
+    const { hooks } = setup(p, [note("idle", "idle_prompt"), note("slow", "auth_success", go1), note("slower", "permission_prompt", go2), p.hook("pre")]);
+    const events = () => hooks.runs.map((r) => [r.event, ...(r.match ? [r.match] : [])]);
+    hooks.beginTurn();
+    await hooks.fire("PreToolUse", {});
+    const before = hooks.runs;
+    await hooks.fire("Notification", {}, { match: "idle_prompt", outside: true });
+    const slow = hooks.fireAndLeave("Notification", {}, { match: "auth_success", outside: true });
+    const slower = hooks.fireAndLeave("Notification", {}, { match: "permission_prompt", outside: true });
+    while (p.inputs("slow").length < 1 || p.inputs("slower").length < 1) await pause(20);
+    hooks.beginTurn(); // a prompt a UserPromptSubmit hook then blocks
+    expect(events()).toEqual([["Notification", "idle_prompt"]]);
+    hooks.restoreRuns(before);
+    expect(hooks.runs).toBe(before);
+    writeFileSync(go1, "");
+    await slow;
+    expect(events()).toEqual([["PreToolUse"]]);
+    hooks.beginTurn(); // the next real turn
+    expect(events()).toEqual([["Notification", "idle_prompt"], ["Notification", "auth_success"]]);
+    writeFileSync(go2, "");
+    await slower;
+    await hooks.fire("PreToolUse", {});
+    expect(events()).toEqual([["Notification", "idle_prompt"], ["Notification", "auth_success"], ["Notification", "permission_prompt"], ["PreToolUse"]]);
+    expect(before.map((r) => r.event)).toEqual(["PreToolUse"]);
+  });
+
+  // Step 4's review: a run fired outside a turn that is still answering when a second turn begins lands in the turn it
+  // answers in, never the earlier turn's list, which Ctrl+O no longer shows.
+  it("lists a run fired outside a turn that answers two turns later with the turn it answers in, not the earlier one", async () => {
+    const p = await place();
+    const go = path.join(p.root, "go");
+    const { hooks } = setup(p, [p.hook("slow", { event: "Notification" }, { go })]);
+    const late = hooks.fireAndLeave("Notification", {}, { outside: true });
+    while (p.inputs("slow").length < 1) await pause(20);
+    hooks.beginTurn();
+    const first = hooks.runs;
+    hooks.beginTurn();
+    writeFileSync(go, "");
+    await late;
+    expect([first, hooks.runs.map((r) => r.event)]).toEqual([[], ["Notification"]]);
+    // A prompt that then starts no turn puts it back apart, for the next real turn.
+    hooks.restoreRuns(first);
+    expect(hooks.runs).toBe(first);
+    hooks.beginTurn();
+    expect([first, hooks.runs.map((r) => r.event)]).toEqual([[], ["Notification"]]);
   });
 
   // Release 8b plan, Task 12 (design, "What the user sees"): the waiting line shows a running hook's statusMessage, so the

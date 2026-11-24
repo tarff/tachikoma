@@ -25,9 +25,12 @@ export type Field = { name: string; question: string; note?: string; required: b
 // `signal`; `given`, what the field was last answered with, when it is asked again after a wrong answer. `visit` is the
 // window's own yes or no, a subagent's with its `owner`, so its stop takes the question away and Ctrl-C there stops it;
 // the question already starts with the subagent's id, as its heading does (Task 12's quality review and re-check).
+// `opened`: a form opens, its first question about to be put, with its server's name and its kind, a form to fill in or a
+// page to open; the function it gives is called once as the form closes (release 8e plan, step 17; Codex round 1, point 8).
 export interface FormUI {
   field(field: Field, given: string | string[] | undefined, signal: AbortSignal): Promise<string | string[] | null>;
   visit(question: string, owner: Owner | undefined): Promise<boolean>;
+  opened?(server: string, kind: "form" | "page"): () => void;
 }
 
 // "Lines this plan adds", Forms.
@@ -186,34 +189,56 @@ export class Forms {
         this.#bus.emit("error", { kind: "mcp", attempted: `MCP server ${who}`, message, lead: this.#lead() });
         return { action: "decline" };
       }
-      const yes = await ui.visit(`${tag}${who} asks you to open ${shown(form.url)} in your browser: ${shown(form.message)}. Open it`, owner);
+      const close = this.#opened(ui, name, "page", signal);
+      const yes = await ui.visit(`${tag}${who} asks you to open ${shown(form.url)} in your browser: ${shown(form.message)}. Open it`, owner).finally(close);
       if (signal.aborted) return { action: "cancel" };
       if (yes) this.#openBrowser(parsed.href);
       return { action: yes ? "accept" : "decline" };
     }
-    say(`${who} asks: ${shown(form.message)}`);
-    const content: Record<string, Value> = {};
-    for (const field of fieldsOf(form.requestedSchema)) {
-      let given: string | string[] | undefined;
-      for (;;) {
-        const typed = await ui.field(field, given, signal);
-        if (typed === null) {
-          if (signal.aborted) return { action: "cancel" };
-          say(`You declined ${who}'s form.`);
-          return { action: "decline" };
+    const close = this.#opened(ui, name, "form", signal);
+    try {
+      say(`${who} asks: ${shown(form.message)}`);
+      const content: Record<string, Value> = {};
+      for (const field of fieldsOf(form.requestedSchema)) {
+        let given: string | string[] | undefined;
+        for (;;) {
+          const typed = await ui.field(field, given, signal);
+          if (typed === null) {
+            if (signal.aborted) return { action: "cancel" };
+            say(`You declined ${who}'s form.`);
+            return { action: "decline" };
+          }
+          const checked = check(field, typed);
+          if ("wrong" in checked) {
+            say(checked.wrong);
+            given = typed;
+            continue;
+          }
+          say(`${field.question}${checked.shown}`);
+          if (checked.value !== undefined) content[field.name] = checked.value;
+          break;
         }
-        const checked = check(field, typed);
-        if ("wrong" in checked) {
-          say(checked.wrong);
-          given = typed;
-          continue;
-        }
-        say(`${field.question}${checked.shown}`);
-        if (checked.value !== undefined) content[field.name] = checked.value;
-        break;
       }
+      return { action: "accept", content };
+    } finally {
+      close();
     }
-    return { action: "accept", content };
+  }
+
+  // Tells the window the form opens (FormUI.opened), and gives its closing, said once: as the form ends, or at once when
+  // its stop comes, the server's cancel or its subagent's, as a page's question is not taken away by that stop and would
+  // otherwise end only once the user answers it (release 8e plan, step 17; Codex round 2, point 7; round 3, point 6).
+  #opened(ui: FormUI, server: string, kind: "form" | "page", signal: AbortSignal): () => void {
+    const closing = ui.opened?.(server, kind);
+    let open = true;
+    const close = () => {
+      if (!open) return;
+      open = false;
+      signal.removeEventListener("abort", close);
+      closing?.();
+    };
+    signal.addEventListener("abort", close, { once: true });
+    return close;
   }
 
 }

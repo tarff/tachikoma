@@ -244,6 +244,15 @@ describe("fromAnthropic", () => {
     const turn = fromAnthropic(message({ stop_reason: "model_context_window_exceeded" }));
     expect(turn.cutOff).toEqual({ kind: "window", detail: "The conversation filled the context window" });
   });
+
+  // Release 8e plan, step 10: the output limit is marked as a true one, for StopFailure's max_output_tokens; the window
+  // and a refusal are not.
+  it("marks a reply that hit the output limit as a true output limit, and nothing else", () => {
+    expect(fromAnthropic(message({ stop_reason: "max_tokens" })).cutOff).toStrictEqual({ kind: "max_tokens", detail: "The response hit the output limit", limit: true });
+    expect(fromAnthropic(message({ stop_reason: "model_context_window_exceeded" })).cutOff).toStrictEqual({ kind: "window", detail: "The conversation filled the context window" });
+    const refused = fromAnthropic(message({ stop_reason: "refusal", stop_details: { type: "refusal", category: "cyber", explanation: null } as BetaMessage["stop_details"] }));
+    expect(refused.cutOff).toStrictEqual({ kind: "refusal", detail: "The model declined (category: cyber)" });
+  });
 });
 
 describe("AnthropicProvider", () => {

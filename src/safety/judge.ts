@@ -6,7 +6,10 @@ import { errorText, type Message, type Provider, type Turn } from "../core/types
 // `auto` may run without asking the user. It sees what choice 6 names and nothing else: the user's own prompts, the
 // calls made so far (name and input, never output), the action, and the instruction files' text as read at launch.
 
-export type Verdict = { allow: true } | { allow: false; reason: string };
+// A no says which of three it was (release 8e plan, step 5; design, "The permission events"): the judge's own refusal,
+// which has no `noVerdict`, or no verdict at all, as the judge could not be reached or its answer could not be read (a
+// cut-off answer included). PermissionDenied's retry counts only for the judge's own refusal.
+export type Verdict = { allow: true } | { allow: false; reason: string; noVerdict?: "unreachable" | "unreadable" };
 export interface JudgeInput {
   prompts: string[];
   calls: { name: string; input: unknown }[];
@@ -110,7 +113,7 @@ export async function judge(provider: Provider, input: JudgeInput, signal: Abort
     const message = errorText(err);
     // `lead` is the model that made the failed request, as a subagent's errors carry its own model there (tasks.ts).
     bus.emit("error", { kind: "judge", attempted: `request to ${provider.id}`, message, lead: provider.id });
-    return { allow: false, reason: `the judge could not be reached: ${message}` };
+    return { allow: false, reason: `the judge could not be reached: ${message}`, noVerdict: "unreachable" };
   }
   // Billed even if the answer is then dropped, as the session reports its own (session.ts, #request). Marked as the
   // judge's, so the context bar stays the lead's (choice 9).
@@ -118,6 +121,6 @@ export async function judge(provider: Provider, input: JudgeInput, signal: Abort
   bus.emit("usage", { provider: turn.servedBy ?? provider.id, usage: turn.usage, judge: true });
   signal.throwIfAborted();
   // A reply cut off by a limit or a refusal is not the judge's whole answer, whatever its text says (Task 9 review).
-  if (turn.cutOff) return { allow: false, reason: UNREADABLE };
-  return read(turn.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n")) ?? { allow: false, reason: UNREADABLE };
+  if (turn.cutOff) return { allow: false, reason: UNREADABLE, noVerdict: "unreadable" };
+  return read(turn.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n")) ?? { allow: false, reason: UNREADABLE, noVerdict: "unreadable" };
 }
