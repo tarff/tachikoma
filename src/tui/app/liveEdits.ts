@@ -94,7 +94,9 @@ export const configChanges = (ui: UI, fns: () => Pick<Fns, "note" | "onSettings"
     // A broken read applies nothing, so its red line is said at once, never held behind a decision nor replaced (step
     // 16's review, the user).
     if ("problem" in read) return fns().onSettings(read);
-    if (deciding) waiting = { read, first: isFirst };
+    // Once leaving has started, none waits behind a stopped decision still ending: take says or applies it now (Codex
+    // review of 8e, round 4, the user's choice).
+    if (deciding && !stopped.signal.aborted) waiting = { read, first: isFirst };
     else take(read, isFirst);
   };
   const leave = () => {

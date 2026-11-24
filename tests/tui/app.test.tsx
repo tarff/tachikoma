@@ -15424,6 +15424,44 @@ describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_00
     await expectExited(app);
   });
 
+  // Codex review of 8e, round 4 (the user's choice): a save made once leaving has started, while the stopped hook has
+  // not yet ended, says so too, rather than waiting behind it to be dropped.
+  it("says once that a save made while a stopped ConfigChange hook ends was not applied, firing none", async () => {
+    let settle!: () => void;
+    let end!: () => void;
+    const runs: HookRun[] = [];
+    const real = vi.mocked(runHook).getMockImplementation()!;
+    onTestFinished(() => void vi.mocked(runHook).mockImplementation(real));
+    vi.mocked(runHook).mockImplementation((hook, input, opts) => {
+      const fields = input as Record<string, unknown>;
+      const event = String(fields.hook_event_name);
+      if (event !== "ConfigChange" && event !== "SessionEnd") return real(hook, input, opts);
+      const run = { event, command: hook.command, input: fields, stopped: false };
+      runs.push(run);
+      // A stopped hook ends only when told, as a killed command ends a moment after its stop.
+      opts.signal?.addEventListener("abort", () => void (run.stopped = true), { once: true });
+      return new Promise<Ran>((resolve, reject) => {
+        if (event === "SessionEnd") end = () => resolve(ran());
+        else settle = () => reject(new Error("Cancelled"));
+      });
+    });
+    const ending: Hook = { event: "SessionEnd", matcher: { all: true }, command: "on-end", async: false, where: "" };
+    const { app, session, hand } = await launch("{}", { hooks: [configHook(), ending] });
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    await type(app, "/exit");
+    await waitFor(() => runs.some((r) => r.event === "SessionEnd"));
+    expect(runs[0]!.stopped).toBe(true);
+    hand(json({ autoCompactWindow: 200000 }));
+    await sees(app, CLOSING);
+    settle();
+    await tick();
+    await tick();
+    expect([times(app, CLOSING), runs.map((r) => r.event), session.autoCompact]).toEqual([1, ["ConfigChange", "SessionEnd"], null]);
+    end();
+    await expectExited(app);
+  });
+
   // Codex review of 8e, round 2 (the user's choice): leaving ends only ConfigChange's deciding; with no ConfigChange hook
   // in force, a save still applies at once, as before.
   it("still applies at once a save made after /exit starts leaving, while SessionEnd's hook runs, with no ConfigChange hook", async () => {
