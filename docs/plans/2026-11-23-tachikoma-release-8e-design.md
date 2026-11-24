@@ -491,7 +491,9 @@ to a1c0c3f on `release-8e`, with their review fixes.
 - **The reason for the model** goes with the next request, headed as hook text, whichever request
   that is, a turn of background answers included (Q29, 2026-11-23). An end with no reason sends the
   grey line the user sees, "A PostToolBatch hook stopped the turn." (the user's choice at step 11's
-  review, 2026-11-23). A subagent keeps none, and `/clear`, `/resume` and `/branch` drop it.
+  review, 2026-11-23). A subagent keeps none, and `/clear`, `/resume` and `/branch` drop it. A
+  background answer that came while the hook ran stays waiting when the batch ends the turn, so it
+  still starts a turn of its own, the reason with it (Codex review 5 of 8e, point 1).
 - **A stop while PostToolBatch runs** (step 11) stores the results all the same and ends the turn
   with no line, keeping nothing of the hook. A failure that is not a stop gives a red line,
   "PostToolBatch hook failed: ...", and the turn goes on.
