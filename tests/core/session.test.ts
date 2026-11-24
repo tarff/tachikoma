@@ -6055,7 +6055,7 @@ describe("Session, PostModelSwitch (release 8e plan, step 14)", { timeout: 15_00
   const settle = () => new Promise((resolve) => setImmediate(resolve));
 
   // The session leads with fake:a; `hooks` are its hooks, a PostModelSwitch hook named "after" unless given.
-  async function setup(o: { hooks?: Hook[]; inbox?: () => string[] } = {}) {
+  async function setup(o: { hooks?: Hook[]; inbox?: () => string[]; recall?: ConstructorParameters<typeof Session>[0]["recall"] } = {}) {
     const bus = new Bus();
     const errors = collectErrors(bus);
     const notes: string[] = [];
@@ -6063,7 +6063,7 @@ describe("Session, PostModelSwitch (release 8e plan, step 14)", { timeout: 15_00
     const ctx = await tempContext();
     const where: Where = { sessionId: () => "s1", transcript: () => undefined, root: ctx.root, mode: () => "never", effort: () => undefined, lead: () => session.lead.id };
     const hooks = new Hooks({ hooks: o.hooks ?? [hook()], off: false, leftOut: [] }, where, bus);
-    const session: Session = new Session({ lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx, bus, hooks, ...(o.inbox ? { inbox: o.inbox } : {}) });
+    const session: Session = new Session({ lead: new FakeProvider("a", []), tools: [echo], system: "t", ctx, bus, hooks, ...(o.inbox ? { inbox: o.inbox } : {}), ...(o.recall ? { recall: o.recall } : {}) });
     return { session, hooks, errors, notes };
   }
   // setTimeout's and Date's clock faked; the function moves it on by `ms`, then lets what that started run (setImmediate is
@@ -6136,6 +6136,31 @@ describe("Session, PostModelSwitch (release 8e plan, step 14)", { timeout: 15_00
     await wait();
     await s.session.send("again", undefined, undefined, Date.now());
     expect(b.seen[1]!.at(-1)!.parts).toEqual([hookText("b leads now"), said("again")]);
+  });
+
+  // Codex review 3 of 8e, point 2: the note from long-term memory, found before a stop ends the wait for the switch's
+  // hooks, is still due, so the next prompt sent is searched for and carries it.
+  it("keeps the note from long-term memory due for the next prompt when a stop ends the wait for the switch's hooks", async () => {
+    const searched: string[] = [];
+    const hit: Hit = { text: "a missing lock file", wing: WING, room: "r", label: "tachikoma session a, turn 1", distance: 0, date: "2026-11-24" };
+    const palace = { searchTwo: async (query: string) => (searched.push(query), { is: "found", hits: [hit] }) } as unknown as Palace;
+    const s = await setup({ recall: { memory: { on: () => true, palace }, room: "r", timeout: 1_000 } });
+    s.session.start("startup");
+    const runs = standIn("PostModelSwitch");
+    const wait = clock();
+    const b = new FakeProvider("b", [reply("one")]);
+    s.session.setLead(b, FIELDS);
+    const stop = new AbortController();
+    const first = s.session.send("lock file", stop.signal, undefined, Date.now());
+    await wait(1_000);
+    expect([searched, b.seen]).toEqual([["lock file"], []]);
+    stop.abort();
+    await first;
+    runs[0]!.finish();
+    await wait();
+    await s.session.send("lock file", undefined, undefined, Date.now());
+    expect(searched).toEqual(["lock file", "lock file"]);
+    expect(b.seen[0]!.at(-1)!.parts.map((p) => (p.type === "text" ? p.from : p.type))).toEqual(["memory", undefined]);
   });
 
   it("waits only the rest of the 5 s after a UserPromptSubmit hook that took 3 s", async () => {

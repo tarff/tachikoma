@@ -789,6 +789,7 @@ export class Session {
     // The note from long-term memory, searched with the typed words once a hook has let the prompt through (8d plan,
     // step 24); a stop meanwhile sends and saves nothing, as one while the hooks run does, and the note waits for the
     // next prompt.
+    const due = this.#recallDue;
     const recalled = words ? await this.#recall(words, signal) : [];
     if (!recalled) {
       if (before) hooks!.restoreRuns(before);
@@ -801,6 +802,8 @@ export class Session {
     const by = words && sent !== undefined ? sent + SWITCH_WAIT : undefined;
     if (by !== undefined && !(await this.#switchAnswered(by, signal))) {
       if (before) hooks!.restoreRuns(before);
+      // The note is still due for the message that does go, as at a stop during the search (Codex review 3 of 8e, point 2).
+      this.#recallDue = due;
       return;
     }
     if (words && !this.opts.subagent) this.prompts.push(words);
