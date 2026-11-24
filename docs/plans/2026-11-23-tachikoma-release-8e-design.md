@@ -628,9 +628,11 @@ to a1c0c3f on `release-8e`, with their review fixes.
   final review, 2026-11-24): as `/exit`, or Ctrl-C or Ctrl-D twice, starts leaving, before copy
   mode's review and SessionEnd, a decision under way is stopped and the save waiting behind it is
   dropped, saying nothing. With no ConfigChange hook in force a save still applies at once, as
-  before (the user's choice at the final review). A later save that a ConfigChange hook would
-  decide fires no hook and applies nothing, with a grey line, "This settings change was not
-  applied, as the window is closing." (the user's choice at the round 2 re-check, 2026-11-24).
+  before (the user's choice at the round 2 re-check, 2026-11-24). A later save that a ConfigChange
+  hook would decide fires no hook and applies nothing, with a grey line, "This settings change was
+  not applied, as the window is closing." (the user's choice at the round 3 re-check,
+  2026-11-24), once per save, a save made while the stopped hook is still ending included (the
+  user's choice at the round 4 re-check, 2026-11-24).
 - **A save that changes both the hooks and the lead** (step 16) is decided by the hooks in force:
   blocked, it runs no PreModelSwitch and the lead stays; allowed, its own hooks are in force for the
   switch.
