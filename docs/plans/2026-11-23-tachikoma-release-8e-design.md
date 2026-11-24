@@ -519,8 +519,13 @@ to a1c0c3f on `release-8e`, with their review fixes.
   hook's question Esc answers no and Ctrl-C cancels it. A blocked switch makes no shortening
   request.
 - **The working line** (the user's choice at step 13's review, 2026-11-23): `/lead` and the model
-  list show it only when some PreModelSwitch hook would run for the target, by its matcher, or any
-  hook for a model with no canonical name.
+  list show it when some PreModelSwitch hook would run for the target, by its matcher, or any
+  hook for a model with no canonical name. With no such hook they show none in an empty
+  conversation, or when the target has no context window lookup. In a non-empty conversation
+  they still show it while the fit check runs, as before 8e, since that check may ask the
+  provider for the window size or a token count; Esc stops it and the switch (queue.ts:644-646;
+  the user kept this at the final review, 2026-11-24). Step 13's test
+  (tests/tui/app.test.tsx:14707) covers only an empty conversation.
 - **A settings-file switch** is decided between turns, and the lead is set before that state ends,
   so no queued prompt goes to the old lead. Once its hook allows, the switch is made only if
   `settings.json` still names that lead (the user's choice at step 13's review, 2026-11-23);
