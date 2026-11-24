@@ -500,6 +500,15 @@ describe("outcomeOf and combine: PreModelSwitch, PostModelSwitch, PostToolBatch 
     expect(one("PreToolUse", ranOf({ stdout: JSON.stringify({ decision: "approve" }) }))).toMatchObject({ decision: "allow" });
   });
 
+  // Codex review 2 of 8e, point 2: at PreModelSwitch a top-level block cancels the switch whatever permissionDecision
+  // says beside it; at PreToolUse permissionDecision still wins, as before.
+  it.each(["allow", "ask"])("cancels a PreModelSwitch whose hook answers a top-level block beside a permissionDecision of %s, with the block's reason", (permissionDecision) => {
+    const both = specific("PreModelSwitch", { permissionDecision, permissionDecisionReason: "Fine" }, { decision: "block", reason: "Too costly" });
+    expect(one("PreModelSwitch", ranOf({ stdout: both }))).toMatchObject({ decision: "deny", reason: "Too costly", block: "Too costly" });
+    const tool = specific("PreToolUse", { permissionDecision, permissionDecisionReason: "Fine" }, { decision: "block", reason: "Too costly" });
+    expect(one("PreToolUse", ranOf({ stdout: tool }))).toMatchObject({ decision: permissionDecision, reason: "Fine" });
+  });
+
   it("takes deny over ask over allow among several PreModelSwitch hooks, in both orders (release 8e plan, step 3)", () => {
     const at = (permissionDecision: string, reason: string) => {
       const hook = hookOf({ args: [reason] });

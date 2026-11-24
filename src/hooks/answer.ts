@@ -266,8 +266,11 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
       // step 3, D3; an "approve" there is ignored, the user's choice at the step's review).
       const said = outcome.kind === "block" ? "deny" : (specific.permissionDecision as (typeof PERMISSIONS)[number] | undefined);
       const old = json.decision === "approve" && event === "PreToolUse" ? "allow" : json.decision === "block" ? "deny" : undefined;
-      const decision = said ?? old;
-      const why = outcome.kind === "block" ? outcome.reason : said ? ((specific.permissionDecisionReason as string | undefined) ?? "") : reason;
+      // At PreModelSwitch a top-level block cancels whatever permissionDecision says beside it, as a deny wins over ask
+      // and allow (design, "PreModelSwitch cancels on ..."; Codex review 2 of 8e, point 2); PreToolUse is as before.
+      const blocks = event === "PreModelSwitch" && old === "deny" && said !== "deny";
+      const decision = blocks ? old : said ?? old;
+      const why = outcome.kind === "block" ? outcome.reason : said && !blocks ? ((specific.permissionDecisionReason as string | undefined) ?? "") : reason;
       if (decision === "defer") c.deferred = true;
       else if (decision && decided[decision] === undefined) decided[decision] = cut(why);
       if (event === "PreToolUse" && specific.updatedInput != null) {
