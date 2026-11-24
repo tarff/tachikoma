@@ -1,9 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdtemp, readdir, rmdir, unlink } from "node:fs/promises";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { onTestFinished } from "vitest";
+import { afterAll, onTestFinished } from "vitest";
 import { Bus, type ErrorEvent } from "../src/core/bus.js";
 import { type Mode, PermissionGate } from "../src/core/permissions.js";
 import type { CompletionRequest, Message, Part, Provider, Turn, Usage } from "../src/core/types.js";
@@ -12,6 +11,7 @@ import { LocalExecutor, LocalWorkspace } from "../src/exec/local.js";
 import { CommandLog } from "../src/exec/log.js";
 import type { Workspace } from "../src/exec/workspace.js";
 import type { ToolContext } from "../src/tools/tool.js";
+import { type Left, tryRemoveTree } from "./removeTree.mjs";
 
 // An animated GIF of two frames, white then black, made in memory: two frames the same would be stored as one. sharp is
 // loaded only here, so the test files that never make a picture do not pay for it.
@@ -70,7 +70,7 @@ export function collectErrors(bus: Bus): ErrorEvent[] {
 }
 
 export async function tempContext(mode: Mode = "never", answers: boolean[] = []): Promise<ToolContext & { asked: string[]; details: (string | undefined)[] }> {
-  const root = await mkdtemp(path.join(tmpdir(), "tachi-"));
+  const root = tempDir("tachi-");
   const asked: string[] = [];
   const details: (string | undefined)[] = [];
   const gate = new PermissionGate(mode, async (summary, detail) => {
@@ -136,10 +136,9 @@ export function shortName(folder: string, name: string): string | undefined {
 // next.txt into the file when there is one; `wait` does the same, marks `started`, and waits until `go` is written or
 // its folder is gone; `fail` exits 1; `line` writes the first line it reads from its own stdin into the file.
 export function standInEditor() {
-  const dir = mkdtempSync(path.join(tmpdir(), "tachi editor "));
+  const dir = tempDir("tachi editor ");
   const at = (name: string) => path.join(dir, name);
   writeFileSync(at("editor.cjs"), STAND_IN);
-  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   return {
     dir,
     command: (mode: "keep" | "wait" | "fail" | "line") => `"${process.execPath}" "${at("editor.cjs")}" ${mode}`,
@@ -173,14 +172,47 @@ if (mode === "line") {
 }
 `;
 
-// Removes a folder the test made: a link or junction is removed itself, never followed.
+// The remover's retry (cleanup plan, step 4): every 50 ms, for up to 2 s. The user's choice at step 3 (2026-11-25); the
+// values the tests' own retry loops already use (tests/hooks/run.test.ts); about 11 times the 170 ms measured on the
+// user's PC on 2026-10-31, and more than 100 times CI's longest, 17.5 ms in 150 rounds with at most 7 refused tries in a
+// row (run 45467602109, 2026-11-25). CI's figure does not cap the user's PC: the user's PC gave 170 ms on 2026-10-31 and
+// 2.8 to 8.1 ms on 2026-11-22.
+export const RETRY_PAUSE_MS = 50;
+export const RETRY_LIMIT_MS = 2_000;
+
+// Removes a folder the test made, through the tests' remover (tests/removeTree.mjs, which says what it does and does not
+// hold): a link or junction is removed itself, never followed. It is for tidying up only: it does not throw, and for
+// anything it could not remove it writes one warning line on stderr. A test that deletes something as part of what it
+// tests keeps its own call.
 export async function removeTree(folder: string): Promise<void> {
-  for (const e of await readdir(folder, { withFileTypes: true })) {
-    const p = path.join(folder, e.name);
-    if (e.isDirectory() && !e.isSymbolicLink()) await removeTree(p);
-    else await unlink(p);
-  }
-  await rmdir(folder);
+  warnLeft(await tryRemoveTree(folder, { pause: RETRY_PAUSE_MS, limit: RETRY_LIMIT_MS }));
+}
+
+// One stderr line for each thing a removal left, naming it and the reason.
+export function warnLeft(left: Left[]): void {
+  for (const l of left) process.stderr.write(`${l.path} was not removed: ${l.reason}\n`);
+}
+
+// A folder in Temp, named by the prefix, removed when the current test ends.
+export function tempDir(prefix: string): string {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix));
+  onTestFinished(() => removeTree(dir));
+  return dir;
+}
+
+// A folder in Temp, named by the prefix, removed when the file's tests end: made at the top of a file, in a describe's
+// body or inside a beforeAll. A hook cannot register another from inside a beforeAll (Vitest 5.0.3 puts an afterAll
+// called while the tests run on a list it never runs again), so the removal is one afterAll, registered here when this
+// module is loaded, which is while a test file is collected: Vitest loads this module afresh for each test file
+// (isolate, its default). It runs after the file's own afterAll hooks, the newest of which run first.
+const fileFolders: string[] = [];
+afterAll(async () => {
+  for (const dir of fileFolders.splice(0)) await removeTree(dir);
+});
+export function fileTempDir(prefix: string): string {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix));
+  fileFolders.push(dir);
+  return dir;
 }
 
 export const ZERO = String.fromCharCode(0);
