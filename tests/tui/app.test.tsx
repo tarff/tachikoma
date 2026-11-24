@@ -15376,6 +15376,33 @@ describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_00
     expect(unhandled).toEqual([]);
   });
 
+  // Codex review of 8e, point 2: the deciding ends as leaving starts, not only once the window has closed, so nothing
+  // applies while SessionEnd's hooks still run.
+  it("ends a ConfigChange hook still deciding once /exit starts leaving, while SessionEnd's hook runs, applying no save then", async () => {
+    let go!: () => void;
+    let end!: () => void;
+    const runs = configRuns(
+      (r) => new Promise<Ran>((resolve) => (r.event === "SessionEnd" ? (end = () => resolve(ran())) : (go = () => resolve(ran())))),
+      ["ConfigChange", "SessionEnd"],
+    );
+    const ending: Hook = { event: "SessionEnd", matcher: { all: true }, command: "on-end", async: false, where: "" };
+    const { app, session, hand } = await launch("{}", { hooks: [configHook(), ending] });
+    hand(json({ autoCompactWindow: 100000 }));
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    await type(app, "/exit");
+    await waitFor(() => runs.some((r) => r.event === "SessionEnd"));
+    expect(runs[0]!.stopped).toBe(true);
+    go();
+    hand(json({ autoCompactWindow: 300000 }));
+    await tick();
+    await tick();
+    expect([runs.map((r) => r.event), session.autoCompact]).toEqual([["ConfigChange", "SessionEnd"], null]);
+    end();
+    await expectExited(app);
+    expect(session.autoCompact).toBeNull();
+  });
+
   // Codex round 3, point 10: the watcher hands a text on again after it read the file empty (settingsWatch.test.ts).
   it("decides a text handed in again again: a blocked one is blocked again, an applied one applies nothing new", async () => {
     const runs = configRuns(() => (runs.length <= 2 ? ran("", 2, "No") : ran()));

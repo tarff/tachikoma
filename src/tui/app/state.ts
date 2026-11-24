@@ -264,6 +264,10 @@ export function useAppState({
   // Notification's idle_prompt wait (release 8e plan, step 18): its timer, from the end of the lead's turn (queue.ts, idle)
   // until it fires, or a key or paste (keyed), a new turn or the window's closing ends it.
   const idleWait = useRef<NodeJS.Timeout | undefined>(undefined);
+  // The stop of ConfigChange's deciding of the settings file's reads (release 8e plan, step 16; liveEdits.ts,
+  // configChanges), set where the watching starts (App.tsx), so the window's closing ends it as it starts (queue.ts,
+  // leave; Codex review of 8e, point 2).
+  const settingsStop = useRef<(() => void) | undefined>(undefined);
   const keyed = () => {
     clearTimeout(idleWait.current);
     const w = notifyWait.current;
@@ -368,7 +372,7 @@ export function useAppState({
     happening, late, toolLine, answered, run, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
     editingBack, leftLines, closeMemory, memory,
     hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm, palette, lastSaid, command,
-    formOpen, notifyWait, waitOn, keyed, idleWait,
+    formOpen, notifyWait, waitOn, keyed, idleWait, settingsStop,
   } as const;
 }
 
