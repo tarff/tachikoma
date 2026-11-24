@@ -1048,21 +1048,28 @@ export class Session {
       // after them is taken once it has answered, as without one, and saved in a joined line, which a resume adds back
       // (transcript.ts), the window told of the message once, whole, as before (Codex review 3 of 8e, point 1, the user's
       // choice).
+      // The set whenever a search grew it, after the results' line (release 8c plan, Task 6b), so before the hook's wait
+      // too, as the results are (Codex review 4 of 8e, point 1).
+      const grown = () => {
+        if (!this.opts.mcp || this.opts.mcp.loaded.size === loaded) return;
+        this.#transcript?.write({ t: "loaded", names: [...this.opts.mcp.loaded] });
+        this.#saving();
+      };
       const hooked = hooks?.has("PostToolBatch", "") && !round.stopped && !signal?.aborted;
       const message: Message = { role: "user", parts: [...results, ...round.pictures] };
-      if (hooked) this.#push(message, false);
+      if (hooked) {
+        this.#push(message, false);
+        grown();
+      }
       const batch = hooks && hooked ? await this.#postToolBatch(hooks, calls, entries, results, signal) : undefined;
       if (batch) this.#hookText.push(...batch.context);
       const rest = [...this.#hookParts(), ...this.#switchParts(), ...this.#waiting(), ...this.#notes()];
-      if (!hooked) this.#push({ ...message, parts: [...message.parts, ...rest] });
-      else {
+      if (!hooked) {
+        this.#push({ ...message, parts: [...message.parts, ...rest] });
+        grown();
+      } else {
         if (rest.length) this.#join(message, rest);
         this.opts.bus.emit("message", message);
-      }
-      // The set whenever a search grew it, after the results' line (release 8c plan, Task 6b).
-      if (this.opts.mcp && this.opts.mcp.loaded.size !== loaded) {
-        this.#transcript?.write({ t: "loaded", names: [...this.opts.mcp.loaded] });
-        this.#saving();
       }
       // Every call has its one result, saved, before the turn ends (design, review finding 1).
       if (round.stopped) {

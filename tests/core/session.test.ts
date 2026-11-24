@@ -4649,13 +4649,34 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   describe("the results saved before PostToolBatch", () => {
     const result = { type: "tool_result", callId: "c1", output: "ran echo hi", isError: false };
     const savedLines = (file: string) => readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
-    async function saving(says: Says[]) {
+    async function saving(says: Says[], more: { turns?: Turn[]; mcp?: McpTools } = {}) {
       const p = pathsOf(path.join(await folder(), "s1.jsonl"));
       const transcript = new Transcript(p.file, p.pictures);
       transcript.write({ t: "start", v: 1, id: "s1", project: "p", lead: "fake:a", version: "0.8.0", print: false, system: "test", tools: [] });
-      const s = await setup({ mode: "never", says, turns: shellCall("echo hi"), transcript });
+      const s = await setup({ mode: "never", says, turns: more.turns ?? shellCall("echo hi"), transcript, ...(more.mcp ? { mcp: more.mcp } : {}) });
       return { ...s, p };
     }
+
+    // Codex review 4 of 8e, point 1: the MCP tools a search loaded are saved with the results, before the hook's wait,
+    // so a crash meanwhile resumes with them offered; and once for the round.
+    it("saves the loaded line a tool search grew before the hook answers, once", async () => {
+      const go = path.join(await folder(), "go");
+      const found = new Set<string>();
+      const search = defineTool("tool_search", "Finds MCP tools", z.object({ query: z.string() }), async () => (found.add("mcp__docs__lookup"), "Loaded mcp__docs__lookup"));
+      const mcp: McpTools = { loaded: found, offer: () => ({ defined: [], search }), tool: () => { throw new Error("not offered"); } };
+      const s = await saving([batchSays("", { go })], { turns: oneCall("tool_search", { query: "docs" }), mcp });
+      const sending = s.session.send("go");
+      try {
+        await vi.waitFor(() => {
+          expect(batches(s)).toHaveLength(1);
+          expect(savedLines(s.p.file).slice(-2)).toMatchObject([{ t: "message", message: { role: "user" } }, { t: "loaded", names: ["mcp__docs__lookup"] }]);
+        }, { timeout: 10_000 });
+      } finally {
+        writeFileSync(go, "");
+      }
+      expect(await sending).toBeUndefined();
+      expect(savedLines(s.p.file).filter((l) => l.t === "loaded")).toHaveLength(1);
+    });
 
     it("saves the results while the hook is still running, and its text after, in a joined line a resume adds back", async () => {
       const go = path.join(await folder(), "go");
