@@ -652,6 +652,8 @@ export const queue = (ui: UI, fns: Fns) => {
       // After a cut the status line's number is 0 until the next reply: the kept request's size instead, null with no
       // rate to work it out by (release 8e plan, step 14's review; the user's choice).
       const kept = room ? ui.session.keptSize : undefined;
+      // An effort saved meanwhile is the new lead's too, as make gives it (output.ts; Codex review 5 of 8e, point 2).
+      if (ui.effortNow.current) provider.setEffort?.(ui.effortNow.current.effort);
       return ui.session.setLead(provider, switched(provider, source, spec, kept === undefined ? ui.stats.context : kept));
     }
     fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "error" });

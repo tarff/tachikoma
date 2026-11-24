@@ -296,6 +296,9 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       const fields = provider.id === lead.id ? undefined : switchFields({
         from: lead.id, to: provider.id, source: "command", requested: spec, contextTokens: ui.stats.context, lastReply: ui.session.lastReply,
       });
+      // An effort saved while the hooks decided is the new lead's too, as make gives it (output.ts; Codex review 5 of 8e,
+      // point 2).
+      if (ui.effortNow.current) provider.setEffort?.(ui.effortNow.current.effort);
       ui.leadFromFile.current = true; // read by onLead while setLead runs: the bus calls its handlers at once
       ui.session.setLead(provider, fields);
       ui.leadFromFile.current = false;

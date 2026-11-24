@@ -15462,6 +15462,31 @@ describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_00
     await expectExited(app);
   });
 
+  // Codex review 5 of 8e, point 2: an effort saved while a PreModelSwitch hook decides a switch is the new lead's too,
+  // whichever way the switch was asked for: /lead, or the file's lead.
+  it.each(["/lead", "the file's lead"])("gives the new lead of a switch by %s the effort saved while its PreModelSwitch hook decided", async (how) => {
+    class Effortful extends FakeProvider {
+      effort: Provider["effort"];
+      setEffort(effort: Provider["effort"]) {
+        this.effort = effort;
+      }
+    }
+    const b = new Effortful("b", []);
+    let go!: () => void;
+    const runs = configRuns(() => new Promise<Ran>((resolve) => (go = () => resolve(ran()))), ["PreModelSwitch"]);
+    const switchHook: Hook = { event: "PreModelSwitch", matcher: { all: true }, command: "check-switch", async: false, where: "" };
+    const { app, session, hand } = await launch("{}", { hooks: [switchHook], mount: { newLead: b } });
+    if (how === "/lead") await type(app, "/lead ollama:b");
+    else hand(json({ lead: "ollama:b" }));
+    await waitFor(() => runs.length === 1);
+    hand(json({ ...(how === "/lead" ? {} : { lead: "ollama:b" }), effort: "low" }));
+    await sees(app, `effort is now low ${FROM}`);
+    expect(b.effort).toBeUndefined();
+    go();
+    await vi.waitFor(() => expect(session.lead).toBe(b), WATCHED);
+    expect(b.effort).toBe("low");
+  });
+
   // Codex review of 8e, round 2 (the user's choice): leaving ends only ConfigChange's deciding; with no ConfigChange hook
   // in force, a save still applies at once, as before.
   it("still applies at once a save made after /exit starts leaving, while SessionEnd's hook runs, with no ConfigChange hook", async () => {
