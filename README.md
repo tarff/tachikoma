@@ -1612,7 +1612,9 @@ there decides nothing, and one that tries is reported as asking to block or stop
     newer one takes the waiting one's place, so an older save never lands after a newer one. A
     change that removes the ConfigChange hook is decided by that hook, as it is still in force.
   - **Closing the window** while its hooks decide stops them, and neither that change nor a
-    waiting one applies.
+    waiting one applies. Once the window has started closing, a save a ConfigChange hook would
+    decide does not apply and runs no hook, and Tachikoma says `This settings change was not
+    applied, as the window is closing.`; a save with no ConfigChange hook still applies at once.
 
 ### Where hooks run
 
