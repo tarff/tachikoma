@@ -15403,6 +15403,21 @@ describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_00
     expect(session.autoCompact).toBeNull();
   });
 
+  // Codex review of 8e, round 2 (the user's choice): leaving ends only ConfigChange's deciding; with no ConfigChange hook
+  // in force, a save still applies at once, as before.
+  it("still applies at once a save made after /exit starts leaving, while SessionEnd's hook runs, with no ConfigChange hook", async () => {
+    let end!: () => void;
+    const runs = configRuns(() => new Promise<Ran>((resolve) => (end = () => resolve(ran()))), ["SessionEnd"]);
+    const ending: Hook = { event: "SessionEnd", matcher: { all: true }, command: "on-end", async: false, where: "" };
+    const { app, session, hand } = await launch("{}", { hooks: [ending] });
+    await type(app, "/exit");
+    await waitFor(() => runs.length === 1);
+    hand(json({ autoCompactWindow: 200000 }));
+    await vi.waitFor(() => expect(session.autoCompact).toBe(200_000), WATCHED);
+    end();
+    await expectExited(app);
+  });
+
   // Codex round 3, point 10: the watcher hands a text on again after it read the file empty (settingsWatch.test.ts).
   it("decides a text handed in again again: a blocked one is blocked again, an applied one applies nothing new", async () => {
     const runs = configRuns(() => (runs.length <= 2 ? ran("", 2, "No") : ran()));

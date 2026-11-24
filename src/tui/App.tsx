@@ -543,7 +543,7 @@ export function App(props: AppProps) {
     // ConfigChange's to decide first, stopped where the watching stops (release 8e plan, step 16).
     let unwatch: (() => void) | undefined;
     const settingsChanges = configChanges(ui, () => latest.current);
-    ui.settingsStop.current = settingsChanges.stop; // leaving stops it too, as it starts (queue.ts, leave)
+    ui.settingsStop.current = settingsChanges.leave; // leaving ends its deciding, as it starts (queue.ts, leave)
     try {
       unwatch =
         ui.live &&

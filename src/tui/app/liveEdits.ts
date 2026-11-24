@@ -38,11 +38,14 @@ const NEXT_LAUNCH: readonly (typeof LIVE)[number][] = ["mode", "sandbox", "netwo
 // does the watcher's first read unless it changes something in force (Q27): an entry that takes effect in this session,
 // a warning or a left-out row; every later good read fires (Q16). One read is decided at a time: one made meanwhile
 // waits, a newer one taking its place, and is decided once the one before has applied or been kept out, against what is
-// in force by then. `stop`, at the window's close, ends the hooks still deciding, as a stop ends a hook, and throws away
-// the read being decided and the one waiting, saying nothing.
+// in force by then. `leave`, as the window starts to close (queue.ts, leave), ends the hooks still deciding, as a stop
+// ends a hook, and throws away the read being decided and the one waiting, saying nothing; a read after it that a hook
+// would decide fires none and applies nothing, and one no hook decides applies at once, as before (Codex review of 8e,
+// round 2, the user's choice). `stop`, at the window's close, does that and takes no read after it.
 export const configChanges = (ui: UI, fns: () => Pick<Fns, "note" | "onSettings">) => {
   const file = path.join(settingsDir(ui.home), SETTINGS);
   const stopped = new AbortController();
+  let closed = false;
   let first = true;
   let deciding = false;
   let waiting: { read: Loaded; first: boolean } | undefined;
@@ -69,6 +72,7 @@ export const configChanges = (ui: UI, fns: () => Pick<Fns, "note" | "onSettings"
   const take = (read: Loaded, isFirst: boolean) => {
     const fires = !("problem" in read) && (!isFirst || inForce(read)) && (ui.hooks?.has("ConfigChange", "user_settings") ?? false);
     if (!fires) return fns().onSettings(read);
+    if (stopped.signal.aborted) return; // leaving (leave, below)
     deciding = true;
     void decide(read)
       .catch((err) => {
@@ -84,18 +88,22 @@ export const configChanges = (ui: UI, fns: () => Pick<Fns, "note" | "onSettings"
   const deliver = (read: Loaded) => {
     const isFirst = first;
     first = false;
-    if (stopped.signal.aborted) return;
+    if (closed) return;
     // A broken read applies nothing, so its red line is said at once, never held behind a decision nor replaced (step
     // 16's review, the user).
     if ("problem" in read) return fns().onSettings(read);
     if (deciding) waiting = { read, first: isFirst };
     else take(read, isFirst);
   };
-  const stop = () => {
+  const leave = () => {
     stopped.abort();
     waiting = undefined;
   };
-  return { deliver, stop };
+  const stop = () => {
+    closed = true;
+    leave();
+  };
+  return { deliver, leave, stop };
 };
 
 export const liveEdits = (ui: UI, fns: Fns) => {

@@ -836,7 +836,7 @@ export const queue = (ui: UI, fns: Fns) => {
     if (ui.leaving.current) return;
     ui.leaving.current = true;
     clearTimeout(ui.idleWait.current); // the window is closing: no idle_prompt (idle, above)
-    ui.settingsStop.current?.(); // nor a settings change still being decided, or read from now on (liveEdits.ts)
+    ui.settingsStop.current?.(); // nor a settings change a ConfigChange hook decides, under way or later (liveEdits.ts)
     ui.tasks.close(); // commands too, unrecorded, so a resume reports them (background commands plan, choice 29, the user's)
     ui.rerender((n) => n + 1);
     const c = ui.copy;
