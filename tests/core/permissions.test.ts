@@ -821,6 +821,21 @@ describe("the gate's PermissionRequest decider", () => {
     expect(log).toEqual(["decider"]);
   });
 
+  // Codex review 2 of 8e, point 1: the same at a PreToolUse hook's ask, which never mode refuses.
+  it.each([
+    { name: "decides nothing", decision: undefined },
+    { name: "allows", decision: { allow: true } as const },
+  ])("refuses a PreToolUse hook's ask under the mode switched to never while the decider runs, when it $name", async ({ decision }) => {
+    const { gate, log } = gateIn("ask");
+    const switching: Decider = async () => {
+      log.push("decider");
+      gate.mode = "never";
+      return decision;
+    };
+    expect(await gate.deciding(switching).putHookAsk("shell {}", "Sure?")).toBe(NEVER);
+    expect(log).toEqual(["decider"]);
+  });
+
   it("runs nothing when a stop comes while the decider runs, at its own question and at a hook's ask", async () => {
     for (const ends of ["rejects", "decides nothing", "allows", "rewrites"] as const) {
       const { gate, log } = gateIn("ask");

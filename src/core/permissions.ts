@@ -355,7 +355,13 @@ export class PermissionGate {
   // yes, and runs with withHook({ asked: true }). A no or the decider's deny throws Declined, its new input StartAgain.
   async putHookAsk(summary: string, reason: string, mcp = false, boxed = false, signal?: AbortSignal): Promise<string | undefined> {
     if (this.#hookNever(mcp, boxed)) return hookNeverRefusal(reason);
-    if (await this.#decided(signal)) return undefined;
+    // A change of the mode or the rules while the decider ran has the ask put again under what is in force now, its
+    // answer kept for the call, as require() does (Codex review 2 of 8e, point 1).
+    const top = this.#parent ?? this;
+    const version = top.#version;
+    const allowed = await this.#decided(signal);
+    if (top.#version !== version) return this.putHookAsk(summary, reason, mcp, boxed, signal);
+    if (allowed) return undefined;
     const cannot = this.hookCannotAsk(reason, mcp, boxed);
     if (cannot !== undefined) return cannot;
     await this.hookAsks(summary, reason);
