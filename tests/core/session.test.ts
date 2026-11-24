@@ -4643,6 +4643,55 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect([s.notes, s.errors]).toEqual([[], []]);
   });
 
+  // Codex review 3 of 8e, point 1 (the user's choice (b)): with a PostToolBatch hook, the results are saved before it
+  // answers, so a crash meanwhile keeps them; what the message takes after them is saved in a joined line, which a resume
+  // adds back to it, so the model is sent the same message, live and resumed.
+  describe("the results saved before PostToolBatch", () => {
+    const result = { type: "tool_result", callId: "c1", output: "ran echo hi", isError: false };
+    const savedLines = (file: string) => readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
+    async function saving(says: Says[]) {
+      const p = pathsOf(path.join(await folder(), "s1.jsonl"));
+      const transcript = new Transcript(p.file, p.pictures);
+      transcript.write({ t: "start", v: 1, id: "s1", project: "p", lead: "fake:a", version: "0.8.0", print: false, system: "test", tools: [] });
+      const s = await setup({ mode: "never", says, turns: shellCall("echo hi"), transcript });
+      return { ...s, p };
+    }
+
+    it("saves the results while the hook is still running, and its text after, in a joined line a resume adds back", async () => {
+      const go = path.join(await folder(), "go");
+      const s = await saving([batchSays(after("PostToolBatch", { additionalContext: "batch checked" }), { go })]);
+      const sending = s.session.send("go");
+      // The hook has its input and is held; the results' line is on disk by then. Let go whatever the checks find.
+      try {
+        await vi.waitFor(() => {
+          expect(batches(s)).toHaveLength(1);
+          expect(savedLines(s.p.file).at(-1)).toMatchObject({ t: "message", message: { role: "user", parts: [result] } });
+        }, { timeout: 10_000 });
+      } finally {
+        writeFileSync(go, "");
+      }
+      expect(await sending).toBeUndefined();
+      expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([result, hookText("PostToolBatch", "batch checked")]);
+      const kinds = savedLines(s.p.file).map((l) => (l.t === "message" ? l.message.role : l.t));
+      expect(kinds).toEqual(["start", "user", "assistant", "user", "joined", "assistant"]);
+      expect(savedLines(s.p.file).find((l) => l.t === "joined")).toMatchObject({ message: { role: "user", parts: [hookText("PostToolBatch", "batch checked")] } });
+      const r = readTranscript(s.p.file, s.p.pictures);
+      if ("problem" in r) throw new Error(r.problem);
+      expect([r.messages, r.damaged]).toEqual([s.session.messages, 0]);
+    });
+
+    it.each<[string, Says[]]>([
+      ["no PostToolBatch hook, with a tool hook's text", [{ event: "PostToolUse", stdout: after("PostToolUse", { additionalContext: "after it ran" }) }]],
+      ["a PostToolBatch hook that adds nothing", [batchSays("")]],
+    ])("writes no joined line with %s, the results' line as before", async (_how, says) => {
+      const s = await saving(says);
+      await s.session.send("go");
+      const saved = savedLines(s.p.file);
+      expect(saved.map((l) => l.t)).toEqual(["start", "message", "message", "message", "message"]);
+      expect(saved[3]).toEqual({ t: "message", at: expect.any(String), message: s.session.messages[2] });
+    });
+  });
+
   it.each<[string, Says, string]>([
     ["a decision block", batchSays(block("Lint first")), "Lint first"],
     ["a continue: false", batchSays(stops("Enough")), "Enough"],

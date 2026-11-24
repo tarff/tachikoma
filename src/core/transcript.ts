@@ -76,7 +76,11 @@ export type Line<M = SavedMessage> =
   // The end of a typed turn, by its number among the prompts, and that turn's saved record, written once every entry of
   // it is in the palace (8d plan, step 22; Q22). An older Tachikoma skips both, counting them as damaged lines (Q17).
   | { t: "turn"; at: string; n: number }
-  | { t: "saved"; at: string; n: number };
+  | { t: "saved"; at: string; n: number }
+  // Parts of the last message line, saved after it: what a tool round's results message takes once its PostToolBatch hook
+  // has answered, the results saved before (Codex review 3 of 8e, point 1, the user's choice). A read adds them back to
+  // that message; an older Tachikoma skips the line, counting it as damaged, as it does turn and saved.
+  | { t: "joined"; at: string; message: M };
 
 // Omit on a union keeps only the shared fields, so each variant is omitted on its own, as boxWorkspace.ts:106 does.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -228,8 +232,9 @@ const own = (p: SavedMessage["parts"][number]) =>
 export function readTranscript(file: string, pictures: string): Read | { problem: string } {
   try {
     const rows = parse(readFileSync(file, "utf8"));
-    const lines = rows.filter((l) => l !== undefined);
-    const damaged = rows.length - lines.length;
+    const read = rows.filter((l) => l !== undefined);
+    const damaged = rows.length - read.length;
+    const lines = joinedIn(read);
     // The start line is written first, once (choice 4); without it there is no system prompt or tool list to go on.
     const start = rows[0];
     if (start?.t !== "start") return { problem: `${file} could not be read as a session (its first line is missing or damaged).` };
@@ -390,6 +395,24 @@ export function wholeLines(file: string): string {
   return text.slice(0, text.lastIndexOf("\n") + 1);
 }
 
+// The lines with each joined line's parts added back to the last message line before it, as the live session holds that
+// message, so every read after sees the one line the session would have written without the wait (Codex review 3 of 8e,
+// point 1). One with no message line before it is left out.
+function joinedIn(lines: Line[]): Line[] {
+  const out: Line[] = [];
+  let last = -1;
+  for (const l of lines) {
+    if (l.t !== "joined") {
+      if (l.t === "message") last = out.length;
+      out.push(l);
+      continue;
+    }
+    const m = out[last];
+    if (m?.t === "message") out[last] = { ...m, message: { ...m.message, parts: [...m.message.parts, ...l.message.parts] } };
+  }
+  return out;
+}
+
 // Each line in the file's order, undefined for a bad one: a killed process or a full disk can leave a half-written line,
 // which is skipped and counted, as the error log skips its own (choice 6).
 function parse(text: string): (Line | undefined)[] {
@@ -437,6 +460,7 @@ function valid(l: unknown): l is Line {
   if (r.t === "command") return strings("id", "command");
   if (r.t === "command-ended") return strings("id") && (r.state === "done" || r.state === "failed" || r.state === "stopped" || r.state === "lost");
   if (r.t === "turn" || r.t === "saved") return Number.isInteger(r.n) && (r.n as number) >= 1;
+  if (r.t === "joined") return isMessage(r.message);
   return false;
 }
 

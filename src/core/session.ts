@@ -1044,14 +1044,21 @@ export class Session {
       // 8e plan, step 11): under the turn's stop, as the reply's own is let go of above, and a stop that ends its hooks keeps
       // nothing of them, the results stored all the same. Only when a hook would run, so the results are otherwise stored
       // at once, as before.
-      const batch = hooks?.has("PostToolBatch", "") && !round.stopped && !signal?.aborted
-        ? await this.#postToolBatch(hooks, calls, entries, results, signal)
-        : undefined;
+      // With one to wait for, the results are saved before it runs, so a crash meanwhile keeps them; what the message takes
+      // after them is taken once it has answered, as without one, and saved in a joined line, which a resume adds back
+      // (transcript.ts), the window told of the message once, whole, as before (Codex review 3 of 8e, point 1, the user's
+      // choice).
+      const hooked = hooks?.has("PostToolBatch", "") && !round.stopped && !signal?.aborted;
+      const message: Message = { role: "user", parts: [...results, ...round.pictures] };
+      if (hooked) this.#push(message, false);
+      const batch = hooks && hooked ? await this.#postToolBatch(hooks, calls, entries, results, signal) : undefined;
       if (batch) this.#hookText.push(...batch.context);
-      this.#push({
-        role: "user",
-        parts: [...results, ...round.pictures, ...this.#hookParts(), ...this.#switchParts(), ...this.#waiting(), ...this.#notes()],
-      });
+      const rest = [...this.#hookParts(), ...this.#switchParts(), ...this.#waiting(), ...this.#notes()];
+      if (!hooked) this.#push({ ...message, parts: [...message.parts, ...rest] });
+      else {
+        if (rest.length) this.#join(message, rest);
+        this.opts.bus.emit("message", message);
+      }
       // The set whenever a search grew it, after the results' line (release 8c plan, Task 6b).
       if (this.opts.mcp && this.opts.mcp.loaded.size !== loaded) {
         this.#transcript?.write({ t: "loaded", names: [...this.opts.mcp.loaded] });
@@ -1886,12 +1893,23 @@ export class Session {
 
   // The line is written before the event, so every message is on disk before anything else sees it (release 8a plan,
   // choice 4). A failed write stops saving and never the turn (transcript.ts).
-  #push(message: Message): void {
+  // `tell`: false when the caller tells of it once the parts joined to it are in (the PostToolBatch round).
+  #push(message: Message, tell = true): void {
     for (const p of message.parts) if (p.type === "image") this.#lastPicture = Math.max(this.#lastPicture, p.id);
     this.messages.push(message);
     if (this.#told) this.#told = toldAfter(this.#told, message.parts);
     this.#transcript?.write({ t: "message", message });
-    this.opts.bus.emit("message", message);
+    if (tell) this.opts.bus.emit("message", message);
+    this.#saving();
+  }
+
+  // Parts the message last pushed takes after its line was written (the PostToolBatch round): added to it, and saved in a
+  // joined line, which a resume adds back to that message (transcript.ts; Codex review 3 of 8e, point 1).
+  #join(message: Message, parts: Part[]): void {
+    for (const p of parts) if (p.type === "image") this.#lastPicture = Math.max(this.#lastPicture, p.id);
+    message.parts.push(...parts);
+    if (this.#told) this.#told = toldAfter(this.#told, parts);
+    this.#transcript?.write({ t: "joined", message: { role: message.role, parts } });
     this.#saving();
   }
 
