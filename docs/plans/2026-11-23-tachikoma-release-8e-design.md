@@ -359,7 +359,10 @@ to a1c0c3f on `release-8e`, with their review fixes.
 - **PreModelSwitch** cancels on exit code 2, a top-level `"decision": "block"` or a deny; deny wins
   over ask, ask over allow, and the first hook in the file gives the reason. The old top-level
   `"approve"` counts only at PreToolUse; at PreModelSwitch it decides nothing (the user's choice at
-  step 3's review, 2026-11-23). `"permissionDecision": "defer"` is unreadable JSON there.
+  step 3's review, 2026-11-23). `"permissionDecision": "defer"` is unreadable JSON there. Within
+  one hook's answer, a top-level `"decision": "block"` wins over a `permissionDecision` of allow or
+  ask beside it, and the block's `reason` is used (Codex's second review; the user's choice,
+  2026-11-24).
 - **`"onFailure": "block"`** (Q28, 2026-11-23) makes a failure a block at PreModelSwitch,
   PostToolBatch and ConfigChange, a time-out included at the last two, as in 8b. At
   PermissionRequest a failure never refuses the call, and at the other five new events `onFailure`
@@ -432,7 +435,9 @@ to a1c0c3f on `release-8e`, with their review fixes.
   the final review, 2026-11-24): the gate checks the call again after the hook, under the mode and
   rules in force then, even after the hook's allow, so after a switch to `never` never's refusals
   win, and after a switch to `auto` the judge decides. The hook is not fired twice. This narrows
-  Q5's "an allow covers every question of that call" to calls whose mode does not change.
+  Q5's "an allow covers every question of that call" to calls whose mode does not change. The
+  same recheck covers a PreToolUse hook's ask, so after a switch to `never` during the hook,
+  never's refusal wins (Codex's second review; the user's choice, 2026-11-24).
 
 **The turn's end, and tool batches** (steps 10 and 11)
 - **StopFailure only for the table's four rows** (Q8, 2026-11-23). It fires nothing for a
