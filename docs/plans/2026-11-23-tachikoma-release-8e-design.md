@@ -428,6 +428,11 @@ to a1c0c3f on `release-8e`, with their review fixes.
   that the sentence is never what is cut off. A subagent's refusal fires PermissionDenied too, with
   its `agent_id`. A failure that is not a stop gives a red line, "PermissionDenied hook failed:
   ...", and the refusal goes back unchanged.
+- **A mode or rules change while PermissionRequest decides** (Codex's review; the user's choice at
+  the final review, 2026-11-24): the gate checks the call again after the hook, under the mode and
+  rules in force then, even after the hook's allow, so after a switch to `never` never's refusals
+  win, and after a switch to `auto` the judge decides. The hook is not fired twice. This narrows
+  Q5's "an allow covers every question of that call" to calls whose mode does not change.
 
 **The turn's end, and tool batches** (steps 10 and 11)
 - **StopFailure only for the table's four rows** (Q8, 2026-11-23). It fires nothing for a
@@ -619,6 +624,11 @@ to a1c0c3f on `release-8e`, with their review fixes.
   under the window's own stop, and closing the window, which the window's exit also does, stops a
   decision under way and drops the waiting save: neither applies and nothing is said. `-p` does not
   watch the file.
+- **Leaving stops a ConfigChange decision under way** (Codex's review; the user's choice at the
+  final review, 2026-11-24): as `/exit`, or Ctrl-C or Ctrl-D twice, starts leaving, before copy
+  mode's review and SessionEnd, a decision under way is stopped and the save waiting behind it is
+  dropped, saying nothing. A later save that a ConfigChange hook would decide fires no hook and
+  applies nothing; with no ConfigChange hook in force a save still applies at once, as before.
 - **A save that changes both the hooks and the lead** (step 16) is decided by the hooks in force:
   blocked, it runs no PreModelSwitch and the lead stays; allowed, its own hooks are in force for the
   switch.
