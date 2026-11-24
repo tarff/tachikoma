@@ -475,6 +475,15 @@ to a1c0c3f on `release-8e`, with their review fixes.
   results are stored with no extra wait. It does not fire after a tool hook's `"continue": false` or
   a PermissionRequest `interrupt`, after the user's stop, or for a reply the provider cut off, whose
   calls did not run.
+- **Results saved before PostToolBatch** (Codex review 3 of 8e, point 1, the user's choice (b)):
+  with a PostToolBatch hook in force, the tool round's results are written before the hook runs, so
+  a crash during it keeps them. What the message takes after the hook (the hooks' text, a switch's
+  text, waiting answers, notes) is written as a `joined` line that a resume adds back to that
+  message, passing over harmless lines written in between, such as `saved` or `command-ended`. A
+  joined line whose message line is damaged or missing, or with another joined line or a damaged
+  line between them, is dropped and counted as damaged (the user's choice at the re-check,
+  2026-11-24). An older Tachikoma skips the line and reports it as damaged, so it shows the results
+  without that text.
 - **`tool_response`** (Q30, 2026-11-23) is the result text as stored, with nothing put in front for
   a failed call, the same whatever model leads; so a used PostToolUse `updatedToolOutput`, and the
   lessons memory adds to a failure, are part of it.
