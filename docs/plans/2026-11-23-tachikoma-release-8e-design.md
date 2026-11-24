@@ -321,10 +321,10 @@ and its date: all were answered on 2026-11-23, at the plan's approval and after 
 outside reviews. D1 to D9 are the plan's checks against Claude Code's hooks reference, read the same
 day. "The user's choice" marks an answer given at a step's review during the build: on 2026-11-23
 for steps 1 to 15, on 2026-11-24 for steps 16 to 20. No figure here was measured for Tachikoma: the
-30 s, 6 s, 60 s and 5 s are Claude Code's documented values and the 5 minutes is the design's, as
-"Sources" says; the 600 s is 8b's usual limit; and the test clean-up's 5 s (under "Tests") is
-carried over from existing test code. Steps 1 to 20 are d17a4d0 to a1c0c3f on `release-8e`, with
-their review fixes.
+30 s, 6 s, 60 s and 5 s are Claude Code's documented values, as "Sources" says; the 5 minutes is
+the design's own figure (its `prompt_cache_warm` line); the 600 s is 8b's usual limit; and the test
+clean-up's 5 s (under "Tests") is carried over from existing test code. Steps 1 to 20 are d17a4d0
+to a1c0c3f on `release-8e`, with their review fixes.
 
 **The settings side and warnings**
 - **FileChanged and CwdChanged** (Q1, 2026-11-23; step 1): at the launch each warning is
@@ -360,8 +360,6 @@ their review fixes.
   over ask, ask over allow, and the first hook in the file gives the reason. The old top-level
   `"approve"` counts only at PreToolUse; at PreModelSwitch it decides nothing (the user's choice at
   step 3's review, 2026-11-23). `"permissionDecision": "defer"` is unreadable JSON there.
-- **A PreModelSwitch time-out** (Q13, 2026-11-23) of a hook that is not `async` gives the red
-  time-out line and cancels the switch, with or without `onFailure`.
 - **`"onFailure": "block"`** (Q28, 2026-11-23) makes a failure a block at PreModelSwitch,
   PostToolBatch and ConfigChange, a time-out included at the last two, as in 8b. At
   PermissionRequest a failure never refuses the call, and at the other five new events `onFailure`
@@ -418,8 +416,8 @@ their review fixes.
   review, 2026-11-23).
 - **Known limit, the tool row after a restart:** the row on screen still names the call's original
   target, as after 8b's PreToolUse rewrite (the user's choice at step 9's review, 2026-11-23).
-- **Tool names:** W1's `<tool>` is Tachikoma's name (`shell`, `read_file`), as 8b's PreToolUse lines
-  are; Notification's `permission_prompt` message uses Claude Code's (`Bash`, Q17).
+- **Tool names** (step 8): W1's `<tool>` is Tachikoma's name (`shell`, `read_file`), as 8b's
+  PreToolUse lines are; Notification's `permission_prompt` message uses Claude Code's (`Bash`, Q17).
 - **`mcp_server`** at PermissionRequest and PermissionDenied is the server's name as written in the
   settings file, the name Elicitation's `mcp_server_name` sends (the user's choice at step 6's
   review, 2026-11-23). PreToolUse and PostToolUse do not send it.
@@ -441,8 +439,8 @@ their review fixes.
   OpenAI's and Ollama's `length`, ChatGPT's `max_output_tokens`. ChatGPT's other early stops keep
   their kind and words, unmarked. The one-line changes to `src/providers/anthropic.ts` and
   `src/providers/openai.ts` are outside the plan's list of files; its approach named them.
-- **A stopped turn fires nothing:** the user's stop during the request, Ctrl-C at "send again
-  without the pictures", and a stop during the fallback's request. A "yes" there whose second
+- **A stopped turn fires nothing** (step 10): the user's stop during the request, Ctrl-C at "send
+  again without the pictures", and a stop during the fallback's request. A "yes" there whose second
   request fails fires once, with the second failure.
 - **Statuses** (step 10): "any 5xx" is 500 to 599, and any status the table does not name, such as
   408, 409, 413 or 422, sends `"unknown"` (the user's choice at step 10, 2026-11-23).
@@ -450,21 +448,22 @@ their review fixes.
   refuses, one StopFailure (`unknown`) is sent the lead's refusal, its line and its detail.
 - **A reply that fills the window** (Q22, 2026-11-23) sends `max_output_tokens`, in an unsaved
   session too, and so does a fallback's reply that fills it.
-- **Still too long after a shortening** sends `invalid_request`, with the provider's "too long"
-  message as `error_details`, even where the line shown is Tachikoma's own.
+- **Still too long after a shortening** (step 10) sends `invalid_request`, with the provider's "too
+  long" message as `error_details`, even where the line shown is Tachikoma's own.
 - **`last_assistant_message`** (Q9, 2026-11-23) is the window's line without its `✗ ` mark,
   escaped as the window shows it and without an ending line break the window drops (the user's
   choices at step 10's review, 2026-11-23), so the hook gets the characters on screen;
   `error_details` stays the provider's message as sent. In `-p` the printed line keeps any ending
   line breaks of the provider's message (left as it is, the user's choice, 2026-11-23), so the two
   can differ by those breaks alone.
-- **Order and waiting:** the red line is shown first, then StopFailure runs, waited for as Stop is.
+- **Order and waiting** (step 10): the red line is shown first, then StopFailure runs, waited for as
+  Stop is.
 - **Subagents fire none.** Since step 13's review a subagent skips the call itself at all seven
   places, which restored the end-of-turn timing a step 10 change had given subagents; an app test
   failing from step 10 on showed it (the user's choice at step 13's review, 2026-11-23; 0907480).
-- **PostToolBatch fires only when a PostToolBatch hook is in force,** so without one the results are
-  stored with no extra wait. It does not fire after a tool hook's `"continue": false` or a
-  PermissionRequest `interrupt`, after the user's stop, or for a reply the provider cut off, whose
+- **PostToolBatch fires only when a PostToolBatch hook is in force** (step 11), so without one the
+  results are stored with no extra wait. It does not fire after a tool hook's `"continue": false` or
+  a PermissionRequest `interrupt`, after the user's stop, or for a reply the provider cut off, whose
   calls did not run.
 - **`tool_response`** (Q30, 2026-11-23) is the result text as stored, with nothing put in front for
   a failed call, the same whatever model leads; so a used PostToolUse `updatedToolOutput`, and the
@@ -473,9 +472,9 @@ their review fixes.
   that is, a turn of background answers included (Q29, 2026-11-23). An end with no reason sends the
   grey line the user sees, "A PostToolBatch hook stopped the turn." (the user's choice at step 11's
   review, 2026-11-23). A subagent keeps none, and `/clear`, `/resume` and `/branch` drop it.
-- **A stop while PostToolBatch runs** stores the results all the same and ends the turn with no
-  line, keeping nothing of the hook. A failure that is not a stop gives a red line, "PostToolBatch
-  hook failed: ...", and the turn goes on.
+- **A stop while PostToolBatch runs** (step 11) stores the results all the same and ends the turn
+  with no line, keeping nothing of the hook. A failure that is not a stop gives a red line,
+  "PostToolBatch hook failed: ...", and the turn goes on.
 - **In `-p`** a turn a PostToolBatch hook ends gives exit code 1, as any turn ended so does. This is
   read from the code, not run in `-p` (step 19).
 
@@ -505,6 +504,13 @@ their review fixes.
   naming the model already leading, in the same spelling or another that comes to the same id,
   fires neither event, and the "lead is now" line stays. A dated and an undated Anthropic name are
   two ids, so a switch between them fires both events, though one matcher matches both.
+- **A PreModelSwitch time-out** (Q13, 2026-11-23) of a hook that is not `async` gives the red
+  time-out line and cancels the switch, with or without `onFailure`.
+- **Anthropic's own fallback runs no switch hook** (design, "Switching the lead model", line 165).
+  When Anthropic's server-side fallback (`src/providers/anthropic.ts`, `fallbacks: "default"`)
+  answers a refused request on another model, the window shows a notice line and the lead stays as
+  it is; the switch events fire only where the window changes the lead (`/lead`, the model list, the
+  settings file, `/resume`). This is read from the code; no test drives it.
 - **PreModelSwitch's lines** name the model by its provider id, as "lead is now" does. A full stop
   follows a reason only when the reason does not end in ".", "!" or "?" (the user's choice at step
   13's review, 2026-11-23). Esc while the hooks run cancels the switch and says nothing; at the
@@ -525,8 +531,8 @@ their review fixes.
   no prompt of the user's, such as one of background answers, does not wait and takes only text
   already there. Esc during the wait sends nothing and records no prompt; the switch's text is kept
   for the next request (c2cd91d's message corrects 93d22d4's on this).
-- **PostModelSwitch's runs** are not waited for, are stopped at exit, and are listed in Ctrl+O with
-  the list on screen, as PreModelSwitch's are, not with the next turn.
+- **PostModelSwitch's runs** (step 14) are not waited for, are stopped at exit, and are listed in
+  Ctrl+O with the list on screen, as PreModelSwitch's are, not with the next turn.
 - **`context_tokens` after a `/lead` that shortened the conversation** (the user's choice at step
   14's review, 2026-11-23): PostModelSwitch is sent the estimate the fit check makes for the kept
   request, its characters times the tokens per character learned from the old lead's replies, with
@@ -597,16 +603,17 @@ their review fixes.
   or a kind switched back on (the user's choice at step 16's review, 2026-11-24). Known limits: an
   edit made before that first read that changes only spacing, only such an entry, or only loosens
   `dangerousCommands` fires nothing.
-- **The same text saved again** fires nothing, as the watcher passes a text on only when it differs
-  from the last it read. It is passed on again, and fires again, blocked or applied, only if the
-  watcher happened to read the file while an editor had it empty; that is a matter of timing, so it
-  is not promised either way. An empty file fires nothing and applies nothing.
+- **The same text saved again** (step 16) fires nothing, as the watcher passes a text on only when
+  it differs from the last it read. It is passed on again, and fires again, blocked or applied, only
+  if the watcher happened to read the file while an editor had it empty; that is a matter of timing,
+  so it is not promised either way. An empty file fires nothing and applies nothing.
 - **A ConfigChange being decided is stopped at close and exit** (step 16): its hooks are waited for
   under the window's own stop, and closing the window, which the window's exit also does, stops a
   decision under way and drops the waiting save: neither applies and nothing is said. `-p` does not
   watch the file.
-- **A save that changes both the hooks and the lead** is decided by the hooks in force: blocked, it
-  runs no PreModelSwitch and the lead stays; allowed, its own hooks are in force for the switch.
+- **A save that changes both the hooks and the lead** (step 16) is decided by the hooks in force:
+  blocked, it runs no PreModelSwitch and the lead stays; allowed, its own hooks are in force for the
+  switch.
 
 **What the user sees** (W1 to W9)
 - **W1 to W8** (Q19, 2026-11-23) are used word for word. W8's rows with no reason drop the reason
@@ -624,8 +631,12 @@ their review fixes.
   decides. Its commits are d58f9ee, 8cde83b, baf77d9, dfbf07d and 99a5c12.
 
 **Tests**
-- **No real waits** (design, "Testing"): every 6 s, 60 s, 5 s and 30 s wait is tested on a fake
-  clock, and nothing ran under load.
+- **Waits on a fake clock** (design, "Testing"; steps 13, 14, 17 and 18): Notification's 6 s and
+  60 s, PostModelSwitch's 5 s wait for the prompt's request (`SWITCH_WAIT`, `src/core/session.ts`)
+  and PreModelSwitch's 30 s time-out are tested on a fake clock. PostModelSwitch's 30 s is checked
+  only as the limit handed to the hook runner, not run out. The exception is a real wait: the test
+  clean-up's wait of up to 5 s for the stand-in to exit (below), which is not the switch's 5 s.
+  Nothing ran under load.
 - **Step 20's outcome:** typecheck and build passed, and the whole suite, run with CI's command,
   which leaves out `tests/tui/external.test.ts`, on 083aebb: "the full run had 1 file time out;
   each passed when run alone". The file is `tests/cli.test.ts`: its `--max-tasks` and `--raw` tests
@@ -634,10 +645,12 @@ their review fixes.
   list. This is not "all pass". The later commits 78469c2 and a1c0c3f changed tests only and had no
   full run, by the user's choice (2026-11-24); the files that use the stand-in box were each run
   alone and passed. CI runs the suite again at the pull request.
-- **The first full run** (on 99a5c12) also found two failures. The two tests in
-  `tests/hooks/mcp.test.ts` (above) were fixed in the tests, the code staying as step 15 built it
-  (the user's choice, 2026-11-24; 55c7200). A folder clean-up in `tests/mcp/servers.test.ts` failed
-  with EBUSY and passed alone; for it the stand-in box's server now works in the temp folder
+- **The first full run** (on 99a5c12) failed six tests in three files: two in
+  `tests/hooks/mcp.test.ts`, two folder clean-ups in `tests/mcp/servers.test.ts`, and the same two
+  `tests/cli.test.ts` 15 s time-outs, which passed when the file ran alone. The two tests in
+  `tests/hooks/mcp.test.ts` (above) failed every time and were fixed in the tests, the code staying
+  as step 15 built it (the user's choice, 2026-11-24; 55c7200). The two clean-ups failed with EBUSY
+  and passed alone; for them the stand-in box's server now works in the temp folder
   (083aebb), the clean-up waits for the stand-in to exit (78469c2), and that wait also ends when
   PowerShell cannot start (a1c0c3f), all by the user's choices of 2026-11-24. The failure did not
   show on a quiet machine, so one passing run cannot prove it fixed.
