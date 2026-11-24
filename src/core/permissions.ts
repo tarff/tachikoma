@@ -410,8 +410,12 @@ export class PermissionGate {
     const note = pause === null ? descriptionNote(action.note) : `Auto mode paused after ${pause.count} refusals; approving this resumes it.`;
     // The call's PermissionRequest decider first, here and headless before the ask's refusal (release 8e plan, step 7). Its
     // allow skips the question, its red lines and -p's refusal of a danger, and lifts no pause: only the user's yes does
-    // (Q6).
-    if (await this.#decided(signal)) return;
+    // (Q6). A change of the mode or the rules while it ran, as while the judge decides, has the call decided again under
+    // what is in force now, its answer kept for the call, so it is not asked again (Codex review of 8e, point 1).
+    const version = top.#version;
+    const allowed = await this.#decided(signal);
+    if (top.#version !== version) return this.require(action, signal);
+    if (allowed) return;
     const yes = await this.ask(shown, action.detail, undefined, undefined, warnings, note, pause === null && action.kind === "mcp");
     // Headless, the ask is the launch's report of a refusal (cli.tsx), so the run fails and says so; a danger is
     // refused whatever it answers.

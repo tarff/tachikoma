@@ -803,6 +803,24 @@ describe("the gate's PermissionRequest decider", () => {
     expect([log, notes, judged.length]).toEqual([["decider", "decider", "asked: read /q/a.txt"], [PAUSED], 4]);
   });
 
+  // Codex review of 8e, point 1: a mode switched while the decider runs, by Shift+Tab, is the one the call is decided
+  // under, as a judge's answer is rechecked, and the decider is not asked again.
+  it.each([
+    { name: "decides nothing", decision: undefined },
+    { name: "allows", decision: { allow: true } as const },
+  ])("decides the call again under the mode switched to never while the decider runs, when it $name", async ({ decision }) => {
+    const { gate, log } = gateIn("ask");
+    const switching: Decider = async () => {
+      log.push("decider");
+      gate.mode = "never";
+      return decision;
+    };
+    const call = gate.deciding(switching);
+    await expect(call.require(run(push))).rejects.toThrow(/^Not allowed: this command matches the dangerous-command check/);
+    await call.require(run("echo hi"));
+    expect(log).toEqual(["decider"]);
+  });
+
   it("runs nothing when a stop comes while the decider runs, at its own question and at a hook's ask", async () => {
     for (const ends of ["rejects", "decides nothing", "allows", "rewrites"] as const) {
       const { gate, log } = gateIn("ask");
