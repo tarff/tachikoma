@@ -232,9 +232,8 @@ const own = (p: SavedMessage["parts"][number]) =>
 export function readTranscript(file: string, pictures: string): Read | { problem: string } {
   try {
     const rows = parse(readFileSync(file, "utf8"));
-    const read = rows.filter((l) => l !== undefined);
-    const damaged = rows.length - read.length;
-    const lines = joinedIn(read);
+    const { lines, dropped } = joinedIn(rows);
+    const damaged = rows.filter((l) => l === undefined).length + dropped;
     // The start line is written first, once (choice 4); without it there is no system prompt or tool list to go on.
     const start = rows[0];
     if (start?.t !== "start") return { problem: `${file} could not be read as a session (its first line is missing or damaged).` };
@@ -395,22 +394,27 @@ export function wholeLines(file: string): string {
   return text.slice(0, text.lastIndexOf("\n") + 1);
 }
 
-// The lines with each joined line's parts added back to the last message line before it, as the live session holds that
+// The good lines, each joined line's parts added back to the last message line before it, as the live session holds that
 // message, so every read after sees the one line the session would have written without the wait (Codex review 3 of 8e,
-// point 1). One with no message line before it is left out.
-function joinedIn(lines: Line[]): Line[] {
-  const out: Line[] = [];
-  let last = -1;
-  for (const l of lines) {
-    if (l.t !== "joined") {
-      if (l.t === "message") last = out.length;
-      out.push(l);
+// point 1). Good lines of other kinds between them, as a saved or command-ended line written while the hook ran, are
+// passed over; a damaged line or another joined line between them, or no message line before it, drops it, counted as
+// damaged (`dropped`; the re-check, the user's choice (b)).
+function joinedIn(rows: (Line | undefined)[]): { lines: Line[]; dropped: number } {
+  const lines: Line[] = [];
+  let dropped = 0;
+  let last = -1; // the message line a joined line may fold into; none since a damaged or joined line
+  for (const l of rows) {
+    if (l === undefined || l.t === "joined") {
+      const m = lines[last];
+      if (l && m?.t === "message") lines[last] = { ...m, message: { ...m.message, parts: [...m.message.parts, ...l.message.parts] } };
+      else if (l) dropped++;
+      last = -1;
       continue;
     }
-    const m = out[last];
-    if (m?.t === "message") out[last] = { ...m, message: { ...m.message, parts: [...m.message.parts, ...l.message.parts] } };
+    if (l.t === "message") last = lines.length;
+    lines.push(l);
   }
-  return out;
+  return { lines, dropped };
 }
 
 // Each line in the file's order, undefined for a bad one: a killed process or a full disk can leave a half-written line,

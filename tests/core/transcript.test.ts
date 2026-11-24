@@ -214,6 +214,68 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect(r.damaged).toBe(1);
   });
 
+  // Codex review 3 of 8e, point 1, and its re-check (the user's choice (b)): a joined line's parts fold into the last
+  // message line before it, good lines of other kinds passed over; one with a damaged or another joined line between, or
+  // with no message line before it, is dropped and counted as damaged.
+  describe("a joined line", () => {
+    const hookText = (text: string): Part => ({ type: "text", text: `PostToolBatch hook:\n${text}`, from: "hooks" });
+    const joined = (text: string) => ({ t: "joined" as const, message: { role: "user" as const, parts: [hookText(text)] } });
+    const withHook = (m: Message, text: string): Message => ({ ...m, parts: [...m.parts, hookText(text)] });
+
+    it("folds into its results' line, a saved and a command-ended line between passed over, with nothing damaged", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      for (const message of [prompt("go"), asks("c1", { path: "a" }), answers("c1", "A")]) t.write({ t: "message", message });
+      t.write({ t: "saved", n: 1 });
+      t.write({ t: "command-ended", id: "t1", state: "done" });
+      t.write(joined("checked"));
+      t.write({ t: "message", message: said("done") });
+      const r = read(p);
+      expect([r.messages, r.damaged]).toEqual([[prompt("go"), asks("c1", { path: "a" }), withHook(answers("c1", "A"), "checked"), said("done")], 0]);
+    });
+
+    it("is dropped and counted as damaged with no message line before it", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      t.write(joined("checked"));
+      t.write({ t: "message", message: prompt("go") });
+      const r = read(p);
+      expect([r.messages, r.damaged]).toEqual([[prompt("go")], 1]);
+    });
+
+    it("is dropped and counted after a damaged results' line, never joining an earlier message", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      for (const message of [prompt("go"), asks("c1", { path: "a" }), answers("c1", "A")]) t.write({ t: "message", message });
+      t.write(joined("checked"));
+      t.write({ t: "message", message: said("done") });
+      tear(p.file, 3); // c1's result
+      const r = read(p);
+      expect(r.damaged).toBe(2);
+      expect(r.messages).toEqual([
+        prompt("go"),
+        asks("c1", { path: "a" }),
+        { role: "user", parts: [{ type: "tool_result", callId: "c1", output: UNKNOWN, isError: true }] },
+        said("done"),
+      ]);
+    });
+
+    // The session writes one joined line for a message, so a second one in a row has none of its own.
+    it("folds the first of two joined lines in a row, the second dropped and counted", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      for (const message of [prompt("go"), asks("c1", { path: "a" }), answers("c1", "A")]) t.write({ t: "message", message });
+      t.write(joined("first"));
+      t.write(joined("second"));
+      const r = read(p);
+      expect([r.messages, r.damaged]).toEqual([[prompt("go"), asks("c1", { path: "a" }), withHook(answers("c1", "A"), "first")], 1]);
+    });
+  });
+
   it("gives a call whose result line is damaged the 'Outcome unknown' result, and drops a result whose call is damaged", async () => {
     const p = place();
     const t = new Transcript(p.file, p.pictures);
