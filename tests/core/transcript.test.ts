@@ -263,6 +263,25 @@ describe("transcript", { timeout: 15_000 }, () => {
       ]);
     });
 
+    // Codex review 4 of 8e, point 2 (the user's choice): only a hand edit leaves a joined line without its results' line;
+    // it never joins the reply before it.
+    it("is dropped and counted when its results' line is missing, never joining the reply before it", async () => {
+      const p = place();
+      const t = new Transcript(p.file, p.pictures);
+      t.write(start);
+      for (const message of [prompt("go"), asks("c1", { path: "a" })]) t.write({ t: "message", message });
+      t.write(joined("checked"));
+      t.write({ t: "message", message: said("done") });
+      const r = read(p);
+      expect(r.damaged).toBe(1);
+      expect(r.messages).toEqual([
+        prompt("go"),
+        asks("c1", { path: "a" }),
+        { role: "user", parts: [{ type: "tool_result", callId: "c1", output: UNKNOWN, isError: true }] },
+        said("done"),
+      ]);
+    });
+
     // The session writes one joined line for a message, so a second one in a row has none of its own.
     it("folds the first of two joined lines in a row, the second dropped and counted", async () => {
       const p = place();

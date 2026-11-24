@@ -405,8 +405,11 @@ function joinedIn(rows: (Line | undefined)[]): { lines: Line[]; dropped: number 
   let last = -1; // the message line a joined line may fold into; none since a damaged or joined line
   for (const l of rows) {
     if (l === undefined || l.t === "joined") {
+      // Only a tool round's results message, as the session writes one before its joined line: a user message with a
+      // result in it (Codex review 4 of 8e, point 2, the user's choice).
       const m = lines[last];
-      if (l && m?.t === "message") lines[last] = { ...m, message: { ...m.message, parts: [...m.message.parts, ...l.message.parts] } };
+      const results = m?.t === "message" && m.message.role === "user" && m.message.parts.some((p) => p.type === "tool_result");
+      if (l && results) lines[last] = { ...m, message: { ...m.message, parts: [...m.message.parts, ...l.message.parts] } };
       else if (l) dropped++;
       last = -1;
       continue;
