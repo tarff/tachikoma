@@ -510,7 +510,9 @@ to a1c0c3f on `release-8e`, with their review fixes.
   When Anthropic's server-side fallback (`src/providers/anthropic.ts`, `fallbacks: "default"`)
   answers a refused request on another model, the window shows a notice line and the lead stays as
   it is; the switch events fire only where the window changes the lead (`/lead`, the model list, the
-  settings file, `/resume`). This is read from the code; no test drives it.
+  settings file); PostModelSwitch also fires on `/resume`. This is read from the code: no test
+  checks that a switch hook stays silent for it, though `tests/core/session.test.ts:226` and `:267`
+  check its notice.
 - **PreModelSwitch's lines** name the model by its provider id, as "lead is now" does. A full stop
   follows a reason only when the reason does not end in ".", "!" or "?" (the user's choice at step
   13's review, 2026-11-23). Esc while the hooks run cancels the switch and says nothing; at the
