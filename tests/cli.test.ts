@@ -1093,6 +1093,20 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     }
   });
 
+  // Cleanup plan, step 14a: the list is drawn by screen code loaded only when it is (cli.tsx, screens). With a terminal,
+  // the stand-in one (windowLater), -r alone draws it; Ctrl-C closes it, and nothing is opened. 60 s and a 15 s wait, as
+  // the window's cases in "tachi's MCP servers" have.
+  it("draws the list -r picks from, and quits when it is closed", { timeout: 60_000 }, async () => {
+    const { proj, data, dir } = place();
+    write(dir, "a1", [start("a1"), message("user", "first"), message("assistant", "one"), { t: "name", at, name: "the fix" }]);
+    const w = windowLater("--lead", "ollama:none", "-r", { cwd: proj, TACHI_DATA_DIR: data });
+    await vi.waitFor(() => expect(stripVTControlCharacters(w.stdout())).toContain("Saved sessions in this folder, newest first:"), { timeout: 15_000 });
+    expect(stripVTControlCharacters(w.stdout())).toContain("the fix");
+    w.write("\u0003");
+    expect(await w.closed()).toBe(0);
+    expect(stripVTControlCharacters(w.stderr())).toBe(""); // Ink shows the cursor again there
+  });
+
   it("opens a session by its name, sending its history", async () => {
     const { url, sent } = await standIn();
     const { proj, data, dir } = place();
@@ -1483,8 +1497,16 @@ setInterval(() => {}, 1000);`,
 // Long-term memory is off here (8d plan, step 27), so no case meets its first-use question; its own cases launch with
 // it (below).
 function windowLater(...args: (string | Record<string, string>)[]) {
-  const { argv, options } = launch([...args, "--no-memory"]);
+  return screenLater([...args, "--no-memory"]);
+}
+
+// windowLater()'s start, for any command line drawn on the stand-in terminal: `tachi review <name>` too, which takes no
+// --no-memory, with `more` stand-ins given with --import as well (cleanup plan, step 14a). `closed` is its exit code once
+// it has closed.
+function screenLater(args: (string | Record<string, string>)[], more: string[] = []) {
+  const { argv, options } = launch(args);
   argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/terminal.mjs")).href); // after tsx's loader
+  for (const file of more) argv.splice(2, 0, "--import", pathToFileURL(path.resolve(file)).href);
   // With the recording stand-in when the case names its file (cleanup plan, step 14a; loadedBy, below).
   if (args.some((a) => typeof a === "object" && a.TACHI_TEST_LOADED)) argv.splice(2, 0, "--import", LOADED);
   const terminal = { TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"), CI: "0", CONTINUOUS_INTEGRATION: "0", TACHI_CLASSIC: "1", WT_SESSION: "" };
@@ -1507,7 +1529,7 @@ function windowLater(...args: (string | Record<string, string>)[]) {
     write("\r");
     return closed;
   };
-  return { write, exit, stdout: () => stdout, stderr: () => stderr };
+  return { write, exit, closed: () => closed, stdout: () => stdout, stderr: () => stderr };
 }
 
 // The recording stand-in (tests/standin/loaded.mjs): every module a start resolves, by URL, written to a file.
@@ -2526,6 +2548,19 @@ describe("tachi review", { timeout: 15_000 }, () => {
     const two = (n: number) => String(n).padStart(2, "0");
     const time = `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
     expect(lines[1]).toBe(`  s1  ${w.root}  ${time}  1 change`);
+  });
+
+  // Cleanup plan, step 14a: the review is drawn by screen code loaded only when it is (cli.tsx, screens). With a terminal,
+  // the stand-in one (screenLater), and Docker the stand-in (register.mjs), which lists no box, `tachi review s1` opens it;
+  // `l` leaves the copy for later. 60 s and a 15 s wait, as the window's cases in "tachi's MCP servers" have.
+  it("draws the review it opens, and leaves the copy for later", { timeout: 60_000 }, async () => {
+    const w = dataWithCopy();
+    const s = screenLater(["review", "s1", { TACHI_DATA_DIR: w.data }], ["tests/standin/register.mjs"]);
+    await vi.waitFor(() => expect(stripVTControlCharacters(s.stdout())).toContain("Review the copy's changes: 1 file."), { timeout: 15_000 });
+    s.write("l");
+    expect(await s.closed()).toBe(0);
+    expect(s.stdout()).toContain("The copy is kept; tachi review s1 opens it again.\n");
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
   });
 
   it("names a copy that is not waiting", () => {
