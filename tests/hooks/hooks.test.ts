@@ -601,7 +601,12 @@ describe("Hooks", { timeout: 15_000 }, () => {
         return false;
       }
     };
-    onTestFinished(() => pids.forEach((pid) => alive(pid) && process.kill(pid)));
+    // Killed and waited for, as below, before the folder is removed (cleanup plan, step 7); a hook still alive after the
+    // wait is left to the remover's warning.
+    onTestFinished(async () => {
+      pids.forEach((pid) => alive(pid) && process.kill(pid));
+      for (let i = 0; pids.some(alive) && i < 500; i++) await pause(20);
+    });
     hooks.stopAsync();
     for (let i = 0; pids.some(alive) && i < 500; i++) await pause(20);
     expect(pids.map(alive)).toEqual([false, false]);

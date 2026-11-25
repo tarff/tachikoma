@@ -114,8 +114,11 @@ setTimeout(() => {}, 60000);`);
     const stop = new AbortController();
     const run = runHook(hook, {}, { cwd: root, env: process.env, limit: 30, signal: stop.signal });
     const pid = await readPid(path.join(root, "pid"));
-    onTestFinished(() => {
+    // Killed and waited for, as below, before the folder is removed (cleanup plan, step 7); a program still alive after
+    // the wait is left to the remover's warning. Not for a pid of 0, which would mean our own process group.
+    onTestFinished(async () => {
       if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL");
+      for (let i = 0; i < 40 && pid > 0 && alive(pid); i++) await pause(50);
     });
     expect(alive(pid)).toBe(true);
     stop.abort();
