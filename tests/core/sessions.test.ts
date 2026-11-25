@@ -1,15 +1,13 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
 import { projectFile } from "../../src/core/datadir.js";
 import { copySession, findSession, listSessions, openSession, sessionPaths, sessionsDir, sweep } from "../../src/core/sessions.js";
 import { type Line, readTranscript, Transcript } from "../../src/core/transcript.js";
 import type { Message } from "../../src/core/types.js";
-import { removeTree } from "../helpers.js";
+import { fileTempDir } from "../helpers.js";
 
 // Release 8a plan, Task 4. Everything is inside one fresh temporary folder, as privateDir needs (plan, "Rules for every
 // task"). Only the copies go through privateDir, which starts PowerShell on Windows, so they share one sessions folder
@@ -20,13 +18,12 @@ describe("sessions", { timeout: 15_000 }, () => {
   let data: string;
   let shared: string;
   let folders = 0;
-  beforeAll(async () => {
-    top = await mkdtemp(path.join(tmpdir(), "tachi-sessions-"));
+  beforeAll(() => {
+    top = fileTempDir("tachi-sessions-");
     data = path.join(top, "data", "tachikoma");
     shared = sessionsDir(top, data);
     privateDir(shared);
   });
-  afterAll(() => removeTree(top));
   // A plain folder of its own for one case, standing for one project's sessions folder.
   const folder = () => {
     const dir = path.join(top, "plain", `p${++folders}`);

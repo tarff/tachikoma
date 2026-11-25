@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { mkdtemp, symlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { symlink } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writePrivate } from "../../src/auth/private.js";
@@ -9,7 +8,7 @@ import { Bus } from "../../src/core/bus.js";
 import { projectFile } from "../../src/core/datadir.js";
 import { attachErrorLog, summarize } from "../../src/core/errorlog.js";
 import { Stats } from "../../src/core/stats.js";
-import { shortName } from "../helpers.js";
+import { shortName, tempDir } from "../helpers.js";
 
 // Review fixes plan, fix 3: the log is in Tachikoma's data folder, named after the project's real path as the prompt
 // history is, so nothing in a project can lead it elsewhere. Making that folder private starts PowerShell on Windows.
@@ -18,9 +17,9 @@ describe("error log", { timeout: 15_000 }, () => {
 
   // The project is a folder of its own inside one the test made, so its short name can be listed quickly.
   async function project() {
-    const data = await mkdtemp(path.join(tmpdir(), "tachi-data-"));
+    const data = tempDir("tachi-data-");
     vi.stubEnv("TACHI_DATA_DIR", data);
-    const root = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a project folder");
+    const root = path.join(tempDir("tachi-"), "a project folder");
     mkdirSync(root);
     return { data, root };
   }
@@ -40,7 +39,7 @@ describe("error log", { timeout: 15_000 }, () => {
 
   it("is not led out by a .tachikoma link in the project", async () => {
     const { root } = await project();
-    const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));
+    const elsewhere = tempDir("tachi-outside-");
     // A junction on Windows needs no special rights; elsewhere it is an ordinary symlink.
     await symlink(elsewhere, path.join(root, ".tachikoma"), "junction");
     const bus = new Bus();
