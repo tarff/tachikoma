@@ -1,23 +1,15 @@
 import { existsSync, readdirSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { clearDontAsk, dontAsk, recordDontAsk } from "../../src/memory/asked.js";
 import { memoryPaths } from "../../src/memory/paths.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 // "Don't ask again" (8d plan, step 27; Q12): one small private file in <data folder>/memory/, kept until /memory setup
 // clears it. Every folder is one the test made.
 
-const folders: string[] = [];
-afterEach(async () => {
-  for (const folder of folders.splice(0)) await removeTree(folder);
-});
-
 async function paths() {
-  const top = await mkdtemp(path.join(tmpdir(), "tachi-asked-"));
-  folders.push(top);
+  const top = tempDir("tachi-asked-");
   return memoryPaths(path.join(top, "data"), "test");
 }
 

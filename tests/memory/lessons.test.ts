@@ -1,6 +1,4 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,7 +12,7 @@ import { askLesson, LESSON_REQUEST, lessonRequest, pairOf, type Ran } from "../.
 import { Memory } from "../../src/memory/memory.js";
 import { LESSONS, WING } from "../../src/memory/paths.js";
 import { defineTool, type ToolContext } from "../../src/tools/tool.js";
-import { callTool, FakeProvider, Held, removeTree, reply, usage } from "../helpers.js";
+import { callTool, FakeProvider, Held, reply, tempDir, usage } from "../helpers.js";
 
 // The lesson ask and storing lessons (8d plan, step 26): which calls make a pair, the request, the reply read, and,
 // with the stand-in MemPalace as the user's own program (tests/memory/standin.mjs, never a real one), storing,
@@ -178,7 +176,6 @@ class Recording extends FakeProvider {
 
 // --- With memory: the stand-in MemPalace as the user's own program. ---
 
-const folders: string[] = [];
 const made: Memory[] = [];
 const records: string[] = [];
 
@@ -188,11 +185,8 @@ afterEach(async () => {
   await Promise.race([closing, sleep(LIMIT)]);
   vi.unstubAllEnvs();
   const started = records.splice(0).flatMap((r) => lines(r).flatMap((l) => (l.start ? [l.start.pid as number] : [])));
-  try {
-    await until(() => started.every((pid) => !alive(pid)), "the stand-ins to end");
-  } finally {
-    for (const folder of folders.splice(0)) await removeTree(folder);
-  }
+  // The folders are removed once this has run, even when it fails (tempDir; cleanup plan, step 9).
+  await until(() => started.every((pid) => !alive(pid)), "the stand-ins to end");
 }, 4 * LIMIT);
 
 const alive = (pid: number) => {
@@ -237,8 +231,7 @@ class Split implements Provider {
 // Memory with the stand-in as the user's own program, in a folder the test made, and a lead's session given the
 // lesson ask, whose `shell` stand-in fails or works as `outcomes` say, one call each.
 async function withMemory() {
-  const top = await mkdtemp(path.join(tmpdir(), "tachi-lessonask-"));
-  folders.push(top);
+  const top = tempDir("tachi-lessonask-");
   const user = path.join(top, "user");
   const bin = path.join(top, "bin");
   mkdirSync(bin, { recursive: true });

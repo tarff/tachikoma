@@ -381,8 +381,10 @@ describe.runIf(process.env.TACHI_TEST_MEMPALACE === "1")("a real MemPalace", { t
     for (const h of hubs) await h.close();
     proxy.close();
     modelServer?.close();
-    // A folder still in use (a process a failure left running) stays, and says so.
-    if (root) await removeTree(root).catch((err) => console.log(`${root} was not removed: ${String(err)}`));
+    // A folder still in use (a process a failure left running) stays, and the remover says so. Removed here, with
+    // this hook's own "no limit", not by fileTempDir under the 10 s hook limit (the user's choice, cleanup plan,
+    // step 9).
+    if (root) await removeTree(root);
   }, 0);
 
   it("installs MemPalace from the shipped lock, through sfw, into its own folder", async () => {

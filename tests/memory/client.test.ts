@@ -1,8 +1,6 @@
 import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -12,7 +10,7 @@ import { connect, type Kind, type Palace, palaceFile, type Target } from "../../
 import { load } from "../../src/memory/oslock.js";
 import { LESSONS, WING } from "../../src/memory/paths.js";
 import { readLog } from "../mcp/fake.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 // Tachikoma's palace client against the stand-in MemPalace (8d plan, step 18), in both of its forms: the hub over HTTP
 // and a program over stdio. Nothing here starts a real hub or touches a real palace.
@@ -32,7 +30,6 @@ const HANG_MARGIN = 75;
 type Hub = ChildProcessByStdio<null, Readable, Readable>;
 const hubs: Hub[] = [];
 const palaces: Palace[] = [];
-const folders: string[] = [];
 
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -45,13 +42,10 @@ afterEach(async () => {
       await closed;
     }),
   );
-  for (const folder of folders.splice(0)) await removeTree(folder);
 });
 
 async function folder(): Promise<string> {
-  const made = await mkdtemp(path.join(tmpdir(), "tachi-client-"));
-  folders.push(made);
-  return made;
+  return tempDir("tachi-client-");
 }
 
 // The stand-in hub's environment: its home, the user's AppData folders and an empty PATH folder all in the folder

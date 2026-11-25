@@ -1,12 +1,10 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { tryLock, type OsLock } from "../../src/memory/oslock.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 const CHILD = path.resolve("tests/memory/oslock-child.ts");
 
@@ -15,7 +13,6 @@ type Child = ChildProcessByStdio<Writable, Readable, Readable>;
 // Everything a test started or took, stopped or let go after it, whether it passed or not.
 const children: Child[] = [];
 const locks: OsLock[] = [];
-const folders: string[] = [];
 
 afterEach(async () => {
   for (const lock of locks.splice(0)) lock.release();
@@ -27,13 +24,10 @@ afterEach(async () => {
       await closed;
     }),
   );
-  for (const folder of folders.splice(0)) await removeTree(folder);
 });
 
 async function folder(): Promise<string> {
-  const made = await mkdtemp(path.join(tmpdir(), "tachi-oslock-"));
-  folders.push(made);
-  return made;
+  return tempDir("tachi-oslock-");
 }
 
 // A second process, as another Tachikoma window would be. `next` gives its next line of output.
