@@ -10,10 +10,10 @@ import {
   type LineSegment,
   pieces,
   type Segment,
-  SEGMENTS,
   type StatusInfo,
   StatusLine,
 } from "../../src/tui/StatusLine.js";
+import { SEGMENTS } from "../../src/tui/segments.js";
 import { type Look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
 import { textWidth } from "../../src/tui/view.js";
 

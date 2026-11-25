@@ -113,7 +113,7 @@ import { programRunning } from "./tui/owner.js";
 import { Review, type ReviewCopy, type ReviewEnd } from "./tui/Review.js";
 import { SessionList } from "./tui/SessionList.js";
 import { startBox } from "./tui/startup.js";
-import { SEGMENTS } from "./tui/StatusLine.js";
+import { SEGMENTS } from "./tui/segments.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
 import { ThemeContext, themeOf } from "./tui/theme.js";
 import { textWidth } from "./tui/view.js";

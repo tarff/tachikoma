@@ -68,7 +68,7 @@ import {
 import { type Ended, Session } from "../src/core/session.js";
 import { setupNote } from "../src/core/setup.js";
 import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "../src/tools/commands.js";
-import { SEGMENTS } from "../src/tui/StatusLine.js";
+import { SEGMENTS } from "../src/tui/segments.js";
 import { callTool, FakeProvider, fileTempDir, reply, standInRun, tempContext, tempDir, usage } from "./helpers.js";
 import { standinBox } from "./mcp/fake.js";
 
