@@ -1,6 +1,4 @@
 import { readFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { running } from "../../src/exec/local.js";
@@ -19,7 +17,7 @@ import type { ServerConfig, ServerEntry } from "../../src/mcp/config.js";
 import { Server } from "../../src/mcp/server.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
 import { killInBox, killLine } from "../../src/sandbox/executor.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 import { type FakeOptions, fakeServer, readLog, standinBox } from "./fake.js";
 
 const NUL = String.fromCharCode(0);
@@ -165,13 +163,12 @@ const groupIn = (args: string[]) => /\/tmp\/tachikoma-[0-9a-f-]{36}/.exec(args[7
 // The test's own folder, the project's root, the stand-in box recording there, and its servers, each stopped before the
 // folder is removed, as on Windows a running server holds the folder it works in; then any left running is killed.
 async function setup(opts: { gone?: string } = {}) {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-box-"));
+  const dir = tempDir("tachi-mcp-box-");
   const fake = standinBox(dir, opts);
   const servers: Server[] = [];
   onTestFinished(async () => {
     await Promise.all(servers.map((s) => s.stop()));
     await fake.killAll();
-    await removeTree(dir);
   });
   const make = (config: ServerConfig, env: NodeJS.ProcessEnv = process.env) => {
     const server = new Server(config, { root: dir, env, onChange: () => {}, box: fake.box });

@@ -1,6 +1,4 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { type Owner, PermissionGate } from "../../src/core/permissions.js";
@@ -12,7 +10,7 @@ import type { ServerConfig } from "../../src/mcp/config.js";
 import { check, type Field, Forms, type FormUI, fieldsOf } from "../../src/mcp/forms.js";
 import { Servers } from "../../src/mcp/servers.js";
 import { mcpTools } from "../../src/mcp/tools.js";
-import { Bus, collectErrors, removeTree } from "../helpers.js";
+import { Bus, collectErrors, tempDir } from "../helpers.js";
 import { fakeServer } from "./fake.js";
 
 // Release 8c plan, Task 12 (design, "Forms a server asks for"; choices 29 and 35): a server's forms, through real Servers
@@ -45,7 +43,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 });`;
 
 async function setup(opts: { headless?: boolean } = {}) {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-forms-"));
+  const dir = tempDir("tachi-mcp-forms-");
   const bus = new Bus();
   const notes: string[] = [];
   bus.on("mcp-note", (line) => notes.push(line));
@@ -61,7 +59,6 @@ async function setup(opts: { headless?: boolean } = {}) {
   });
   onTestFinished(async () => {
     await servers.stopAll();
-    await removeTree(dir);
   });
   servers.startAll();
   await servers.ready();

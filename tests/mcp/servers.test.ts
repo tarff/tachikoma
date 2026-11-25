@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,7 +14,7 @@ import { NotReached } from "../../src/mcp/server.js";
 import { type Offered, Servers } from "../../src/mcp/servers.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import type { Site } from "../../src/sandbox/sites.js";
-import { Bus, collectErrors, removeTree } from "../helpers.js";
+import { Bus, collectErrors, tempDir } from "../helpers.js";
 import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog, standinBox } from "./fake.js";
 
 // Release 8c plan, Task 5: the servers together, one table of unique names, against the fake servers of fake.ts.
@@ -38,11 +38,10 @@ const STAND_IN = {
 // The test's own folder, the project's root, and its Servers, each stopped before the folder is removed: on Windows a
 // running server holds the folder it works in.
 async function setup() {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-servers-"));
+  const dir = tempDir("tachi-mcp-servers-");
   const made: Servers[] = [];
   onTestFinished(async () => {
     await Promise.all(made.map((s) => s.stopAll()));
-    await removeTree(dir);
   });
   const bus = new Bus();
   const notes: string[] = [];

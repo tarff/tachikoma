@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it } from "vitest";
 import { mergeServers, readProjectFile, readServers, type ServerConfig } from "../../src/mcp/config.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 // The environment ${VAR} is filled from: never the user's own, so no test depends on what this machine has set.
 const ENV = { TOKEN: "sk-secret-123", HOST: "example.com", EMPTY: "" };
@@ -473,8 +472,7 @@ describe("mergeServers", () => {
 
 describe("readProjectFile", () => {
   const project = async (text?: string) => {
-    const root = await mkdtemp(path.join(tmpdir(), "tachi-mcp-config-"));
-    onTestFinished(() => removeTree(root));
+    const root = tempDir("tachi-mcp-config-");
     if (text !== undefined) await writeFile(path.join(root, ".mcp.json"), text);
     return root;
   };
