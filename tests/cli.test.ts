@@ -1485,6 +1485,8 @@ setInterval(() => {}, 1000);`,
 function windowLater(...args: (string | Record<string, string>)[]) {
   const { argv, options } = launch([...args, "--no-memory"]);
   argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/terminal.mjs")).href); // after tsx's loader
+  // With the recording stand-in when the case names its file (cleanup plan, step 14a; loadedBy, below).
+  if (args.some((a) => typeof a === "object" && a.TACHI_TEST_LOADED)) argv.splice(2, 0, "--import", LOADED);
   const terminal = { TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"), CI: "0", CONTINUOUS_INTEGRATION: "0", TACHI_CLASSIC: "1", WT_SESSION: "" };
   const child = spawn(process.execPath, argv, { ...options, env: { ...options.env, ...terminal } });
   stopAtEnd(child);
@@ -1507,6 +1509,96 @@ function windowLater(...args: (string | Record<string, string>)[]) {
   };
   return { write, exit, stdout: () => stdout, stderr: () => stderr };
 }
+
+// The recording stand-in (tests/standin/loaded.mjs): every module a start resolves, by URL, written to a file.
+const LOADED = pathToFileURL(path.resolve("tests/standin/loaded.mjs")).href;
+
+// The screen code (cleanup plan, step 14a): Ink, React and React's drawing runtime, by package, and the drawing modules
+// under src/tui, by name: each .tsx file, and each .ts file that takes ink or react as a value. A module is named by its
+// path under tui/ without its extension, from source (src/tui/App.tsx) or from a build (dist/tui/App.js) alike.
+const DRAWING = readdirSync("src/tui", { recursive: true, encoding: "utf8" })
+  .map((f) => f.replaceAll("\\", "/"))
+  .filter((f) => f.endsWith(".tsx") || (f.endsWith(".ts") && /^import (?!type )[^;]*from "(ink|react)"/m.test(readFileSync(path.join("src/tui", f), "utf8"))))
+  .map((f) => f.replace(/\.tsx?$/, ""));
+function screenCode(loaded: string[]) {
+  const packages = loaded.filter((url) => /\/node_modules\/(ink|react)\//.test(url));
+  const modules = loaded.flatMap((url) => {
+    const name = /\/(?:src|dist[^/]*)\/tui\/(.+)\.(?:tsx?|js)$/.exec(new URL(url).pathname)?.[1];
+    return name !== undefined && DRAWING.includes(name) ? [name] : [];
+  });
+  return { packages: [...new Set(packages)], modules: [...new Set(modules)] };
+}
+
+// tachiLater(), with the recording stand-in: the run's result and the modules it loaded. tsx is named the project's
+// settings, as for the window, so it compiles JSX as the build does, and a file with JSX loads React's drawing runtime.
+async function loadedBy(...args: (string | Record<string, string>)[]) {
+  const record = path.join(tempDir("tachi-cli-loaded-"), "loaded.txt");
+  const env = { TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"), ...args.find((a) => typeof a === "object"), TACHI_TEST_LOADED: record };
+  const { argv, options } = launch([...args.filter((a) => typeof a === "string"), env]);
+  argv.splice(2, 0, "--import", LOADED); // after tsx's loader
+  const child = spawn(process.execPath, argv, options);
+  stopAtEnd(child);
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+  child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+  child.stdin.end("x\n");
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", resolve);
+  });
+  return { code, stdout, stderr, loaded: readFileSync(record, "utf8").split("\n").filter(Boolean) };
+}
+
+// Cleanup plan, step 14a: the screen code is loaded only for a run that has a screen. 60 s and 15 s waits, as the
+// window's cases in "tachi's MCP servers" below have.
+describe("what a start loads", { timeout: 60_000 }, () => {
+  const WAIT = { timeout: 15_000 };
+
+  // The lead is a stand-in for OpenAI's chat completions served on the loopback address, answering "done", so the run
+  // reaches no real provider and not localhost:11434.
+  it("loads none of the screen code for a -p run", async () => {
+    const server = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const choice = { index: 0, finish_reason: "stop", message: { role: "assistant", content: "done" } };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const r = await loadedBy("--lead", "openai:lead", "-p", "hi", { OPENAI_API_KEY: "x", OPENAI_BASE_URL: url });
+    expect(r.stdout).toBe("done\n");
+    expect(r.code).toBe(0);
+    expect(r.loaded.some((u) => /\/(?:src|dist[^/]*)\/cli\.(?:tsx|js)$/.test(new URL(u).pathname))).toBe(true); // it records
+    expect(screenCode(r.loaded)).toEqual({ packages: [], modules: [] });
+  });
+
+  it("loads none of the screen code for a start that ends early", async () => {
+    const r = await loadedBy("--lead", "ollama:none", "--max-tasks", "0", "-p", "hi");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('--max-tasks must be a whole number from 1 (got "0")');
+    expect(screenCode(r.loaded)).toEqual({ packages: [], modules: [] });
+  });
+
+  it("loads the screen code for the window, which draws", async () => {
+    const record = path.join(tempDir("tachi-cli-loaded-"), "loaded.txt");
+    const w = windowLater("--lead", "ollama:none", { TACHI_TEST_LOADED: record });
+    const version: string = JSON.parse(readFileSync(path.resolve("package.json"), "utf8")).version;
+    await vi.waitFor(() => expect(stripVTControlCharacters(w.stdout())).toContain(`Tachikoma ${version}`), WAIT);
+    expect(await w.exit()).toBe(0);
+    const { packages, modules } = screenCode(readFileSync(record, "utf8").split("\n").filter(Boolean));
+    expect(packages.some((u) => u.includes("/node_modules/ink/"))).toBe(true);
+    expect(packages.some((u) => /\/node_modules\/react\/jsx(?:-dev)?-runtime\.js$/.test(u))).toBe(true);
+    expect(modules).toContain("App");
+  });
+});
 
 // Release 8c plan, Task 9: the MCP servers at the launch. Each server is a fake of tests/mcp/fake.ts, a Node script written
 // into the case's own folder, logging what it is sent and writing its process id; the lead is a stand-in for OpenAI's
