@@ -360,7 +360,7 @@ describe("tachi review <name> --discard", () => {
   // exits.
   it("goes on removing through Ctrl-C, twice, and listens for it again after", async () => {
     const w = world();
-    w.copy("s1", { "a.txt": "made-up a\n" });
+    const c = w.copy("s1", { "a.txt": "made-up a\n" });
     const exits: string[] = [];
     const exit = () => exits.push("SIGINT");
     process.on("SIGINT", exit);
@@ -375,6 +375,8 @@ describe("tachi review <name> --discard", () => {
     };
     expect(await reviewCommand(["s1", "--discard"], r.io)).toBe(0);
     expect(r.out.at(-1)).toBe("The copy was discarded.");
+    // The shared remover only warns when a removal is refused, so the test sees for itself that the copy is gone.
+    expect(existsSync(c.folder)).toBe(false);
     expect(exits).toEqual([]);
     expect(during).toBeGreaterThan(0); // a listener is there, so Node does not end the process
     expect(process.listeners("SIGINT")).toContain(exit);
