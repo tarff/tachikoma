@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { linkSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +8,7 @@ import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { TOOLS } from "../../src/tools/index.js";
 import { findFilesTool, searchFilesTool } from "../../src/tools/search.js";
 import { brief } from "../../src/tui/describe.js";
-import { fakeWorkspace, shortName, tempContext } from "../helpers.js";
+import { fakeWorkspace, shortName, tempContext, tempDir } from "../helpers.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -117,7 +116,7 @@ describe("find_files", () => {
 
   it("follows no links or junctions", async () => {
     const ctx = await tempContext();
-    const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));
+    const elsewhere = tempDir("tachi-outside-");
     await files(elsewhere, { "far.ts": "" });
     await files(ctx.root, { "near.ts": "" });
     // A junction needs no special rights on Windows; on other systems this makes a directory symlink.
@@ -197,7 +196,7 @@ describe("search_files", () => {
 
   it("asks before searching outside the project", async () => {
     const ctx = await tempContext("project", [false, true]);
-    const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));
+    const elsewhere = tempDir("tachi-outside-");
     await files(elsewhere, { "notes.txt": "secret" });
     await expect(searchFilesTool.run({ pattern: "secret", path: elsewhere }, ctx)).rejects.toThrow("The user declined");
     expect(await searchFilesTool.run({ pattern: "secret", path: elsewhere }, ctx)).toBe(`${path.join(await realpath(elsewhere), "notes.txt")}:1: secret`);

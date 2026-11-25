@@ -1,5 +1,3 @@
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
@@ -13,7 +11,7 @@ import type { ServerConfig } from "../../src/mcp/config.js";
 import { Servers } from "../../src/mcp/servers.js";
 import { type Approve, mcpTools } from "../../src/mcp/tools.js";
 import { defineTool } from "../../src/tools/tool.js";
-import { Bus, callTool, collectErrors, FakeProvider, removeTree, reply } from "../helpers.js";
+import { Bus, callTool, collectErrors, FakeProvider, reply, tempDir } from "../helpers.js";
 import { type FakeOptions, fakeServer, readLog } from "../mcp/fake.js";
 
 // Release 8c plan, Task 8: MCP calls as hooks see them, and mcp_tool hooks calling a fake server of tests/mcp/fake.ts
@@ -33,7 +31,7 @@ const answer = (event: Event, fields: object) => JSON.stringify({ hookSpecificOu
 // The test's own folder, the project's root, with one fake server named "fake" logging every message it gets; started and
 // ready unless `wait` is false. Its Servers are stopped before the folder is removed, as a running server holds it.
 async function setup(fake: FakeOptions = {}, wait = true) {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-hooks-mcp-"));
+  const dir = tempDir("tachi-hooks-mcp-");
   const bus = new Bus();
   const log = path.join(dir, "fake.jsonl");
   const config: ServerConfig = {
@@ -47,7 +45,6 @@ async function setup(fake: FakeOptions = {}, wait = true) {
   const servers = new Servers([config], { root: dir, env: process.env, bus, answers, network: "none", lead: () => "fake:a" });
   onTestFinished(async () => {
     await servers.stopAll();
-    await removeTree(dir);
   });
   servers.startAll();
   if (wait) await servers.ready();

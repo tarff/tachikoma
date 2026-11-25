@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { onPath } from "../../src/exec/env.js";
 import { gitSettings } from "../../src/safety/gitconfig.js";
+import { tempDir } from "../helpers.js";
 
 // How many git runs the guard below let start.
 const started = vi.hoisted(() => ({ runs: 0 }));
@@ -39,8 +40,7 @@ const OWN = /^(path|home|homedrive|homepath|userprofile|xdg_config_home|git_.*)$
 // By its real path, so git's settings name each file once: the temporary folder can be written with a short name
 // (RUNNER~1, the CI trial), and gitSettings gives a file's real path as well as the written one when they differ.
 function world() {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-gitconfig-")));
-  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  const dir = realpathSync.native(tempDir("tachi-gitconfig-"));
   const at = (rel: string) => path.join(dir, rel);
   const home = at("home");
   const root = at("project");

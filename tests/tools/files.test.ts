@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { existsSync, linkSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,7 +8,7 @@ import type { Mode } from "../../src/core/permissions.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import type { ToolContext } from "../../src/tools/tool.js";
 import { editFileTool, programEnvironment, readFileTool, inData, inSettings, resolveIn, sameIgnoringCase, writeFileTool } from "../../src/tools/files.js";
-import { fakeWorkspace, shortName, tempContext } from "../helpers.js";
+import { fakeWorkspace, shortName, tempContext, tempDir } from "../helpers.js";
 
 const onShare = (abs: string) =>
   `${abs} is a network or device path not written as a path in the project, so the file tools do not open it; a shell command can reach it, after asking`;
@@ -373,7 +373,7 @@ describe("file tools", () => {
 
   it("treats a path through a link that leads out of the project as outside", async () => {
     const ctx = await tempContext("project", [false]);
-    const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));
+    const elsewhere = tempDir("tachi-outside-");
     // A junction needs no special rights on Windows; on other systems this makes a directory symlink.
     await symlink(elsewhere, path.join(ctx.root, "linked"), "junction");
     expect(resolveIn(ctx.root, "linked/x.txt").outside).toBe(true);
@@ -386,7 +386,7 @@ describe("file tools", () => {
   // Windows' own answer, realpathSync.native, is used, and the JavaScript one when that throws.
   it.runIf(process.platform === "win32")("treats a junction to a folder named by its volume ID as leading there", async () => {
     const ctx = await tempContext("ask", [false]);
-    const elsewhere = realpathSync.native(await mkdtemp(path.join(tmpdir(), "tachi-outside-")));
+    const elsewhere = realpathSync.native(tempDir("tachi-outside-"));
     await writeFile(path.join(elsewhere, "b.txt"), "elsewhere");
     const mountvol = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "mountvol.exe");
     const volume = execFileSync(mountvol, [elsewhere.slice(0, 2), "/L"], { encoding: "utf8" }).trim();
@@ -430,7 +430,7 @@ describe("file tools", () => {
 
   it("shows where a path through a link really leads when asking", async () => {
     const ctx = await tempContext("project", [false]);
-    const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));
+    const elsewhere = tempDir("tachi-outside-");
     await symlink(elsewhere, path.join(ctx.root, "linked"), "junction");
     await expect(writeFileTool.run({ path: "linked/x.txt", content: "x" }, ctx)).rejects.toThrow("The user declined");
     // Windows' own realpath, as the tool's: the JavaScript one keeps a short name (RUNNER~1, the CI trial).
@@ -462,7 +462,7 @@ describe("file tools", () => {
 
   it("asks before reading or editing a file outside the project, given by absolute path", async () => {
     const ctx = await tempContext("project", [false, false]);
-    const outside = path.join(await mkdtemp(path.join(tmpdir(), "tachi-outside-")), "a.txt");
+    const outside = path.join(tempDir("tachi-outside-"), "a.txt");
     await writeFile(outside, "one");
     await expect(readFileTool.run({ path: outside }, ctx)).rejects.toThrow("The user declined");
     await expect(editFileTool.run({ path: outside, old_text: "one", new_text: "two" }, ctx)).rejects.toThrow("The user declined");

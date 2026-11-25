@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it } from "vitest";
 import { PROTECTED_FILES, PROTECTED_FOLDERS, protectedPart } from "../../src/safety/protected.js";
+import { tempDir } from "../helpers.js";
 
 // A made-up project folder that does not exist, so its real place is itself.
 const root = path.resolve("/tachi-protected-test/project");
@@ -174,8 +174,7 @@ describe("protectedPart", () => {
   });
 
   it("compares with the project's real place, as resolveIn does, when the project is reached through a link", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-protected-"));
-    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir("tachi-protected-");
     mkdirSync(path.join(dir, "real"));
     symlinkSync(path.join(dir, "real"), path.join(dir, "joined"), "junction");
     const real = realpathSync.native(path.join(dir, "real"));
@@ -184,8 +183,7 @@ describe("protectedPart", () => {
   });
 
   it("finds a missing hooks folder by the real place Task 5 lists for it, when the project is reached through a link (choice 62)", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-protected-"));
-    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir("tachi-protected-");
     mkdirSync(path.join(dir, "real"));
     symlinkSync(path.join(dir, "real"), path.join(dir, "joined"), "junction");
     const real = realpathSync.native(path.join(dir, "real"));
