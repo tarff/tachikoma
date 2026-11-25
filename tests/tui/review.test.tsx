@@ -4,7 +4,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -13,7 +12,6 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import chalk from "chalk";
 import { render } from "ink-testing-library";
@@ -27,7 +25,7 @@ import type { Manifest } from "../../src/sandbox/snapshot.js";
 import { Bindings, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { diffOf, Review, type ReviewEnd } from "../../src/tui/Review.js";
 import { type Theme, ThemeContext, themeOf } from "../../src/tui/theme.js";
-import { removeTree, ZERO } from "../helpers.js";
+import { removeTree, tempDir, ZERO } from "../helpers.js";
 
 const sha = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
 const tick = () => new Promise((r) => setTimeout(r, 50));
@@ -49,8 +47,7 @@ const OWN = /^(path|home|homedrive|homepath|userprofile|xdg_config_home|git_.*)$
 // is made private; a folder outside the project for links to reach; and a home with empty git settings files for every
 // git run. The test then changes work/ as the box would, and the project as the user would.
 function world(tree: Record<string, string | Buffer>) {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-rvw-")));
-  onTestFinished(() => removeTree(dir));
+  const dir = realpathSync.native(tempDir("tachi-rvw-"));
   const root = path.join(dir, "project");
   const data = path.join(dir, "data");
   const folder = path.join(data, "copies", "s1");

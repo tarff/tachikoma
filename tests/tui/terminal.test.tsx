@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
-import { constants, tmpdir } from "node:os";
+import { closeSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { constants } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
@@ -21,6 +21,7 @@ import {
   WIN32_ON,
   writeBestEffort,
 } from "../../src/tui/terminal.js";
+import { tempDir } from "../helpers.js";
 
 const ESC = String.fromCharCode(27);
 
@@ -159,7 +160,7 @@ describe("Screen", () => {
 
 describe("writeBestEffort", () => {
   it("writes at once, and does not throw when the write fails", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-terminal-"));
+    const dir = tempDir("tachi-terminal-");
     try {
       const file = path.join(dir, "out.txt");
       const fd = openSync(file, "w");
@@ -220,7 +221,7 @@ describe("restoreOnExit", () => {
   const TWO = 'ink.rerender(React.createElement(Text, null, "frame two"));';
   const url = (p: string) => JSON.stringify(pathToFileURL(path.resolve(p)).href);
   function run(end: string, { unmount = "() => ink?.unmount()", app = 'React.createElement(Text, null, "frame one")' } = {}) {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-terminal-"));
+    const dir = tempDir("tachi-terminal-");
     try {
       const script = path.join(dir, "script.mjs");
       writeFileSync(

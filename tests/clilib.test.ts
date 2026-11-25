@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { getEventListeners } from "node:events";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import path from "node:path";
 import { privateDir } from "../src/auth/private.js";
 import { Bus } from "../src/core/bus.js";
@@ -69,7 +69,7 @@ import { type Ended, Session } from "../src/core/session.js";
 import { setupNote } from "../src/core/setup.js";
 import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "../src/tools/commands.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
-import { callTool, FakeProvider, removeTree, reply, standInRun, tempContext, usage } from "./helpers.js";
+import { callTool, FakeProvider, fileTempDir, reply, standInRun, tempContext, tempDir, usage } from "./helpers.js";
 import { standinBox } from "./mcp/fake.js";
 
 describe("the instruction files on screen", () => {
@@ -248,8 +248,7 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
   });
 
   it("asks about each project server not yet answered for its entry, in order, and keeps a yes and a no for the next launch", async () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-mcp-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-clilib-mcp-");
     const data = path.join(top, "data", "tachikoma");
     answersFor(top, data).set("old", "as written: old", true);
     const asked: string[] = [];
@@ -276,8 +275,7 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
   // data folder cannot be written as a file stands where the answers' folder goes, which the test made itself; no
   // permission is changed.
   it("says an answer that could not be saved, and keeps it for this launch", async () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-mcp-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-clilib-mcp-");
     const data = path.join(top, "data", "tachikoma");
     let answers: Answers | undefined;
     const blocked = () => {
@@ -304,8 +302,7 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
   // the network off the remote server does not start, so it is not asked about; with the sandbox on its helper does not
   // run, so it is asked about again without it.
   it("asks about each project server once per setup, and the answer counts where Servers reads it", async () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-mcp-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-clilib-mcp-");
     const data = path.join(top, "data", "tachikoma");
     const tv = local("tv", ["server.js"]);
     const entry = { kind: "http" as const, url: "https://x/mcp", headers: {}, headersHelper: "get-token" };
@@ -337,8 +334,7 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
   // Decision 11: a line saved by 8c, without a setup, counts on this computer, and not for live link with the network
   // on.
   it("counts an 8c answer on this computer, and asks again for live link with the network on", async () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-mcp-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-clilib-mcp-");
     const data = path.join(top, "data", "tachikoma");
     const tv = local("tv", ["server.js"]);
     answersFor(top, data).set("tv", tv.written, true);
@@ -467,7 +463,6 @@ describe("waitForBackground", () => {
 
   async function setup(turns: (Turn | Error)[], more: { limits?: boolean; stopWhen?: (root: string) => string } = {}) {
     const ctx = await tempContext();
-    onTestFinished(() => removeTree(ctx.root));
     const runs: { command: string; log: CommandLog; end: (r: ExecResult) => void; stopped: boolean }[] = [];
     const executor: Executor = {
       exec: () => Promise.reject(new Error("exec is not used here")),
@@ -850,9 +845,8 @@ describe("gitBashLine", () => {
 describe("setupOf", () => {
   let top: string;
   beforeAll(() => {
-    top = mkdtempSync(path.join(tmpdir(), "tachi-setup-"));
+    top = fileTempDir("tachi-setup-");
   });
-  afterAll(() => removeTree(top));
   const folder = (...names: string[]) => {
     const d = path.join(top, ...names);
     mkdirSync(d, { recursive: true });
@@ -1211,11 +1205,10 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
   let dir: string;
   let plain = 0;
   beforeAll(() => {
-    top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-"));
+    top = fileTempDir("tachi-clilib-");
     dir = sessionsDir(top, path.join(top, "data", "tachikoma"));
     privateDir(dir);
   });
-  afterAll(() => removeTree(top));
   const folder = () => {
     const d = path.join(top, "plain", `p${++plain}`);
     mkdirSync(d, { recursive: true });
@@ -1834,7 +1827,6 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
         saved(dir, "started", [start("started"), ...history]);
         const o = open("started");
         const ctx = await tempContext();
-        onTestFinished(() => removeTree(ctx.root));
         const executor: Executor = {
           exec: () => Promise.reject(new Error("exec is not used here")),
           start: () => standInRun(new Promise(() => {})),
@@ -1894,8 +1886,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
   // Release 8a plan, choice 3 (user, 2026-11-06: "Re-read, reuse launch's answer"): a shortening's prompt reads the
   // instruction files again, a file outside the project going in only as the launch's question answered for it.
   it("reads the instruction files again, outside ones only as the launch's question answered for them", async () => {
-    const own = mkdtempSync(path.join(tmpdir(), "tachi-clilib-instr-"));
-    onTestFinished(() => removeTree(own));
+    const own = tempDir("tachi-clilib-instr-");
     const [home, root, outside] = [path.join(own, "home"), path.join(own, "project"), path.join(own, "outside")];
     for (const d of [home, root, outside]) mkdirSync(d);
     writeFileSync(path.join(outside, "allowed.md"), "allowed words");
@@ -1925,8 +1916,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
   // Release 8e plan, step 15: the files read again come back beside the text, for InstructionsLoaded to be sent once the
   // text is the conversation's prompt; those left out are not among them.
   it("hands back the instruction files read again beside the prompt, those left out not among them", async () => {
-    const own = mkdtempSync(path.join(tmpdir(), "tachi-clilib-instr-"));
-    onTestFinished(() => removeTree(own));
+    const own = tempDir("tachi-clilib-instr-");
     const [home, root, outside] = [path.join(own, "home"), path.join(own, "project"), path.join(own, "outside")];
     for (const d of [home, root, outside]) mkdirSync(d);
     writeFileSync(path.join(outside, "new.md"), "new words");
@@ -2043,7 +2033,6 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
   // made after a resume never takes a saved one's number.
   it("makes the lead's session with the Pictures the screen is given, which a loaded conversation raises", async () => {
     const ctx = await tempContext();
-    onTestFinished(() => removeTree(ctx.root));
     const { session, pictures } = leadSession({ lead: new FakeProvider("a", []), tools: [], system: "s", ctx, bus: new Bus() });
     session.load({ id: "x", messages: [], system: "s", prompts: [], calls: [], nextPicture: 4, nextTask: 1 });
     expect(pictures.next()).toBe(4);
@@ -2146,8 +2135,7 @@ describe("a sites launch", () => {
   }
 
   async function launch(sites: { name: string; port: number }[], s = stand()) {
-    const root = mkdtempSync(path.join(tmpdir(), "tachi-sites-launch-"));
-    onTestFinished(() => removeTree(root));
+    const root = tempDir("tachi-sites-launch-");
     const tag = "tachikoma-sandbox:0123456789ab";
     const ready: Ready = { tag, git: undefined, mounts: [], env: {}, gitOutside: false };
     const lines: string[] = [];

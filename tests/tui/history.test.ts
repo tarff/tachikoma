@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { History, historyFile, matches } from "../../src/tui/history.js";
+import { tempDir } from "../helpers.js";
 
-const temp = () => mkdtempSync(path.join(tmpdir(), "tachi-history-"));
+const temp = () => tempDir("tachi-history-");
 const historyUrl = pathToFileURL(path.resolve("src/tui/history.ts")).href;
 
 describe("History", () => {

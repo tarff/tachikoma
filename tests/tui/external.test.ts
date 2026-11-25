@@ -1,14 +1,13 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { commandEnv, system32 } from "../../src/exec/env.js";
 import { editFile, editorCommand, editText, NOT_FOUND, type Runner } from "../../src/tui/external.js";
 import { InputFilter } from "../../src/tui/input.js";
 import { TerminalOwner } from "../../src/tui/owner.js";
-import { standInEditor } from "../helpers.js";
+import { standInEditor, tempDir } from "../helpers.js";
 
 // The real shell, recording each call's arguments: the temporary file's path is in them.
 function recorded() {
@@ -117,8 +116,7 @@ describe("the editor's run", () => {
     // Tachikoma's own environment without it, as when the user starts Tachikoma (Claude Code's shell sets it).
     vi.stubEnv("NoDefaultCurrentDirectoryInExePath", undefined);
     onTestFinished(() => void vi.unstubAllEnvs());
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-editor-lookup-"));
-    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir("tachi-editor-lookup-");
     writeFileSync(path.join(dir, "sample-editor.cmd"), "@echo off\r\necho ran> marker.txt\r\n");
     const file = path.join(dir, "settings.json");
     writeFileSync(file, "{}\n");
