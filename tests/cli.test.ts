@@ -1,10 +1,9 @@
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -38,7 +37,7 @@ import { NO_UV } from "../src/memory/memory.js";
 import { memoryPaths, roomName } from "../src/memory/paths.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
-import { removeTree } from "./helpers.js";
+import { tempDir } from "./helpers.js";
 import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog, signInFake } from "./mcp/fake.js";
 
 // Docker's answer for an image with no bash (node:22-alpine, as the quality review gave it).
@@ -61,7 +60,7 @@ function tachiLater(...args: (string | Record<string, string> | ((stderr: string
   const watch = args.find((a) => typeof a === "function");
   const { argv, options } = launch(args.filter((a): a is string | Record<string, string> => typeof a !== "function"));
   const child = spawn(process.execPath, argv, options);
-  onTestFinished(() => void child.kill()); // a run still going when the test ends, as a failing one can leave it
+  stopAtEnd(child);
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
@@ -76,11 +75,21 @@ function tachiLater(...args: (string | Record<string, string> | ((stderr: string
   });
 }
 
+// A run still going when the test ends, as a failing one can leave it, is killed and waited for, as httpFake stops its
+// server (tests/mcp/fake.ts): it works in the test's folder, which is removed after (cleanup plan, step 12, rule 5).
+function stopAtEnd(child: ChildProcess) {
+  onTestFinished(async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, "exit");
+    child.kill();
+    await exited;
+  });
+}
+
 function launch(args: (string | Record<string, string>)[]) {
   const env = args.find((a) => typeof a === "object") ?? {};
   const words = args.filter((a) => typeof a === "string");
-  const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
-  onTestFinished(() => removeTree(top));
+  const top = tempDir("tachi-cli-");
   const home = path.join(top, "home");
   mkdirSync(home);
   const system = path.join(top, "system.gitconfig");
@@ -110,8 +119,7 @@ function launch(args: (string | Record<string, string>)[]) {
 
 // A pretend home folder holding ~/.tachikoma/settings.json, given to tachi() as its HOME and USERPROFILE.
 function homeWith(settings: string) {
-  const home = mkdtempSync(path.join(tmpdir(), "tachi-cli-home-"));
-  onTestFinished(() => removeTree(home));
+  const home = tempDir("tachi-cli-home-");
   mkdirSync(path.join(home, ".tachikoma"));
   writeFileSync(path.join(home, ".tachikoma", "settings.json"), settings);
   return { USERPROFILE: home, HOME: home };
@@ -174,7 +182,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   });
 
   it("signs out of ChatGPT on its own, and says when nobody was signed in", () => {
-    const data = path.join(mkdtempSync(path.join(tmpdir(), "tachi-cli-")), "data");
+    const data = path.join(tempDir("tachi-cli-"), "data");
     const r = tachi("logout", "chatgpt", { TACHI_DATA_DIR: data });
     expect(r.code).toBe(0);
     expect(r.stdout.trim()).toBe("Not signed in to ChatGPT.");
@@ -195,7 +203,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   });
 
   it("with -p, leaves out instruction files from outside the project and says which, printing nothing about the rest", () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+    const top = tempDir("tachi-cli-");
     const proj = path.join(top, "proj");
     mkdirSync(proj);
     writeFileSync(path.join(top, "secret.md"), "secret");
@@ -355,8 +363,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   // passed the mode's check, and no case here runs Docker. The project is a folder of its own, beside the pretend home, so
   // choice 13's refusal does not come first. Five starts.
   it("launches copy mode, and never with it, from the flag or the settings file, as far as Docker", { timeout: 60_000 }, () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-cli-");
     const proj = path.join(top, "proj");
     const empty = path.join(top, "empty");
     mkdirSync(proj);
@@ -386,7 +393,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   // Task 16: live link's first step is choice 13's refusal, before Docker is asked anything. Here the project folder holds
   // the pretend home folder, so the real command stops there, and no case here reaches Docker. Two starts.
   it("refuses live link on a folder that holds the home folder, from the flag or the settings file, before Docker", { timeout: 60_000 }, () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+    const top = tempDir("tachi-cli-");
     const home = path.join(top, "home");
     mkdirSync(path.join(home, ".tachikoma"), { recursive: true });
     writeFileSync(path.join(home, ".tachikoma", "settings.json"), '{"sandbox": "live"}');
@@ -527,7 +534,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   // listing of it passes Node's execFile maxBuffer (1 MiB) and the run fails as git killed by a signal would. Port 9, as
   // below: the run then gets as far as asking the model and fails there. 15 s for each of its two launches, as above.
   it.skipIf(!onPath("git"))("says at launch when git's settings could not be read, and starts", { timeout: 30_000 }, () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-cli-git-"));
+    const dir = tempDir("tachi-cli-git-");
     const big = path.join(dir, "big.gitconfig");
     writeFileSync(big, `[sample]\n${Array.from({ length: 12_000 }, (_, i) => `\tkey${i} = ${"x".repeat(100)}\n`).join("")}`);
     const unreachable = { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" };
@@ -541,7 +548,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   // and fails no run. The lead and the judge are a stand-in for OpenAI's chat completions that this test serves on the
   // loopback address: the lead asks to read a made-up file outside the project, then answers; the judge's request fails.
   it("with -p in auto, says a judge's error on stderr, refuses the action, and still ends as the run did", async () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+    const top = tempDir("tachi-cli-");
     const proj = path.join(top, "proj");
     mkdirSync(proj);
     const notes = path.join(top, "elsewhere", "notes.txt");
@@ -591,8 +598,7 @@ describe("tachi", { timeout: 15_000 }, () => {
       "Error: Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask.",
     ],
   ])("with -p, fails the run with exit code 1 when a PreToolUse hook refuses a call: %s", async (_name, decided, told) => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-cli-hook-");
     const proj = path.join(top, "proj");
     mkdirSync(proj);
     writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
@@ -638,8 +644,7 @@ describe("tachi", { timeout: 15_000 }, () => {
     ["a deny fails the run with exit code 1, the hook's message to the model and W1 on stderr", "deny", 1, "Error: not the notes", "note: A PermissionRequest hook refused read_file: not the notes\n"],
     ["an allow reads the file and exits 0", "allow", 0, "     1\tmade-up notes", ""],
   ] as const)("with -p, a PermissionRequest hook runs for a call -p would refuse: %s", { timeout: 60_000 }, async (_name, behavior, code, told, stderr) => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-permission-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-cli-permission-");
     const proj = path.join(top, "proj");
     mkdirSync(proj);
     const notes = path.join(top, "elsewhere", "notes.txt");
@@ -687,8 +692,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   // address, as above; a PreToolUse hook of the test's own allows the command, as -p asks nobody. Its own limit: the run
   // pays the -p start of about 7.5 s ("Before you start").
   it("with -p, waits for a background command and prints the answer its ending gets too", { timeout: 60_000 }, async () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-wait-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-cli-wait-");
     const proj = path.join(top, "proj");
     mkdirSync(proj);
     const script = path.join(top, "allow.cjs");
@@ -739,8 +743,7 @@ describe("tachi", { timeout: 15_000 }, () => {
     ["a UserPromptSubmit hook blocks the prompt, under --json", "UserPromptSubmit", { decision: "block", reason: "not today" }, 0, blocked, true],
   ])("with -p, fails the run with exit code 1 when %s, with its line", async (_name, event, said, requests, line, json) => {
     const flags = json ? ["--json"] : [];
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-cli-hook-");
     const proj = path.join(top, "proj");
     mkdirSync(proj);
     writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
@@ -784,8 +787,7 @@ describe("tachi", { timeout: 15_000 }, () => {
     // Task 9's code review: the turn ends at the limit as a normal end does, so the run does not fail.
     ["prints the answer and exits 0 when Stop hooks keep the turn going 8 times in a row", { decision: "block", reason: "again" }, 0, 9, keptEight],
   ])("with -p, %s", async (_name, said, code, requests, stderr) => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-cli-hook-");
     const proj = path.join(top, "proj");
     mkdirSync(proj);
     const script = path.join(top, "hook.cjs");
@@ -816,8 +818,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   // output as `hook: <line>`, and a grey line as `note: <line>`, escaped (Task 6's review). The lead is a stand-in served on
   // the loopback address, as above: it asks to read a file in the project, then answers.
   it("with -p, exits 0 when a PreToolUse hook fails and the run then answers, with the hook's lines escaped on its error output", async () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-cli-hook-");
     const proj = path.join(top, "proj");
     mkdirSync(proj);
     writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
@@ -860,8 +861,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   // stand-in answers the lead with a delegate call, then "done", and the subagent, which -p runs in the foreground, with
   // text; the SubagentStop hook blocks once, saying a systemMessage, then stops the subagent.
   it("with -p, writes a subagent's systemMessage, its SubagentStop block and its stop to the error output, each naming it", async () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-cli-hook-");
     const proj = path.join(top, "proj");
     mkdirSync(proj);
     const script = path.join(top, "hook.cjs");
@@ -946,8 +946,7 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
   }
   // A project and data folder of the case's own, and its sessions folder, as the launch finds it.
   function place() {
-    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-saved-")));
-    onTestFinished(() => removeTree(top));
+    const top = realpathSync.native(tempDir("tachi-cli-saved-"));
     const proj = path.join(top, "proj");
     const data = path.join(top, "data", "tachikoma");
     mkdirSync(proj);
@@ -1300,7 +1299,11 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
         return false;
       }
     };
-    onTestFinished(() => void (alive() && process.kill(pid)));
+    onTestFinished(async () => {
+      if (alive()) process.kill(pid);
+      // The body's own wait: the hook ends before the folder it works in is removed (cleanup plan, step 12, rule 5).
+      for (let i = 0; alive() && i < 500; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    });
     for (let i = 0; alive() && i < 500; i++) await new Promise((resolve) => setTimeout(resolve, 20));
     expect(alive()).toBe(false);
   });
@@ -1365,7 +1368,11 @@ setInterval(() => {}, 1000);`,
         return false;
       }
     };
-    onTestFinished(() => void (alive() && process.kill(pid)));
+    onTestFinished(async () => {
+      if (alive()) process.kill(pid);
+      // The body's own wait: the hook ends before the folder it works in is removed (cleanup plan, step 12, rule 5).
+      for (let i = 0; alive() && i < 500; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    });
     for (let i = 0; alive() && i < 500; i++) await new Promise((resolve) => setTimeout(resolve, 20));
     expect(alive()).toBe(false);
   });
@@ -1480,7 +1487,7 @@ function windowLater(...args: (string | Record<string, string>)[]) {
   argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/terminal.mjs")).href); // after tsx's loader
   const terminal = { TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"), CI: "0", CONTINUOUS_INTEGRATION: "0", TACHI_CLASSIC: "1", WT_SESSION: "" };
   const child = spawn(process.execPath, argv, { ...options, env: { ...options.env, ...terminal } });
-  onTestFinished(() => void child.kill());
+  stopAtEnd(child);
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
@@ -1519,8 +1526,7 @@ describe("tachi's MCP servers", { timeout: 60_000 }, () => {
     }
   };
   async function project() {
-    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-mcp-")));
-    onTestFinished(() => removeTree(top));
+    const top = realpathSync.native(tempDir("tachi-cli-mcp-"));
     const proj = path.join(top, "proj");
     mkdirSync(proj);
     const data = path.join(top, "data", "tachikoma");
@@ -1744,8 +1750,7 @@ describe("live link's launch, with a stand-in Docker", () => {
   // A project folder of the test's own, and the data folder beside it, or inside it for choice 13's step.
   // `made` adds to the project and the folder around it before the launch.
   async function launch(broken: Set<Step>, info?: string, network: Network = "off", made?: (top: string, root: string) => void) {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-box-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-cli-box-");
     const root = path.join(top, "project");
     mkdirSync(root);
     made?.(top, root);
@@ -1800,8 +1805,7 @@ describe("live link's launch, with a stand-in Docker", () => {
   // A Ctrl-C during the git step stops the launch as one during the image's does (image.ts, 128 + SIGINT's number), with
   // nothing more said, whether git was ended by it or had already answered.
   it("stops on a Ctrl-C during git's settings, saying nothing more", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "tachi-cli-box-"));
-    onTestFinished(() => removeTree(root));
+    const root = tempDir("tachi-cli-box-");
     vi.stubEnv("TACHI_DATA_DIR", path.join(tmpdir(), "tachi-cli-no-data"));
     for (const answered of [false, true]) {
       const stop = new AbortController();
@@ -1923,8 +1927,7 @@ describe("copy mode's launch, with a stand-in Docker", () => {
   // `broken`: "git" for git's settings that cannot be read on the host, "commit" for the box's git missing. `head`: the
   // text of a .git/HEAD made by hand in the project, which the snapshot leaves out; no .git when not given.
   async function launch(broken: "git" | "commit" | null = null, head?: string, abortAtCopy = false) {
-    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-copy-")));
-    onTestFinished(() => removeTree(top));
+    const top = realpathSync.native(tempDir("tachi-cli-copy-"));
     const root = path.join(top, "project");
     const elsewhere = path.join(top, "elsewhere");
     mkdirSync(path.join(root, ".husky"), { recursive: true });
@@ -2069,8 +2072,7 @@ describe("copy mode's launch, with a stand-in Docker", () => {
 // take a while, so a line says so first, counting the manifest's files as the review does (the user's words).
 describe("dropOnExit", () => {
   it("removes the copy at exit, saying so first, never following a link out of it, until it is kept", () => {
-    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-drop-")));
-    onTestFinished(() => removeTree(top));
+    const top = realpathSync.native(tempDir("tachi-cli-drop-"));
     const outside = path.join(top, "outside");
     mkdirSync(outside);
     writeFileSync(path.join(outside, "kept.txt"), "made-up\n");
@@ -2101,8 +2103,7 @@ describe("dropOnExit", () => {
 
   // The quality review: a removal that fails is said, with the review's line, so the folder can be deleted by hand.
   it("says when the copy could not be removed", () => {
-    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-drop-")));
-    onTestFinished(() => removeTree(top));
+    const top = realpathSync.native(tempDir("tachi-cli-drop-"));
     const folder = path.join(top, "copies", "s1");
     mkdirSync(folder, { recursive: true });
     const proc = new EventEmitter();
@@ -2128,8 +2129,7 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     more: Record<string, string> = {},
     flags: string[] = [],
   ) {
-    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-e2e-")));
-    onTestFinished(() => removeTree(top));
+    const top = realpathSync.native(tempDir("tachi-cli-e2e-"));
     const proj = path.join(top, "proj");
     const empty = path.join(top, "empty");
     const data = path.join(top, "data");
@@ -2167,7 +2167,7 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     const { argv, options } = launch([...copyFlags, "-p", "hi", env]);
     argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/register.mjs")).href); // after tsx's loader
     const child = spawn(process.execPath, argv, options);
-    onTestFinished(() => void child.kill());
+    stopAtEnd(child);
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
@@ -2245,8 +2245,7 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
   // logs each one, so a case reads what was made and removed. With -p every launch line is on stderr, none on stdout.
   describe("with the allowed sites", () => {
     const logged = () => {
-      const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-docker-"));
-      onTestFinished(() => removeTree(top));
+      const top = tempDir("tachi-cli-docker-");
       const file = path.join(top, "calls.jsonl");
       const calls = () => readFileSync(file, "utf8").trimEnd().split("\n").map((l) => JSON.parse(l) as string[]);
       return { env: { TACHI_TEST_STANDIN_LOG: file }, calls };
@@ -2311,8 +2310,7 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     // The window, with the stand-in terminal and the stand-in Docker both: /clear's prompt is built by the same maker
     // as each shortening's (systemAgain, cli.tsx), so it names the sites as the launch's did.
     it("in the window, the prompt after /clear names the sites too", async () => {
-      const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-e2e-")));
-      onTestFinished(() => removeTree(top));
+      const top = realpathSync.native(tempDir("tachi-cli-e2e-"));
       const proj = path.join(top, "proj");
       mkdirSync(proj);
       const prompts: string[] = [];
@@ -2350,7 +2348,7 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
         WT_SESSION: "", TACHI_TEST_STANDIN_DOCKER: "ok",
       };
       const child = spawn(process.execPath, argv, { ...options, env: { ...options.env, ...terminal } });
-      onTestFinished(() => void child.kill());
+      stopAtEnd(child);
       const closed = new Promise<number | null>((resolve) => child.on("close", resolve));
       let stdout = "";
       child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
@@ -2409,8 +2407,7 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
 describe("tachi review", { timeout: 15_000 }, () => {
   // A data folder holding one copy, s1, of a made-up project, made by hand as the snapshot leaves one, and none private.
   function dataWithCopy() {
-    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-review-")));
-    onTestFinished(() => removeTree(top));
+    const top = realpathSync.native(tempDir("tachi-cli-review-"));
     const data = path.join(top, "data");
     const folder = path.join(data, "copies", "s1");
     for (const sub of ["base", "work"]) mkdirSync(path.join(folder, sub), { recursive: true });
@@ -2421,8 +2418,7 @@ describe("tachi review", { timeout: 15_000 }, () => {
   }
 
   it("says when no copies are waiting", () => {
-    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-review-"));
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-cli-review-");
     const r = tachi("review", { TACHI_DATA_DIR: path.join(top, "data") });
     expect(r.code).toBe(0);
     expect(r.stdout).toBe("No copies are waiting.\n");
@@ -2468,7 +2464,7 @@ describe("tachi review", { timeout: 15_000 }, () => {
 // settings name inside the project are given as the box sees them; those outside it the box cannot reach.
 describe("boxProtection", () => {
   it("gives the project's protected paths as /work paths, leaving out those outside it", () => {
-    const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-prot-")));
+    const root = realpathSync.native(tempDir("tachi-cli-prot-"));
     const p = { hooks: [path.join(root, ".husky", "_"), path.join(tmpdir(), "elsewhere-hooks")], files: [path.join(root, "team.gitconfig")] };
     expect(boxProtection(root, p)).toEqual({ hooks: ["/work/.husky/_"], files: ["/work/team.gitconfig"] });
   });
@@ -2586,7 +2582,7 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
     memory?: object;
     upFirst?: "connected";
   } = {}) {
-    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-memory-")));
+    const top = realpathSync.native(tempDir("tachi-cli-memory-"));
     const proj = path.join(top, "proj");
     const home = path.join(top, "home");
     const bin = path.join(top, "bin");
@@ -2718,7 +2714,7 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
         WT_SESSION: "",
       };
       const child = spawn(process.execPath, argv, { ...options, env: { ...options.env, ...(window ? terminal : {}) } });
-      onTestFinished(() => void child.kill());
+      stopAtEnd(child);
       let stdout = "";
       let stderr = "";
       // When the answer's line came, as it came, for the cases that time what follows it.
@@ -2776,26 +2772,19 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
       );
     const hubPids = () => jsonLines(record).flatMap((l) => (l.hub ? [l.hub.pid as number] : []));
     const uvPids = () => jsonLines(uvRecord).flatMap((l) => (l.as === "uv" ? [l.pid as number] : []));
-    // The stand-in hubs end once their control file is gone; the case's folder goes once they and uv have ended.
+    // The stand-in hubs end once their control file is gone; the case's folder goes once they and uv have ended:
+    // tempDir removes it after this clean-up, as it was registered first. A hub the stand-in helper stopped
+    // (TerminateProcess) is reported gone before Windows lets go of memory/home, its working folder: refused at once
+    // 100 times in 100, then held 2.8 to 8.1 ms after "gone" in 50 more (measured 2026-11-22, recorded in
+    // ~/.claude/orch/Agent Harness/2026-11-19-memory-and-lessons/build-ci-fix.md), and about 170 ms for a killed
+    // program in tests/hooks/run.test.ts (2026-10-31). The shared remover tries again every 50 ms for up to 2 s (the
+    // user's choice, cleanup plan, step 3), in place of this hook's own retry until its 15 s. Vitest ends this wait at
+    // its default hook limit of 10 s, before its 15 s, as it is given no limit of its own.
     onTestFinished(async () => {
       clearInterval(poll);
       rmSync(controlFile, { force: true });
       const began = Date.now();
       while ([...hubPids(), ...uvPids()].some(alive) && Date.now() - began < 15_000) await sleep(50);
-      // A hub the stand-in helper stopped (TerminateProcess) is reported gone before Windows lets go of memory/home,
-      // its working folder: refused at once 100 times in 100, then held 2.8 to 8.1 ms after "gone" in 50 more (measured
-      // 2026-11-22, recorded in ~/.claude/orch/Agent Harness/2026-11-19-memory-and-lessons/build-ci-fix.md), and about
-      // 170 ms for a killed program in tests/hooks/run.test.ts (2026-10-31). So the removal is tried again every 50 ms
-      // until the wait's 15 s, though vitest ends this hook first, at its default hook limit of 10 s, as it is given no
-      // limit of its own.
-      for (;;) {
-        try {
-          return await removeTree(top);
-        } catch (err) {
-          if (Date.now() - began >= 15_000) throw err;
-          await sleep(50);
-        }
-      }
     });
     return {
       top, proj, data, paths, env, run, sent, control, added, calls: callsMade, dropped, serving, hubPids, uvPids,
