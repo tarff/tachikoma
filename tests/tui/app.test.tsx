@@ -12242,7 +12242,11 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   afterEach(async () => {
     for (const hook of endHooks.splice(0)) {
       if (!hook.alive()) continue;
-      hook.kill();
+      try {
+        hook.kill();
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err; // ESRCH: it ended after the look above
+      }
       await untilSlowly(() => !hook.alive(), 600);
     }
   });
