@@ -1103,7 +1103,14 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     await vi.waitFor(() => expect(stripVTControlCharacters(w.stdout())).toContain("Saved sessions in this folder, newest first:"), { timeout: 15_000 });
     expect(stripVTControlCharacters(w.stdout())).toContain("the fix");
     w.write("\u0003");
-    expect(await w.closed()).toBe(0);
+    // Nothing opened: a session opened would draw the window's start-up box, and the window would stay open. It is looked
+    // for once the run has closed, or after the same 15 s wait if it has not.
+    const wait = new AbortController();
+    const ended = await Promise.race([w.closed(), sleep(15_000, undefined, { signal: wait.signal }).then(() => "still running", () => "")]);
+    wait.abort();
+    const version: string = JSON.parse(readFileSync(path.resolve("package.json"), "utf8")).version;
+    expect(stripVTControlCharacters(w.stdout())).not.toContain(`Tachikoma ${version}`);
+    expect(ended).toBe(0);
     expect(stripVTControlCharacters(w.stderr())).toBe(""); // Ink shows the cursor again there
   });
 
