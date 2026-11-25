@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
 import { changes } from "../../src/sandbox/changes.js";
@@ -9,15 +8,14 @@ import { dockerState } from "../../src/sandbox/docker.js";
 import { boxLimits, boxUser, DockerExecutor, dockerRoom } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
 import { snapshot } from "../../src/sandbox/snapshot.js";
-import { removeTree, ZERO } from "../helpers.js";
+import { tempDir, ZERO } from "../helpers.js";
 
 const windows = process.platform === "win32";
 
 // A test's own folder, holding a project with `tree` in it, and what `more` makes there, and a data folder for its copy,
 // which is taken at once. The test then changes work/ as the box would.
 async function copied(tree: Record<string, string>, more: (at: (rel: string) => string) => void = () => {}) {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-chg-")));
-  onTestFinished(() => removeTree(dir));
+  const dir = realpathSync.native(tempDir("tachi-chg-"));
   const root = path.join(dir, "project");
   const at = (rel: string) => path.join(root, rel);
   mkdirSync(root);
@@ -353,7 +351,7 @@ describe("a pipe a box made, in real Docker", { timeout: 0 }, () => {
     if (state !== "ready") return ctx.skip(state === "denied" ? "this user is not allowed to use Docker" : "Docker is set to Windows containers");
     // An ordinary test folder for the box, not the private copy, so Docker Desktop is sure to share it. changes() reads
     // it as work/, with no base/ beside it: nothing here is changed or deleted, and no .gitignore is read.
-    const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-chg-")));
+    const dir = realpathSync.native(tempDir("tachi-chg-"));
     const work = path.join(dir, "work");
     mkdirSync(work);
     writeFileSync(path.join(work, "a.txt"), "a\n");
@@ -362,7 +360,6 @@ describe("a pipe a box made, in real Docker", { timeout: 0 }, () => {
       // The host may not remove what it cannot read, so the box removes its pipe first.
       await box?.exec("rm -f /work/pipe", "/").catch(() => {});
       await box?.stop();
-      await removeTree(dir);
     });
     const info = await imageFor(work);
     if (!info.built) return ctx.skip(`the sandbox's image (${info.tag}) is not built`);

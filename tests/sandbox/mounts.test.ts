@@ -1,10 +1,9 @@
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, linkSync, mkdirSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { GitSettings } from "../../src/safety/gitconfig.js";
 import { ignoresCase, liveMounts } from "../../src/sandbox/mounts.js";
-import { removeTree } from "../helpers.js";
+import { removeTree, tempDir } from "../helpers.js";
 
 // A folder whose reading fails as a test says (choice 124), with no permission changed: every other read is the real one.
 let failAt: string | undefined;
@@ -23,8 +22,7 @@ vi.mock("node:fs", async (original) => {
 // A test's own folder, holding a project with `tree` in it (a name ending in / is a folder), and what gitSettings would
 // give, filled in by the test. No git runs here: tests/sandbox/livelink.test.ts has the real ones.
 function world(tree: string[] = []) {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-mounts-")));
-  onTestFinished(() => removeTree(dir));
+  const dir = realpathSync.native(tempDir("tachi-mounts-"));
   const root = path.join(dir, "project");
   mkdirSync(root);
   const at = (rel: string) => path.join(root, rel);
@@ -292,8 +290,7 @@ describe("liveMounts", () => {
 // A test-made folder, and whether it ignores letter case, told by two names in a folder of its own that differ only in
 // case: whether they reach one file.
 async function caseOf(): Promise<{ dir: string; ignores: boolean }> {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-case-")));
-  onTestFinished(() => removeTree(dir));
+  const dir = realpathSync.native(tempDir("tachi-case-"));
   const probe = path.join(dir, "probe");
   mkdirSync(probe);
   writeFileSync(path.join(probe, "a"), "");

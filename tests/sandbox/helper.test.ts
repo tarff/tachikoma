@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { linkSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,7 +10,7 @@ import { LocalWorkspace } from "../../src/exec/local.js";
 import { BoxWorkspace, helperCode, LOADER } from "../../src/sandbox/boxWorkspace.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
 import { BoxState, DockerExecutor } from "../../src/sandbox/executor.js";
-import { removeTree, TREE } from "../helpers.js";
+import { tempDir, TREE } from "../helpers.js";
 
 // Runs `node -e <loader>` with its input on the host, as the call would in the box: what node writes, and how it ends.
 function node(args: string[], input: Buffer | undefined, signal?: AbortSignal): Promise<{ code: number; out: string; err: string }> {
@@ -43,8 +43,7 @@ function hostNode(started?: () => void) {
 
 // A test folder holding `tree`, each file's folders made, removed when the test ends.
 async function folderWith(tree: Record<string, string | Buffer>, prefix = "tachi-helper-"): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
-  onTestFinished(() => removeTree(root));
+  const root = tempDir(prefix);
   for (const [p, text] of Object.entries(tree)) {
     await mkdir(path.dirname(path.join(root, p)), { recursive: true });
     await writeFile(path.join(root, p), text);

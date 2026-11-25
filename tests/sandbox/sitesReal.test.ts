@@ -1,8 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rmdir } from "node:fs/promises";
 import os from "node:os";
-import path from "node:path";
 import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
 import { commandEnv, onPath } from "../../src/exec/env.js";
 import { docker, dockerState } from "../../src/sandbox/docker.js";
@@ -19,6 +17,7 @@ import {
 import { imageFor } from "../../src/sandbox/image.js";
 import type { Site } from "../../src/sandbox/sites.js";
 import { checkSites, routesVerdict, removeSitesNet, startSitesNet } from "../../src/sandbox/sitesNet.js";
+import { tempDir } from "../helpers.js";
 
 // 8c-2b plan, Step 7: the allowed sites in real Docker, with the sandbox's own image, never pulled. Every container and
 // network a test makes is labelled tachikoma.test=1 and removed when the test ends; the box joins only the network the
@@ -41,8 +40,7 @@ async function ready(ctx: TestContext): Promise<{ image: string; limits: Limits;
   if (state === "stopped") ctx.skip("Docker is not running");
   if (state === "denied") ctx.skip("this user is not allowed to use Docker");
   if (state !== "ready") ctx.skip("Docker is set to Windows containers");
-  const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-sites-real-"));
-  onTestFinished(() => rmdir(folder));
+  const folder = tempDir("tachi-sites-real-");
   const info = await imageFor(folder);
   if (!info.built) ctx.skip(`the sandbox's image (${info.tag}) is not built`);
   const space = await dockerRoom();
@@ -57,8 +55,7 @@ async function ready(ctx: TestContext): Promise<{ image: string; limits: Limits;
 async function launch(ctx: TestContext, sites: Site[], addHosts: string[] = []) {
   const o = await ready(ctx);
   const session = `test-${randomUUID()}`;
-  const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-sites-work-"));
-  onTestFinished(() => rmdir(folder).catch(() => {}));
+  const folder = tempDir("tachi-sites-work-");
   const going = (async () => {
     const made = await startSitesNet({ ...o, session, sites, labels: TEST_LABEL, addHosts });
     if (!("net" in made)) throw new Error(made.line);

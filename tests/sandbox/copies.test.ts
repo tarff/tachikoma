@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
 import { dropOnExit } from "../../src/clilib.js";
@@ -10,7 +9,7 @@ import { toReview } from "../../src/sandbox/apply.js";
 import { boxCheck, dropIfNothing, type ReviewIo, reviewCommand } from "../../src/sandbox/copies.js";
 import type { Manifest } from "../../src/sandbox/snapshot.js";
 import type { ReviewEnd } from "../../src/tui/Review.js";
-import { removeTree } from "../helpers.js";
+import { removeTree, tempDir } from "../helpers.js";
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const ok = (out = "") => ({ code: 0, out, err: "" });
@@ -20,8 +19,7 @@ const ASKED = "Discard the copy and every change in it? [y/n]";
 // A test's own data folder, with copies made by hand as the snapshot leaves them (base/, work/, manifest.json in
 // copies/<name>/), as tests/tui/review.test.tsx makes one, so no folder is made private; and a project per copy.
 function world() {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-copies-")));
-  onTestFinished(() => removeTree(dir));
+  const dir = realpathSync.native(tempDir("tachi-copies-"));
   const data = path.join(dir, "data");
   mkdirSync(path.join(data, "copies"), { recursive: true });
   // A copy named `name` of a project holding `tree`, made at `at`, by the session process `pid`; `changed` is what the

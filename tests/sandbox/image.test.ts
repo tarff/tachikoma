@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
@@ -25,11 +25,11 @@ import {
   UNBUILT,
   WINDOWS_CONTAINERS,
 } from "../../src/sandbox/image.js";
+import { removeTree, tempDir } from "../helpers.js";
 
 // A project folder of the test's own, removed when the test ends; `dockerfile` puts .tachikoma/sandbox.Dockerfile in it.
 function project(dockerfile?: string) {
-  const root = mkdtempSync(path.join(tmpdir(), "tachi-image-"));
-  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  const root = tempDir("tachi-image-");
   if (dockerfile !== undefined) {
     mkdirSync(path.join(root, ".tachikoma"));
     writeFileSync(path.join(root, ".tachikoma", "sandbox.Dockerfile"), dockerfile);
@@ -366,7 +366,8 @@ describe("prepareImage (the launch)", () => {
         writeFileSync(path.join(dir, "left"), ""); // so the remove, which never removes what is inside, fails
       },
     });
-    onTestFinished(() => rmSync(context, { recursive: true, force: true }));
+    // Empty until the build has made its folder; removeTree("") would start from the current folder.
+    onTestFinished(() => (context ? removeTree(context) : undefined));
     const t = terminal([true]);
     const tag = `tachikoma-sandbox:${hex(PROJECT)}-project`;
     expect(await prepareImage(project(PROJECT), { ...t, signal: new AbortController().signal, run: docker.run })).toEqual({ tag });
