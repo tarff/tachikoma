@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -12,7 +12,7 @@ import chalk from "chalk";
 import { Completions } from "openai/resources/chat/completions";
 import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { Models } from "@anthropic-ai/sdk/resources/models";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
 import { askServers, type Given, newSaved, WindowSessions } from "../../src/clilib.js";
 import { type Answers, answersFor, launchAnswers } from "../../src/mcp/answers.js";
@@ -73,7 +73,7 @@ import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, 
 import { startBox } from "../../src/tui/startup.js";
 import { type Look, look, palette, type Theme, ThemeContext } from "../../src/tui/theme.js";
 import { textWidth, wrap } from "../../src/tui/view.js";
-import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, standInRun, tempContext, texts, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, fakeWorkspace, fileTempDir, reply, standInEditor, standInRun, tempContext, tempDir, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog, signInFake, standinBox } from "../mcp/fake.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
@@ -148,17 +148,16 @@ type Login = AppProps["login"];
 // Each test's history is a file in one folder of this file's own, inside a fresh temp folder: the
 // history makes its folder private, which takes about 1.5 s for a new folder on Windows (measured
 // 2026-10-25), once a process.
-const histories = path.join(mkdtempSync(path.join(tmpdir(), "tachi-")), "history");
+const histories = path.join(fileTempDir("tachi-"), "history");
 mkdirSync(histories);
 beforeAll(() => privateDir(histories)); // so the first test does not wait for it
 let nextHistory = 0;
 // The home folder whose settings and keys files /settings and /keybindings open, shared by the tests that do not look
 // at them.
-const sharedHome = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+const sharedHome = fileTempDir("tachi-home-");
 // The window's sessions for an App rendered without mount(), which saves none: nothing is written unless /clear, /resume
 // or /branch runs, into one folder of this file's own, two levels inside a fresh temp folder, removed at the end.
-const unsavedTop = mkdtempSync(path.join(tmpdir(), "tachi-app-data-"));
-afterAll(() => removeTree(unsavedTop));
+const unsavedTop = fileTempDir("tachi-app-data-");
 // The setup the window's sessions record: no sandbox, no git (system prompt plan, Task 6).
 const OFF: Setup = { sandbox: "off", git: "none" };
 const unsaved = () =>
@@ -228,7 +227,7 @@ async function mount(
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
   // give an earlier mount's to find what it saved (release 8a plan, Task 2). Only a mount with `save` writes a
   // transcript there from the start; any other has none until /clear, /resume or /branch opens one.
-  const sessions = opts.sessions ?? path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "sessions");
+  const sessions = opts.sessions ?? path.join(tempDir("tachi-app-data-"), "data", "sessions");
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
@@ -755,7 +754,7 @@ describe("App", () => {
   // Choice 26, the user's: /lead, a /model pick and /screen change this window only, and save nothing, nor does
   // Shift+Tab. Unwatched here, so nothing else makes ~/.tachikoma either.
   it("changes the lead with /lead and a /model pick, and the screen with /screen, in this window only, making no settings file", async () => {
-    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    const home = tempDir("tachi-home-");
     const made: string[] = [];
     const { app, session } = await mount([], { models, full: true, home, made });
     await press(app, "\u001b[Z");
@@ -988,7 +987,7 @@ describe("App", () => {
   });
 
   it("cuts each row of /errors to the screen's width", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const dir = tempDir("tachi-");
     const errorFile = path.join(dir, "errors.jsonl");
     writeFileSync(errorFile, `${JSON.stringify({ at: "x", session: "s", kind: "tool", attempted: `write_file ${"x".repeat(300)}`, message: "y".repeat(300), lead: "a" })}\n`);
     const { app } = await mount([], { errorFile });
@@ -1023,7 +1022,7 @@ describe("App", () => {
 
   it("shows an error, and keeps running, when the error log cannot be read", async () => {
     // A folder in one the test made: the log's own folder is made private when it is read (review fixes plan, fix 3).
-    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "log");
+    const dir = path.join(tempDir("tachi-"), "log");
     mkdirSync(dir);
     const { app } = await mount([reply("still here")], { errorFile: dir });
     await type(app, "/errors");
@@ -1097,7 +1096,7 @@ describe("App", () => {
   // Release 7 plan, Task 10 and choice 65: a judge that cannot be reached refuses the action, which the screen shows as an
   // error, and the turn goes on.
   it("shows a judge that cannot be reached as an error, refuses the action, and the turn goes on", async () => {
-    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const target = path.join(tempDir("tachi-"), "a.txt");
     const judge = new FakeProvider("judge", [new Error("judge down")]);
     const { app } = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("carried on")], { mode: "auto", judge });
     await type(app, "write it");
@@ -1113,8 +1112,7 @@ describe("App", () => {
       const errors: string[] = [];
       bus.on("error", (e) => errors.push(e.message));
       // A file where the sessions folder should be, so the first write fails, with no permission changed.
-      const own = await mkdtemp(path.join(tmpdir(), "tachi-"));
-      onTestFinished(() => removeTree(own));
+      const own = tempDir("tachi-");
       writeFileSync(path.join(own, "sessions"), "not a folder");
       const dir = path.join(own, "sessions", "project");
       const transcript = new Transcript(path.join(dir, "s1.jsonl"), path.join(dir, "s1", "pictures"));
@@ -1135,7 +1133,7 @@ describe("App", () => {
   // pause in grey just above it, in full screen and classic; approving it resumes auto mode, so the next goes to the judge.
   it.each([true, false])("says auto mode's pause in grey above its question, and approving resumes it (full screen: %s)", async (full) => {
     await inColour(1, async () => {
-      const folder = await mkdtemp(path.join(tmpdir(), "tachi-"));
+      const folder = tempDir("tachi-");
       const writes = ["a", "b", "c", "d", "e"].map((n, i) => callTool(`c${i + 1}`, "write_file", { path: path.join(folder, `${n}.txt`), content: n }).parts).flat();
       const no = reply('{"allow": false, "reason": "No."}');
       const judge = new FakeProvider("judge", [no, no, no, reply('{"allow": true}')]);
@@ -1397,7 +1395,7 @@ describe("App's keys for stopping and exiting", () => {
   // Release 7 plan, Task 10: Esc while the judge is out stops its request, and the action does not run.
   it("runs nothing when Esc stops the turn while the judge is out", async () => {
     const judge = new Held("fake:judge");
-    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const target = path.join(tempDir("tachi-"), "a.txt");
     const { app } = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("never sent")], { mode: "auto", judge });
     await type(app, "write it");
     await waitFor(() => judge.asked.length === 1);
@@ -1576,7 +1574,7 @@ describe("App's history", () => {
   it("says once when the history cannot be read or saved, and still sends the prompt", async () => {
     // A folder where the file should be, inside a folder of the test's own: the history makes its
     // folder private, which must never be the system's temp folder.
-    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "history.jsonl");
+    const dir = path.join(tempDir("tachi-"), "history.jsonl");
     mkdirSync(dir);
     const { app } = await mount([reply("still sent")], { historyFile: dir });
     await until(app, "The prompt history could not be read or saved");
@@ -2755,7 +2753,7 @@ describe("App's answers", () => {
   });
 
   it("keeps the result row of a refusal nobody was asked about: the judge's, and a mode's", async () => {
-    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const target = path.join(tempDir("tachi-"), "a.txt");
     const judge = new FakeProvider("judge", [reply('{"allow": false, "reason": "Not this one."}')]);
     const judged = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("carried on")], { mode: "auto", judge });
     await type(judged.app, "write it");
@@ -3301,14 +3299,14 @@ describe("App's blocks and gaps", () => {
   // The user's choice at Task 3's review: the start-up's warnings are notices, a grey `● ` and a block each; the launch's
   // red line, as a live edit's problem is, a block without the dot.
   it("makes the start-up's warnings notices, the history's and the launch's", async () => {
-    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "history.jsonl"); // a folder: unreadable
+    const dir = path.join(tempDir("tachi-"), "history.jsonl"); // a folder: unreadable
     mkdirSync(dir);
     const classic = await mount([reply("ok")], { historyFile: dir });
     await showing(classic.app, "The prompt history could not be read or saved");
     expect(rows(classic.app)[0]).toMatch(/^● The prompt history could not be read or saved/); // the first line said: no gap
     const line = "--network acts only with the sandbox on; it was ignored";
     const live = { loaded: { settings: { dangerousCommands: { off: ["git history"], add: [] } }, warnings: ["a launch warning"] }, given: {}, networkLine: line };
-    const full = await mount([], { full: true, home: mkdtempSync(path.join(tmpdir(), "tachi-home-")), live: live as AppProps["live"] });
+    const full = await mount([], { full: true, home: tempDir("tachi-home-"), live: live as AppProps["live"] });
     const r = rows(full.app, true);
     expect(r.slice(0, 4)).toEqual(["● a launch warning", "", `● ${line}`, ""]);
     expect(r[4]).toMatch(/^The dangerous-command check is off for: git history/); // red: a block, no dot
@@ -4025,8 +4023,7 @@ describe("App's one path per edit", () => {
   });
 
   it.each([true, false])("keeps an edit of a file outside the project in full everywhere (full screen: %s)", async (full) => {
-    const outside = await mkdtemp(path.join(tmpdir(), "tachi-"));
-    onTestFinished(() => removeTree(outside));
+    const outside = tempDir("tachi-");
     const file = path.join(outside, "save.ts");
     writeFileSync(file, "one\n");
     const { app } = await mount([callTool("c1", "edit_file", { path: file, old_text: "one", new_text: "uno" }), reply("edited")], { full });
@@ -4434,7 +4431,7 @@ describe("App's keys for the modes, the model list and the last turn", () => {
   // takes the session to ask, so the write asks, though the judge said yes.
   it("asks when Shift+Tab changes the mode while the judge is out, whatever it answers", async () => {
     const judge = new Held("fake:judge");
-    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const target = path.join(tempDir("tachi-"), "a.txt");
     const { app } = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("carried on")], { mode: "auto", judge });
     await type(app, "write it");
     await waitFor(() => judge.asked.length === 1);
@@ -4450,7 +4447,7 @@ describe("App's keys for the modes, the model list and the last turn", () => {
   // Release 7 plan, Task 10: with no judge set, the lead judges, the one leading at each action (release 7 design, "The
   // modes": "Unset, the lead's own model judges, through the login already in use"), so a /lead switch moves the judge.
   it("judges with the lead leading at each action when no judge is set, so /lead moves the judge too", async () => {
-    const folder = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const folder = tempDir("tachi-");
     const write = (id: string, n: string) => callTool(id, "write_file", { path: path.join(folder, `${n}.txt`), content: n });
     const allow = reply('{"allow": true}');
     const a = new FakeProvider("a", [write("c1", "a"), allow, reply("first done")]);
@@ -4470,7 +4467,7 @@ describe("App's keys for the modes, the model list and the last turn", () => {
 
   // A judge that --judge or the settings file set stays the judge for the session, whoever leads (Task 10).
   it("keeps a set judge after /lead", async () => {
-    const folder = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const folder = tempDir("tachi-");
     const write = (id: string, n: string) => callTool(id, "write_file", { path: path.join(folder, `${n}.txt`), content: n });
     const judge = new FakeProvider("judge", [reply('{"allow": true}'), reply('{"allow": true}')]);
     const a = new FakeProvider("a", [write("c1", "a"), reply("first done")]);
@@ -8124,7 +8121,7 @@ describe("App's external editor", () => {
     },
     {
       command: "/keybindings",
-      home: () => mkdtempSync(path.join(tmpdir(), "tachi-home-")),
+      home: () => tempDir("tachi-home-"),
       started: (_app: Shown, home: string) => existsSync(keysFile(home)),
       ended: (app: Shown, home: string) => existsSync(keysFile(home)) && flat(app).includes("The editor failed (exit code 1)"),
     },
@@ -8133,7 +8130,6 @@ describe("App's external editor", () => {
     vi.stubEnv("VISUAL", editor.command("wait"));
     const lead = new Held();
     const home = made.home();
-    if (home !== sharedHome) onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const { app, session } = await mount([], { lead, home });
     await type(app, "go");
     await type(app, command);
@@ -8180,8 +8176,7 @@ describe("App's external editor", () => {
   ])("says it waits for the editor $how opens in $mode, and erases the line before the screen comes back", async ({ how, classic }) => {
     const editor = standInEditor();
     vi.stubEnv("VISUAL", editor.command("wait"));
-    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const home = tempDir("tachi-home-");
     const { steps, key } = await onTerminal(new FakeProvider("a", []), { classic, home });
     steps.length = 0;
     if (how === "Ctrl+G") await key(CTRL_G);
@@ -8651,11 +8646,7 @@ describe("App's picture reads", () => {
     const answers: ((r: Read) => void)[] = [];
     return { read: () => new Promise<Read>((resolve) => answers.push(resolve)), answers };
   };
-  const folder = () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-paste-"));
-    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
-    return dir;
-  };
+  const folder = () => tempDir("tachi-paste-");
   // A stand-in reader (clipboard.ts, readImage) that fails as a real one does, run only once the test lets it start.
   const failing = () => {
     const file = path.join(folder(), "reader.mjs");
@@ -8904,8 +8895,7 @@ describe("App's vim mode", () => {
   const onPrompt = (app: ReturnType<typeof render>) => reverse(app.lastFrame()!.split("\n").find((r) => /^›( |$)/.test(r))!);
 
   it("switches on and off with /vim, /vim on and /vim off, saying so, in this window only", async () => {
-    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const home = tempDir("tachi-home-");
     const { app } = await mount([], { home });
     await press(app, "a", "\u0015"); // the hint row is blank until a key types (Task 14)
     expect(app.lastFrame()).toContain("? for shortcuts");
@@ -9104,8 +9094,7 @@ describe("App's vim mode", () => {
   ])("leaves VISUAL for NORMAL when $name changes the text, and o then works", async ({ keys }) => {
     await inColour(1, async () => {
       // On from the settings file, so no /vim is in the history for Up to bring back.
-      const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-      onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+      const home = tempDir("tachi-home-");
       const live = { loaded: { settings: { editorMode: "vim" as const }, warnings: [] }, given: {} };
       const { app } = await mount([reply("ok")], { past: ["hi"], home, live });
       await press(app, "hello world", ESC, "v", "0", ...keys);
@@ -9216,7 +9205,7 @@ describe("App's live settings", () => {
   // A long line wraps, and Ink can carry the space it broke at onto the next row.
   const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " ");
   const sees = (app: ReturnType<typeof render>, text: string) => vi.waitFor(() => expect(flat(app)).toContain(text), WATCHED);
-  const freshHome = () => mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+  const freshHome = () => tempDir("tachi-home-");
   const PINNED = (mode: string) => `"mode" changes in settings.json take effect at the next launch; the mode stays ${mode}`;
 
   // A home of the test's own whose settings file holds `file` at launch, and the App watching it; `given`, the
@@ -10306,7 +10295,6 @@ describe("App's live settings", () => {
     editor.next('{"effort": "low"}\n');
     vi.stubEnv("VISUAL", editor.command("wait"));
     const home = freshHome();
-    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const lead = Object.assign(new FakeProvider("a", []), { setEffort: vi.fn() });
     const { app } = await mount([], { lead, home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
     await type(app, "/settings");
@@ -10482,8 +10470,6 @@ describe("App's live settings", () => {
   it("says a changed editor, the one that applies once the entry is removed, and that EDITOR keeps its own", async () => {
     vi.stubEnv("VISUAL", "");
     const { app, write, where } = await watching([], {});
-    const home = path.dirname(path.dirname(where));
-    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     write({ editor: "code --wait" });
     await sees(app, `editor is now code --wait ${FROM}`);
     write({});
@@ -10500,7 +10486,6 @@ describe("App's live settings", () => {
     editor.next('{"effort": "low"}\n');
     vi.stubEnv("VISUAL", editor.command("wait"));
     const home = freshHome();
-    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const lead = Object.assign(new FakeProvider("a", []), { setEffort: vi.fn() }); // a live mode edit changes nothing (choice 32)
     const { app } = await mount([], { lead, home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
     await type(app, "/settings");
@@ -10515,7 +10500,6 @@ describe("App's live settings", () => {
     const editor = standInEditor();
     vi.stubEnv("VISUAL", editor.command("keep"));
     const home = freshHome();
-    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const { app } = await mount([], { home });
     await type(app, "/keybindings");
     const file = path.join(settingsDir(home), "keybindings.json");
@@ -10526,8 +10510,6 @@ describe("App's live settings", () => {
     const editor = standInEditor();
     vi.stubEnv("VISUAL", editor.command("keep"));
     const { app, where } = await watching([], { mode: "project" });
-    const home = path.dirname(path.dirname(where));
-    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     await type(app, "/settings");
     await vi.waitFor(() => expect(editor.given()).toEqual({ file: where, text: '{"mode":"project"}' }), WATCHED);
   });
@@ -10554,7 +10536,6 @@ describe("App's live settings", () => {
     const editor = standInEditor();
     vi.stubEnv("VISUAL", editor.command("fail"));
     const home = freshHome();
-    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const { app } = await mount([], { home });
     await type(app, "/settings");
     await sees(app, `The editor failed (exit code 1). Set VISUAL or EDITOR, or "editor" in ${shownFile()}.`);
@@ -10567,7 +10548,6 @@ describe("App's live settings", () => {
     editor.next('{"screen": "classic", "effort": "low"}\n');
     vi.stubEnv("VISUAL", editor.command("wait"));
     const home = freshHome();
-    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const lead = Object.assign(new FakeProvider("a", []), { setEffort: vi.fn() }); // a live mode edit changes nothing (choice 32)
     const { app } = await mount([], { lead, full: true, home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
     await type(app, "/settings");
@@ -10763,8 +10743,7 @@ describe("App's live settings", () => {
 // made; the box is a stand-in.
 describe("App's leave() in copy mode", () => {
   function copyWorld() {
-    const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-leave-")));
-    onTestFinished(() => removeTree(dir));
+    const dir = realpathSync.native(tempDir("tachi-leave-"));
     const root = path.join(dir, "project");
     const folder = path.join(dir, "data", "copies", "s1");
     for (const f of [root, path.join(folder, "base"), path.join(folder, "work")]) mkdirSync(f, { recursive: true });
@@ -11004,10 +10983,9 @@ describe("App's leave() in copy mode", () => {
 // (about 1.5 s), so a case's /resume list holds earlier cases' sessions too, newest first: each picks the one it saved
 // last, the newest.
 describe("App's sessions", () => {
-  const top = mkdtempSync(path.join(tmpdir(), "tachi-sessions-"));
+  const top = fileTempDir("tachi-sessions-");
   const dir = path.join(top, "data", "sessions");
   beforeAll(() => privateDir(dir));
-  afterAll(() => removeTree(top));
   const saved = (turns: ConstructorParameters<typeof FakeProvider>[1], opts: Parameters<typeof mount>[1] = {}) =>
     mount(turns, { ...opts, save: true, sessions: dir });
   const bg = (id: string, task: string) => callTool(id, "delegate", { description: task, task, background: true });
@@ -11305,8 +11283,7 @@ describe("App's sessions", () => {
 
   // Release 8a plan, Task 7: /clear says its line once the new conversation is loaded, so a saving failure comes first.
   it("says /clear's line after the new session's saving failure", async () => {
-    const own = await mkdtemp(path.join(tmpdir(), "tachi-"));
-    onTestFinished(() => removeTree(own));
+    const own = tempDir("tachi-");
     writeFileSync(path.join(own, "data"), "not a folder"); // a file where the sessions folder's parent should be
     const { app } = await mount([], { sessions: path.join(own, "data", "sessions") });
     await type(app, "/clear");
@@ -11973,8 +11950,7 @@ describe("App's hooks", { timeout: 60_000 }, () => {
   // called when `held`, and lets the others through. `started()`: it has been sent that prompt; `answered()`: it has
   // printed its answer.
   function hookFor(answer: object, o: { at?: number; held?: boolean } = {}) {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-hook-"));
-    onTestFinished(() => removeTree(dir));
+    const dir = tempDir("tachi-app-hook-");
     const at = (name: string) => path.join(dir, name);
     const script = at("hook.cjs");
     writeFileSync(
@@ -12204,8 +12180,7 @@ process.stdin.resume().on("end", () => {
   // Release 8b plan, Task 10 and choice 18: each switch ends the session it leaves, then starts the one it opens, and
   // SessionStart's context goes with the next request. The hook writes its input to a file in the test's folder.
   it("fires SessionEnd then SessionStart at /branch (other, fork), /clear (clear, clear) and /resume (resume, resume)", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-hook-"));
-    onTestFinished(() => removeTree(dir));
+    const dir = tempDir("tachi-app-hook-");
     const out = path.join(dir, "inputs.jsonl");
     const script = path.join(dir, "hook.cjs");
     writeFileSync(
@@ -12260,13 +12235,24 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     ]);
   });
 
+  // The SessionEnd hooks endHook made in the test. One still running when the test ends works in the project's root, so
+  // it is killed and waited for here, as the Esc case waits for its kill: an afterEach runs before the test's folders are
+  // removed (cleanup plan, step 13).
+  const endHooks: { alive: () => boolean; kill: () => void }[] = [];
+  afterEach(async () => {
+    for (const hook of endHooks.splice(0)) {
+      if (!hook.alive()) continue;
+      hook.kill();
+      await untilSlowly(() => !hook.alive(), 600);
+    }
+  });
+
   // Release 8b plan, Task 10 (approved by the user, 2026-11-09): SessionEnd as the user leaves, its keys off meanwhile and
   // the screen as it was; in full screen its lines are handed back, to print once the window has closed. The window has
   // closed once its session's lock is let go (App's unmount). The hook writes its input to a file in the test's folder,
   // waits for the file `go` when one is given, and prints `stdout`; without `go` given it never ends.
   function endHook(stdout: string, held: "go" | "never") {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-hook-"));
-    onTestFinished(() => removeTree(dir));
+    const dir = tempDir("tachi-app-hook-");
     const at = (name: string) => path.join(dir, name);
     const script = at("hook.cjs");
     writeFileSync(
@@ -12291,7 +12277,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
         return false;
       }
     };
-    onTestFinished(() => void (existsSync(at("pid")) && alive() && process.kill(Number(readFileSync(at("pid"), "utf8")))));
+    endHooks.push({ alive, kill: () => process.kill(Number(readFileSync(at("pid"), "utf8"))) });
     return { hooks, script, inputs, alive, go: () => writeFileSync(at("go"), "") };
   }
   const closed = (sessions: string, id: string) => {
@@ -12390,8 +12376,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // Release 8b plan, Task 12 (choices 22 to 25). A hook of the test's own: `body` runs once the hook has read its input,
   // with `input`, the input as sent, and `n`, how many times the script has run, the first time 1.
   function nodeHook(body: string) {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-hook-"));
-    onTestFinished(() => removeTree(dir));
+    const dir = tempDir("tachi-app-hook-");
     const script = path.join(dir, "hook.cjs");
     const count = path.join(dir, "count");
     writeFileSync(
@@ -12542,8 +12527,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // expression stringifies to {}, so the comparison reads its text (Task 6's review); a broken file keeps the hooks.
   it("applies a live edit of the hooks from the next call, with its line, and keeps them when the file breaks", async () => {
     const h = nodeHook('process.stdout.write(JSON.stringify({ systemMessage: "fired " + n }));');
-    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-    onTestFinished(() => removeTree(home));
+    const home = tempDir("tachi-home-");
     const where = path.join(settingsDir(home), "settings.json");
     mkdirSync(settingsDir(home), { recursive: true });
     writeFileSync(where, "{}");
@@ -12613,8 +12597,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   it("shows in full screen, in grey, that Git Bash was not found", async () => {
     await inColour(1, async () => {
       const line = "Git Bash was not found, so hooks run by a shell use Windows PowerShell; set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe to change that.";
-      const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-      onTestFinished(() => removeTree(home));
+      const home = tempDir("tachi-home-");
       const { app } = await mount([], { full: true, home, live: { loaded: { settings: {}, warnings: [] }, given: {}, bashLine: line } });
       expect(app.lastFrame()).toContain("\u001b[90m● Git Bash was not found");
       expect(squashed(app.lastFrame()!)).toContain(squashed(line));
@@ -12766,8 +12749,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // Task 12's code review: after a switch the old session's runs are gone, the switch's SessionEnd among them.
   it("lists on Ctrl+O none of the old session's hook runs after /resume", async () => {
     const h = nodeHook("");
-    const sessions = path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-hook-")), "data", "sessions");
-    onTestFinished(() => removeTree(path.dirname(path.dirname(sessions))));
+    const sessions = path.join(tempDir("tachi-app-hook-"), "data", "sessions");
     const earlier = await mount([callTool("c1", "find_files", { pattern: "*.md" }), reply("noted")], { save: true, sessions });
     await type(earlier.app, "remember apple");
     await untilSlow(earlier.app, "noted");
@@ -12811,8 +12793,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   // Task 12's spec review: /hooks's left-out rows follow a live edit too.
   it("lists on /hooks the hooks a live edit left out", async () => {
-    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-    onTestFinished(() => removeTree(home));
+    const home = tempDir("tachi-home-");
     const where = path.join(settingsDir(home), "settings.json");
     mkdirSync(settingsDir(home), { recursive: true });
     writeFileSync(where, "{}");
@@ -12833,8 +12814,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // and alone in /hooks's left-out rows; a value that is not a list under one of the nine events 8e adds is refused, and
   // the settings in force kept.
   it("says FileChanged's and CwdChanged's own warnings at a live edit and on /hooks, and refuses a Notification that is not a list (release 8e plan, step 1)", async () => {
-    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-    onTestFinished(() => removeTree(home));
+    const home = tempDir("tachi-home-");
     const where = path.join(settingsDir(home), "settings.json");
     mkdirSync(settingsDir(home), { recursive: true });
     writeFileSync(where, "{}");
@@ -12969,11 +12949,10 @@ describe("App's MCP", () => {
   // the mount's Servers, each stopped before the folder is removed, as on Windows a running server holds the folder it
   // works in.
   async function mcpSetup() {
-    const dir = await mkdtemp(path.join(tmpdir(), "tachi-app-mcp-"));
+    const dir = tempDir("tachi-app-mcp-");
     const made: Servers[] = [];
     onTestFinished(async () => {
       await Promise.all(made.map((s) => s.stopAll()));
-      await removeTree(dir);
     });
     const config = async (name: string, fake: FakeOptions = {}, over: Partial<ServerConfig> = {}): Promise<ServerConfig> => {
       const entry = { kind: "stdio" as const, command: process.execPath, args: [await fakeServer(dir, fake)], env: {} };
@@ -12995,8 +12974,7 @@ describe("App's MCP", () => {
       };
     // A settings file in a home of the test's own, holding `file`, read as the launch reads it, for the App to watch.
     const settings = (file: object) => {
-      const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-      onTestFinished(() => removeTree(home));
+      const home = tempDir("tachi-home-");
       const where = path.join(settingsDir(home), "settings.json");
       mkdirSync(settingsDir(home), { recursive: true });
       writeFileSync(where, JSON.stringify(file));
@@ -13268,8 +13246,7 @@ describe("App's MCP", () => {
   // once resumed, by its asked line; a transcript from before that line folds it (a known limit).
   it("keeps an approved MCP call's own row live and after a resume, and folds it from a transcript without the asked mark", async () => {
     const { config, servers } = await mcpSetup();
-    const sessions = path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "sessions");
-    onTestFinished(() => removeTree(path.dirname(path.dirname(sessions))));
+    const sessions = path.join(tempDir("tachi-app-data-"), "data", "sessions");
     const both = { parts: [...callTool("c1", "read_file", { path: "a.txt" }).parts, ...callTool("c2", "mcp__s__echo", { text: "hi" }).parts], usage };
     const first = await mount([both, reply("done")], { mcp: servers([await config("s", {}, { alwaysLoad: true })]), save: true, sessions });
     writeFileSync(path.join(first.ctx.root, "a.txt"), "a\n");
@@ -14162,11 +14139,7 @@ describe("long-term memory in the window", () => {
   const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " "); // a long line wraps
   const soon = (check: () => void) => vi.waitFor(check, { timeout: 5_000 });
   const shows = (app: ReturnType<typeof render>, text: string) => soon(() => expect(flat(app)).toContain(text));
-  const folder = () => {
-    const made = mkdtempSync(path.join(tmpdir(), "tachi-app-memory-"));
-    onTestFinished(() => removeTree(made));
-    return made;
-  };
+  const folder = () => tempDir("tachi-app-memory-");
 
   // The stand-in over stdio, its calls recorded in a folder the test made, connected, and closed at the test's end.
   async function standIn(args: string[] = []) {
@@ -14552,8 +14525,7 @@ describe("App's PreModelSwitch hooks (release 8e plan, step 13)", { timeout: 60_
   });
 
   it("sends a real hook a /lead switch's fields, matched on the new model's canonical name, then switches, and the next prompt goes to the new lead", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-switch-"));
-    onTestFinished(() => removeTree(dir));
+    const dir = tempDir("tachi-app-switch-");
     const file = path.join(dir, "input.json");
     const script = path.join(dir, "hook.cjs");
     writeFileSync(script, `let s = "";\nprocess.stdin.on("data", (d) => (s += d)).on("end", () => require("fs").writeFileSync(${JSON.stringify(file)}, s));\n`);
@@ -15167,8 +15139,7 @@ describe("App's ConfigChange hooks (release 8e plan, step 16)", { timeout: 60_00
     text: string | null,
     o: { launched?: string; given?: Given; hooks?: Hook[]; mount?: Parameters<typeof mount>[1] } = {},
   ) {
-    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-    onTestFinished(() => removeTree(home));
+    const home = tempDir("tachi-home-");
     const where = path.join(settingsDir(home), "settings.json");
     mkdirSync(settingsDir(home), { recursive: true });
     if (text !== null) writeFileSync(where, text);
@@ -15703,7 +15674,7 @@ describe("App's Notification hooks (release 8e plan, step 17)", { timeout: 60_00
     o: { hooks?: Hook[]; events?: string[]; answer?: (run: HookRun) => Ran | Promise<Ran>; server?: boolean; mount?: Parameters<typeof mount>[1] } = {},
   ) {
     const runs = configRuns(o.answer ?? (() => ran()), ["Notification", ...(o.events ?? [])]);
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-notify-"));
+    const dir = tempDir("tachi-app-notify-");
     const configs: ServerConfig[] = [];
     if (o.server) {
       const entry = { kind: "stdio" as const, command: process.execPath, args: [await fakeServer(dir)], env: {} };
@@ -15712,7 +15683,6 @@ describe("App's Notification hooks (release 8e plan, step 17)", { timeout: 60_00
     let made: Servers | undefined;
     onTestFinished(async () => {
       await made?.stopAll();
-      await removeTree(dir);
     });
     const mcp = (bus: Bus) => {
       made = new Servers(configs, { root: dir, env: process.env, bus, answers: launchAnswers, network: "none", lead: () => "fake:a", openBrowser: () => {} });
@@ -15872,7 +15842,7 @@ describe("App's Notification hooks (release 8e plan, step 17)", { timeout: 60_00
     [
       "/resume's list",
       async () => {
-        const sessions = path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "sessions");
+        const sessions = path.join(tempDir("tachi-app-data-"), "data", "sessions");
         const earlier = await mount([reply("noted")], { save: true, sessions });
         await type(earlier.app, "remember apple");
         await until(earlier.app, "noted");
@@ -16060,8 +16030,7 @@ describe("App's Notification hooks (release 8e plan, step 17)", { timeout: 60_00
   // under them is not on screen. Ctrl-D twice leaves from a question while no lead turn runs (keyRouting.ts, twice), as at
   // a background subagent's; the box's stop never ends here, so the leaving line stays up.
   it("fires nothing for a question hidden by copy mode's leaving line, left from with Ctrl-D twice", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-notify-copy-"));
-    onTestFinished(() => removeTree(dir));
+    const dir = tempDir("tachi-app-notify-copy-");
     const manifest: Manifest = { session: "s1", pid: process.pid, root: dir, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
     const copy: NonNullable<AppProps["copy"]> = {
       copy: { session: "s1", folder: path.join(dir, "s1"), manifest },
@@ -16333,8 +16302,7 @@ describe("App's Notification hooks (release 8e plan, step 17)", { timeout: 60_00
     // Leaving is the window closing: /exit, typed during a turn, runs as it ends, and copy mode's leaving line stays up
     // while the box's stop never ends.
     it("fires nothing while copy mode's leaving line is up after an /exit that waited for the turn", async () => {
-      const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-idle-copy-"));
-      onTestFinished(() => removeTree(dir));
+      const dir = tempDir("tachi-app-idle-copy-");
       const manifest: Manifest = { session: "s1", pid: process.pid, root: dir, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
       const copy: NonNullable<AppProps["copy"]> = {
         copy: { session: "s1", folder: path.join(dir, "s1"), manifest },
