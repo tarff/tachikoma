@@ -930,6 +930,10 @@ Each release works on its own and can be shown.
      shortening; lessons from the error log, stored in the palace and recalled
    - 8e: nine of the hook events 8b leaves out; FileChanged and CwdChanged have no place in
      Tachikoma and are not planned ([release 8e design](2026-11-23-tachikoma-release-8e-design.md))
+
+   Then a cleanup between releases 8 and 9, done
+   ([cleanup design](2026-11-25-tachikoma-cleanup-design.md)); its page request and MCP server
+   items moved to a later release.
 9. Rewinding: going back to an earlier message, with the files put back as they were then
 10. Skills: the loader, vendored superpowers, Tachikoma's own skills, and skills drafted from
     experience, saved on the user's yes

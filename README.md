@@ -134,7 +134,9 @@ So far it has been tested on Windows 11 only; release 14 adds testing on Linux a
   get every event as one JSON line. Details below.
 - **An error log:** every failure, and every refusal another model answered, is written to a
   private file of the project's own in Tachikoma's data folder, `errors/<hash>.jsonl`, so nothing
-  in a project can lead it elsewhere. `/errors` summarises it.
+  in a project can lead it elsewhere. `/errors` summarises it. If you ran Tachikoma's tests before
+  2026-11-06, the rows they wrote there, with the lead `ollama:none`, are still there; nothing
+  removes them.
 - **Long-term memory,** once memory is on: your conversations saved with
   [MemPalace](https://github.com/MemPalace/mempalace), close matches handed back to the model, and
   lessons from failed tool calls that a later call doing the same job got past, shown again when a
@@ -671,6 +673,21 @@ each, in `<id>/pictures/`, and each subagent's work in `<id>/subagents/`. Only y
 folder, and the file tools never touch it; as with the login, an approved shell command still can
 (see [Known limits](#known-limits)). Nothing is saved in the project, so a transcript, which holds
 everything the model read, cannot be committed by mistake.
+
+On Windows, a folder Tachikoma keeps private that belongs to another account is refused: the data
+folder itself, or one in it, such as a project's sessions folder, `errors` or `memory`. When
+Tachikoma is about to make or check such a folder as private, it stops that operation before
+changing the folder's permissions, and says so: `<folder> belongs to another account, so it cannot
+be kept private; Tachikoma stopped before changing its permissions.` The message goes on with two
+ways forward, then says to start Tachikoma again: make your own account its owner, in PowerShell
+run as administrator while signed in as your own account, with `takeown /f "<folder>" /r /d Y`;
+or rename the folder, which sets aside what it holds and lets Tachikoma make a new, empty one. The
+`/d Y` also replaces the permissions of the folders inside with full control for you alone, which
+is what Tachikoma sets on its folders anyway; that `/d Y` is needed is inferred, not tried. Only
+this refusal comes before any change to the permissions: `Could not make <folder> private to you`
+comes after Windows was asked to change them. An owner of the Administrators group counts as
+yours. What the check leaves open is under [The private folders'
+limits](#the-private-folders-limits).
 
 - **Reopening one:**
   - `tachi -c` (`--continue`) reopens the newest session saved in this folder.
@@ -2966,6 +2983,38 @@ it says so.
   window that opens the session in that moment opens it as its own, not as a copy.
 - **Reopening reads every saved session in the folder,** for `tachi -c`, `tachi -r` and `/resume`,
   so hundreds of large ones can take a second or more, and the first read longer.
+
+### The private folders' limits
+
+The check that a folder is private, with its owner check on Windows (see [Saved
+sessions](#saved-sessions)), leaves these open:
+
+- **On Windows, a folder the Administrators group owns is accepted,** as a file is.
+- **On Windows, a folder Tachikoma may not read or repair** fails with Windows' own command error,
+  not words of Tachikoma's.
+- **The folders above the one checked are not looked at,** and a missing folder is made through
+  them. When the data folder itself is refused (it holds the ChatGPT login and the MCP sign-ins),
+  the launch goes on making and writing the folders beneath it, each checked on its own.
+- **On Windows, a junction to another volume is not caught as a link.**
+- **A folder that has passed its check is not looked at again in that run,** and a session's
+  saving or the error log, once stopped by a refusal, stays stopped until the next start.
+- **On Windows, the last look at a folder's permissions comes straight after their repair,** so a
+  change another program makes then is seen only by the next start; and the folder's owner is read
+  once, at the first look, not again before the repair.
+- **The session list and the clear-out of old sessions do not go through the check:** the
+  clear-out, `tachi -c` and `tachi -r` work in a sessions folder before anything is checked, and
+  `/resume`'s list goes on reading it after a refusal.
+- **When the saved MCP sign-ins cannot be read,** `/mcp` offers no Sign out. A server that starts
+  says why in its own failed start; one that does not start shows nothing.
+- **If the "Don't ask again" answer to the memory question cannot be saved,** nothing is said, and
+  the next launch asks again.
+- **In copy mode, the launch's clean-up at exit may still remove a copy folder** at that path
+  after the check has refused it, and through a link would empty the folder the link points to
+  (that last part inferred, not tried).
+- **A window refused the memory folder still leaves the hub when it closes,** which can rewrite
+  the hub's record and ask for a stop of the hub.
+- **The prompt history says once a window that it cannot be used;** later failures in that window
+  are not said.
 
 ### `/export`'s limits
 

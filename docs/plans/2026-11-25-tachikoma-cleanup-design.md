@@ -241,4 +241,138 @@ its measured cost.
 
 ## As built
 
-(Filled in during the build.)
+Built on local `cleanup`, 2026-11-25 to 2026-11-27. On 2026-11-27 the user chose to finish the
+release small; what that dropped or moved is the last item below.
+
+### The chosen numbers
+
+- **The tests' remover tries a held folder again every 50 ms, for up to 2 s** (the user's choice
+  at the decision point, 2026-11-25): what four test files already used; about 11 times the
+  170 ms on record from the user's PC, and over 100 times CI's longest, 17.5 ms (table 1).
+- **`STANDIN_WAIT_S` stays 5 s** (the same choice): a ceiling; on CI a killed stand-in's folder
+  was free at most 12.8 ms after the kill (table 1).
+- **The CLI tests' own build may take up to 30 s** (`BUILD_LIMIT_MS`, the user's choice,
+  2026-11-27): about 12 times the slowest build step of the 55 CI runs that built, which took
+  0.98 to 2.40 s; a margin chosen, not measured.
+
+### Measured on CI
+
+Both on GitHub's Windows machine with Node 24, 2026-11-24 (UTC), from a measuring branch of its
+own. Nothing was timed on the user's PC, and CI's times do not cap it.
+
+**Table 1. A killed program's folder** (step 1, 150 rounds of each case): from the kill's return
+until the folder could first be removed.
+
+| Case | Kill itself | Removable, from the kill's return: shortest / middle / longest | Rounds with a refusal | Refused tries (all EBUSY), most in one round |
+|---|---|---|---|---|
+| Plain child, `child.kill()` | 0.2 / 0.2 / 0.3 ms | 0.8 / 1.0 / 2.1 ms | 41 of 150 (41 of the first 100, 0 of the 50 more) | 42, at most 2 |
+| Plain child, `taskkill /T /F` | 47.4 / 49.9 / 74.3 ms | 0.6 / 0.7 / 17.5 ms | 0 of 150 | 0 |
+| Stand-in server, `killAll` (kill = its taskkill, up to its own wait) | 46.5 / 51.0 / 63.4 ms | 0.6 / 1.3 / 12.8 ms | 120 of 150 (79 of 100, 41 of 50) | 383, at most 7 |
+
+Windows refused to rename a folder in use in each of the three ways tried, 150 rounds of 150: a
+program working in it (`EBUSY`), a file inside held open as Node opens one (`EPERM`), and one
+held open with no sharing (`EPERM`).
+
+**Table 2. A `tachi -p` start** (`--lead ollama:none -p hi`), stage by stage (step 2, 20 starts
+of each kind). "tsx" is from source, as the CLI tests started it then; "build" is
+`node dist/cli.js`. Each column's figures come from each stage on its own, so its middles need not
+add up to the whole start's.
+
+| Stage | tsx shortest | tsx middle | tsx longest | build shortest | build middle | build longest |
+|---|---|---|---|---|---|---|
+| spawn to the process's start | 27.2 ms | 28.0 ms | 30.2 ms | 26.4 ms | 27.9 ms | 40.3 ms |
+| compiling and loading, to cli.tsx's first line | 1.37 s | 1.39 s | 2.08 s | 913.5 ms | 922.0 ms | 954.2 ms |
+| settings and project file read | 2.2 ms | 3.4 ms | 10.5 ms | 2.4 ms | 3.2 ms | 7.5 ms |
+| options checked | 1.2 ms | 1.6 ms | 2.1 ms | 1.6 ms | 6.6 ms | 8.4 ms |
+| sessions swept | 0.7 ms | 0.8 ms | 1.0 ms | 0.7 ms | 1.0 ms | 1.2 ms |
+| models made | 2.9 ms | 3.1 ms | 9.7 ms | 2.9 ms | 3.0 ms | 8.1 ms |
+| git and sandbox checked | 140.7 ms | 146.5 ms | 157.7 ms | 140.3 ms | 148.0 ms | 164.0 ms |
+| instruction files read | 11.5 ms | 11.7 ms | 15.3 ms | 11.6 ms | 11.8 ms | 13.4 ms |
+| memory made | 3.7 ms | 3.9 ms | 5.1 ms | 3.8 ms | 4.1 ms | 5.3 ms |
+| prompt built, servers made | 1.6 ms | 1.7 ms | 2.1 ms | 1.6 ms | 1.7 ms | 2.5 ms |
+| gate, hooks and tools made | 5.2 ms | 5.4 ms | 12.5 ms | 5.0 ms | 5.3 ms | 6.9 ms |
+| session file made, its folder made private | 1.36 s | 1.38 s | 2.65 s | 1.35 s | 1.38 s | 1.44 s |
+| lead's session made | 0.8 ms | 0.9 ms | 1.0 ms | 0.8 ms | 0.9 ms | 1.0 ms |
+| servers and memory started | 0.4 ms | 0.4 ms | 0.5 ms | 0.4 ms | 0.4 ms | 0.5 ms |
+| up to the first request | 1.1 ms | 1.2 ms | 1.3 ms | 1.2 ms | 1.2 ms | 1.6 ms |
+| the first request (refused at localhost:11434) | 2.50 s | 2.65 s | 2.81 s | 2.53 s | 2.68 s | 2.89 s |
+| from the last mark to the exit | 2.4 ms | 2.5 ms | 2.7 ms | 2.4 ms | 2.5 ms | 3.2 ms |
+| exit to close, as the measuring process sees it | 15.5 ms | 16.7 ms | 23.5 ms | 14.2 ms | 15.6 ms | 20.6 ms |
+| **spawn to just before the first request** | 2.94 s | 2.98 s | 4.96 s | 2.48 s | 2.51 s | 2.61 s |
+| **whole start, spawn to close** | 5.49 s | 5.63 s | 7.80 s | 5.08 s | 5.21 s | 5.44 s |
+
+There is no "after" table: the repeat run was dropped (last item below).
+
+### Known limits: the parts of a start nobody chose to change
+
+- **The refused request, 2.65 s on CI** (middle, table 2), though it is refused at once. Its parts
+  are read from the code, not timed: the OpenAI SDK's 2 retry waits (0.5 s, then 1.0 s, each cut
+  by up to 25% at random) and, likely, making the error log's folder private (Windows only).
+- **The git check, 0.15 s on CI.**
+
+### Where the build differs from the design
+
+- **The EBUSY failure's cause is not known.** The design named `killAll`'s missing wait for the
+  server processes. Step 1 did not confirm it: on CI the folder's holder was the stand-in Docker,
+  which `killAll` already waited for, and every folder was free by the end of `killAll`. Step 8
+  read the logged failures: all ran on code from before 2026-11-24's changes, none says which
+  program held the folder or when, and the test the design names is in none of them. One
+  candidate is ruled out outright (a record file held open); the rest stay open. The wait for the
+  server processes was not built. The tests rest on the remover's retry, which then warns on
+  stderr instead of failing, and `killAll` names any stand-in still running after its wait.
+- **The remover's guarantee is narrower than "never followed"** (step 4). Held: a root that is a
+  link when looked at, and a link in a listing when it is first read, are not followed; a folder
+  replaced by a link that is still a link at the second look is not deleted from. Not held: it
+  may read the listing of what a swapped-in link points at, deleting nothing from it; a folder
+  above swapped for a junction; a folder that is a junction only between the two looks; anything
+  swapped after the second look.
+- **Fix (a) reached wider than `src/cli.tsx`.** Plain values moved out of `src/tui/Review.tsx` and
+  `src/tui/StatusLine.tsx` into `src/tui/reviewWords.ts` and `src/tui/segments.ts`, and
+  `src/cli.tsx`'s drawing code into `src/tui/draw.tsx`, loaded on demand. The boundary is the
+  user's "full boundary" (2026-11-26): a `-p` start, and a start that ends early, load none of
+  `ink`, `react`, `react/jsx-runtime` or a drawing module; `tests/cli.test.ts` records what a
+  start loads.
+- **Fix (b) was built as a cheaper check (2a + 2b), not as a check made once** (the user's choice,
+  2026-11-26). The account comes from the PowerShell run that reads the permissions, so `whoami`
+  is gone, and after a repair with nothing of another account's to remove the folder is not read
+  again. On its own this changed no outcome: the same folders pass, and the same are refused in
+  the same words. Not shown: the time saved (the repeat run was dropped); the account match for
+  an elevated launch, for one under other credentials, and on CI's machine before the pull
+  request; a folder the Administrators group really owns; the macOS and Linux branch, unchanged
+  by the diff.
+- **A folder's owner is checked on Windows** (the user's addition, 2026-11-26). A folder another
+  account owns is refused, not taken over, before any permission is changed; one the
+  Administrators group owns counts as the user's. The approved words (`src/auth/private.ts`):
+  `<folder> belongs to another account, so it cannot be kept private; Tachikoma stopped before
+  changing its permissions. To use it, either make your own account its owner, in PowerShell run
+  as administrator while signed in as your own account: takeown /f "<folder>" /r /d Y; or rename
+  it (for example to <name>.old), which sets aside what it holds and lets Tachikoma make a new,
+  empty one. Then start Tachikoma again.` That `/d Y` is needed is inferred, not tried. All seven
+  cases where a caller hides a refusal or acts on a refused folder were left as known limits (the
+  README's "The private folders' limits").
+- **The CLI tests start Tachikoma from a build of their own** (fix (c)): each run of
+  `tests/cli.test.ts` compiles into `dist-test-<pid>-<time>` at the repo's top, one folder per
+  run, removed when the file ends (`.gitignore` has `dist-test-*/`), and every start runs it with
+  plain `node`; the stand-ins take the place of the build's Docker and memory modules. The user's
+  `dist/` is not touched.
+- **The one-off script** (`scripts/clear-old-test-leftovers.mjs`) does folders only: names that
+  are a test's prefix followed by exactly the six characters `mkdtemp` adds, last changed before a
+  cut-off written into it; each entry's type taken from its one listing of Temp, links and files
+  not touched; a count and size first, then only `y` deletes. It deletes with the tests' remover,
+  one try per folder: no staging rename, no record, no error rows. Its known limit: a folder
+  swapped for a link between the script's listing and its delete, or a folder inside swapped
+  during the delete, is not caught.
+- **Tachikoma makes a third name in Temp,** `tachikoma-proxy-` (`src/sandbox/sitesNet.ts`), beside
+  the two the design names. It is on no test list, so the script shows it as "not sure" and never
+  deletes it.
+- **The Docker clean-up is only in `tests/sandbox/sitesReal.test.ts`'s `container()`:** when its
+  test ends, a `docker run` still going is stopped, then the container is removed by name. The
+  other real-Docker test files, and `launch()` in that file, still wait for their run in their
+  clean-up, so a start that hangs there can still leave a container. A container the engine makes
+  after the stop could also outlive the `rm -f` (not measured). Tried against a stand-in `docker`
+  only.
+- **Dropped or moved on 2026-11-27:** the repeat measurement on CI, so the fixes' saving was not
+  timed afterwards; the CLI tests' new limits, the split of the six-value `--max-tasks` test and
+  the deadline on a start; and the page request and the three MCP server items (the refusal during
+  a server's start or refresh, the late refusal from the lists, the failed resource and prompt
+  lists), moved to a later release. The old tests' error rows stay; the script removes none.
