@@ -13,8 +13,15 @@ export interface Left {
 }
 
 // Removes `root` and gives back what is left: [] when it is all gone, or was never there. A refused try is made again
-// after `pause` ms until `limit` ms have passed; `seam` is for tests of the remover only.
+// after `pause` ms until `limit` ms have passed; `seam` is for tests of the remover only. `listedAsFolder`: the caller
+// read from the holder's listing that the root is a folder, so the holder is not listed again (its limit is in
+// removeTree.mjs's first comment).
 export function tryRemoveTree(
   root: string,
-  options: { pause: number; limit: number; seam?: (moment: Moment, folder: string) => void | Promise<void> },
+  options: {
+    pause: number;
+    limit: number;
+    seam?: (moment: Moment, folder: string) => void | Promise<void>;
+    listedAsFolder?: boolean;
+  },
 ): Promise<Left[]>;

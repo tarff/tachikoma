@@ -1,8 +1,13 @@
 // The tests' remover (cleanup plan, step 4): removes a folder a test made, and gives back what it could not remove.
 //
-// Who may use it: tests, on folders a test made. It must not be pointed at folders of unknown history, and it is never
-// what deletes in the user's real Temp: the one-off script deletes there only by a way measured on CI and shown by its
-// own tests (cleanup plan, steps 14e and 21).
+// Who may use it: tests, on folders a test made; and, by the user's choice, the one-off script that clears the old test
+// folders from the user's Temp (scripts/clear-old-test-leftovers.mjs, cleanup plan, step 21), with the limit below.
+// It must not be pointed at anything else of unknown history.
+//
+// The option `listedAsFolder`: the caller has read the root's type from its holder's listing itself, and says it was a
+// folder. The remover then lists the holder for neither look at the root (the script's Temp is large); inside the
+// root, it reads types as below. Its limit: a root swapped for a link after the caller's listing is not seen, and
+// deletes can land behind the link.
 //
 // How it reads a type: always from the listing of the folder that holds the entry, never by a status call on the
 // entry itself, which on Windows follows a junction that names its drive by ID (src/core/sessions.ts). Before a
@@ -25,8 +30,9 @@
 //     the listing read in between was the junction's target and is deleted from.
 //   - Afterwards: anything swapped after the second look is not seen.
 //   In short, the remover does not keep its walk inside the folder it was given if another program changes folders
-//   under it while it runs. That is acceptable for tests and nowhere else: a test's folder was made by that test a
-//   moment ago under a random name, and the only programs changing it are the test's own.
+//   under it while it runs. That is acceptable for tests: a test's folder was made by that test a moment ago under a
+//   random name, and the only programs changing it are the test's own. For the one-off script's old folders, which
+//   nothing uses, the user accepted it.
 //
 // A changed entry is final for the whole removal: no later try touches it again, whatever type it shows by then, and
 // it is never removed as a link. A try that is refused (on CI every refusal was EBUSY) is made again from the root
@@ -70,7 +76,7 @@ async function removeLink(p) {
 }
 
 // Gives back what is left after the removal of `root`: [] when it is all gone, or was never there.
-export async function tryRemoveTree(root, { pause, limit, seam }) {
+export async function tryRemoveTree(root, { pause, limit, seam, listedAsFolder }) {
   const top = path.resolve(root);
   const changed = new Set();
   const began = Date.now();
@@ -92,8 +98,9 @@ export async function tryRemoveTree(root, { pause, limit, seam }) {
     };
     const change = (dir) => (changed.add(dir), keep(dir, CHANGED), false);
 
-    // Removes the folder `name` in `holder`, which listed it as a folder; true when it is gone.
-    const folder = async (holder, name) => {
+    // Removes the folder `name` in `holder`, which listed it as a folder; true when it is gone. `listed`: the caller's
+    // listing stands for the second look.
+    const folder = async (holder, name, listed = false) => {
       const dir = path.join(holder, name);
       if (changed.has(dir)) return keep(dir, CHANGED), false;
       await seam?.("before its own listing", dir);
@@ -101,8 +108,8 @@ export async function tryRemoveTree(root, { pause, limit, seam }) {
       if (!(await tried(dir, async () => (entries = await listing(dir))))) return false;
       if (entries === undefined) return change(dir);
       await seam?.("before the second look", dir);
-      let now;
-      if (!(await tried(dir, async () => (now = await typeIn(holder, name))))) return false;
+      let now = "folder";
+      if (!listed && !(await tried(dir, async () => (now = await typeIn(holder, name))))) return false;
       if (now !== "folder") return change(dir);
       let whole = true;
       for (const e of entries) {
@@ -116,12 +123,12 @@ export async function tryRemoveTree(root, { pause, limit, seam }) {
       return tried(dir, () => rmdir(dir));
     };
 
-    let type;
-    if (await tried(top, async () => (type = await typeIn(path.dirname(top), path.basename(top))))) {
+    let type = "folder";
+    if (listedAsFolder || (await tried(top, async () => (type = await typeIn(path.dirname(top), path.basename(top)))))) {
       if (type === "gone") return [];
       if (type === "file") return [{ path: top, reason: "not a folder" }];
       if (type === "link") await tried(top, () => removeLink(top));
-      else await folder(path.dirname(top), path.basename(top));
+      else await folder(path.dirname(top), path.basename(top), listedAsFolder === true);
     }
     if (!refused || Date.now() - began >= limit) return left;
     await new Promise((resolve) => setTimeout(resolve, pause));

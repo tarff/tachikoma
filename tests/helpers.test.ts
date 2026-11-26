@@ -18,6 +18,15 @@ const listed = (dir: string) => readdirSync(dir, { withFileTypes: true });
 const entry = (dir: string, name: string) => listed(dir).find((e) => e.name === name);
 const sorted = (left: { path: string; reason: string }[]) => [...left].sort((a, b) => a.path.localeCompare(b.path));
 
+// Every folder listed through node:fs/promises while the file runs, so that a test can show which listings the remover
+// read; the listing itself is the real one.
+const listings = vi.hoisted(() => [] as string[]);
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const readdir = (dir: string, ...rest: unknown[]) => (listings.push(String(dir)), (real.readdir as (...a: unknown[]) => unknown)(dir, ...rest));
+  return { ...real, readdir };
+});
+
 // A folder outside the tree with one file in it, and the check that the file is as it was.
 function outside() {
   const dir = realpathSync.native(tempDir("tachi-helpers-outside-"));
@@ -200,6 +209,25 @@ describe("the remover, at the root", () => {
     writeFileSync(root, "file");
     expect(await tryRemoveTree(root, NO_RETRY)).toEqual([{ path: root, reason: "not a folder" }]);
     expect(readFileSync(root, "utf8")).toBe("file");
+  });
+
+  it("lists the holder for neither look when told the root was listed as a folder, and reads inside it as before", async () => {
+    const holder = tempDir("tachi-helpers-");
+    const plain = path.join(holder, "plain");
+    const given = path.join(holder, "given");
+    for (const root of [plain, given]) {
+      mkdirSync(path.join(root, "a"), { recursive: true });
+      writeFileSync(path.join(root, "a", "f.txt"), "f");
+    }
+    listings.length = 0;
+    expect(await tryRemoveTree(plain, NO_RETRY)).toEqual([]);
+    expect(listings.filter((d) => d === holder)).toHaveLength(2);
+    listings.length = 0;
+    expect(await tryRemoveTree(given, { ...NO_RETRY, listedAsFolder: true })).toEqual([]);
+    expect(listings.filter((d) => d === holder)).toEqual([]);
+    expect(listings.filter((d) => d === given)).toHaveLength(2);
+    expect(listings.filter((d) => d === path.join(given, "a"))).toHaveLength(1);
+    expect(listed(holder)).toEqual([]);
   });
 });
 
