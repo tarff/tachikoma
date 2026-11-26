@@ -680,7 +680,7 @@ Tachikoma is about to make or check such a folder as private, it stops that oper
 changing the folder's permissions, and says so: `<folder> belongs to another account, so it cannot
 be kept private; Tachikoma stopped before changing its permissions.` The message goes on with two
 ways forward, then says to start Tachikoma again: make your own account its owner, in PowerShell
-run as administrator while signed in as your own account, with `takeown /f "<folder>" /r /d Y`;
+run as administrator while signed in as your own account, with `takeown /f '<folder>' /r /d Y`;
 or rename the folder, which sets aside what it holds and lets Tachikoma make a new, empty one. The
 `/d Y` also replaces the permissions of the folders inside with full control for you alone, which
 is what Tachikoma sets on its folders anyway; that `/d Y` is needed is inferred, not tried. Only

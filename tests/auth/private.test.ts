@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, fsyncSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { PrivateFileError, privateDir, readPrivate, writePrivate } from "../../src/auth/private.js";
+import { ownerRefusal, PrivateFileError, privateDir, readPrivate, writePrivate } from "../../src/auth/private.js";
 import { commandEnv, system32 } from "../../src/exec/env.js";
 import { tempDir } from "../helpers.js";
 
@@ -476,7 +476,7 @@ describe.runIf(windows)("on Windows, a folder's owner", () => {
   // The approved words (decision 1, 2026-11-27).
   const refusal = (dir: string) =>
     `${dir} belongs to another account, so it cannot be kept private; Tachikoma stopped before changing its permissions. ` +
-    `To use it, either make your own account its owner, in PowerShell run as administrator while signed in as your own account: takeown /f "${dir}" /r /d Y; ` +
+    `To use it, either make your own account its owner, in PowerShell run as administrator while signed in as your own account: takeown /f '${dir.replaceAll("'", "''")}' /r /d Y; ` +
     `or rename it (for example to ${path.basename(dir)}.old), which sets aside what it holds and lets Tachikoma make a new, empty one. Then start Tachikoma again.`;
   const ANOTHER = "S-1-5-21-1-2-3-1000"; // an account of no one here
   // Refused with that error, of the module copy that threw it.
@@ -499,6 +499,12 @@ describe.runIf(windows)("on Windows, a folder's owner", () => {
     return dir;
   }
   const reportOwner = (owner: string | undefined) => Object.assign(reported, { owner });
+
+  // Text only: no folder is made and nothing is run with this path (Codex review).
+  it("gives the takeown line the path as a PowerShell single-quoted literal, so a $, a backtick or an apostrophe stays itself", () => {
+    const dir = "C:\\Users\\a$name`b'c\\data";
+    expect(ownerRefusal(dir)).toContain(" own account: takeown /f 'C:\\Users\\a$name`b''c\\data' /r /d Y; or rename it ");
+  });
 
   it("refuses a folder really private to the user whose reported owner is another account, after 1 PowerShell run", async () => {
     const dir = alreadyPrivate(me());

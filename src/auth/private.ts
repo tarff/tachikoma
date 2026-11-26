@@ -66,6 +66,11 @@ const ADMINISTRATORS = "S-1-5-32-544";
 // Paths already checked by this process; each Windows check starts PowerShell, which takes a moment.
 const checked = new Set<string>();
 
+// The refusal of a folder another account owns. The takeown line gives the path as a PowerShell single-quoted literal,
+// each ' doubled, so a $ or a backtick in it is not read by PowerShell (Codex review).
+export const ownerRefusal = (dir: string) =>
+  `${dir} belongs to another account, so it cannot be kept private; Tachikoma stopped before changing its permissions. To use it, either make your own account its owner, in PowerShell run as administrator while signed in as your own account: takeown /f '${dir.replaceAll("'", "''")}' /r /d Y; or rename it (for example to ${path.basename(dir)}.old), which sets aside what it holds and lets Tachikoma make a new, empty one. Then start Tachikoma again.`;
+
 // Creates the folder if needed and makes it private.
 export function privateDir(dir: string): void {
   if (checked.has(dir)) return;
@@ -77,9 +82,7 @@ export function privateDir(dir: string): void {
     // Another account's folder is refused, not taken over, before any permission is changed (cleanup plan, step 14c;
     // the words are the user's, decision 1).
     if (first.owner !== first.user && first.owner !== ADMINISTRATORS) {
-      throw new PrivateFileError(
-        `${dir} belongs to another account, so it cannot be kept private; Tachikoma stopped before changing its permissions. To use it, either make your own account its owner, in PowerShell run as administrator while signed in as your own account: takeown /f "${dir}" /r /d Y; or rename it (for example to ${path.basename(dir)}.old), which sets aside what it holds and lets Tachikoma make a new, empty one. Then start Tachikoma again.`,
-      );
+      throw new PrivateFileError(ownerRefusal(dir));
     }
     if (!onlyUser(first, true)) {
       // Removes inherited entries and leaves the user alone; files already inside inherit that. Other

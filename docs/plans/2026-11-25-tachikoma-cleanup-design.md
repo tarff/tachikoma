@@ -345,7 +345,7 @@ There is no "after" table: the repeat run was dropped (last item below).
   Administrators group owns counts as the user's. The approved words (`src/auth/private.ts`):
   `<folder> belongs to another account, so it cannot be kept private; Tachikoma stopped before
   changing its permissions. To use it, either make your own account its owner, in PowerShell run
-  as administrator while signed in as your own account: takeown /f "<folder>" /r /d Y; or rename
+  as administrator while signed in as your own account: takeown /f '<folder>' /r /d Y; or rename
   it (for example to <name>.old), which sets aside what it holds and lets Tachikoma make a new,
   empty one. Then start Tachikoma again.` That `/d Y` is needed is inferred, not tried. All seven
   cases where a caller hides a refusal or acts on a refused folder were left as known limits (the

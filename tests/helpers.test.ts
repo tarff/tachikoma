@@ -275,7 +275,9 @@ describe("the remover, a folder changed while it is being removed", () => {
 
   for (const moment of MOMENTS) {
     for (const retry of [false, true]) {
-      it(`leaves a folder replaced by a junction ${moment}, with the retry ${retry ? "on" : "off"}, and all above it`, async () => {
+      // With the retry on, on Windows only: Mac and Linux let a folder be removed while a program works in it, so the
+      // stand-in does not make the first try refused there.
+      it.runIf(!retry || WINDOWS)(`leaves a folder replaced by a junction ${moment}, with the retry ${retry ? "on" : "off"}, and all above it`, async () => {
         const out = outside();
         const t = tree();
         const holder = retry ? await standIn(t.c) : undefined;
