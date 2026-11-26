@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
 import { commandEnv, onPath } from "../../src/exec/env.js";
-import { docker, dockerState } from "../../src/sandbox/docker.js";
+import { docker, type DockerRun, dockerState } from "../../src/sandbox/docker.js";
 import {
   boxLimits,
   boxUser,
@@ -77,16 +77,19 @@ async function launch(ctx: TestContext, sites: Site[], addHosts: string[] = []) 
   return { ...o, ...(await going), session };
 }
 
-// A container of the box's image, labelled, removed by its name when the test ends; the removal is set before the run
-// and waits for it, so a test cut off during `docker run` leaves nothing.
-async function container(args: string[], command: string[], o: { image: string }) {
+// A container of the box's image, labelled, removed by its name when the test ends, passed, failed or timed out. The
+// removal is set before the run; a `docker run` still going then (one that hung) is stopped first, and Docker's answer
+// that there is no such container is not a failure. `run` is a stand-in only in the clean-up's own tests at the end.
+async function container(args: string[], command: string[], o: { image: string }, run: DockerRun = docker) {
   const name = `tachi-test-${randomUUID().slice(0, 8)}`;
-  const run = docker(["run", "-d", ...HARD, "--name", name, ...args, o.image, ...command]);
+  const stop = new AbortController();
+  const going = run(["run", "-d", ...HARD, "--name", name, ...args, o.image, ...command], { signal: stop.signal });
   onTestFinished(async () => {
-    await run.catch(() => undefined);
-    await docker(["rm", "-f", name]);
+    stop.abort();
+    await going.catch(() => undefined);
+    await run(["rm", "-f", name]);
   }, LIMIT_MS);
-  const got = await run;
+  const got = await going;
   if (got === "missing" || got.code !== 0) throw new Error(got === "missing" ? "no docker" : got.err);
   return name;
 }
@@ -264,5 +267,44 @@ describe.runIf(process.env.TACHI_TEST_INTERNET === "1")("the allowed sites on th
     const pip = await box.exec(PIP, "/tmp");
     expect(pip.code).not.toBe(0);
   }, 180_000);
+});
+
+// Cleanup plan, step 20: container()'s clean-up with a stand-in docker that records its calls, so no Docker is needed.
+// In each pair, the first test makes a container and ends; the second sees what the clean-up did when the first ended.
+describe("a container's clean-up, with a stand-in docker", () => {
+  const calls: string[][] = [];
+  const standIn =
+    (hangs: boolean): DockerRun =>
+    (args, opts = {}) => {
+      calls.push(args);
+      if (args[0] !== "run" || !hangs) return Promise.resolve({ code: 0, out: "", err: "" });
+      return new Promise((_, reject) =>
+        opts.signal?.addEventListener("abort", () => {
+          calls.push(["stopped"]);
+          reject(new Error("docker was stopped"));
+        }),
+      );
+    };
+  const nameIn = (args: string[]) => args[args.indexOf("--name") + 1];
+
+  it("a run that never returns is still going when its test ends", () => {
+    calls.length = 0;
+    void container([], ["sleep", "infinity"], { image: "stand-in" }, standIn(true)).catch(() => undefined);
+    expect(calls.map((c) => c[0])).toEqual(["run"]);
+  });
+
+  it("that run was stopped, then its container removed by name", () => {
+    expect(calls).toEqual([expect.arrayContaining(["run"]), ["stopped"], ["rm", "-f", nameIn(calls[0]!)]]);
+  });
+
+  it("a run that returns normally ends its test", async () => {
+    calls.length = 0;
+    const name = await container([], ["sleep", "infinity"], { image: "stand-in" }, standIn(false));
+    expect(nameIn(calls[0]!)).toBe(name);
+  });
+
+  it("that container was removed by name", () => {
+    expect(calls).toEqual([expect.arrayContaining(["run"]), ["rm", "-f", nameIn(calls[0]!)]]);
+  });
 });
 
