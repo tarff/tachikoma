@@ -58,7 +58,7 @@ function icacls(...args: string[]): void {
 }
 
 // The Administrators group, owner of what an administrator makes on Windows Server (measured on GitHub's Windows Server
-// 2025, the CI trial). A file's owner counts as the user's when it is this too (the user's choice, "Accept
+// 2025, the CI trial). A file's or a folder's owner counts as the user's when it is this too (the user's choice, "Accept
 // Administrators"): only an administrator, or an account that can give a file any owner, can give a file this one, and
 // an administrator can give a file any owner, the user too.
 const ADMINISTRATORS = "S-1-5-32-544";
@@ -74,6 +74,13 @@ export function privateDir(dir: string): void {
   if (st.isSymbolicLink() || !st.isDirectory()) throw new PrivateFileError(`${dir} is not a plain folder, so it cannot be kept private`);
   if (windows) {
     const first = windowsAcl([dir])[0]!;
+    // Another account's folder is refused, not taken over, before any permission is changed (cleanup plan, step 14c;
+    // the words are the user's, decision 1).
+    if (first.owner !== first.user && first.owner !== ADMINISTRATORS) {
+      throw new PrivateFileError(
+        `${dir} belongs to another account, so it cannot be kept private; Tachikoma stopped before changing its permissions. To use it, either make your own account its owner, in PowerShell run as administrator while signed in as your own account: takeown /f "${dir}" /r /d Y; or rename it (for example to ${path.basename(dir)}.old), which sets aside what it holds and lets Tachikoma make a new, empty one. Then start Tachikoma again.`,
+      );
+    }
     if (!onlyUser(first, true)) {
       // Removes inherited entries and leaves the user alone; files already inside inherit that. Other
       // accounts' own entries, which that keeps, are removed next.

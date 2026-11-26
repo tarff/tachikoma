@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, fsyncSync, linkSync, mkdirSync, readdirSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, fsyncSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { PrivateFileError, privateDir, readPrivate, writePrivate } from "../../src/auth/private.js";
@@ -466,5 +466,173 @@ describe.runIf(windows)("on Windows, the programs a folder's privacy check start
     symlinkSync(`${dir}-moved`, dir, "junction");
     const { privateDir: check } = await newStart();
     expect(() => check(dir)).toThrow(`${dir} is not a plain folder, so it cannot be kept private`);
+  });
+});
+
+// A folder's owner on Windows (cleanup plan, step 14c, part 2): the user's own account and the Administrators group are
+// accepted, as for a file; any other owner is refused at the first read, before any permission is changed. A test can
+// give a folder no other owner without rights it does not take, so the stand-in reports one.
+describe.runIf(windows)("on Windows, a folder's owner", () => {
+  // The approved words (decision 1, 2026-11-27).
+  const refusal = (dir: string) =>
+    `${dir} belongs to another account, so it cannot be kept private; Tachikoma stopped before changing its permissions. ` +
+    `To use it, either make your own account its owner, in PowerShell run as administrator while signed in as your own account: takeown /f "${dir}" /r /d Y; ` +
+    `or rename it (for example to ${path.basename(dir)}.old), which sets aside what it holds and lets Tachikoma make a new, empty one. Then start Tachikoma again.`;
+  const ANOTHER = "S-1-5-21-1-2-3-1000"; // an account of no one here
+  // Refused with that error, of the module copy that threw it.
+  function refused(m: typeof import("../../src/auth/private.js"), act: () => unknown, dir: string): void {
+    let err: unknown;
+    try {
+      act();
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(m.PrivateFileError);
+    expect((err as Error).message).toBe(refusal(dir));
+  }
+  // A folder already private to the user, by the test's own icacls, confirmed by the reader.
+  function alreadyPrivate(user: string): string {
+    const dir = temp();
+    mkdirSync(dir);
+    icacls(dir, "/inheritance:r", "/grant:r", `*${user}:(OI)(CI)F`);
+    expect(look(dir).access).toEqual(privateTo(user));
+    return dir;
+  }
+  const reportOwner = (owner: string | undefined) => Object.assign(reported, { owner });
+
+  it("refuses a folder really private to the user whose reported owner is another account, after 1 PowerShell run", async () => {
+    const dir = alreadyPrivate(me());
+    const m = await newStart();
+    try {
+      reportOwner(ANOTHER);
+      record.length = 0;
+      refused(m, () => m.privateDir(dir), dir);
+      expect(runs()).toEqual({ powershell: 1, icacls: 0, whoami: 0 });
+      expect(reads().map((r) => r.rewrote)).toEqual([[dir]]);
+    } finally {
+      reportOwner(undefined);
+    }
+  });
+
+  it("refuses a folder not private whose reported owner is another account, leaving its permissions as they were", async () => {
+    const dir = inheritsOnly(me());
+    const before = look(dir);
+    const m = await newStart();
+    try {
+      reportOwner(ANOTHER);
+      record.length = 0;
+      refused(m, () => m.privateDir(dir), dir);
+      expect(runs()).toEqual({ powershell: 1, icacls: 0, whoami: 0 });
+      expect(reads().map((r) => r.rewrote)).toEqual([[dir]]);
+    } finally {
+      reportOwner(undefined);
+    }
+    expect(look(dir)).toEqual(before);
+  });
+
+  it("refuses a folder whose reported owner is the system account", async () => {
+    const dir = alreadyPrivate(me());
+    const m = await newStart();
+    try {
+      reportOwner("S-1-5-18");
+      record.length = 0;
+      refused(m, () => m.privateDir(dir), dir);
+      expect(reads().map((r) => r.rewrote)).toEqual([[dir]]);
+    } finally {
+      reportOwner(undefined);
+    }
+  });
+
+  it("accepts a folder whose reported owner is the Administrators group, private or made private", async () => {
+    const user = me();
+    const ready = alreadyPrivate(user);
+    const open = inheritsOnly(user);
+    const m = await newStart();
+    try {
+      reportOwner("S-1-5-32-544");
+      record.length = 0;
+      m.privateDir(ready);
+      expect(runs()).toEqual({ powershell: 1, icacls: 0, whoami: 0 });
+      expect(reads().map((r) => r.rewrote)).toEqual([[ready]]);
+      record.length = 0;
+      m.privateDir(open);
+      expect(runs()).toEqual({ powershell: 2, icacls: 1, whoami: 0 });
+      expect(reads().map((r) => r.rewrote)).toEqual([[open], [open]]);
+    } finally {
+      reportOwner(undefined);
+    }
+    expect(look(open).access).toEqual(privateTo(user));
+  });
+
+  it("takes a folder the test made, with its real owner, through the check private and needing repair", async () => {
+    standInOff();
+    const user = me();
+    const ready = alreadyPrivate(user);
+    const open = inheritsOnly(user);
+    const owners = [look(ready).owner, look(open).owner];
+    const kind = (o: string) => (o === user ? "the user's own account" : o === "S-1-5-32-544" ? "the Administrators group (S-1-5-32-544)" : "another account");
+    console.log(`the real owner of the test's folders: ${owners.map(kind).join(", ")}`);
+    for (const o of owners) expect([user, "S-1-5-32-544"]).toContain(o);
+    const m = await newStart();
+    record.length = 0;
+    m.privateDir(ready);
+    m.privateDir(open);
+    expect(reads().every((r) => r.rewrote === undefined)).toBe(true);
+    expect(look(ready).access).toEqual(privateTo(user));
+    expect(look(open).access).toEqual(privateTo(user));
+  });
+
+  it("asks Windows again about a refused folder, and uses it once its owner is right", async () => {
+    const dir = alreadyPrivate(me());
+    const m = await newStart();
+    try {
+      reportOwner(ANOTHER);
+      refused(m, () => m.privateDir(dir), dir);
+      record.length = 0;
+      refused(m, () => m.privateDir(dir), dir);
+      expect(reads().map((r) => r.rewrote)).toEqual([[dir]]);
+    } finally {
+      reportOwner(undefined);
+    }
+    record.length = 0;
+    m.privateDir(dir);
+    expect(reads()).toHaveLength(1);
+    expect(reads()[0]!.rewrote).toBeUndefined();
+  });
+
+  it("refuses readPrivate in a folder another account owns, giving nothing back and leaving the file as it was", async () => {
+    const dir = temp();
+    mkdirSync(dir);
+    const file = path.join(dir, "chatgpt.json");
+    writeFileSync(file, "kept");
+    const before = look(file);
+    const m = await newStart();
+    try {
+      reportOwner(ANOTHER);
+      record.length = 0;
+      let got: string | null | undefined;
+      refused(m, () => (got = m.readPrivate(file, () => {})), dir);
+      expect(got).toBeUndefined();
+      expect(reads().map((r) => r.rewrote)).toEqual([[dir]]); // the folder's read only: the file was never read
+    } finally {
+      reportOwner(undefined);
+    }
+    expect(readFileSync(file, "utf8")).toBe("kept");
+    expect(look(file)).toEqual(before);
+  });
+
+  it("refuses writePrivate in a folder another account owns, leaving the folder empty", async () => {
+    const dir = temp();
+    mkdirSync(dir);
+    const m = await newStart();
+    try {
+      reportOwner(ANOTHER);
+      record.length = 0;
+      refused(m, () => m.writePrivate(path.join(dir, "chatgpt.json"), "x"), dir);
+      expect(reads().map((r) => r.rewrote)).toEqual([[dir]]);
+    } finally {
+      reportOwner(undefined);
+    }
+    expect(readdirSync(dir)).toEqual([]);
   });
 });
