@@ -1,7 +1,23 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { tempDir } from "../helpers.js";
+
+// What another program does to a folder just before the script's next status call or listing of it, for the tests of
+// entries that change while the script reads; the calls themselves are the real ones.
+const before = vi.hoisted(() => ({
+  lstat: undefined as ((p: string) => void) | undefined,
+  readdir: undefined as ((p: string) => void) | undefined,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const call = (fn: unknown, args: unknown[]) => (fn as (...a: unknown[]) => unknown)(...args);
+  return {
+    ...real,
+    lstat: async (p: string, ...rest: unknown[]) => (before.lstat?.(String(p)), call(real.lstat, [p, ...rest])),
+    readdir: async (p: string, ...rest: unknown[]) => (before.readdir?.(String(p)), call(real.readdir, [p, ...rest])),
+  };
+});
 
 // The one-off script that clears the old test folders (cleanup plan, step 21), run on a pretend Temp the test made,
 // with fixed answers. It is plain JavaScript outside the type-checked folders, so it is loaded by a path the type
@@ -102,6 +118,35 @@ describe("the one-off script for the old test folders", () => {
     expect(names(temp)).toEqual(["tachi-cli-AbCd12"]);
     expect(readdirSync(temp, { withFileTypes: true })[0]!.isSymbolicLink()).toBe(true);
     expect(readFileSync(path.join(outside, "keep.txt"), "utf8")).toBe("k".repeat(5000));
+  });
+
+  it("skips a folder another program deletes between Temp's listing and the script's look at it", async () => {
+    const temp = tempDir("tachi-clear-temp-");
+    testFolder(temp, "tachi-cli-", OLD);
+    const gone = testFolder(temp, "tachi-cli-", OLD);
+    before.lstat = (p) => void (p === gone && rmSync(gone, { recursive: true }));
+    onTestFinished(() => void (before.lstat = undefined));
+    const lines = await run(temp, "y");
+    expect(lines).toContain("Test folders to delete: 1");
+    expect(lines).toContain("Removed 1 test folder.");
+    expect(names(temp)).toEqual([]);
+  });
+
+  it("marks the total size as at least when a folder inside a test folder cannot be read", async () => {
+    const temp = tempDir("tachi-clear-temp-");
+    const dir = mkdtempSync(path.join(temp, "tachi-home-"));
+    writeFileSync(path.join(dir, "f.txt"), "x".repeat(700));
+    const locked = path.join(dir, "locked");
+    mkdirSync(locked);
+    writeFileSync(path.join(locked, "g.txt"), "x".repeat(300));
+    utimesSync(dir, OLD, OLD);
+    before.readdir = (p) => {
+      if (p === locked) throw Object.assign(new Error(`EACCES: permission denied, scandir '${p}'`), { code: "EACCES" });
+    };
+    onTestFinished(() => void (before.readdir = undefined));
+    const lines = await run(temp, "n");
+    expect(lines).toContain("  Total size: at least 700 B");
+    expect(lines.at(-1)).toBe("Nothing was deleted.");
   });
 
   for (const answer of ["n", "Y"]) {

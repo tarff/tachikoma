@@ -74,13 +74,22 @@ function size(bytes) {
 }
 
 // The bytes in the files under `dir`, types read from listings: a link is not entered and adds nothing, as a status
-// call on it could follow it.
-async function bytesIn(dir) {
+// call on it could follow it. Something gone by then adds nothing; something that cannot be read adds nothing and
+// sets `sizes.unknown`.
+async function bytesIn(dir, sizes) {
+  const read = async (fn, otherwise) => {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err.code !== "ENOENT") sizes.unknown = true;
+      return otherwise;
+    }
+  };
   let total = 0;
-  for (const e of await readdir(dir, { withFileTypes: true })) {
+  for (const e of await read(() => readdir(dir, { withFileTypes: true }), [])) {
     const p = path.join(dir, e.name);
     if (e.isSymbolicLink()) continue;
-    total += e.isDirectory() ? await bytesIn(p) : (await lstat(p)).size;
+    total += e.isDirectory() ? await bytesIn(p, sizes) : await read(async () => (await lstat(p)).size, 0);
   }
   return total;
 }
@@ -97,7 +106,13 @@ export async function clearOldTestLeftovers({ temp, ask, print }) {
       others.push({ key: e.name, text: `${e.isSymbolicLink() ? "a link" : "a file"}, not a folder` });
       continue;
     }
-    const changed = (await lstat(path.join(temp, e.name))).mtimeMs;
+    let changed;
+    try {
+      changed = (await lstat(path.join(temp, e.name))).mtimeMs;
+    } catch (err) {
+      if (err.code === "ENOENT") continue; // deleted by another program since Temp's listing
+      throw err;
+    }
     if (!isTestName(e.name)) {
       const g = groups.get(group(e.name)) ?? { n: 0, first: changed, last: changed };
       groups.set(group(e.name), { n: g.n + 1, first: Math.min(g.first, changed), last: Math.max(g.last, changed) });
@@ -111,8 +126,9 @@ export async function clearOldTestLeftovers({ temp, ask, print }) {
   print(`Test folders to delete: ${count(test.length)}`);
   if (test.length > 0) {
     let bytes = 0;
-    for (const t of test) bytes += await bytesIn(path.join(temp, t.name));
-    print(`  Total size: ${size(bytes)}`);
+    const sizes = { unknown: false };
+    for (const t of test) bytes += await bytesIn(path.join(temp, t.name), sizes);
+    print(`  Total size: ${sizes.unknown ? "at least " : ""}${size(bytes)}`);
     print(`  Oldest: ${date(Math.min(...test.map((t) => t.changed)))}`);
     print(`  Newest: ${date(Math.max(...test.map((t) => t.changed)))}`);
   }
