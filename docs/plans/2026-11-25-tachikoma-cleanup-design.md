@@ -247,7 +247,7 @@ release small; what that dropped or moved is the last item below.
 ### The chosen numbers
 
 - **The tests' remover tries a held folder again every 50 ms, for up to 2 s** (the user's choice
-  at the decision point, 2026-11-25): what four test files already used; about 11 times the
+  at the decision point, 2026-11-25): what four test files already used; about 12 times the
   170 ms on record from the user's PC, and over 100 times CI's longest, 17.5 ms (table 1).
 - **`STANDIN_WAIT_S` stays 5 s** (the same choice): a ceiling; on CI a killed stand-in's folder
   was free at most 12.8 ms after the kill (table 1).

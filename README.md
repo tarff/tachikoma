@@ -135,8 +135,8 @@ So far it has been tested on Windows 11 only; release 14 adds testing on Linux a
 - **An error log:** every failure, and every refusal another model answered, is written to a
   private file of the project's own in Tachikoma's data folder, `errors/<hash>.jsonl`, so nothing
   in a project can lead it elsewhere. `/errors` summarises it. If you ran Tachikoma's tests before
-  2026-11-06, the rows they wrote there, with the lead `ollama:none`, are still there; nothing
-  removes them.
+  2026-11-06, the rows they wrote there, with the lead `ollama:none`, `openai:none` or
+  `openai:judge`, are still there; nothing removes them.
 - **Long-term memory,** once memory is on: your conversations saved with
   [MemPalace](https://github.com/MemPalace/mempalace), close matches handed back to the model, and
   lessons from failed tool calls that a later call doing the same job got past, shown again when a
