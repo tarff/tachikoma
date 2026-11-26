@@ -24,10 +24,12 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 // checker does not follow.
 interface Script {
   PREFIXES: readonly string[];
+  smallest(values: number[]): number;
+  largest(values: number[]): number;
   clearOldTestLeftovers(io: { temp: string; ask: (question: string) => Promise<string>; print: (line: string) => void }): Promise<void>;
 }
 const SCRIPT = new URL("../../scripts/clear-old-test-leftovers.mjs", import.meta.url).href;
-const { PREFIXES, clearOldTestLeftovers } = (await import(SCRIPT)) as Script;
+const { PREFIXES, smallest, largest, clearOldTestLeftovers } = (await import(SCRIPT)) as Script;
 
 // Noon on that day, the PC's own time, so the date shown is that day wherever the test runs.
 const day = (y: number, m: number, d: number) => new Date(y, m - 1, d, 12);
@@ -147,6 +149,16 @@ describe("the one-off script for the old test folders", () => {
     const lines = await run(temp, "n");
     expect(lines).toContain("  Total size: at least 700 B");
     expect(lines.at(-1)).toBe("Nothing was deleted.");
+  });
+
+  // 200,000: above the 130,000 at which a spread into Math.min or Math.max ran out of stack on the user's PC (Node
+  // 24.22.1, final review), near the 223,256 leftovers the user's Temp held on 2026-11-22. In memory, no folders made.
+  it("finds the oldest and newest date, and the widest name, among 200,000 folders", () => {
+    const values = Array.from({ length: 200_000 }, (_, i) => 1_000 + i);
+    values[123_456] = 5;
+    values[54_321] = 999_999;
+    expect(smallest(values)).toBe(5);
+    expect(largest(values)).toBe(999_999);
   });
 
   for (const answer of ["n", "Y"]) {

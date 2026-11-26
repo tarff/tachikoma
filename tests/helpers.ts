@@ -173,7 +173,7 @@ if (mode === "line") {
 `;
 
 // The remover's retry (cleanup plan, step 4): every 50 ms, for up to 2 s. The user's choice at step 3 (2026-11-25); the
-// values the tests' own retry loops already use (tests/hooks/run.test.ts); about 11 times the 170 ms measured on the
+// values the tests' own retry loops already use (tests/hooks/run.test.ts); about 12 times the 170 ms measured on the
 // user's PC on 2026-10-31, and more than 100 times CI's longest, 17.5 ms in 150 rounds with at most 7 refused tries in a
 // row (run 45467602109, 2026-11-25). CI's figure does not cap the user's PC: the user's PC gave 170 ms on 2026-10-31 and
 // 2.8 to 8.1 ms on 2026-11-22.

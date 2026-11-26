@@ -63,6 +63,10 @@ const date = (ms) => {
   const d = new Date(ms);
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
 };
+// The smallest and largest of `values`, one at a time: a spread hands Math.min or Math.max one argument for each, and
+// 130,000 of them ran out of stack on the user's PC (final review).
+export const smallest = (values) => values.reduce((a, b) => Math.min(a, b), Infinity);
+export const largest = (values) => values.reduce((a, b) => Math.max(a, b), -Infinity);
 const count = (n) => n.toLocaleString("en-US");
 const plural = (n, word) => `${count(n)} ${word}${n === 1 ? "" : "s"}`;
 function size(bytes) {
@@ -129,8 +133,8 @@ export async function clearOldTestLeftovers({ temp, ask, print }) {
     const sizes = { unknown: false };
     for (const t of test) bytes += await bytesIn(path.join(temp, t.name), sizes);
     print(`  Total size: ${sizes.unknown ? "at least " : ""}${size(bytes)}`);
-    print(`  Oldest: ${date(Math.min(...test.map((t) => t.changed)))}`);
-    print(`  Newest: ${date(Math.max(...test.map((t) => t.changed)))}`);
+    print(`  Oldest: ${date(smallest(test.map((t) => t.changed)))}`);
+    print(`  Newest: ${date(largest(test.map((t) => t.changed)))}`);
   }
   print(`Test folders changed after that time, left alone: ${count(late)}`);
   const rows = [...others];
@@ -140,7 +144,7 @@ export async function clearOldTestLeftovers({ temp, ask, print }) {
   }
   if (rows.length > 0) {
     rows.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-    const width = Math.max(...rows.map((r) => r.key.length)) + 4;
+    const width = largest(rows.map((r) => r.key.length)) + 4;
     print("");
     print("Not sure (never deleted):");
     for (const r of rows) print(`  ${r.key.padEnd(width)}${r.text}`);
@@ -153,7 +157,7 @@ export async function clearOldTestLeftovers({ temp, ask, print }) {
   for (const t of test) {
     const got = await tryRemoveTree(path.join(temp, t.name), { pause: 0, limit: 0, listedAsFolder: true });
     if (got.length === 0) removed++;
-    else left.push(...got);
+    else for (const g of got) left.push(g);
   }
   print(`Removed ${plural(removed, "test folder")}.`);
   if (left.length > 0) {
