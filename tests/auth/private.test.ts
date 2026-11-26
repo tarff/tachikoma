@@ -101,11 +101,20 @@ async function newStart(): Promise<typeof import("../../src/auth/private.js")> {
   vi.resetModules();
   return import("../../src/auth/private.js");
 }
+// Gives a folder the test made these entries of its own and nothing else. icacls /grant:r keeps other accounts' own
+// entries, which a new folder can have from the start (on GitHub's Windows machine, the system account's and the
+// Administrators group's), so those are removed too.
+function ownOnly(dir: string, ...grants: string[]): void {
+  icacls(dir, "/inheritance:r", "/grant:r", ...grants);
+  const keep = grants.map((g) => g.slice(1, g.indexOf(":")));
+  const others = [...new Set(look(dir).access.map((e) => e.sid).filter((sid) => !keep.includes(sid)))];
+  if (others.length) icacls(dir, "/remove", ...others.map((sid) => `*${sid}`));
+}
 // A folder not yet private, with nothing of another account's own: its only entries are inherited from a parent the
 // test made, which lets in the user and ALL APPLICATION PACKAGES.
 function inheritsOnly(user: string): string {
   const parent = tempDir("tachi-private-");
-  icacls(parent, "/inheritance:r", "/grant:r", `*${user}:(OI)(CI)F`, `*${OTHER}:(OI)(CI)RX`);
+  ownOnly(parent, `*${user}:(OI)(CI)F`, `*${OTHER}:(OI)(CI)RX`);
   const dir = path.join(parent, "data");
   mkdirSync(dir);
   const before = look(dir).access;
@@ -117,7 +126,7 @@ function inheritsOnly(user: string): string {
 function withOthersOwn(user: string): string {
   const dir = temp();
   mkdirSync(dir);
-  icacls(dir, "/inheritance:r", "/grant:r", `*${user}:(OI)(CI)F`, `*${OTHER}:(OI)(CI)R`);
+  ownOnly(dir, `*${user}:(OI)(CI)F`, `*${OTHER}:(OI)(CI)R`);
   expect(look(dir).access.filter((e) => !e.inherited).map((e) => e.sid).sort()).toEqual([user, OTHER].sort());
   return dir;
 }
@@ -390,7 +399,7 @@ describe.runIf(windows)("on Windows, the programs a folder's privacy check start
     const user = me();
     const dir = temp();
     mkdirSync(dir);
-    icacls(dir, "/inheritance:r", "/grant:r", `*${user}:(OI)(CI)F`);
+    ownOnly(dir, `*${user}:(OI)(CI)F`);
     expect(look(dir).access).toEqual(privateTo(user));
     const { privateDir: check } = await newStart();
     record.length = 0;
@@ -494,7 +503,7 @@ describe.runIf(windows)("on Windows, a folder's owner", () => {
   function alreadyPrivate(user: string): string {
     const dir = temp();
     mkdirSync(dir);
-    icacls(dir, "/inheritance:r", "/grant:r", `*${user}:(OI)(CI)F`);
+    ownOnly(dir, `*${user}:(OI)(CI)F`);
     expect(look(dir).access).toEqual(privateTo(user));
     return dir;
   }
