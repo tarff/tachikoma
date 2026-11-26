@@ -14,31 +14,29 @@ import { commandEnv, system32 } from "../exec/env.js";
 export class PrivateFileError extends Error {}
 
 const windows = process.platform === "win32";
-let userSid: string | undefined;
-
-function sid(): string {
-  // `whoami /user /fo csv /nh` prints "domain\user","S-1-5-...".
-  userSid ??= execFileSync(system32("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true, stdio: "pipe", env: commandEnv() }).trim().split(",")[1]!.replaceAll('"', "");
-  return userSid;
-}
 
 // The owner and every entry in the permissions of each path: its SID, whether it allows, and its
 // inheritance flags. The entries are read as SIDs: turning names back into SIDs fails for some
 // accounts, such as ALL APPLICATION PACKAGES, and would leave them out. Any error stops the script.
-// The paths go in through the environment, so no quoting is needed.
+// The paths go in through the environment, so no quoting is needed. With each path, the user's own
+// SID: the User of the current Windows identity, the user in the token of this PowerShell process,
+// which acts as no one else (Microsoft's WindowsIdentity.GetCurrent and WindowsIdentity.User pages);
+// not its Owner, the default owner of what it makes, which can be the Administrators group. So no
+// other program is started to ask who the user is (cleanup plan, step 14c).
 const ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$sid = [System.Security.Principal.SecurityIdentifier]",
+  "$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
   "$out = foreach ($p in ($env:TACHI_ACL_PATHS -split [char]10)) {",
   "  $a = Get-Acl -LiteralPath $p",
-  "  [pscustomobject]@{ owner = $a.GetOwner($sid).Value;",
+  "  [pscustomobject]@{ user = $user; owner = $a.GetOwner($sid).Value;",
   "    access = @($a.GetAccessRules($true, $true, $sid) | ForEach-Object {",
   "      [pscustomobject]@{ sid = $_.IdentityReference.Value; allow = $_.AccessControlType -eq 'Allow'; inherit = [int]$_.InheritanceFlags } }) }",
   "}",
   "ConvertTo-Json -Compress -Depth 3 -InputObject @($out)",
 ].join("\n");
 
-type Acl = { owner: string; access: { sid: string; allow: boolean; inherit: number }[] };
+type Acl = { user: string; owner: string; access: { sid: string; allow: boolean; inherit: number }[] };
 
 function windowsAcl(paths: string[]): Acl[] {
   const out = execFileSync(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", ACL_SCRIPT], {
@@ -53,7 +51,7 @@ function windowsAcl(paths: string[]): Acl[] {
 // Every entry lets in the user, and no one else. A folder's must also pass to what is made in it:
 // inheritance flags 3 are ContainerInherit and ObjectInherit (.NET's InheritanceFlags).
 const onlyUser = (a: Acl, folder = false) =>
-  a.access.length > 0 && a.access.every((e) => e.allow && e.sid === sid()) && (!folder || a.access.some((e) => e.inherit === 3));
+  a.access.length > 0 && a.access.every((e) => e.allow && e.sid === a.user) && (!folder || a.access.some((e) => e.inherit === 3));
 
 function icacls(...args: string[]): void {
   execFileSync(system32("icacls.exe"), args, { windowsHide: true, stdio: "ignore", env: commandEnv() });
@@ -75,17 +73,23 @@ export function privateDir(dir: string): void {
   const st = lstatSync(dir);
   if (st.isSymbolicLink() || !st.isDirectory()) throw new PrivateFileError(`${dir} is not a plain folder, so it cannot be kept private`);
   if (windows) {
-    if (!onlyUser(windowsAcl([dir])[0]!, true)) {
+    const first = windowsAcl([dir])[0]!;
+    if (!onlyUser(first, true)) {
       // Removes inherited entries and leaves the user alone; files already inside inherit that. Other
       // accounts' own entries, which that keeps, are removed next.
-      icacls(dir, "/inheritance:r", "/grant:r", `*${sid()}:(OI)(CI)F`);
-      const others = [...new Set(windowsAcl([dir])[0]!.access.filter((e) => e.sid !== sid()).map((e) => `*${e.sid}`))];
-      try {
-        if (others.length) icacls(dir, "/remove", ...others);
-      } catch {
-        // icacls cannot remove an entry for an account Windows cannot look up; the check below says so
+      icacls(dir, "/inheritance:r", "/grant:r", `*${first.user}:(OI)(CI)F`);
+      let now = windowsAcl([dir])[0]!;
+      const others = [...new Set(now.access.filter((e) => e.sid !== now.user).map((e) => `*${e.sid}`))];
+      // With nothing to remove, that read is the last one; after a removal, tried or failed, the folder is read again.
+      if (others.length) {
+        try {
+          icacls(dir, "/remove", ...others);
+        } catch {
+          // icacls cannot remove an entry for an account Windows cannot look up; the check below says so
+        }
+        now = windowsAcl([dir])[0]!;
       }
-      if (!onlyUser(windowsAcl([dir])[0]!, true)) throw new PrivateFileError(`Could not make ${dir} private to you`);
+      if (!onlyUser(now, true)) throw new PrivateFileError(`Could not make ${dir} private to you`);
     }
   } else {
     if (st.uid !== process.getuid!()) throw new PrivateFileError(`${dir} belongs to another user`);
@@ -105,7 +109,7 @@ export function readPrivate(file: string, warn: (message: string) => void): stri
   if (windows) {
     if (!checked.has(file)) {
       const acl = windowsAcl([file])[0]!;
-      if (acl.owner !== sid() && acl.owner !== ADMINISTRATORS) throw new PrivateFileError(`${file} belongs to another account, so it was not used`);
+      if (acl.owner !== acl.user && acl.owner !== ADMINISTRATORS) throw new PrivateFileError(`${file} belongs to another account, so it was not used`);
       if (!onlyUser(acl)) {
         try {
           icacls(file, "/reset"); // back to what it inherits from the private folder

@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, fsyncSync, linkSync, mkdirSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, fsyncSync, linkSync, mkdirSync, readdirSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { PrivateFileError, privateDir, readPrivate, writePrivate } from "../../src/auth/private.js";
@@ -12,18 +12,42 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...fs, fsyncSync: vi.fn(fs.fsyncSync) };
 });
 
-// The owner and entries tachi's permissions script reports, and an icacls /reset that fails, when a test sets them:
-// giving a file another owner, or taking the right to change its permissions, takes rights a test does not take, so the
-// report is changed instead.
-const reported = vi.hoisted(() => ({ owner: undefined as string | undefined, access: undefined as object[] | undefined, resetFails: false }));
+// The owner and entries tachi's permissions script reports, and an icacls /reset or /remove that fails, when a test sets
+// them: giving a file another owner, or taking the right to change its permissions, takes rights a test does not take, so
+// the report is changed instead.
+const reported = vi.hoisted(() => ({ owner: undefined as string | undefined, access: undefined as object[] | undefined, resetFails: false, removeFails: false }));
+// Every program started through execFileSync, in order, the tests' own included, each kept before it runs, so a call the
+// stand-in fails counts too. Kept outside the mocked module, so a fresh copy of private.ts (a new start) records here
+// too. For tachi's permissions script: the paths it read, what it gave back, and the paths the stand-in rewrote.
+type Call = { program: string; args: string[]; paths?: string[]; out?: string; rewrote?: string[]; failed?: string };
+const record = vi.hoisted(() => [] as Call[]);
 vi.mock("node:child_process", async (importOriginal) => {
   const cp = await importOriginal<typeof import("node:child_process")>();
-  const execFileSync = (file: string, args: readonly string[], options: object) => {
-    if (reported.resetFails && args.includes("/reset")) throw new Error(`Command failed: ${file} ${args.join(" ")}`);
-    const out = cp.execFileSync(file, args, options as never);
-    if (!(reported.owner || reported.access) || !args.at(-1)?.includes("GetOwner")) return out;
-    const changed = { ...(reported.owner && { owner: reported.owner }), ...(reported.access && { access: reported.access }) };
-    return JSON.stringify(JSON.parse(String(out)).map((acl: object) => ({ ...acl, ...changed })));
+  const execFileSync = (file: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+    const call: Call = { program: file.split(/[\\/]/).at(-1)!.toLowerCase(), args: [...args] };
+    record.push(call);
+    // Picked out by the variable only tachi's script reads, so the tests' own readers are never rewritten.
+    const ours = args.at(-1)?.includes("TACHI_ACL_PATHS") ?? false;
+    if (ours) call.paths = String(options.env?.TACHI_ACL_PATHS).split("\n");
+    if ((reported.resetFails && args.includes("/reset")) || (reported.removeFails && args.includes("/remove"))) {
+      call.failed = "by the stand-in";
+      throw new Error(`Command failed: ${file} ${args.join(" ")}`);
+    }
+    let out;
+    try {
+      out = cp.execFileSync(file, args, options as never);
+    } catch (err) {
+      call.failed = (err as Error).message;
+      throw err;
+    }
+    if (!ours) return out;
+    if (reported.owner || reported.access) {
+      const changed = { ...(reported.owner && { owner: reported.owner }), ...(reported.access && { access: reported.access }) };
+      out = JSON.stringify(JSON.parse(String(out)).map((acl: object) => ({ ...acl, ...changed })));
+      call.rewrote = call.paths;
+    }
+    call.out = String(out);
+    return out;
   };
   return { ...cp, execFileSync: vi.fn(execFileSync) };
 });
@@ -41,6 +65,63 @@ function sids(p: string): string[] {
 }
 const icacls = (...args: string[]) => execFileSync(system32("icacls.exe"), args, { stdio: "ignore" });
 const me = () => execFileSync(system32("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" }).trim().split(",")[1]!.replaceAll('"', "");
+
+// The real owner of a path and each of its entries: account, allow or refuse, rights, inheritance and propagation flags,
+// and whether it is inherited. Read by a script of the tests' own, which the stand-in never rewrites (above).
+type Entry = { sid: string; allow: boolean; rights: number; inherit: number; propagate: number; inherited: boolean };
+function look(p: string): { owner: string; access: Entry[] } {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$sid = [System.Security.Principal.SecurityIdentifier]",
+    "$a = Get-Acl -LiteralPath $env:P",
+    "$access = @($a.GetAccessRules($true, $true, $sid) | ForEach-Object { [pscustomobject]@{ sid = $_.IdentityReference.Value;",
+    "  allow = $_.AccessControlType -eq 'Allow'; rights = [int]$_.FileSystemRights; inherit = [int]$_.InheritanceFlags;",
+    "  propagate = [int]$_.PropagationFlags; inherited = $_.IsInherited } })",
+    "ConvertTo-Json -Compress -Depth 3 -InputObject ([pscustomobject]@{ owner = $a.GetOwner($sid).Value; access = $access })",
+  ].join("\n");
+  return JSON.parse(execFileSync(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", env: { ...commandEnv(), P: p } }));
+}
+// .NET's FileSystemRights.FullControl (0x1F01FF), what icacls's F grants.
+const FULL = 2032127;
+// What a folder tachi made private holds: one entry, the user's own, allowing full control, passed on to folders and
+// files (inheritance flags 3), with no propagation flag.
+const privateTo = (user: string) => [{ sid: user, allow: true, rights: FULL, inherit: 3, propagate: 0, inherited: false }];
+// ALL APPLICATION PACKAGES, an account every Windows has, which a test can give an entry.
+const OTHER = "S-1-15-2-1";
+
+// The calls since the record was emptied, by program; tachi's own permissions reads among them.
+const runs = () => ({
+  powershell: record.filter((c) => c.program === "powershell.exe").length,
+  icacls: record.filter((c) => c.program === "icacls.exe").length,
+  whoami: record.filter((c) => c.program === "whoami.exe").length,
+});
+const reads = () => record.filter((c) => c.paths);
+// A new start: a fresh copy of the module, with its own list of checked paths.
+async function newStart(): Promise<typeof import("../../src/auth/private.js")> {
+  vi.resetModules();
+  return import("../../src/auth/private.js");
+}
+// A folder not yet private, with nothing of another account's own: its only entries are inherited from a parent the
+// test made, which lets in the user and ALL APPLICATION PACKAGES.
+function inheritsOnly(user: string): string {
+  const parent = tempDir("tachi-private-");
+  icacls(parent, "/inheritance:r", "/grant:r", `*${user}:(OI)(CI)F`, `*${OTHER}:(OI)(CI)RX`);
+  const dir = path.join(parent, "data");
+  mkdirSync(dir);
+  const before = look(dir).access;
+  expect(before.map((e) => e.sid).sort()).toEqual([user, OTHER].sort());
+  expect(before.every((e) => e.inherited)).toBe(true);
+  return dir;
+}
+// A folder that lets in another account by an entry of its own, beside the user's.
+function withOthersOwn(user: string): string {
+  const dir = temp();
+  mkdirSync(dir);
+  icacls(dir, "/inheritance:r", "/grant:r", `*${user}:(OI)(CI)F`, `*${OTHER}:(OI)(CI)R`);
+  expect(look(dir).access.filter((e) => !e.inherited).map((e) => e.sid).sort()).toEqual([user, OTHER].sort());
+  return dir;
+}
+const standInOff = () => expect(reported).toEqual({ owner: undefined, access: undefined, resetFails: false, removeFails: false });
 
 describe("private files", () => {
   it("writes the whole file, leaving no temporary copy, and reads it back", () => {
@@ -171,9 +252,13 @@ describe("private files", () => {
     writeFileSync(other, "y");
     try {
       reported.owner = "S-1-5-32-544";
+      record.length = 0;
       expect(readPrivate(file, () => {})).toBe("x");
+      expect(reads().map((r) => r.rewrote)).toEqual([[file]]); // the stand-in hit the file's one read, and nothing else
       reported.owner = "S-1-5-21-1-2-3-1000";
+      record.length = 0;
       expect(() => readPrivate(other, () => {})).toThrow(new PrivateFileError(`${other} belongs to another account, so it was not used`));
+      expect(reads().map((r) => r.rewrote)).toEqual([[other]]);
     } finally {
       reported.owner = undefined;
     }
@@ -189,7 +274,11 @@ describe("private files", () => {
     try {
       Object.assign(reported, { owner: "S-1-5-32-544", access: [{ sid: "S-1-1-0", allow: true, inherit: 0 }], resetFails: true }); // Everyone
       const refused = `${file} could be read by others and could not be made private, so it was not used`;
+      record.length = 0;
       expect(() => readPrivate(file, () => {})).toThrow(new PrivateFileError(refused));
+      // The file's read, the /reset the stand-in failed, and the read after it, each rewritten for the file alone.
+      expect(reads().map((r) => r.rewrote)).toEqual([[file], [file]]);
+      expect(record.find((c) => c.args.includes("/reset"))?.failed).toBe("by the stand-in");
     } finally {
       Object.assign(reported, { owner: undefined, access: undefined, resetFails: false });
     }
@@ -219,7 +308,17 @@ describe("private files", () => {
     const script = "$a = Get-Acl -LiteralPath $env:P; $a.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-21-1-2-3-1000'), 'Read', 'Allow')); Set-Acl -LiteralPath $env:P -AclObject $a";
     const powershell = system32("WindowsPowerShell/v1.0/powershell.exe");
     execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], { env: { ...commandEnv(), P: dir } });
+    standInOff();
+    record.length = 0;
     expect(() => privateDir(dir)).toThrow(new PrivateFileError(`Could not make ${dir} private to you`));
+    // What the real /remove did, which nobody had seen: in the test's output. Either way the folder is read after it,
+    // and that read still shows the account's entry.
+    const at = record.findIndex((c) => c.args.includes("/remove"));
+    expect(at).toBeGreaterThan(-1);
+    console.log(`icacls /remove of an account that no longer exists: ${record[at]!.failed === undefined ? "returned" : `failed (${record[at]!.failed})`}`);
+    const after = record.slice(at + 1).filter((c) => c.paths);
+    expect(after).toHaveLength(1);
+    expect(JSON.parse(after[0]!.out!)[0].access.map((e: { sid: string }) => e.sid)).toContain("S-1-5-21-1-2-3-1000");
   });
 
   it.skipIf(windows)("elsewhere, uses mode 700 and 600, and fixes a file others can read", () => {
@@ -233,5 +332,139 @@ describe("private files", () => {
     readPrivate(file, (w) => warnings.push(w));
     expect(warnings).toHaveLength(1);
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+});
+
+// The programs one folder check starts on Windows (cleanup plan, step 14c, part 1), counted from the record: each
+// count is of calls made, the record emptied just before the call under test. Before: 3 PowerShell runs, 1 icacls and 1
+// whoami for a folder not yet private; 1 PowerShell run and 1 whoami for one already private.
+describe.runIf(windows)("on Windows, the programs a folder's privacy check starts", () => {
+  it("the tests' own reader is never rewritten by the stand-in", () => {
+    const dir = temp();
+    mkdirSync(dir);
+    const real = look(dir);
+    try {
+      Object.assign(reported, { owner: "S-1-5-21-1-2-3-1000", access: [{ sid: OTHER, allow: true, inherit: 0 }] });
+      record.length = 0;
+      expect(look(dir)).toEqual(real);
+      expect(record).toHaveLength(1);
+      expect(record[0]!.rewrote).toBeUndefined();
+    } finally {
+      Object.assign(reported, { owner: undefined, access: undefined });
+    }
+  });
+
+  it("a new start's calls land in the record the tests read", async () => {
+    const { privateDir: check } = await newStart();
+    const dir = temp();
+    record.length = 0;
+    check(dir);
+    expect(reads().map((r) => r.paths)).toContainEqual([dir]);
+  });
+
+  it("the account in tachi's own permissions read is the one whoami gives", async () => {
+    standInOff();
+    const { privateDir: check } = await newStart();
+    const dir = temp();
+    record.length = 0;
+    check(dir);
+    const read = reads()[0]!;
+    expect(read.rewrote).toBeUndefined();
+    const account = JSON.parse(read.out!)[0].user;
+    const whoami = me();
+    console.log(`ran on: ${process.env.GITHUB_ACTIONS === "true" ? "GitHub's Windows machine (CI)" : "a machine that is not CI"}; PowerShell's account ${account}, whoami's ${whoami}`);
+    expect(account).toBe(whoami);
+  });
+
+  it("not private, with nothing of another account's own, on a new start: 2 PowerShell runs and 1 icacls", async () => {
+    const user = me();
+    const dir = inheritsOnly(user);
+    const { privateDir: check } = await newStart();
+    record.length = 0;
+    check(dir);
+    expect(runs()).toEqual({ powershell: 2, icacls: 1, whoami: 0 });
+    expect(look(dir).access).toEqual(privateTo(user));
+  });
+
+  it("already private, on a new start: 1 PowerShell run and nothing else", async () => {
+    const user = me();
+    const dir = temp();
+    mkdirSync(dir);
+    icacls(dir, "/inheritance:r", "/grant:r", `*${user}:(OI)(CI)F`);
+    expect(look(dir).access).toEqual(privateTo(user));
+    const { privateDir: check } = await newStart();
+    record.length = 0;
+    check(dir);
+    expect(runs()).toEqual({ powershell: 1, icacls: 0, whoami: 0 });
+  });
+
+  it("checked, then given another account's own entry, then met by a new start: 3 PowerShell runs and 2 icacls", async () => {
+    const user = me();
+    const dir = temp();
+    privateDir(dir);
+    icacls(dir, "/grant", `*${OTHER}:(OI)(CI)R`);
+    expect(look(dir).access.filter((e) => !e.inherited).map((e) => e.sid).sort()).toEqual([user, OTHER].sort());
+    const { privateDir: check } = await newStart();
+    record.length = 0;
+    check(dir);
+    expect(runs()).toEqual({ powershell: 3, icacls: 2, whoami: 0 });
+    // The folder is read again after the removal.
+    const removal = record.findIndex((c) => c.args.includes("/remove"));
+    expect(record.slice(removal + 1).filter((c) => c.paths)).toHaveLength(1);
+    expect(look(dir).access).toEqual(privateTo(user));
+  });
+
+  it("a removal that fails is followed by a read, which still shows the entry, and the folder is refused", async () => {
+    const user = me();
+    const dir = withOthersOwn(user);
+    const { privateDir: check } = await newStart();
+    try {
+      reported.removeFails = true;
+      record.length = 0;
+      expect(() => check(dir)).toThrow(`Could not make ${dir} private to you`);
+      expect(runs()).toEqual({ powershell: 3, icacls: 2, whoami: 0 }); // the second icacls is the stand-in's failure
+      const removal = record.findIndex((c) => c.args.includes("/remove"));
+      expect(record[removal]!.failed).toBe("by the stand-in");
+      const after = record.slice(removal + 1).filter((c) => c.paths);
+      expect(after).toHaveLength(1);
+      expect(JSON.parse(after[0]!.out!)[0].access.map((e: { sid: string }) => e.sid)).toContain(OTHER);
+    } finally {
+      reported.removeFails = false;
+    }
+  });
+
+  it("nothing to remove, and still not private: refused after 2 PowerShell runs and 1 icacls", async () => {
+    const user = me();
+    const dir = inheritsOnly(user);
+    const { privateDir: check } = await newStart();
+    try {
+      reported.access = [{ sid: user, allow: false, inherit: 3 }]; // one entry, refusing the user
+      record.length = 0;
+      expect(() => check(dir)).toThrow(`Could not make ${dir} private to you`);
+      expect(runs()).toEqual({ powershell: 2, icacls: 1, whoami: 0 });
+      expect(reads().map((r) => r.rewrote)).toEqual([[dir], [dir]]); // both reads, of this folder alone
+    } finally {
+      reported.access = undefined;
+    }
+  });
+
+  it("a second call on the same folder in the same start makes no call at all", async () => {
+    const { privateDir: check } = await newStart();
+    const dir = temp();
+    record.length = 0;
+    check(dir);
+    expect(runs().powershell).toBeGreaterThan(0);
+    record.length = 0;
+    check(dir);
+    expect(record).toEqual([]);
+  });
+
+  it("a folder replaced by a junction between two starts is refused by the new start", async () => {
+    const dir = temp();
+    privateDir(dir);
+    renameSync(dir, `${dir}-moved`);
+    symlinkSync(`${dir}-moved`, dir, "junction");
+    const { privateDir: check } = await newStart();
+    expect(() => check(dir)).toThrow(`${dir} is not a plain folder, so it cannot be kept private`);
   });
 });
