@@ -1,16 +1,16 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { hooksOf, loadSettings, readSettings, settingsDir, shownFile } from "../src/settings.js";
+import { tempDir } from "./helpers.js";
 
 const read = (data: unknown) => readSettings(JSON.stringify(data));
 const problem = (data: unknown) => {
   const r = read(data);
   return "problem" in r ? r.problem : undefined;
 };
-const temp = () => mkdtempSync(path.join(tmpdir(), "tachi-settings-"));
+const temp = () => tempDir("tachi-settings-");
 const BOM = "\u{FEFF}";
 
 describe("readSettings", () => {

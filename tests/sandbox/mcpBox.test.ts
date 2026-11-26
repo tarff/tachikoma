@@ -1,7 +1,5 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
@@ -20,7 +18,7 @@ import { Server } from "../../src/mcp/server.js";
 import { docker, dockerState } from "../../src/sandbox/docker.js";
 import { boxLimits, boxUser, DockerExecutor, dockerRoom } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 import { type FakeOptions, fakeServer } from "../mcp/fake.js";
 
 // 8c-2a plan, Task 5: a server in the session's box, in real Docker: the block of its variables over its input, its
@@ -40,13 +38,12 @@ async function realBox(ctx: TestContext) {
   if (state !== "ready") {
     ctx.skip(state === "denied" ? "this user is not allowed to use Docker" : "Docker is set to Windows containers");
   }
-  const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-mcpbox-"));
+  const folder = tempDir("tachi-mcpbox-");
   let box: DockerExecutor | undefined;
   const servers: Server[] = [];
   onTestFinished(async () => {
     await Promise.all(servers.map((s) => s.stop()));
     await box?.stop();
-    await removeTree(folder);
   });
   const info = await imageFor(folder);
   if (!info.built) ctx.skip(`the sandbox's image (${info.tag}) is not built`);

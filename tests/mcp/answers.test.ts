@@ -1,10 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it } from "vitest";
 import { projectFile } from "../../src/core/datadir.js";
 import { answersFor, launchAnswers } from "../../src/mcp/answers.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 // Release 8c plan, choice 24: the project's answers to "use this project's MCP server?", one line per answer, each holding
 // the entry it was given for (ServerConfig.written; any text stands in for one here). Making the data folder's own
@@ -14,8 +13,7 @@ describe("answersFor", { timeout: 15_000 }, () => {
   const B = "entry-b";
   // A data folder and a project folder of the test's own.
   function folders() {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-answers-"));
-    onTestFinished(() => removeTree(dir));
+    const dir = tempDir("tachi-answers-");
     const data = path.join(dir, "data");
     const root = path.join(dir, "project");
     mkdirSync(root);

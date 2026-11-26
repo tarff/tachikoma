@@ -1,10 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import net, { type AddressInfo } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { PermissionGate } from "../../src/core/permissions.js";
@@ -18,7 +17,7 @@ import { Server } from "../../src/mcp/server.js";
 import { Servers } from "../../src/mcp/servers.js";
 import { sitesFetch } from "../../src/mcp/sitesFetch.js";
 import { type Approve, mcpTools } from "../../src/mcp/tools.js";
-import { Bus, removeTree } from "../helpers.js";
+import { Bus, tempDir } from "../helpers.js";
 import { certificate } from "./cert.js";
 import { fakeHelper, httpFake, readLog, signInFake } from "./fake.js";
 
@@ -41,11 +40,10 @@ const remote = (
 // sign-ins, each stopped before the folder is removed. `opened` holds each address the browser was given, `damaged` each
 // damaged file's line. `fakeOpts` are the fake's.
 async function setup(fakeOpts: Parameters<typeof signInFake>[0] = {}) {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-auth-"));
+  const dir = tempDir("tachi-mcp-auth-");
   const made: Servers[] = [];
   onTestFinished(async () => {
     await Promise.all(made.map((s) => s.stopAll()));
-    await removeTree(dir);
   });
   const data = path.join(dir, "data", "tachi");
   const fake = await signInFake(fakeOpts);
@@ -675,11 +673,10 @@ describe("signing in with the allowed sites", () => {
     given: Parameters<typeof signInFake>[0] & object, listed: string[], oauthAt?: (port: number) => OAuthEntry,
     lookup: (name: string) => Promise<string[]> = async () => [PUBLIC],
   ) {
-    const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-auth-"));
+    const dir = tempDir("tachi-mcp-auth-");
     const servers: Server[] = [];
     onTestFinished(async () => {
       await Promise.all(servers.map((s) => s.stop()));
-      await removeTree(dir);
     });
     // Over TLS, as the library sends a token request to no other address but localhost's (decision 12's certificates).
     const names = [...new Set([...Object.values(given.names ?? {}), "meta.example"])];

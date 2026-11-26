@@ -1,9 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
 import { privateDir } from "../../src/auth/private.js";
 import type { Events } from "../../src/core/bus.js";
@@ -46,7 +44,7 @@ import { connect, type Hit, type Palace, type Scope } from "../../src/memory/cli
 import type { MemoryState } from "../../src/memory/memory.js";
 import { LESSONS, WING } from "../../src/memory/paths.js";
 import { entriesOf, type Turn as SavedTurn } from "../../src/memory/saver.js";
-import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, standInRun, tempContext, texts, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, collectErrors, fileTempDir, reply, standInRun, tempContext, tempDir, texts, usage } from "../helpers.js";
 import { readLog } from "../mcp/fake.js";
 
 // Hooks run as they are; the PostModelSwitch tests stand in for some events' runs (release 8e plan, step 14; standIn,
@@ -653,12 +651,11 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
   let top: string;
   let shared: string;
   let sessions = 0;
-  beforeAll(async () => {
-    top = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
+  beforeAll(() => {
+    top = fileTempDir("tachi-session-");
     shared = path.join(top, "sessions", "project");
     privateDir(shared);
   });
-  afterAll(() => removeTree(top));
   function place() {
     const id = `s${++sessions}`;
     return { id, file: path.join(shared, `${id}.jsonl`), pictures: path.join(shared, id, "pictures") };
@@ -822,8 +819,7 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
   // A transcript that cannot be written: a file where the sessions folder should be, with no permission changed (plan,
   // Task 3). The write fails before any folder is made private.
   async function unwritable(id = "s1") {
-    const own = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
-    onTestFinished(() => removeTree(own));
+    const own = tempDir("tachi-session-");
     mkdirSync(path.join(own, "data"));
     writeFileSync(path.join(own, "data", "sessions"), "not a folder");
     const dir = path.join(own, "data", "sessions", "project");
@@ -1039,10 +1035,9 @@ const bare = ({ session, n, typed, texts }: SavedTurn) => ({ session, n, typed, 
 describe("Session, shortening", { timeout: 15_000 }, () => {
   let top: string;
   let n = 0;
-  beforeAll(async () => {
-    top = await mkdtemp(path.join(tmpdir(), "tachi-shorten-"));
+  beforeAll(() => {
+    top = fileTempDir("tachi-shorten-");
   });
-  afterAll(() => removeTree(top));
   // Two levels inside the test's temp folder; `inherits`, as a subagent's file is made, so no PowerShell starts.
   const saving = () => {
     const dir = path.join(top, "sessions", "project");
@@ -1165,8 +1160,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   }
   // A transcript that cannot be written: a file where its folder should be, with no permission changed (Task 3).
   async function unsavable() {
-    const own = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
-    onTestFinished(() => removeTree(own));
+    const own = tempDir("tachi-session-");
     mkdirSync(path.join(own, "data"));
     writeFileSync(path.join(own, "data", "sessions"), "not a folder");
     const dir = path.join(own, "data", "sessions", "project");
@@ -1285,8 +1279,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   it("refuses to shorten when saving has stopped, ending the turn with the line and the history unchanged", async () => {
     const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long")], 1_000_000);
-    const own = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
-    onTestFinished(() => removeTree(own));
+    const own = tempDir("tachi-session-");
     mkdirSync(path.join(own, "data"));
     writeFileSync(path.join(own, "data", "sessions"), "not a folder"); // a file where the folder should be (Task 3)
     const transcript = new Transcript(path.join(own, "data", "sessions", "project", "s.jsonl"), path.join(own, "data", "sessions", "project", "s", "pictures"));
@@ -2565,21 +2558,10 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   const P = "Not allowed in -p mode, where nobody can approve it"; // cli.tsx's refusal in -p
   const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  // A folder of the test's own, removed when it finishes, tried every 50 ms up to 2 s, as tests/hooks/run.test.ts does:
-  // Windows keeps the folder a killed program worked in for about 170 ms (measured 2026-10-31).
+  // A folder of the test's own, removed when it finishes; the shared remover tries again while Windows still holds a
+  // folder a killed program worked in (cleanup plan, step 6).
   async function folder(): Promise<string> {
-    const dir = await mkdtemp(path.join(tmpdir(), "tachi-pretool-"));
-    onTestFinished(async () => {
-      for (let i = 0; ; i++) {
-        try {
-          return await removeTree(dir);
-        } catch (err) {
-          if (i === 40) throw err;
-          await pause(50);
-        }
-      }
-    });
-    return dir;
+    return tempDir("tachi-pretool-");
   }
   // The hook appends its input to the file named by its first argument, as SCRIPT's does, then prints the answer its second,
   // a JSON list, gives for this firing of its event: the first the first time, and nothing once the list is used up. It counts
@@ -4898,10 +4880,9 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 // at the end of its next user message, once; a conversation that says nothing of what was told gets no notes.
 describe("Session, notes to the model", { timeout: 15_000 }, () => {
   let top: string;
-  beforeAll(async () => {
-    top = await mkdtemp(path.join(tmpdir(), "tachi-notes-"));
+  beforeAll(() => {
+    top = fileTempDir("tachi-notes-");
   });
-  afterAll(() => removeTree(top));
   const OFF: Setup = { sandbox: "off", git: "repo" };
   const LIVE_ON: Setup = { sandbox: "live", network: "on", git: "repo" };
   const host = { root: "C:\\proj", platform: "win32" } as const;
@@ -5049,10 +5030,9 @@ describe("Session, notes to the model", { timeout: 15_000 }, () => {
 describe("Session, saving turns", { timeout: 15_000 }, () => {
   let top: string;
   let n = 0;
-  beforeAll(async () => {
-    top = await mkdtemp(path.join(tmpdir(), "tachi-saving-"));
+  beforeAll(() => {
+    top = fileTempDir("tachi-saving-");
   });
-  afterAll(() => removeTree(top));
   // Two levels inside the test's temp folder; `inherits`, so no PowerShell starts. Each begins with its start line.
   const saving = (id = `s${++n}`) => {
     const dir = path.join(top, "sessions", "project");
@@ -5285,7 +5265,7 @@ describe("Session, the note from long-term memory", { timeout: 15_000 }, () => {
   // the stand-in's; `gate`, the file its --pause-after waits for.
   async function remembering(args: string[] = [], o: { timeout?: number; turns?: Turn[] } & Partial<
     ConstructorParameters<typeof Session>[0]> = {}) {
-    const dir = await mkdtemp(path.join(tmpdir(), "tachi-recall-"));
+    const dir = tempDir("tachi-recall-");
     const record = path.join(dir, "record.jsonl");
     const gate = path.join(dir, "gate");
     const made = await connect({ command: process.execPath, args: [STANDIN, "--record", record, "--gate", gate,
@@ -5293,7 +5273,6 @@ describe("Session, the note from long-term memory", { timeout: 15_000 }, () => {
     if (made.is !== "connected") throw new Error(`not connected: ${JSON.stringify(made)}`);
     onTestFinished(async () => {
       await made.palace.close();
-      await removeTree(dir);
     });
     const memory = { now: true, on: () => memory.now, palace: made.palace };
     const { timeout = LIMIT, turns = [reply("one"), reply("two"), reply("three"), reply("four")], ...more } = o;
@@ -5423,8 +5402,7 @@ describe("Session, the note from long-term memory", { timeout: 15_000 }, () => {
   });
 
   it("sends the note again with the first message after a shortening", async () => {
-    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-recall-")), "sessions", "project");
-    onTestFinished(() => removeTree(path.dirname(path.dirname(dir))));
+    const dir = path.join(tempDir("tachi-recall-"), "sessions", "project");
     const transcript = new Transcript(path.join(dir, "s1.jsonl"), path.join(dir, "s1", "pictures"), { inherits: true });
     const turns = [reply("one"), reply("two"), reply("A summary."), reply("three")];
     const m = await remembering([], { turns, transcript });
@@ -5456,8 +5434,7 @@ describe("Session, the note from long-term memory", { timeout: 15_000 }, () => {
   });
 
   it("keeps the note out of the prompts, the saver's turn and the typed words read back, as memory's", async () => {
-    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-recall-")), "sessions", "project");
-    onTestFinished(() => removeTree(path.dirname(path.dirname(dir))));
+    const dir = path.join(tempDir("tachi-recall-"), "sessions", "project");
     const transcript = new Transcript(path.join(dir, "s1.jsonl"), path.join(dir, "s1", "pictures"), { inherits: true });
     transcript.write({ t: "start", v: 1, id: "s1", project: dir, lead: "fake:a", version: "0.8.0", print: false,
       system: "t", tools: [] });
@@ -5566,8 +5543,7 @@ describe("Session, lessons when a tool fails", { timeout: 15_000 }, () => {
   });
 
   it("takes the first word from the command a PreToolUse hook rewrote the call to", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "tachi-lessons-"));
-    onTestFinished(() => removeTree(root));
+    const root = tempDir("tachi-lessons-");
     const script = path.join(root, "hook.cjs");
     writeFileSync(script, 'process.stdin.resume().on("end", () => process.stdout.write(process.argv[2]));');
     const answer = { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "npm run build" } } };
@@ -5644,14 +5620,13 @@ describe("Session, lessons when a tool fails", { timeout: 15_000 }, () => {
   });
 
   it("leaves the result as today when the search passes its limit", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "tachi-lessons-"));
+    const dir = tempDir("tachi-lessons-");
     const record = path.join(dir, "record.jsonl");
     const made = await connect({ command: process.execPath, args: [STANDIN, "--record", record, "--hold-room",
       LESSONS] }, "own", { timeout: LIMIT });
     if (made.is !== "connected") throw new Error(`not connected: ${JSON.stringify(made)}`);
     onTestFinished(async () => {
       await made.palace.close();
-      await removeTree(dir);
     });
     expect((await made.palace.add(LESSONS, LESSON, "shell git fatal: Authentication failed", LIMIT)).is).toBe("added");
     const s = failingSession(made.palace, [failing("shell", AUTH)], [["shell", { command: "git push" }]], {}, SHORT);
@@ -5715,8 +5690,7 @@ describe("Session, lessons when a tool fails", { timeout: 15_000 }, () => {
   });
 
   it("sends a PostToolUseFailure hook the plain error, for a failed command with a lesson added", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "tachi-lessons-"));
-    onTestFinished(() => removeTree(root));
+    const root = tempDir("tachi-lessons-");
     const script = path.join(root, "hook.cjs");
     const out = path.join(root, "inputs.jsonl");
     writeFileSync(script, 'const fs = require("fs"); let t = ""; process.stdin.setEncoding("utf8")' +
@@ -6005,8 +5979,7 @@ describe("Session, the lesson ask", { timeout: 15_000 }, () => {
   });
 
   it("shows the input that ran when a PreToolUse hook rewrote the failed call", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "tachi-lessonask-"));
-    onTestFinished(() => removeTree(root));
+    const root = tempDir("tachi-lessonask-");
     const script = path.join(root, "hook.cjs");
     writeFileSync(script, 'process.stdin.resume().on("end", () => process.stdout.write(process.argv[2]));');
     const answer = { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "npm run build" } } };

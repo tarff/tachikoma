@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { realpathSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NOTE, type Reached, readInstructions } from "../../src/core/instructions.js";
+import { tempDir } from "../helpers.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -13,7 +13,7 @@ afterEach(() => {
 // for the top of the drive, `home` for the user's folder, and the project is top/work/proj.
 async function machine(tree: Record<string, string> = {}) {
   // Its real path, as the paths found are: the temporary folder can have a short name (RUNNER~1, the CI trial).
-  const top = realpathSync.native(await mkdtemp(path.join(tmpdir(), "tachi-")));
+  const top = realpathSync.native(tempDir("tachi-"));
   const at = (p: string) => path.join(top, ...p.split("/"));
   await mkdir(at("home"), { recursive: true });
   await mkdir(at("work/proj"), { recursive: true });

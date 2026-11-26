@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { LoginError, LoginStore } from "../../src/auth/store.js";
+import { tempDir } from "../helpers.js";
 
-const temp = () => path.join(mkdtempSync(path.join(tmpdir(), "tachi-store-")), "data");
+const temp = () => path.join(tempDir("tachi-store-"), "data");
 
 describe("LoginStore", () => {
   it("starts empty, with a new machine ID that says nothing about the user", () => {

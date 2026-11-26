@@ -1,12 +1,11 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir, uptime } from "node:os";
+import { uptime } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it } from "vitest";
 import { tryLock, withLock } from "../../src/auth/lock.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 const lockUrl = pathToFileURL(path.resolve("src/auth/lock.ts")).href;
 
@@ -20,11 +19,9 @@ function run(dir: string, name: string, source: string): { done: Promise<number 
   return { done: new Promise((resolve) => child.on("close", resolve)), output: () => out, kill: () => child.kill("SIGKILL") };
 }
 
-const tempDir = () => mkdtemp(path.join(tmpdir(), "tachi-lock-"));
-
 describe("withLock", () => {
   it("lets one process at a time in", async () => {
-    const dir = await tempDir();
+    const dir = tempDir("tachi-lock-");
     const lock = JSON.stringify(path.join(dir, "login.lock"));
     const log = JSON.stringify(path.join(dir, "log"));
     const workers = ["a", "b", "c"].map((tag) =>
@@ -47,7 +44,7 @@ await withLock(${lock}, async () => {
   }, 30_000);
 
   it("queues calls within one process", async () => {
-    const file = path.join(await tempDir(), "login.lock");
+    const file = path.join(tempDir("tachi-lock-"), "login.lock");
     const order: string[] = [];
     const step = (tag: string) =>
       withLock(file, async () => {
@@ -60,13 +57,13 @@ await withLock(${lock}, async () => {
   });
 
   it("is released when the work fails", async () => {
-    const file = path.join(await tempDir(), "login.lock");
+    const file = path.join(tempDir("tachi-lock-"), "login.lock");
     await expect(withLock(file, () => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
     expect(await withLock(file, async () => "next")).toBe("next");
   });
 
   it("takes over a lock whose owner is no longer running", async () => {
-    const file = path.join(await tempDir(), "login.lock");
+    const file = path.join(tempDir("tachi-lock-"), "login.lock");
     const gone = spawn(process.execPath, ["-e", ""]);
     await new Promise((r) => gone.on("close", r));
     writeFileSync(file, String(gone.pid));
@@ -74,7 +71,7 @@ await withLock(${lock}, async () => {
   });
 
   it("takes over a lock made before the computer last started, whatever process has its pid now", async () => {
-    const file = path.join(await tempDir(), "login.lock");
+    const file = path.join(tempDir("tachi-lock-"), "login.lock");
     writeFileSync(file, String(process.ppid)); // running, and not this process
     const boot = Date.now() / 1000 - uptime();
     utimesSync(file, boot - 1, boot - 1);
@@ -85,7 +82,7 @@ await withLock(${lock}, async () => {
 
   // A backup or antivirus program can hold a leftover lock open, so that it cannot be removed yet.
   it.runIf(process.platform === "win32")("waits without blocking while another program holds a leftover lock open", async () => {
-    const file = path.join(await tempDir(), "login.lock");
+    const file = path.join(tempDir("tachi-lock-"), "login.lock");
     const gone = spawn(process.execPath, ["-e", ""]);
     await new Promise((r) => gone.on("close", r));
     writeFileSync(file, String(gone.pid));
@@ -101,19 +98,19 @@ await withLock(${lock}, async () => {
   }, 30_000);
 
   it("leaves a lock that another process took over in the meantime", async () => {
-    const file = path.join(await tempDir(), "login.lock");
+    const file = path.join(tempDir("tachi-lock-"), "login.lock");
     await withLock(file, async () => writeFileSync(file, String(process.ppid)));
     expect(readFileSync(file, "utf8")).toBe(String(process.ppid));
   });
 
   it("takes over a lock with no pid in it", async () => {
-    const file = path.join(await tempDir(), "login.lock");
+    const file = path.join(tempDir("tachi-lock-"), "login.lock");
     writeFileSync(file, "");
     expect(await withLock(file, async () => "taken")).toBe("taken");
   });
 
   it("goes on when the owner it waits for is killed outright, which changes nothing in the folder", async () => {
-    const dir = await tempDir();
+    const dir = tempDir("tachi-lock-");
     const file = path.join(dir, "login.lock");
     const owner = run(dir, "owner", `await withLock(${JSON.stringify(file)}, async () => {
   console.log("held");
@@ -131,7 +128,7 @@ await withLock(${lock}, async () => {
   }, 30_000);
 
   it("stops waiting when cancelled, in this process's queue and behind another process", async () => {
-    const dir = await tempDir();
+    const dir = tempDir("tachi-lock-");
     const file = path.join(dir, "login.lock");
     let release!: () => void;
     let firstDone = false;
@@ -163,7 +160,7 @@ await withLock(${lock}, async () => {
   }, 30_000);
 
   it("waits for a running owner, says which, and goes on when it is released", async () => {
-    const dir = await tempDir();
+    const dir = tempDir("tachi-lock-");
     const file = path.join(dir, "login.lock");
     let release!: () => void;
     const first = withLock(file, () => new Promise<void>((r) => (release = r)));
@@ -185,8 +182,7 @@ await withLock(${lock}, async () => {
 // a fresh temporary folder (plan, "Rules for every task"), removed when the case ends.
 describe("tryLock", () => {
   async function lockFile() {
-    const top = await tempDir();
-    onTestFinished(() => removeTree(top));
+    const top = tempDir("tachi-lock-");
     const dir = path.join(top, "data", "sessions");
     mkdirSync(dir, { recursive: true });
     return path.join(dir, "s1.lock");

@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +13,7 @@ import {
   memoryPaths,
   roomName,
 } from "../../src/memory/paths.js";
+import { tempDir } from "../helpers.js";
 
 // MemPalace 3.12.0's rules for a room's name, written from the build record's step 6 item 10 (config.py:36-37,
 // :137-162, run on 22 names), not from the code under test: at most 128 characters, counted as Python counts them
@@ -41,7 +41,7 @@ const inside = (file: string, folder: string) => {
 
 // A folder of the test's own, so the rooms are worked out from real paths.
 async function folders() {
-  return realpathSync.native(await mkdtemp(path.join(tmpdir(), "tachi-room-")));
+  return realpathSync.native(tempDir("tachi-room-"));
 }
 function folder(parent: string, ...names: string[]) {
   const dir = path.join(parent, ...names);
@@ -170,7 +170,7 @@ describe("the lock file's hash", () => {
     expect(path.basename(SHIPPED_LOCK)).toBe("uv.lock");
     const text = readFileSync(SHIPPED_LOCK, "latin1").replaceAll("\r\n", "\n");
     expect(lockHash()).toBe(createHash("sha256").update(Buffer.from(text, "latin1")).digest("hex").slice(0, 12));
-    const dir = await mkdtemp(path.join(tmpdir(), "tachi-lock-"));
+    const dir = tempDir("tachi-lock-");
     writeFileSync(path.join(dir, "lf.lock"), "a\nb\n");
     writeFileSync(path.join(dir, "crlf.lock"), "a\r\nb\r\n");
     writeFileSync(path.join(dir, "other.lock"), "a\nc\n");
@@ -219,14 +219,14 @@ describe("the memory folder", { timeout: 15_000 }, () => {
   });
 
   it("uses the data folder and the shipped lock's hash when given neither", async () => {
-    const data = await mkdtemp(path.join(tmpdir(), "tachi-data-"));
+    const data = tempDir("tachi-data-");
     vi.stubEnv("TACHI_DATA_DIR", data);
     expect(memoryPaths().env).toBe(path.join(data, "memory", "env", lockHash()));
   });
 
   // privateDir runs on memory/ only, inside a data folder this test made (8d plan, step 16, "Permissions").
   it("makes memory/ as a plain folder inside the data folder, and nothing else", async () => {
-    const data = await mkdtemp(path.join(tmpdir(), "tachi-data-"));
+    const data = tempDir("tachi-data-");
     vi.stubEnv("TACHI_DATA_DIR", data);
     const p = memoryPaths();
     makeMemoryFolder(p);

@@ -1,8 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   Clipboard,
   DECODE,
@@ -19,6 +18,7 @@ import {
   unquoted,
 } from "../../src/tui/clipboard.js";
 import { system32 } from "../../src/exec/env.js";
+import { tempDir } from "../helpers.js";
 
 // Each tool's process, so a test can see what runTool left open.
 vi.mock("node:child_process", async (importOriginal) => {
@@ -82,7 +82,7 @@ describe("systemTool", () => {
     const tool = systemTool("win32", {})!;
     const stand = { ...tool, args: tool.args.map((a) => a.replace("Set-Clipboard", "Get-Item")) };
     expect(stand.args.join(" ")).not.toContain("Set-Clipboard");
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-clipboard-"));
+    const dir = tempDir("tachi-clipboard-");
     try {
       const missing = path.join(dir, "missing é 日本");
       await expect(runTool(stand)(missing)).rejects.toThrow(`Set-Clipboard failed: Cannot find path '${missing}' because it does not exist.`);
@@ -125,7 +125,7 @@ describe("runTool", () => {
   // xclip and wl-copy leave a process behind that holds the clipboard and keeps the tool's stderr open; that pipe would
   // keep Tachikoma running after its last work until another program took the clipboard.
   it("leaves nothing open when a tool exits with 0 and leaves a process of its own behind", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-clipboard-"));
+    const dir = tempDir("tachi-clipboard-");
     const pidFile = path.join(dir, "helper.pid");
     // 30 s: longer than the test, so only the kill below ends the helper.
     const script =
@@ -229,11 +229,7 @@ describe("Clipboard", () => {
 
 // A 1×1 PNG, made for these tests; it never comes from the clipboard.
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
-const tempFolder = () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "tachi-pictures-"));
-  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
-  return dir;
-};
+const tempFolder = () => tempDir("tachi-pictures-");
 
 // Release 6 plan, choice 11. Only the command lines are checked: no test reads the user's clipboard.
 describe("imageReader", () => {

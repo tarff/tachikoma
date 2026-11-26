@@ -1,7 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, type TestContext, vi } from "vitest";
 import { sandboxReady, sandboxStart, type Started } from "../../src/clilib.js";
@@ -21,7 +20,7 @@ import { boxLimits, dockerRoom } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
 import { shellTools } from "../../src/tools/commands.js";
 import { TOOLS } from "../../src/tools/index.js";
-import { Bus, callTool, FakeProvider, removeTree, reply } from "../helpers.js";
+import { Bus, callTool, FakeProvider, reply, tempDir } from "../helpers.js";
 import { fakeServer } from "../mcp/fake.js";
 
 const TEST_LABEL = { "tachikoma.test": "1" }; // the plan's rule for every container a test starts
@@ -32,7 +31,7 @@ const OWN = /^(path|home|homedrive|homepath|userprofile|xdg_config_home|git_.*)$
 // A test's own folder: a home, empty system and user git settings files, a data folder, where the copy is made, and a
 // project holding one made-up file. At the end the box is removed, then the folder, the copy with it.
 function world() {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-copy-")));
+  const dir = realpathSync.native(tempDir("tachi-copy-"));
   const home = path.join(dir, "home");
   const root = path.join(dir, "project");
   mkdirSync(home);
@@ -94,7 +93,6 @@ describe("a session in the box with copy mode, in real Docker", { timeout: 0 }, 
   // with no review the copy is kept, for `tachi review` (choice 29).
   it("writes the model's file in the copy, never in the folder, and keeps the copy", async (ctx) => {
     const w = world();
-    onTestFinished(() => removeTree(w.dir));
     const session = `test-${randomUUID()}`;
     const started = await launch(ctx, w, session);
     const bus = new Bus();
@@ -127,7 +125,6 @@ describe("a session in the box with copy mode, in real Docker", { timeout: 0 }, 
   // removed, then the folder.
   it("makes a box server's file in the copy, never in the folder", async (ctx) => {
     const w = world();
-    onTestFinished(() => removeTree(w.dir));
     const session = `test-${randomUUID()}`;
     const started = await launch(ctx, w, session);
     const id = started.box.id;
@@ -157,7 +154,6 @@ describe("a session in the box with copy mode, in real Docker", { timeout: 0 }, 
 describe("the box's branch in copy mode, in real Docker", { timeout: 0 }, () => {
   it("takes the host's branch, on an image whose git has --initial-branch", async (ctx) => {
     const w = world();
-    onTestFinished(() => removeTree(w.dir));
     const exe = onPath("git", w.env);
     if (!exe) ctx.skip("no git on PATH");
     for (const args of [["init", "-q"], ["symbolic-ref", "HEAD", "refs/heads/feature/made-up"]]) {
@@ -179,7 +175,6 @@ describe("the box's branch in copy mode, in real Docker", { timeout: 0 }, () => 
 describe("tachi review and the copy's box, in real Docker", { timeout: 0 }, () => {
   async function busyCopy(ctx: TestContext) {
     const w = world();
-    onTestFinished(() => removeTree(w.dir));
     const state = await dockerState();
     if (state !== "ready") ctx.skip(`Docker cannot run the box here (${state})`);
     const info = await imageFor(w.root);

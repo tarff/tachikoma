@@ -8,9 +8,6 @@ import { type Colour, type Look, type Palette, ThemeContext } from "./theme.js";
 // how many subagents run (release 4 design, "On screen"); `memory`, long-term memory's marker (8d plan, Q14).
 export type Segment =
   | "lead" | "context" | "tokens" | "cost" | "mode" | "errors" | "memory" | "project" | "time" | "tasks" | "tools";
-export const SEGMENTS: Segment[] = [
-  "lead", "context", "tokens", "cost", "mode", "errors", "memory", "project", "time", "tasks", "tools",
-];
 export type LineSegment = Exclude<Segment, "tools">;
 
 export interface StatusInfo {

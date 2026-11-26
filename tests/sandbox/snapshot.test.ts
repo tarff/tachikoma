@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -14,11 +13,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
 import { removeCopy, snapshot } from "../../src/sandbox/snapshot.js";
-import { removeTree, TREE } from "../helpers.js";
+import { tempDir, TREE } from "../helpers.js";
 
 const windows = process.platform === "win32";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -32,8 +30,7 @@ const copyOf = (work: string, rel: string) => {
 // project for links to reach. No git runs: the snapshot never asks git, so TREE's ignored files and its .git are
 // files like any other here.
 function world(tree: Record<string, string> = {}) {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-snapshot-")));
-  onTestFinished(() => removeTree(dir));
+  const dir = realpathSync.native(tempDir("tachi-snapshot-"));
   const root = path.join(dir, "project");
   const data = path.join(dir, "data");
   const outside = path.join(dir, "elsewhere");

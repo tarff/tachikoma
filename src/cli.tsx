@@ -5,8 +5,7 @@ import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs, styleText } from "node:util";
 import chalk from "chalk";
-import { type Instance, render } from "ink";
-import type { ReactElement } from "react";
+import type { Instance } from "ink";
 import { accountCommand } from "./auth/chatgpt.js";
 import { withLock } from "./auth/lock.js";
 import {
@@ -57,12 +56,12 @@ import {
   WindowSessions,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
-import { dataDir, KEYBINDINGS, projectFile, settingsDir } from "./core/datadir.js";
+import { dataDir, projectFile } from "./core/datadir.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { type Reached, readInstructions } from "./core/instructions.js";
 import { type Ask, PermissionGate, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
-import { type Row, sessionsDir, sweep } from "./core/sessions.js";
+import { sessionsDir, sweep } from "./core/sessions.js";
 import { localDate } from "./core/setup.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
@@ -70,7 +69,6 @@ import { errorText, type Message, type Provider, type Setup } from "./core/types
 import { LocalExecutor, LocalWorkspace, shellFor } from "./exec/local.js";
 import { Hooks } from "./hooks/hooks.js";
 import { pathsFor } from "./hooks/tools.js";
-import { readKeybindings } from "./keybindings.js";
 import { type Answers, answersFor, launchAnswers } from "./mcp/answers.js";
 import { AuthStore } from "./mcp/auth.js";
 import { mergeServers, readProjectFile } from "./mcp/config.js";
@@ -94,28 +92,21 @@ import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
 import { shellOf } from "./safety/split.js";
-import { hooksOf, loadSettings, SETTINGS, type Settings, shownFile } from "./settings.js";
+import { hooksOf, loadSettings, SETTINGS, shownFile } from "./settings.js";
 import { HEADLESS_LIMIT, MOST_TIMEOUT, shellTools } from "./tools/commands.js";
 import { delegateTool } from "./tools/delegate.js";
 import { editFileTool } from "./tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { memoryTools } from "./tools/memory.js";
 import { todoTool } from "./tools/todo.js";
-import { App } from "./tui/App.js";
 import { MEMORY_WORDS, NOT_GONE } from "./tui/app/constants.js";
-import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
 import { asBlock } from "./tui/describe.js";
-import { conversationLines, mcpNames } from "./tui/fold.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
 import { programRunning } from "./tui/owner.js";
-import { Review, type ReviewCopy, type ReviewEnd } from "./tui/Review.js";
-import { SessionList } from "./tui/SessionList.js";
-import { startBox } from "./tui/startup.js";
-import { SEGMENTS } from "./tui/StatusLine.js";
+import { SEGMENTS } from "./tui/segments.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
-import { ThemeContext, themeOf } from "./tui/theme.js";
 import { textWidth } from "./tui/view.js";
 
 const HELP = `tachi: a coding agent for your terminal
@@ -240,82 +231,9 @@ function askMemory(): Promise<MemoryAnswer> {
   });
 }
 
-// A screen drawn alone before the session (`tachi review <name>`'s review, `tachi -r`'s list): in full screen where it can
-// draw, with the keys file's bindings as it reads at this moment (its problems said first, on the normal screen); the
-// mouse stays off, as nothing reads its reports. `draw` is given the bindings and the screen's close. Resolves once Ink
-// has ended and the terminal is back, so the lines printed after it come after. Drawn in the look from `settings`, as the
-// App is, so NO_COLOR and the light look reach it too (TUI design pass, Task 13).
-async function drawAlone(settings: Settings, draw: (bindings: Bindings, close: () => void) => ReactElement): Promise<void> {
-  const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
-  let ink: Instance | undefined;
-  restoreOnExit(screen, () => ink?.unmount());
-  const bindings = keysNow();
-  if (fullPossible(process.env, process.stdout.isTTY === true)) screen.setSecond(true);
-  const theme = themeOf(settings, process.env, chalk.level, process.stdout.isTTY === true);
-  ink = render(<ThemeContext value={theme}>{draw(bindings, () => ink?.unmount())}</ThemeContext>, {
-    exitOnCtrlC: false,
-  });
-  const exited = ink.waitUntilExit();
-  restoreWhenInkEnds(screen, exited);
-  await exited;
-}
-
-// `tachi review` runs before the launch reads the settings, so it reads them here for their theme, quietly: a file that is
-// broken or cannot be read is the default look, and its warnings are not said, so the review says and stops for nothing it
-// did not before (Task 13).
-async function drawReview(copy: ReviewCopy, protection: Protection): Promise<ReviewEnd> {
-  let end: ReviewEnd | undefined;
-  const read = loadSettings();
-  await drawAlone("problem" in read ? {} : read.settings, (bindings, close) => (
-    <Review
-      copy={copy}
-      bindings={bindings}
-      protection={protection}
-      onEnd={(e) => {
-        end = e;
-        close();
-      }}
-    />
-  ));
-  return end!;
-}
-
-// The session picked from the list (release 8a plan, choice 12), or none when it was closed; in the launch's settings' look.
-async function drawSessions(rows: Row[], name: string | undefined, settings: Settings): Promise<string | undefined> {
-  let picked: string | undefined;
-  await drawAlone(settings, (bindings, close) => (
-    <SessionList
-      rows={rows}
-      {...(name === undefined ? {} : { name })}
-      now={Date.now()}
-      bindings={bindings}
-      onPick={(id) => {
-        picked = id;
-        close();
-      }}
-      onClose={close}
-    />
-  ));
-  return picked;
-}
-
-// The keys file laid over the defaults, as a session's start reads it (settingsWatch.ts); a file that cannot be read is
-// none, and one with a problem keeps the defaults, as a session keeps the keys before it.
-function keysNow(): Bindings {
-  let text: string;
-  try {
-    text = readFileSync(path.join(settingsDir(), KEYBINDINGS), "utf8");
-  } catch {
-    return new Bindings(tableOf(DEFAULTS));
-  }
-  const got = readKeybindings(text);
-  if ("problem" in got) {
-    console.error(visible(got.problem));
-    return new Bindings(tableOf(DEFAULTS));
-  }
-  for (const problem of got.problems) console.error(visible(problem));
-  return got.table;
-}
+// The screen code (tui/draw.tsx: the window, `tachi review <name>`'s review, `tachi -r`'s list), loaded only where one of
+// them is drawn, so a run without a screen loads none of it: not Ink, React or a drawing module (cleanup plan, step 14a).
+const screens = () => import("./tui/draw.js");
 
 process.stdout.on("error", endOnEpipe);
 process.stderr.on("error", endOnEpipe); // `tachi -p … 2>&1 | head -1`
@@ -365,7 +283,7 @@ if (verb === "review") {
   for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning));
   try {
     const code = await reviewCommand(process.argv.slice(3), {
-      ...(process.stdin.isTTY ? { ask: askAtStart, open: drawReview } : {}),
+      ...(process.stdin.isTTY ? { ask: askAtStart, open: async (copy, protection) => (await screens()).drawReview(copy, protection) } : {}),
       out: (line) => console.log(line),
       err: (line) => console.error(line),
     });
@@ -470,7 +388,7 @@ if (parsed.continue || parsed.resume !== undefined) {
   const c = chooseSession(sessions, { continue: parsed.continue, resume: parsed.resume, print: !interactive, terminal });
   if ("fail" in c) fail(visible(c.fail));
   if (interactive && !terminal) fail(NO_TERMINAL); // before a held session is copied for a window that cannot start
-  chosen = "id" in c ? c.id : await drawSessions(c.list, c.name, loaded.settings);
+  chosen = "id" in c ? c.id : await (await screens()).drawSessions(c.list, c.name, loaded.settings);
   if (chosen === undefined) process.exit(0); // the list closed: nothing to open
 }
 // Opened, mended and read before anything starts, the instruction files' question and the sandbox among them, so a
@@ -1087,6 +1005,14 @@ if (parsed.print !== undefined) {
     protection: async () => protectionOf(await gitSettings(copied.manifest.root)), // throws: no review (App.tsx)
     ended: (lines: string[]) => reviewed.push(...lines),
   };
+  // The screen code, with the look's, the start-up box's and the resumed conversation's (tui/theme.ts, tui/startup.ts,
+  // tui/fold.ts), loaded now that there is a window, before its screen is entered (cleanup plan, step 14a).
+  const [{ drawWindow }, { themeOf }, { startBox }, { conversationLines, mcpNames }] = await Promise.all([
+    screens(),
+    import("./tui/theme.js"),
+    import("./tui/startup.js"),
+    import("./tui/fold.js"),
+  ]);
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();
   // The look from the launch's settings (TUI design pass, Task 1), the colour depth as Ink's own check gives it.
   const { look: shown, palette: colours } = themeOf(
@@ -1121,87 +1047,86 @@ if (parsed.print !== undefined) {
     width,
     shown,
   );
-  ink = render(
-    <ThemeContext value={{ look: shown, palette: colours }}>
-      <App
-        session={session}
-        tasks={tasks}
-        bus={bus}
-        stats={stats}
-        mode={mode}
-        onMode={(m) => {
-          gate.mode = m;
-        }}
-        onRules={(r) => {
-          gate.rules = r;
-        }}
-        project={path.basename(root) || root}
-        root={root}
-        workspace={workspace}
-        branch={branch}
-        historyFile={historyFile(root)}
-        // The start-up box first, then the files left out and the sandbox's lines (TUI design pass, Task 6). A resumed
-        // conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan, Task 6), its
-        // tool rows folded as they were live (release 8c plan, Task 15), with the live lines' marks (TUI design pass, Task 3).
-        intro={[
-          ...startLines,
-          // Memory's line without uv after the sandbox's (8d plan, step 27).
-          ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? []), ...(noUv ? [noUv] : [])].flatMap(
-            (text) => (text === null ? [] : [{ text, color: "muted" as const }]),
-          ),
-          ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours, root: workspace.root }, width),
-          ...asBlock(said.map((l) => ({ ...l, color: "muted" as const }))), // a block under the conversation (the whole PR's review)
-        ]}
-        restored={opened.conversation.messages.length > 0} // -c, -r, and their --fork-session copies, with messages
-        pictures={pictures}
-        errorFile={errorFile}
-        segments={segments}
-        makeProvider={makeProvider}
-        login={accountCommand}
-        listModels={(signal, warn) => listModels(signal, process.env, warn)}
-        bindAsk={(fn) => {
-          ask = fn;
-        }}
-        screen={screen}
-        fullPossible={fullPossible(process.env, process.stdout.isTTY === true)}
-        mouse={keys}
-        input={keys}
-        scrollSpeed={speed}
-        clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
-        home={os.homedir()}
-        live={{
-          loaded,
-          given: givenBy(parsed, process.env),
-          ...(netLine ? { networkLine: netLine } : {}),
-          ...(bashLine ? { bashLine } : {}),
-          ...(gitLine ? { gitLine } : {}),
-        }}
-        {...(copy ? { copy } : {})}
-        saved={windowSessions}
-        leftLines={(lines) => left.push(...lines)}
-        hooks={hooks}
-        mcp={{ servers, project: projectServers }}
-        shell={shell}
-        // Memory's closing as the window is left (8d plan, step 27; Q16): the lesson requests cancelled, the saver's
-        // last chance, then the hub left.
-        {...(saveLast ? { closeMemory: () => memory.close({ lessons: "cancel", save: saveLast }) } : {})}
-        // Long-term memory for /memory, /lesson and the status line (8d plan, step 28): which of the user's choices
-        // switched it off, read from the flag and the file, as resolve() gives "off" for both (step 15's duty).
-        memory={{
-          service: memory,
-          ...(saver ? { saver } : {}),
-          choice: options.memory,
-          ...(options.memory === "off" ? { off: parsed["no-memory"] ? ("flag" as const) : ("settings" as const) } : {}),
-          palace: memoryAt.palace,
-          room,
-          limits: { count: COUNT_LIMIT, add: ADD_LIMIT },
-          ready: () => existsSync(readyFile(memoryAt)),
-          uv: () => uvProgram() !== null,
-          setUp: setUpMemory,
-          clearDontAsk: () => clearDontAsk(memoryAt),
-        }}
-      />
-    </ThemeContext>,
+  ink = drawWindow(
+    { look: shown, palette: colours },
+    {
+      session,
+      tasks,
+      bus,
+      stats,
+      mode,
+      onMode: (m) => {
+        gate.mode = m;
+      },
+      onRules: (r) => {
+        gate.rules = r;
+      },
+      project: path.basename(root) || root,
+      root,
+      workspace,
+      branch,
+      historyFile: historyFile(root),
+      // The start-up box first, then the files left out and the sandbox's lines (TUI design pass, Task 6). A resumed
+      // conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan, Task 6), its
+      // tool rows folded as they were live (release 8c plan, Task 15), with the live lines' marks (TUI design pass, Task 3).
+      intro: [
+        ...startLines,
+        // Memory's line without uv after the sandbox's (8d plan, step 27).
+        ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? []), ...(noUv ? [noUv] : [])].flatMap(
+          (text) => (text === null ? [] : [{ text, color: "muted" as const }]),
+        ),
+        ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, names: mcpNames(servers), palette: colours, root: workspace.root }, width),
+        ...asBlock(said.map((l) => ({ ...l, color: "muted" as const }))), // a block under the conversation (the whole PR's review)
+      ],
+      restored: opened.conversation.messages.length > 0, // -c, -r, and their --fork-session copies, with messages
+      pictures,
+      errorFile,
+      segments,
+      makeProvider,
+      login: accountCommand,
+      listModels: (signal, warn) => listModels(signal, process.env, warn),
+      bindAsk: (fn) => {
+        ask = fn;
+      },
+      screen,
+      fullPossible: fullPossible(process.env, process.stdout.isTTY === true),
+      mouse: keys,
+      input: keys,
+      scrollSpeed: speed,
+      clipboard: (report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report),
+      home: os.homedir(),
+      live: {
+        loaded,
+        given: givenBy(parsed, process.env),
+        ...(netLine ? { networkLine: netLine } : {}),
+        ...(bashLine ? { bashLine } : {}),
+        ...(gitLine ? { gitLine } : {}),
+      },
+      ...(copy ? { copy } : {}),
+      saved: windowSessions,
+      leftLines: (lines) => left.push(...lines),
+      hooks,
+      mcp: { servers, project: projectServers },
+      shell,
+      // Memory's closing as the window is left (8d plan, step 27; Q16): the lesson requests cancelled, the saver's
+      // last chance, then the hub left.
+      ...(saveLast ? { closeMemory: () => memory.close({ lessons: "cancel", save: saveLast }) } : {}),
+      // Long-term memory for /memory, /lesson and the status line (8d plan, step 28): which of the user's choices
+      // switched it off, read from the flag and the file, as resolve() gives "off" for both (step 15's duty).
+      memory: {
+        service: memory,
+        ...(saver ? { saver } : {}),
+        choice: options.memory,
+        ...(options.memory === "off" ? { off: parsed["no-memory"] ? ("flag" as const) : ("settings" as const) } : {}),
+        palace: memoryAt.palace,
+        room,
+        limits: { count: COUNT_LIMIT, add: ADD_LIMIT },
+        ready: () => existsSync(readyFile(memoryAt)),
+        uv: () => uvProgram() !== null,
+        setUp: setUpMemory,
+        clearDontAsk: () => clearDontAsk(memoryAt),
+      },
+    },
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing
     // only the lines that changed, Ink's incrementalRendering, made no difference felt).

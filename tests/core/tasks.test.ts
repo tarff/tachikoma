@@ -1,8 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
 import { type Ask, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
@@ -19,7 +17,7 @@ import { Servers } from "../../src/mcp/servers.js";
 import { BoxState } from "../../src/sandbox/executor.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { readFileTool } from "../../src/tools/files.js";
-import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, collectErrors, fileTempDir, reply, tempContext, tempDir, texts } from "../helpers.js";
 import { fakeServer, readLog } from "../mcp/fake.js";
 
 async function setup(
@@ -234,19 +232,7 @@ describe("Tasks", () => {
   // Release 8b plan review, 2026-11-09, finding 1: a hook's failure never fails a subagent.
   it("finishes a subagent done with its answer when its hook times out, the failure on the lead's bus starting with its id", { timeout: 15_000 }, async () => {
     const own = ownBus();
-    const root = await mkdtemp(path.join(tmpdir(), "tachi-tasks-hook-"));
-    onTestFinished(async () => {
-      // Windows keeps the folder a killed program worked in for about 170 ms (measured 2026-10-31), so the removal is
-      // tried every 50 ms up to 2 s, as tests/hooks/run.test.ts does.
-      for (let i = 0; ; i++) {
-        try {
-          return await removeTree(root);
-        } catch (err) {
-          if (i === 40) throw err;
-          await new Promise((r) => setTimeout(r, 50));
-        }
-      }
-    });
+    const root = tempDir("tachi-tasks-hook-");
     const script = path.join(root, "slow.cjs");
     writeFileSync(script, "setInterval(() => {}, 1000);"); // never ends by itself
     // Half a second keeps the test quick; the line is the same whether or not Node had started by then.
@@ -283,7 +269,7 @@ describe("Tasks", () => {
   // Release 8c plan, Task 7 and choice 17: a subagent only reads, so it is offered only the tools the user trusts as
   // read-only, which run without a question; the fake server (tests/mcp/fake.ts) is the only one started.
   it("gives a subagent only the MCP tools trusted as read-only, each run without a question", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "tachi-tasks-mcp-"));
+    const dir = tempDir("tachi-tasks-mcp-");
     const log = path.join(dir, "log.jsonl");
     const script = await fakeServer(dir, { log });
     const entry = { kind: "stdio" as const, command: process.execPath, args: [script], env: {} };
@@ -298,7 +284,6 @@ describe("Tasks", () => {
     // Stopped before the folder is removed: on Windows a running server holds the folder it works in.
     onTestFinished(async () => {
       await servers.stopAll();
-      await removeTree(dir);
     });
     servers.startAll();
     await servers.ready();
@@ -325,12 +310,11 @@ describe("Tasks, saved", { timeout: 15_000 }, () => {
   let top: string;
   let shared: string;
   let sessions = 0;
-  beforeAll(async () => {
-    top = await mkdtemp(path.join(tmpdir(), "tachi-tasks-"));
+  beforeAll(() => {
+    top = fileTempDir("tachi-tasks-");
     shared = path.join(top, "sessions", "project");
     privateDir(shared);
   });
-  afterAll(() => removeTree(top));
   function place() {
     const id = `s${++sessions}`;
     return { id, file: path.join(shared, `${id}.jsonl`), pictures: path.join(shared, id, "pictures"), subagents: path.join(shared, id, "subagents") };

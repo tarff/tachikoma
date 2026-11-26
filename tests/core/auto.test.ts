@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -16,7 +16,7 @@ import { editFileTool, readFileTool } from "../../src/tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import { searchFilesTool } from "../../src/tools/search.js";
 import type { Tool } from "../../src/tools/tool.js";
-import { Bus, FakeProvider, callTool, collectErrors, reply, standInRun, texts, usage } from "../helpers.js";
+import { Bus, FakeProvider, callTool, collectErrors, reply, standInRun, tempDir, texts, usage } from "../helpers.js";
 
 // Release 7 plan, Task 10: auto mode in the gate. Reads and project edits pass, dangers ask the user, and the judge
 // decides the rest; after 3 refusals in a row or 20 in the session auto mode pauses (choice 8); an answer counts only if
@@ -38,8 +38,8 @@ const judged = (j: { seen: Message[][] }) => j.seen.map((messages) => JSON.parse
 // calls. The user answers each question from `answers`, and no when they run out.
 // `judge` undefined: none set, so the lead leading judges, as cli.tsx gives it without --judge.
 async function setup(lead: FakeProvider, judge: Provider | undefined, opts: { headless?: boolean; answers?: boolean[]; worker?: Provider } = {}) {
-  const root = await mkdtemp(path.join(tmpdir(), "tachi-"));
-  const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-"));
+  const root = tempDir("tachi-");
+  const elsewhere = tempDir("tachi-");
   const bus = new Bus();
   const errors = collectErrors(bus);
   const asked: Asked[] = [];
@@ -246,8 +246,8 @@ describe("auto mode, the turn's signal from each tool", () => {
     ["shell", shellTool!, () => ({ command: "echo hi" })],
   ];
   it.each(cases)("%s: stopping the turn while the judge is out rejects with the stop and runs nothing", async (_, tool, input) => {
-    const root = await mkdtemp(path.join(tmpdir(), "tachi-"));
-    const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const root = tempDir("tachi-");
+    const elsewhere = tempDir("tachi-");
     await writeFile(path.join(elsewhere, "notes.txt"), "old");
     let given: AbortSignal | undefined;
     let answer: ((v: Verdict) => void) | undefined;

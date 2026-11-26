@@ -565,9 +565,10 @@ export function fakeHelper(dir: string) {
 
 type Answer = Awaited<ReturnType<DockerRun>>;
 const STANDIN = fileURLToPath(new URL("../standin/dockerExec.mjs", import.meta.url));
-// The longest killAll waits for the stand-ins to exit, in Wait-Process's whole seconds: carried over from the tests'
-// wait on another process, WAIT = { timeout: 5_000 }, "a few seconds for a busy machine, well inside the test's 15 s"
-// (tests/mcp/servers.test.ts and tests/mcp/box.test.ts). Not measured for this wait (release 8e plan, step 20).
+// The longest killAll waits for the stand-ins to exit, in Wait-Process's whole seconds: the user's choice of 2026-11-25
+// (cleanup plan, step 3), a ceiling, not a measured need. On CI (run 45467602109, 2026-11-24) the folder a stand-in
+// killed by killAll worked in could be removed at most 12.8 ms after the kill, and Wait-Process on a program that stays
+// alive waited the full 5 s.
 const STANDIN_WAIT_S = 5;
 
 // A stand-in's server and everything it started, as the kill in the box ends the server's group: on Windows its tree,
@@ -646,14 +647,17 @@ export function standinBox(dir: string, opts: { kind?: "live" | "copy"; gone?: s
   // that start servers in the box call it; those that start none do not). Node cannot wait on a process it did not
   // start, so Wait-Process does: the system's own wait on the process, which ends only once Windows has let go of it, not
   // when its exit code is set, as process.kill(pid, 0) tells. A stand-in already gone is passed over. A Wait-Process that
-  // cannot start ends the wait too, and a stand-in still there then fails the removal with its own line. Elsewhere a
-  // working folder does not stop its removal.
-  const killAll = async () => {
+  // cannot start ends the wait too, and a stand-in still there is then named (below). Elsewhere a working folder does
+  // not stop its removal.
+  // Once the wait is over, each stand-in still running is named in one line on stderr, so a folder that then cannot be
+  // removed says which one held it; it does not throw (cleanup plan, step 8). `waitS`, Wait-Process's limit: a test of
+  // killAll itself passes a shorter one.
+  const killAll = async (waitS = STANDIN_WAIT_S) => {
     const all = started();
     for (const { child } of all) if (child !== undefined && alive(child)) killGroup(child);
     if (process.platform !== "win32" || all.length === 0) return;
     const ids = all.map((s) => s.self).join(",");
-    const wait = `Wait-Process -Id ${ids} -Timeout ${STANDIN_WAIT_S} -ErrorAction SilentlyContinue`;
+    const wait = `Wait-Process -Id ${ids} -Timeout ${waitS} -ErrorAction SilentlyContinue`;
     const waiter = spawn(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", wait], {
       stdio: "ignore", windowsHide: true,
     });
@@ -661,6 +665,11 @@ export function standinBox(dir: string, opts: { kind?: "live" | "copy"; gone?: s
       waiter.once("close", () => resolve());
       waiter.once("error", () => resolve());
     });
+    for (const { self } of all) {
+      if (alive(self)) {
+        process.stderr.write(`the stand-in Docker ${self} (record ${record}) was still running after killAll's wait of ${waitS} s\n`);
+      }
+    }
   };
   const program = { file: process.execPath, args: [STANDIN, record] };
   const box: McpBox = { id: "b0x", kind: opts.kind ?? "live", state: new BoxState("b0x", run), run, program };

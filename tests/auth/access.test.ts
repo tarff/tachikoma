@@ -1,17 +1,17 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { ChatGPTAuth } from "../../src/auth/access.js";
 import { signIn, signOut } from "../../src/auth/chatgpt.js";
 import { LoginStore, type SavedLogin, type Tokens } from "../../src/auth/store.js";
+import { tempDir } from "../helpers.js";
 import { FakeOpenAI } from "./fake-openai.js";
 
 async function signedIn() {
   const fake = await FakeOpenAI.start();
-  const dir = path.join(mkdtempSync(path.join(tmpdir(), "tachi-access-")), "data");
+  const dir = path.join(tempDir("tachi-access-"), "data");
   const store = new LoginStore(dir, () => {});
   const io = { say: () => {}, openBrowser: fake.browser };
   await signIn(store, io, { issuer: fake.issuer });

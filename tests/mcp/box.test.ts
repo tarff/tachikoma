@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { running } from "../../src/exec/local.js";
@@ -19,7 +19,7 @@ import type { ServerConfig, ServerEntry } from "../../src/mcp/config.js";
 import { Server } from "../../src/mcp/server.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
 import { killInBox, killLine } from "../../src/sandbox/executor.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 import { type FakeOptions, fakeServer, readLog, standinBox } from "./fake.js";
 
 const NUL = String.fromCharCode(0);
@@ -165,13 +165,12 @@ const groupIn = (args: string[]) => /\/tmp\/tachikoma-[0-9a-f-]{36}/.exec(args[7
 // The test's own folder, the project's root, the stand-in box recording there, and its servers, each stopped before the
 // folder is removed, as on Windows a running server holds the folder it works in; then any left running is killed.
 async function setup(opts: { gone?: string } = {}) {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-box-"));
+  const dir = tempDir("tachi-mcp-box-");
   const fake = standinBox(dir, opts);
   const servers: Server[] = [];
   onTestFinished(async () => {
     await Promise.all(servers.map((s) => s.stop()));
     await fake.killAll();
-    await removeTree(dir);
   });
   const make = (config: ServerConfig, env: NodeJS.ProcessEnv = process.env) => {
     const server = new Server(config, { root: dir, env, onChange: () => {}, box: fake.box });
@@ -427,5 +426,62 @@ describe("a box server's stop that failed", () => {
     expect(unboxed.state).toEqual(blocked("Error: boom"));
     expect(readLog(log)).toEqual([]);
     expect(fake.calls).toEqual([]);
+  });
+});
+
+// Cleanup plan, step 8: once killAll's wait is over, each stand-in still running is named in one line on stderr, so a
+// folder that then cannot be removed says which one held it; none is named once all are gone. It never throws. Its wait
+// is Windows only, so these are too.
+describe.runIf(process.platform === "win32")("killAll", () => {
+  // What killAll writes on stderr.
+  const stderrOf = async (fn: () => Promise<void>): Promise<string[]> => {
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => (lines.push(String(chunk)), true));
+    try {
+      await fn();
+    } finally {
+      spy.mockRestore();
+    }
+    return lines;
+  };
+  // A stand-in Docker started as Servers starts one, recording into the fake's file, with `command` after `_ INNER`.
+  // Until its input ends the block of variables it waits, starting nothing; `begin()` ends it, so the command starts.
+  // Killed and waited for when the test ends, before the folder is removed (tempDir's, registered first).
+  const standIn = (fake: ReturnType<typeof standinBox>, command: string[]) => {
+    const { file, args } = fake.box.program!; // standinBox always gives one
+    const child = spawn(file, [...args, "exec", "_", "INNER", ...command], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    const exited = once(child, "exit");
+    onTestFinished(async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await exited;
+    });
+    return { child, exited, begin: () => child.stdin.write(NUL) };
+  };
+  const forever = [process.execPath, "-e", "setInterval(() => {}, 1000)"];
+
+  it("names a stand-in still running after its wait, in one line, and does not throw", async () => {
+    const dir = tempDir("tachi-mcp-box-");
+    const fake = standinBox(dir);
+    const { child } = standIn(fake, forever);
+    await vi.waitFor(() => expect(fake.started()).toHaveLength(1), WAIT);
+    const [record] = readdirSync(dir).filter((name) => name.startsWith("docker-"));
+    // Wait-Process's smallest limit, 0 (its range is 0 to 32767): it looks once and does not wait, so this test does
+    // not sit out the 5 s.
+    const lines = await stderrOf(() => fake.killAll(0));
+    expect(lines).toEqual([
+      `the stand-in Docker ${child.pid} (record ${path.join(dir, record!)}) was still running after killAll's wait of 0 s\n`,
+    ]);
+  });
+
+  it("names none once the stand-ins are gone", async () => {
+    const dir = tempDir("tachi-mcp-box-");
+    const fake = standinBox(dir);
+    const two = [standIn(fake, forever), standIn(fake, forever)];
+    for (const s of two) s.begin();
+    await vi.waitFor(() => expect(fake.started().map((s) => s.child !== undefined)).toEqual([true, true]), WAIT);
+    // killAll kills each one's command, so each stand-in exits after it.
+    const lines = await stderrOf(() => fake.killAll());
+    expect(lines).toEqual([]);
+    await Promise.all(two.map((s) => s.exited));
   });
 });

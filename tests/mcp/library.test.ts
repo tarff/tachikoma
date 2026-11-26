@@ -1,10 +1,9 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { expect, it, onTestFinished } from "vitest";
-import { removeTree } from "../helpers.js";
+import { expect, it } from "vitest";
+import { tempDir } from "../helpers.js";
 
 // Release 8c plan, Task 1: the library loads and talks to a server. The server is a script this test writes, speaking
 // MCP's JSON-RPC by hand, one message per line, so the test needs no server package and starts nothing of the user's.
@@ -23,8 +22,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 `;
 
 it("connects to a server over stdio and lists its tools", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-"));
-  onTestFinished(() => removeTree(dir));
+  const dir = tempDir("tachi-mcp-");
   const script = path.join(dir, "server.cjs");
   await writeFile(script, SERVER);
   const client = new Client({ name: "tachikoma-test", version: "0.0.0" });

@@ -1,12 +1,12 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { gitBranch } from "../../src/tui/git.js";
+import { tempDir } from "../helpers.js";
 
 // A folder with a repository's HEAD file, holding `head`.
 function repo(head: string): string {
-  const root = mkdtempSync(path.join(tmpdir(), "tachi-git-"));
+  const root = tempDir("tachi-git-");
   mkdirSync(path.join(root, ".git"));
   writeFileSync(path.join(root, ".git", "HEAD"), head);
   return root;
@@ -26,7 +26,7 @@ describe("gitBranch", () => {
 
   it("follows a .git file to the repository it names, as a worktree has", () => {
     const main = repo("ref: refs/heads/main\n");
-    const worktree = mkdtempSync(path.join(tmpdir(), "tachi-git-"));
+    const worktree = tempDir("tachi-git-");
     mkdirSync(path.join(main, ".git", "worktrees", "w"), { recursive: true });
     writeFileSync(path.join(main, ".git", "worktrees", "w", "HEAD"), "ref: refs/heads/side\n");
     writeFileSync(path.join(worktree, ".git"), `gitdir: ${path.join(main, ".git", "worktrees", "w")}\n`);
@@ -34,8 +34,8 @@ describe("gitBranch", () => {
   });
 
   it("gives nothing outside a repository, or when HEAD cannot be read", () => {
-    expect(gitBranch(mkdtempSync(path.join(tmpdir(), "tachi-git-")))).toBeNull();
-    const broken = mkdtempSync(path.join(tmpdir(), "tachi-git-"));
+    expect(gitBranch(tempDir("tachi-git-"))).toBeNull();
+    const broken = tempDir("tachi-git-");
     mkdirSync(path.join(broken, ".git"));
     expect(gitBranch(broken)).toBeNull();
   });

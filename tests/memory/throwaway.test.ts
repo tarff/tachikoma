@@ -1,7 +1,6 @@
 import {
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmdirSync,
   symlinkSync,
@@ -9,19 +8,16 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it } from "vitest";
 // @ts-expect-error: a build script in plain JavaScript, with no type file.
 import { compare, saveSnapshot, snapshot, throwaway } from "../../scripts/8d/throwaway.mjs";
 import { API_KEYS } from "../../src/exec/env.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 // A folder this test makes, removed when the test ends; never the user's folders, never the real build folder.
 function made(): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "tachi-8d-throwaway-test-"));
-  onTestFinished(() => removeTree(dir));
-  return dir;
+  return tempDir("tachi-8d-throwaway-test-");
 }
 
 const inside = (folder: string, file: string) => {

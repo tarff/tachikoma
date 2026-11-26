@@ -1,5 +1,3 @@
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -12,7 +10,7 @@ import { LESSONS, WING } from "../../src/memory/paths.js";
 import type { ToolContext } from "../../src/tools/tool.js";
 import { memoryTools } from "../../src/tools/memory.js";
 import { readLog } from "../mcp/fake.js";
-import { Bus, callTool, FakeProvider, removeTree, reply } from "../helpers.js";
+import { Bus, callTool, FakeProvider, reply, tempDir } from "../helpers.js";
 
 // The three memory tools (8d plan, step 23) against the stand-in MemPalace (tests/memory/standin.mjs) as a program over
 // stdio, which keeps its entries in memory and records every call into a folder the test made. Nothing here starts a
@@ -29,19 +27,16 @@ const SESSION = "4c1e0d2a";
 const CTX = {} as ToolContext;
 
 const palaces: Palace[] = [];
-const folders: string[] = [];
 
 afterEach(async () => {
   await Promise.all(palaces.splice(0).map((p) => p.close()));
-  for (const folder of folders.splice(0)) await removeTree(folder);
 });
 
 // A memory stand-in: the state and the palace, as step 21's Memory gives them; the test changes them.
 type Held = { state: MemoryState; palace: Palace | undefined };
 
 async function start(args: string[] = [], o: { everything?: "wing" | "palace"; search?: number } = {}) {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-memtools-"));
-  folders.push(dir);
+  const dir = tempDir("tachi-memtools-");
   const record = path.join(dir, "record.jsonl");
   const memory: Held = { state: { is: "on" }, palace: undefined };
   const made = await connect({ command: process.execPath, args: [STANDIN, "--record", record, ...args] }, "own", {

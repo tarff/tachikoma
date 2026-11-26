@@ -1,6 +1,4 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { ErrorEvent } from "../../src/core/bus.js";
@@ -11,7 +9,7 @@ import type { Event, Hook, HooksConfig } from "../../src/hooks/config.js";
 import { Hooks, MODE_NAMES, type Run, type Where } from "../../src/hooks/hooks.js";
 import { runHook } from "../../src/hooks/run.js";
 import type { Effort } from "../../src/providers/anthropic.js";
-import { Bus, collectErrors, removeTree } from "../helpers.js";
+import { Bus, collectErrors, tempDir } from "../helpers.js";
 
 // Both run as they are; a test reads the limits runHook was given, or has one answer stand in for a run or for Git Bash.
 vi.mock("../../src/hooks/run.js", async (importOriginal) => {
@@ -25,21 +23,10 @@ vi.mock("../../src/exec/env.js", async (importOriginal) => {
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// A folder of the test's own, removed when the test finishes, tried every 50 ms up to 2 s, as tests/hooks/run.test.ts
-// does: Windows keeps the folder a killed program worked in for about 170 ms (measured 2026-10-31).
+// A folder of the test's own, removed when the test finishes; the shared remover tries again while Windows still holds
+// a folder a killed program worked in (cleanup plan, step 7).
 async function folder(): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-hooks-"));
-  onTestFinished(async () => {
-    for (let i = 0; ; i++) {
-      try {
-        return await removeTree(dir);
-      } catch (err) {
-        if (i === 40) throw err;
-        await pause(50);
-      }
-    }
-  });
-  return dir;
+  return tempDir("tachi-hooks-");
 }
 
 // One script for every hook: it appends its input to the file named by its first argument, so a test sees each run, then
@@ -614,7 +601,12 @@ describe("Hooks", { timeout: 15_000 }, () => {
         return false;
       }
     };
-    onTestFinished(() => pids.forEach((pid) => alive(pid) && process.kill(pid)));
+    // Killed and waited for, as below, before the folder is removed (cleanup plan, step 7); a hook still alive after the
+    // wait is left to the remover's warning.
+    onTestFinished(async () => {
+      pids.forEach((pid) => alive(pid) && process.kill(pid));
+      for (let i = 0; pids.some(alive) && i < 500; i++) await pause(20);
+    });
     hooks.stopAsync();
     for (let i = 0; pids.some(alive) && i < 500; i++) await pause(20);
     expect(pids.map(alive)).toEqual([false, false]);

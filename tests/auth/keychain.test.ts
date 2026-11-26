@@ -1,12 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
 import { ChatGPTAuth } from "../../src/auth/access.js";
 import { signIn, signOut } from "../../src/auth/chatgpt.js";
 import { type Keychain, KeychainError, systemKeychain } from "../../src/auth/keychain.js";
 import { LoginError, LoginStore } from "../../src/auth/store.js";
+import { tempDir } from "../helpers.js";
 import { FakeOpenAI } from "./fake-openai.js";
 
 // A keychain in memory, for the store's own tests.
@@ -43,7 +43,7 @@ describe("the login with --keychain", () => {
   async function setup(keychain: Keychain = memoryKeychain()) {
     const fake = await FakeOpenAI.start();
     const warned: string[] = [];
-    const store = new LoginStore(path.join(mkdtempSync(path.join(tmpdir(), "tachi-keychain-")), "data"), (m) => warned.push(m), keychain);
+    const store = new LoginStore(path.join(tempDir("tachi-keychain-"), "data"), (m) => warned.push(m), keychain);
     const said: string[] = [];
     const io = { say: (l: string) => said.push(l), openBrowser: fake.browser };
     return { fake, keychain, store, warned, said, io, opts: { issuer: fake.issuer } };

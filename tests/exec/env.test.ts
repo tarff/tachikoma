@@ -1,9 +1,9 @@
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, type Stats, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { lstatSync, mkdirSync, rmSync, type Stats, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { API_KEYS, commandEnv, mcpProgram, onPath } from "../../src/exec/env.js";
 import { PRESETS } from "../../src/providers/openai.js";
+import { tempDir } from "../helpers.js";
 
 // statSync and lstatSync as Node's own, unless a test stands in for some paths (mcpProgram's `pretend`, below).
 vi.mock("node:fs", async (importOriginal) => {
@@ -30,8 +30,7 @@ describe("commandEnv", () => {
 
   // A folder of the test's own, with the files named (empty, never run) in the folder `parts` names.
   function machine(parts: string[], files: string[]) {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-psmodules-"));
-    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir("tachi-psmodules-");
     mkdirSync(path.join(dir, ...parts), { recursive: true });
     for (const file of files) writeFileSync(path.join(dir, ...parts, file), "");
     return (...at: string[]) => path.join(dir, ...at);
@@ -73,8 +72,7 @@ describe("onPath", () => {
   const windows = process.platform === "win32";
   const exe = (name: string) => (windows ? `${name}.exe` : name);
   function folders(...names: string[]) {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-onpath-"));
-    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir("tachi-onpath-");
     return names.map((name) => {
       mkdirSync(path.join(dir, name));
       return path.join(dir, name);
@@ -139,8 +137,7 @@ describe("onPath", () => {
 describe("mcpProgram", () => {
   const windows = process.platform === "win32";
   function folders(...names: string[]) {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-mcpprogram-"));
-    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir("tachi-mcpprogram-");
     return names.map((name) => {
       mkdirSync(path.join(dir, name));
       return path.join(dir, name);

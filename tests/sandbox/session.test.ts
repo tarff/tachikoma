@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, type TestContext, vi } from "vitest";
 import { sandboxReady, sandboxStart, setupOf, type Started } from "../../src/clilib.js";
@@ -19,7 +18,7 @@ import { boxLimits, dockerRoom } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
 import { shellTools } from "../../src/tools/commands.js";
 import { TOOLS } from "../../src/tools/index.js";
-import { Bus, callTool, FakeProvider, removeTree, reply } from "../helpers.js";
+import { Bus, callTool, FakeProvider, reply, tempDir } from "../helpers.js";
 
 const TEST_LABEL = { "tachikoma.test": "1" }; // the plan's rule for every container a test starts
 
@@ -38,7 +37,7 @@ class Recording extends FakeProvider {
 // A test's own folder: a home, empty system and user git settings files, a data folder and a project holding a git
 // repository. Git, the test's own and gitSettings's, runs only with them. At the end the box is removed, then the folder.
 function world() {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-session-")));
+  const dir = realpathSync.native(tempDir("tachi-session-"));
   const home = path.join(dir, "home");
   const root = path.join(dir, "project");
   mkdirSync(home);
@@ -126,7 +125,6 @@ afterEach(() => vi.unstubAllEnvs());
 describe("a session in the box with live link, in real Docker", { timeout: 0 }, () => {
   it("runs the model's command in the box, writing the file in the host's folder, with /work in the system prompt", async (ctx) => {
     const w = world();
-    onTestFinished(() => removeTree(w.dir));
     execFileSync(onPath("git", w.env)!, ["init", "-q"], { cwd: w.root, env: w.env, windowsHide: true });
     const started = await launch(ctx, w);
     const lead = new Recording("lead", [callTool("c1", "shell", { command: "echo hi > a.txt" }), reply("done")]);
@@ -141,7 +139,6 @@ describe("a session in the box with live link, in real Docker", { timeout: 0 }, 
   // network command would. example.invalid is a name that never resolves (RFC 2606), so nothing could leave in any case.
   it("adds the network line to a failed command's result", async (ctx) => {
     const w = world();
-    onTestFinished(() => removeTree(w.dir));
     const started = await launch(ctx, w);
     const lead = new FakeProvider("lead", [callTool("c1", "shell", { command: "curl -sS http://example.invalid/" }), reply("done")]);
     const session = headless(started, w.root, lead, new FakeProvider("judge", [allow()]));

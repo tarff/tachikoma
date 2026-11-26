@@ -1,13 +1,11 @@
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
 import { copySession } from "../../src/core/sessions.js";
 import { type Line, readOutline, readTranscript, Transcript, wholeLines } from "../../src/core/transcript.js";
 import type { Message, Part, Setup } from "../../src/core/types.js";
-import { removeTree } from "../helpers.js";
+import { fileTempDir, tempDir } from "../helpers.js";
 
 // Release 8a plan, Task 3. The sessions folder is inside a fresh temporary folder, as privateDir needs (plan, "Rules for
 // every task"). Making a folder private starts PowerShell on Windows, so the cases share one, each with its own session
@@ -16,19 +14,17 @@ describe("transcript", { timeout: 15_000 }, () => {
   let top: string;
   let shared: string;
   let sessions = 0;
-  beforeAll(async () => {
-    top = await mkdtemp(path.join(tmpdir(), "tachi-transcript-"));
+  beforeAll(() => {
+    top = fileTempDir("tachi-transcript-");
     shared = path.join(top, "sessions", "project");
     privateDir(shared);
   });
-  afterAll(() => removeTree(top));
   function place() {
     const id = `s${++sessions}`;
     return { file: path.join(shared, `${id}.jsonl`), pictures: path.join(shared, id, "pictures"), subagents: path.join(shared, id, "subagents") };
   }
   async function fresh() {
-    const own = await mkdtemp(path.join(tmpdir(), "tachi-transcript-"));
-    onTestFinished(() => removeTree(own));
+    const own = tempDir("tachi-transcript-");
     const dir = path.join(own, "data", "sessions", "project");
     return { top: own, file: path.join(dir, "s1.jsonl"), pictures: path.join(dir, "s1", "pictures") };
   }

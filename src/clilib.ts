@@ -43,8 +43,9 @@ import type { SandboxLimits, Settings } from "./settings.js";
 import { screen } from "./tui/describe.js";
 import { gitBranch } from "./tui/git.js";
 import { Pictures } from "./tui/pictures.js";
-import { leftOut, notRemoved, removing } from "./tui/Review.js";
-import { type Segment, SEGMENTS } from "./tui/StatusLine.js";
+import { leftOut, notRemoved, removing } from "./tui/reviewWords.js";
+import { SEGMENTS } from "./tui/segments.js";
+import type { Segment } from "./tui/StatusLine.js";
 import { writeBestEffort } from "./tui/terminal.js";
 
 // Headless output reaches the terminal too, so model and provider text gets the scrollback's escaping.

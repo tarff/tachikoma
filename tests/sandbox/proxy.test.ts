@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
 import dgram from "node:dgram";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import net from "node:net";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
 import { PROXY_SOURCE, proxyFile, type ProxySettings } from "../../src/sandbox/proxy.js";
 import { SITES_SOURCE, type Site } from "../../src/sandbox/sites.js";
+import { tempDir } from "../helpers.js";
 
 // 8c-2b plan, Step 4: the proxy's own source run by this computer's node in a child process, with the lookup and the
 // connect injected (decision 12): the lookup answers from the test's table, and the connect, which records the address
@@ -538,7 +538,7 @@ describe("the proxy: lookups and the file", () => {
   });
 
   it("the file's text runs alone", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "tachi-proxy-test-"));
+    const dir = tempDir("tachi-proxy-test-");
     const settings: ProxySettings = { sites: [GITHUB], own: [], check: CHECK, host: "127.0.0.1", dnsPort: 0 };
     writeFileSync(path.join(dir, "proxy.cjs"), proxyFile());
     writeFileSync(path.join(dir, "settings.json"), JSON.stringify(settings));
@@ -550,8 +550,6 @@ describe("the proxy: lookups and the file", () => {
     onTestFinished(async () => {
       child.kill();
       await exited;
-      for (const f of ["proxy.cjs", "settings.json"]) rmSync(path.join(dir, f), { force: true });
-      rmSync(dir, { recursive: true, force: true });
     });
     const first = await new Promise<string>((done, fail) => {
       let t = "";

@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +17,7 @@ import {
 } from "../../src/memory/install.js";
 import { tryLock, type OsLock } from "../../src/memory/oslock.js";
 import { makeMemoryFolder, type MemoryPaths, memoryPaths, SHIPPED_LOCK } from "../../src/memory/paths.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 // One test has the memory folder go missing after the installer made it: its making is skipped, as if the folder
 // vanished between the making and the take.
@@ -43,7 +41,6 @@ const MODEL_HASH = createHash("sha256").update(MODEL_BYTES).digest("hex");
 // The tests' own limit for something that should happen: long enough never to be reached by one that does.
 const LIMIT = 10_000;
 
-const folders: string[] = [];
 const servers: Server[] = [];
 const locks: OsLock[] = [];
 const pids: number[] = [];
@@ -51,7 +48,8 @@ const pids: number[] = [];
 afterEach(async () => {
   vanish.on = false;
   for (const lock of locks.splice(0)) lock.release();
-  for (const pid of pids.splice(0)) {
+  const killed = pids.splice(0);
+  for (const pid of killed) {
     try {
       process.kill(pid, "SIGKILL");
     } catch {
@@ -59,7 +57,8 @@ afterEach(async () => {
     }
   }
   await Promise.all(servers.splice(0).map((s) => new Promise((resolve) => s.close(resolve))));
-  for (const folder of folders.splice(0)) await removeTree(folder);
+  // They work in the test's folder: gone, by the tests' own wait, before it is removed (cleanup plan, step 9).
+  await Promise.all(killed.map((pid) => until(() => !alive(pid), `process ${pid} to be gone`)));
 });
 
 const alive = (pid: number) => {
@@ -98,8 +97,7 @@ async function modelServer(hold = false) {
 // A data folder, the user's home folders, an empty PATH folder and the stand-in's record, all in a folder the test
 // made. The PATH variable is replaced in every spelling (Windows' is `Path`), so no test reaches the user's own.
 async function setup(more: Record<string, string> = {}) {
-  const top = await mkdtemp(path.join(tmpdir(), "tachi-install-"));
-  folders.push(top);
+  const top = tempDir("tachi-install-");
   const record = path.join(top, "record.jsonl");
   const bin = path.join(top, "bin");
   mkdirSync(bin);
@@ -144,8 +142,7 @@ describe("uvProgram", () => {
   // Programs on a PATH the test builds: empty files, which the lookup finds as it finds the real ones (with .exe on
   // Windows, and runnable elsewhere). They are never started.
   async function bin(...names: string[]) {
-    const top = await mkdtemp(path.join(tmpdir(), "tachi-install-path-"));
-    folders.push(top);
+    const top = tempDir("tachi-install-path-");
     for (const name of names) {
       const file = path.join(top, process.platform === "win32" ? `${name}.exe` : name);
       writeFileSync(file, "");

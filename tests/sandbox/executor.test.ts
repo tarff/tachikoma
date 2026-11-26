@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readlinkSync } from "node:fs";
-import { mkdtemp, rmdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -22,6 +22,7 @@ import {
   unlimitedLine,
 } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
+import { tempDir } from "../helpers.js";
 
 type Answer = Awaited<ReturnType<DockerRun>>;
 const ok = (out = ""): Answer => ({ code: 0, out, err: "" });
@@ -255,8 +256,7 @@ describe("DockerExecutor with a stand-in Docker", () => {
   const SITES = { network: "tachikoma-sites-aaa", proxy: "tachikoma-proxy-aaa", address: "172.23.0.2", port: 40103 };
   it("a sites box gets the network, the lookup address and the proxy variables by address", async () => {
     const fake = answering(() => ok());
-    const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-sites-test-"));
-    onTestFinished(() => rmdir(folder).catch(() => {}));
+    const folder = tempDir("tachi-sites-test-");
     await (await DockerExecutor.start({ ...OPTS, network: { ...SITES, folder, check: "c.invalid" } }, fake.run)).stop();
     const run = fake.calls[0]!;
     const at = run.indexOf("--network");
@@ -274,7 +274,7 @@ describe("DockerExecutor with a stand-in Docker", () => {
 
   it("a stop removes the box, the proxy, then the network, and the proxy's folder", async () => {
     const fake = answering(() => ok());
-    const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-sites-test-"));
+    const folder = tempDir("tachi-sites-test-");
     for (const f of ["proxy.cjs", "settings.json"]) await writeFile(path.join(folder, f), "");
     const box = await DockerExecutor.start({ ...OPTS, network: { ...SITES, folder, check: "c.invalid" } }, fake.run);
     await box.stop();
@@ -291,7 +291,7 @@ describe("DockerExecutor with a stand-in Docker", () => {
       if (args[0] === "network") return { code: 1, out: "", err: "Error response from daemon: has active endpoints\n" };
       return ok(args[0] === "exec" ? "oom_kill 0\n" : "");
     });
-    const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-sites-test-"));
+    const folder = tempDir("tachi-sites-test-");
     const box = await DockerExecutor.start({ ...OPTS, network: { ...SITES, folder, check: "c.invalid" } }, fake.run);
     await expect(box.stop()).resolves.toBeUndefined();
     expect(fake.calls.at(-1)).toEqual(["network", "rm", SITES.network]);
@@ -768,8 +768,7 @@ async function ready(ctx: TestContext, needs: Needs = {}): Promise<{ image: stri
   if (state === "missing") ctx.skip("no docker program on PATH");
   if (state === "stopped") ctx.skip("Docker is not running");
   if (state !== "ready") ctx.skip(state === "denied" ? "this user is not allowed to use Docker" : "Docker is set to Windows containers");
-  const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-box-"));
-  onTestFinished(() => rmdir(folder));
+  const folder = tempDir("tachi-box-");
   const info = await imageFor(folder);
   if (!info.built) ctx.skip(`the sandbox's image (${info.tag}) is not built`);
   const space = await dockerRoom();

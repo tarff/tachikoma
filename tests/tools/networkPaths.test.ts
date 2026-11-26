@@ -1,6 +1,5 @@
 import { realpathSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, symlink, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, realpath, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
@@ -9,7 +8,7 @@ import { LocalWorkspace } from "../../src/exec/local.js";
 import { editFileTool, leaves, readFileTool, writeFileTool } from "../../src/tools/files.js";
 import { findFilesTool, searchFilesTool } from "../../src/tools/search.js";
 import { listFolder, pathMenu } from "../../src/tui/menus.js";
-import { tempContext } from "../helpers.js";
+import { tempContext, tempDir } from "../helpers.js";
 
 // Review fixes plan, fix 2. Every function of node:fs and node:fs/promises that takes a path is wrapped: a network or
 // device path is recorded and refused at once, without calling the real function, so even a test that fails never
@@ -113,8 +112,8 @@ const failure = (p: Promise<unknown>) =>
 describe.runIf(process.platform === "win32")("network and device paths", () => {
   // The data folder and the home folder are the test's own, so no check looks at the user's.
   let home: string;
-  beforeEach(async () => {
-    home = await mkdtemp(path.join(tmpdir(), "tachi-home-"));
+  beforeEach(() => {
+    home = tempDir("tachi-home-");
     vi.stubEnv("USERPROFILE", home);
     vi.stubEnv("HOME", home);
     vi.stubEnv("TACHI_DATA_DIR", path.join(home, "data"));
@@ -245,7 +244,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
   // Review fixes plan, fix 13: the project's own share written as \\?\UNC\server\share is walked from that share's
   // root, as \\server\share is, not from \\?\UNC\ with the server on its own as its first part.
   it("reads a file in a project on the share written as \\\\?\\UNC\\, and asks for one elsewhere on that share", async () => {
-    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    const share = await realpath(tempDir("tachi-share-"));
     const ctx = await tempContext("ask", [false]);
     const name = path.basename(ctx.root);
     await mkdir(path.join(share, name));
@@ -271,7 +270,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
 
   // Review fixes plan, fix 17: in a project on the share, a link to another share is still refused by the link check.
   it("refuses a link in a project on the share that leads to another share", async () => {
-    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    const share = await realpath(tempDir("tachi-share-"));
     const ctx = await tempContext("ask");
     const name = path.basename(ctx.root);
     await mkdir(path.join(share, name));
@@ -287,7 +286,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
   });
 
   it("works in a project reached through a link to the share: its own folders walked once, a link in it, the @ menu", async () => {
-    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    const share = await realpath(tempDir("tachi-share-"));
     const ctx = await tempContext("never");
     const name = path.basename(ctx.root);
     await mkdir(path.join(share, name, "sub"), { recursive: true });
@@ -317,7 +316,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
   // Review fixes plan, fix 8: a path in the project is walked from the root's real place, so a project on a share, or
   // reached through a link to one, works.
   it("reads a file in a project on a share, and in one reached through a link to that share", async () => {
-    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    const share = await realpath(tempDir("tachi-share-"));
     const ctx = await tempContext("never");
     const name = path.basename(ctx.root);
     await mkdir(path.join(share, name));
@@ -357,7 +356,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
   // Review fixes plan, fix 10: your own instruction files, and what they import, may live on a share, as they do with a
   // home folder kept on a server; a project's import of the same path is still refused.
   it("reads your own instruction file on a share, and refuses a project's import of it", async () => {
-    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    const share = await realpath(tempDir("tachi-share-"));
     await mkdir(path.join(share, "home", ".claude"), { recursive: true });
     await writeFile(path.join(share, "home", ".claude", "CLAUDE.md"), "mine\n");
     fake.state.share = share;
@@ -373,7 +372,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
   // Review fixes plan, fix 13: a path on the share the project really lives on is not refused, as Windows has already
   // signed in there for the project (the user's choice, "Same share is fine"); a path on another share still is.
   it.each(["on the share", "through a link to the share"])("looks for instruction files above a project %s, and refuses another share", async (how) => {
-    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    const share = await realpath(tempDir("tachi-share-"));
     const ctx = await tempContext("never");
     const name = path.basename(ctx.root);
     await mkdir(path.join(share, name));
@@ -429,7 +428,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
   it("reads a long path (\\\\?\\C:\\) in the project, and asks for one outside it, as local paths", async () => {
     const ctx = await project("never");
     expect(await readFileTool.run({ path: `\\\\?\\${path.join(ctx.root, "a.txt")}` }, ctx)).toBe("     1\tfine");
-    const other = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));
+    const other = tempDir("tachi-outside-");
     await mkdir(path.join(other, "sub"));
     await writeFile(path.join(other, "sub", "b.txt"), "elsewhere");
     const asking = await tempContext("ask", [false]);

@@ -5,7 +5,6 @@ import {
   linkSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -15,14 +14,13 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
+import { describe, expect, it, type TestContext } from "vitest";
 import { onPath } from "../../src/exec/env.js";
 import { appliedSoFar, applyChange } from "../../src/sandbox/apply.js";
 import { type Change, changes } from "../../src/sandbox/changes.js";
 import type { Manifest } from "../../src/sandbox/snapshot.js";
-import { removeTree, shortName, ZERO } from "../helpers.js";
+import { shortName, tempDir, ZERO } from "../helpers.js";
 
 const windows = process.platform === "win32";
 const sha = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
@@ -40,8 +38,7 @@ const OWN = /^(path|home|homedrive|homepath|userprofile|xdg_config_home|git_.*)$
 // (icacls on Windows); its manifest is the one snapshot() writes for the same tree. The test then changes work/ as the
 // box would, and the project as the user would.
 function world(tree: Record<string, string | Buffer>) {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-apply-")));
-  onTestFinished(() => removeTree(dir));
+  const dir = realpathSync.native(tempDir("tachi-apply-"));
   const root = path.join(dir, "project");
   const data = path.join(dir, "data");
   const copies = path.join(data, "copies", "s1");

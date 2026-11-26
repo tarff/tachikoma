@@ -1,10 +1,8 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
 import { createServer as createHttpServer, type Server } from "node:http";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -18,7 +16,7 @@ import { askLesson, lessonRequest } from "../../src/memory/lessons.js";
 import { Memory, type MemoryOptions, type MemoryState } from "../../src/memory/memory.js";
 import { type OsLock, tryLock } from "../../src/memory/oslock.js";
 import { LESSONS, makeMemoryFolder, memoryPaths } from "../../src/memory/paths.js";
-import { Held, removeTree } from "../helpers.js";
+import { Held, tempDir } from "../helpers.js";
 
 // Memory's state, its reasons and its closing (8d plan, step 21), against the stand-ins only: the stand-in uv
 // (tests/standin/uv.mjs), the stand-in MemPalace (tests/memory/standin.mjs) as the hub and as the user's own
@@ -108,7 +106,6 @@ interface Control {
   backend?: string;
 }
 
-const folders: string[] = [];
 const made: Memory[] = [];
 const hubDirs: string[] = [];
 const servers: Server[] = [];
@@ -147,14 +144,15 @@ afterEach(async () => {
   for (const record of programs.splice(0)) {
     for (const pid of starts(record)) started.push(pid);
   }
-  for (const child of children.splice(0)) child.kill();
-  await Promise.all(servers.splice(0).map((s) => new Promise((resolve) => s.close(resolve))));
-  try {
-    await until(() => started.every((pid) => !alive(pid)), "the stand-ins to end");
-    await Promise.race([closing, sleep(LIMIT)]);
-  } finally {
-    for (const folder of folders.splice(0)) await removeTree(folder);
+  for (const child of children.splice(0)) {
+    // Waited for with the stand-ins below: it works in the test's folder (cleanup plan, step 9).
+    if (child.exitCode === null && child.signalCode === null && child.pid) started.push(child.pid);
+    child.kill();
   }
+  await Promise.all(servers.splice(0).map((s) => new Promise((resolve) => s.close(resolve))));
+  // The folders are removed once this has run, even when it fails (tempDir; cleanup plan, step 9).
+  await until(() => started.every((pid) => !alive(pid)), "the stand-ins to end");
+  await Promise.race([closing, sleep(LIMIT)]);
 }, 4 * LIMIT);
 
 const alive = (pid: number) => {
@@ -215,8 +213,7 @@ function watch(bus: Bus, m: () => Memory | undefined) {
 // Tachikoma's own palace: a data folder, the stand-in Python and its control, the hub's record, and the uv stand-in's
 // record, all in a folder the test made.
 async function own(o: { ready?: boolean; control?: Control; env?: Record<string, string> } = {}) {
-  const top = await mkdtemp(path.join(tmpdir(), "tachi-memory-"));
-  folders.push(top);
+  const top = tempDir("tachi-memory-");
   const base = isolate(top);
   const hub = path.join(top, "hub");
   mkdirSync(hub);
@@ -257,8 +254,7 @@ async function own(o: { ready?: boolean; control?: Control; env?: Record<string,
 // The user's own MemPalace: the stand-in over stdio, at its own path, started with Node by `launch`, which adds only
 // the test's own `--record` and the arguments that make it lack a tool.
 async function use(args: string[] = [], at = STANDIN) {
-  const top = await mkdtemp(path.join(tmpdir(), "tachi-memory-"));
-  folders.push(top);
+  const top = tempDir("tachi-memory-");
   const env = isolate(top);
   const record = path.join(top, "record.jsonl");
   programs.push(record);
@@ -633,8 +629,7 @@ describe("the user's own MemPalace", () => {
   });
 
   it("turns off when the program cannot be started", async () => {
-    const top = await mkdtemp(path.join(tmpdir(), "tachi-memory-"));
-    folders.push(top);
+    const top = tempDir("tachi-memory-");
     const missing = path.join(top, "no-such-mempalace-mcp");
     const s = await use([], missing);
     const m = s.memory({ launch: (file) => ({ command: file, args: [] }) });

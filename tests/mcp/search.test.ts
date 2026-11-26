@@ -1,6 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Models } from "@anthropic-ai/sdk/resources/models";
 import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
@@ -23,7 +22,7 @@ import { type Approve, type McpTools, mcpTools } from "../../src/mcp/tools.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
 import { defineTool } from "../../src/tools/tool.js";
-import { Bus, callTool, collectErrors, reply, removeTree } from "../helpers.js";
+import { Bus, callTool, collectErrors, reply, tempDir } from "../helpers.js";
 import { type FakeOptions, fakeServer, readLog, standinBox } from "./fake.js";
 
 // Release 8c plan, Task 6b: tool search, against the fake servers of fake.ts and a stand-in model. Every request the model
@@ -69,11 +68,10 @@ class Model implements Provider {
 const thought = (turn: Turn, label: string): Turn => ({ ...turn, native: { provider: "anthropic", content: [{ type: "thinking", thinking: label, signature: "s" }] } });
 
 async function setup() {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-search-"));
+  const dir = tempDir("tachi-mcp-search-");
   const made: Servers[] = [];
   onTestFinished(async () => {
     await Promise.all(made.map((s) => s.stopAll()));
-    await removeTree(dir);
   });
   const bus = new Bus();
   const errors = collectErrors(bus);

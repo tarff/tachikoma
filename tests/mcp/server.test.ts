@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import http from "node:http";
 import net, { type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -12,7 +12,7 @@ import type { ServerConfig, ServerEntry } from "../../src/mcp/config.js";
 import { type CheckedFetch, connectionFetch, NotReached, Server } from "../../src/mcp/server.js";
 import { sitesFetch } from "../../src/mcp/sitesFetch.js";
 import type { Site } from "../../src/sandbox/sites.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog } from "./fake.js";
 
 // Release 8c plan, Task 4: one server's connection, local or remote, against the fake servers of fake.ts.
@@ -37,11 +37,10 @@ const remote = (url: string, headers: Record<string, string> = {}, headersHelper
 // The test's own folder, the project's root, and its servers, each stopped before the folder is removed: on Windows a
 // running server holds the folder it works in.
 async function setup() {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-server-"));
+  const dir = tempDir("tachi-mcp-server-");
   const servers: Server[] = [];
   onTestFinished(async () => {
     await Promise.all(servers.map((s) => s.stop()));
-    await removeTree(dir);
   });
   const onChange = vi.fn();
   const make = (

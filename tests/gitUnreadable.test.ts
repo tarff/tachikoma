@@ -1,11 +1,10 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { setupOf } from "../src/clilib.js";
 import { Session } from "../src/core/session.js";
 import { gitBranch } from "../src/tui/git.js";
-import { Bus, FakeProvider, removeTree, reply, tempContext } from "./helpers.js";
+import { Bus, FakeProvider, fileTempDir, reply, tempContext } from "./helpers.js";
 
 // PR #23's review: a `.git` whose stat fails other than as missing (EACCES here) throws from statSync and lstatSync
 // even with throwIfNoEntry false. The paths in `failing` fail so, with no permission changed: every other stat is the
@@ -31,13 +30,12 @@ vi.mock("node:fs", async (original) => {
 describe("an unreadable .git (PR #23's review)", () => {
   let top: string;
   beforeAll(() => {
-    top = mkdtempSync(path.join(tmpdir(), "tachi-unreadable-"));
+    top = fileTempDir("tachi-unreadable-");
   });
   afterEach(() => {
     failing.stat.clear();
     failing.lstat.clear();
   });
-  afterAll(() => removeTree(top));
   const repo = (...names: string[]) => {
     const d = path.join(top, ...names);
     mkdirSync(path.join(d, ".git"), { recursive: true });

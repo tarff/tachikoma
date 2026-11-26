@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
 import { onPath } from "../../src/exec/env.js";
@@ -10,7 +9,7 @@ import { dockerState } from "../../src/sandbox/docker.js";
 import { boxLimits, boxUser, DockerExecutor, dockerRoom } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
 import { liveMounts } from "../../src/sandbox/mounts.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 const TEST_LABEL = { "tachikoma.test": "1" }; // the plan's rule for every container a test starts
 
@@ -21,11 +20,10 @@ const OWN = /^(path|home|homedrive|homepath|userprofile|xdg_config_home|git_.*)$
 // can commit), and a project. Every git run here, the test's own (`git`) and gitSettings's, gets `env`, whose home
 // folders and settings files are all the test's. At the end the boxes started on it are removed, then the folder.
 function world() {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-livelink-")));
+  const dir = realpathSync.native(tempDir("tachi-livelink-"));
   const boxes: DockerExecutor[] = [];
   onTestFinished(async () => {
     for (const box of boxes) await box.stop();
-    await removeTree(dir);
   });
   const home = path.join(dir, "home");
   const root = path.join(dir, "project");

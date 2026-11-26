@@ -6,10 +6,11 @@
 // A sites launch (8c-2b plan, Step 11) gets its network, its proxy's first line and address, and the launch check's
 // passing answers, as tests/sandbox/sitesNet.test.ts's stand-ins give them; "sites-leak" is a box whose check connects
 // straight to an outside address.
+// The real module's other exports come from the build the start runs, at the address TACHI_TEST_BUILD gives (cleanup
+// plan, step 14d).
 import { appendFileSync } from "node:fs";
-import { dockerState, lineSplitter } from "../../src/sandbox/docker.ts";
 
-export { dockerState, lineSplitter };
+export const { dockerState, lineSplitter } = await import(new URL("sandbox/docker.js", process.env.TACHI_TEST_BUILD).href);
 
 const ok = (out = "") => ({ code: 0, out, err: "" });
 // This PC's `docker info`, the parts read (tests/sandbox/executor.test.ts).

@@ -9,10 +9,8 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -31,7 +29,7 @@ import {
 import type { Program } from "../../src/memory/install.js";
 import { load, tryLock } from "../../src/memory/oslock.js";
 import { makeMemoryFolder, type MemoryPaths, memoryPaths } from "../../src/memory/paths.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 // The hub's supervisor (8d plan, step 20) against step 18's stand-in MemPalace (tests/memory/standin.mjs), never a real
 // hub (the real one is step 20's proof, scripts/8d/hub-proof.mjs, and step 29). The environment's Python is a script
@@ -160,16 +158,13 @@ afterEach(async () => {
   await Promise.race([closing, sleep(LIMIT)]);
   vi.useRealTimers();
   const started = records.splice(0).flatMap((r) => launches(r).map((l) => l.pid));
-  for (const folder of folders) {
+  for (const folder of folders.splice(0)) {
     for (const f of found(folder, "control.json")) rmSync(f, { force: true });
   }
-  try {
-    await until(() => started.every((pid) => !alive(pid)), "the stand-ins to end");
-    // A join a failed test left running sees its stand-in end, and lets the join lock go.
-    await Promise.race([closing, sleep(LIMIT)]);
-  } finally {
-    for (const folder of folders.splice(0)) await removeTree(folder);
-  }
+  // The folders are removed once this has run, even when it fails (tempDir; cleanup plan, step 9).
+  await until(() => started.every((pid) => !alive(pid)), "the stand-ins to end");
+  // A join a failed test left running sees its stand-in end, and lets the join lock go.
+  await Promise.race([closing, sleep(LIMIT)]);
 }, 4 * LIMIT);
 
 function found(folder: string, name: string): string[] {
@@ -204,7 +199,7 @@ const launches = (record: string): Launch[] => lines(record).flatMap((l) => (l.h
 // folder, all in a folder the test made; an environment folder holding the stand-in Python.
 async function setup(hash = "test", top?: string) {
   if (!top) {
-    top = await mkdtemp(path.join(tmpdir(), "tachi-hub-"));
+    top = tempDir("tachi-hub-");
     folders.push(top);
   }
   const record = path.join(top, `record-${hash}.jsonl`);
@@ -1056,7 +1051,12 @@ describe("the hub's supervisor", () => {
         new Promise<number | null>((resolve) => child.on("exit", resolve)),
         sleep(LIMIT).then(() => "still running" as const),
       ]);
-      if (ended === "still running") child.kill();
+      if (ended === "still running") {
+        // Its Temp is in the test's folder: it has exited before the folder is removed (cleanup plan, step 9).
+        const closed = new Promise((resolve) => child.on("close", resolve));
+        child.kill();
+        await closed;
+      }
       expect(ended).toBe(0);
       expect(JSON.parse(out)).toEqual(expected);
       expect(s.record()).toBeUndefined();

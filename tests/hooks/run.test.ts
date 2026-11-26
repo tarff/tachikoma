@@ -1,13 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { gitBash } from "../../src/exec/env.js";
 import type { Hook } from "../../src/hooks/config.js";
 import { combine, outcomeOf } from "../../src/hooks/answer.js";
 import { closeOf, program, runHook } from "../../src/hooks/run.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 const alive = (pid: number) => {
   try {
@@ -31,21 +29,9 @@ async function readPid(file: string): Promise<number> {
 }
 
 // A folder of the test's own, removed when the test finishes. Windows keeps the folder a killed program worked in for a
-// moment after it is gone (about 170 ms, measured 2026-10-31 for the shell tool's test), so the removal is tried every
-// 50 ms, up to 2 s: that measurement with room to spare under load, inside the test's own 15 s.
+// moment after it is gone, so the shared remover tries again every 50 ms, up to 2 s (cleanup plan, step 7).
 async function folder(): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-hook-"));
-  onTestFinished(async () => {
-    for (let i = 0; ; i++) {
-      try {
-        return await removeTree(dir);
-      } catch (err) {
-        if (i === 40) throw err;
-        await pause(50);
-      }
-    }
-  });
-  return dir;
+  return tempDir("tachi-hook-");
 }
 
 // A hook in exec form: Node runs the script the test wrote, so no shell is needed (release 8b plan, "Rules").
@@ -128,8 +114,11 @@ setTimeout(() => {}, 60000);`);
     const stop = new AbortController();
     const run = runHook(hook, {}, { cwd: root, env: process.env, limit: 30, signal: stop.signal });
     const pid = await readPid(path.join(root, "pid"));
-    onTestFinished(() => {
+    // Killed and waited for, as below, before the folder is removed (cleanup plan, step 7); a program still alive after
+    // the wait is left to the remover's warning. Not for a pid of 0, which would mean our own process group.
+    onTestFinished(async () => {
       if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL");
+      for (let i = 0; i < 40 && pid > 0 && alive(pid); i++) await pause(50);
     });
     expect(alive(pid)).toBe(true);
     stop.abort();

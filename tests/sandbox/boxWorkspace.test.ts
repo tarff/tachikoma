@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
 import { LocalWorkspace } from "../../src/exec/local.js";
@@ -8,7 +7,7 @@ import { BoxWorkspace } from "../../src/sandbox/boxWorkspace.js";
 import { dockerState } from "../../src/sandbox/docker.js";
 import { boxLimits, boxUser, DockerExecutor, dockerRoom } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
-import { removeTree, TREE } from "../helpers.js";
+import { tempDir, TREE } from "../helpers.js";
 
 const TEST_LABEL = { "tachikoma.test": "1" }; // the plan's rule for every container a test starts
 
@@ -20,12 +19,11 @@ async function realBox(ctx: TestContext, tree: Record<string, string>): Promise<
   if (state === "missing") ctx.skip("no docker program on PATH");
   if (state === "stopped") ctx.skip("Docker is not running");
   if (state !== "ready") ctx.skip(state === "denied" ? "this user is not allowed to use Docker" : "Docker is set to Windows containers");
-  const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-boxws-"));
+  const folder = tempDir("tachi-boxws-");
   let box: DockerExecutor | undefined;
   onTestFinished(async () => {
     await box?.exec("find /work -type l -delete", "/").catch(() => {});
     await box?.stop();
-    await removeTree(folder);
   });
   const info = await imageFor(folder);
   if (!info.built) ctx.skip(`the sandbox's image (${info.tag}) is not built`);

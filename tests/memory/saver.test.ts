@@ -1,7 +1,5 @@
 import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -11,7 +9,7 @@ import { connect, type Kind, type Palace } from "../../src/memory/client.js";
 import { WING } from "../../src/memory/paths.js";
 import { entriesOf, LONGEST_ENTRY, Saver, type Turn } from "../../src/memory/saver.js";
 import { readLog } from "../mcp/fake.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 
 // The saver of turns (8d plan, step 22) against the stand-in MemPalace (tests/memory/standin.mjs) as the hub, with a
 // second saver in a process of its own (tests/memory/saver-child.ts) where a test needs two windows. Nothing here
@@ -30,7 +28,6 @@ const never = () => new AbortController().signal;
 type Proc = ChildProcessByStdio<null, Readable, Readable>;
 const procs: Proc[] = [];
 const palaces: Palace[] = [];
-const folders: string[] = [];
 
 afterEach(async () => {
   await Promise.all(palaces.splice(0).map((p) => p.close()));
@@ -42,13 +39,10 @@ afterEach(async () => {
       await closed;
     }),
   );
-  for (const folder of folders.splice(0)) await removeTree(folder);
 });
 
 async function folder(): Promise<string> {
-  const made = await mkdtemp(path.join(tmpdir(), "tachi-saver-"));
-  folders.push(made);
-  return made;
+  return tempDir("tachi-saver-");
 }
 
 // A process's environment: its home, the AppData folders, an empty PATH folder and Temp all in the folder `dir` the

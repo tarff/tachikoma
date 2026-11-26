@@ -1,10 +1,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it } from "vitest";
 import { type HelperOptions, mergeHeaders, runHelper } from "../../src/mcp/helper.js";
-import { removeTree } from "../helpers.js";
+import { tempDir } from "../helpers.js";
 import { fakeHelper } from "./fake.js";
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -17,21 +15,10 @@ const alive = (pid: number) => {
   }
 };
 
-// A folder of the test's own, removed when the test finishes, tried every 50 ms up to 2 s, as tests/hooks/run.test.ts's
-// folder() is, since Windows keeps the folder a killed program worked in for a moment after it is gone.
+// A folder of the test's own, removed when the test finishes. Windows keeps the folder a killed program worked in for a
+// moment after it is gone, so the shared remover tries again every 50 ms, up to 2 s (cleanup plan, step 8).
 async function folder(): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-helper-"));
-  onTestFinished(async () => {
-    for (let i = 0; ; i++) {
-      try {
-        return await removeTree(dir);
-      } catch (err) {
-        if (i === 40) throw err;
-        await pause(50);
-      }
-    }
-  });
-  return dir;
+  return tempDir("tachi-helper-");
 }
 
 // The test's folder, its fake helper, and `run`, which runs it as a user's entry's helper in that folder, with any

@@ -1,5 +1,4 @@
 import { existsSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
@@ -24,7 +23,7 @@ import { judgeOf } from "../../src/safety/judge.js";
 import { writeFileTool } from "../../src/tools/files.js";
 import { defineTool } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
-import { Bus, callTool, collectErrors, FakeProvider, removeTree, reply, texts, usage } from "../helpers.js";
+import { Bus, callTool, collectErrors, FakeProvider, reply, tempDir, texts, usage } from "../helpers.js";
 import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog, standinBox } from "./fake.js";
 
 // Release 8c plan, Task 6: MCP tools in the session, each call on the tool the model was shown, against the fake servers
@@ -71,11 +70,10 @@ class TooLong extends Error {}
 // The test's own folder, the project's root, and its Servers, each stopped before the folder is removed: on Windows a
 // running server holds the folder it works in.
 async function setup() {
-  const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-tools-"));
+  const dir = tempDir("tachi-mcp-tools-");
   const made: Servers[] = [];
   onTestFinished(async () => {
     await Promise.all(made.map((s) => s.stopAll()));
-    await removeTree(dir);
   });
   const bus = new Bus();
   const notes: string[] = [];
