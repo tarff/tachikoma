@@ -1,5 +1,7 @@
-// The stand-in memory for the real command (register.mjs; 8d plan, step 27): src/memory/memory.ts, as tsx resolves it
-// for any importer, becomes this module, which is the real Memory given what TACHI_TEST_MEMORY (JSON) names, so a whole
+// The stand-in memory for the real command (register.mjs; 8d plan, step 27): the memory module of the build the start
+// runs (cleanup plan, step 14d), as any importer resolves it, becomes this module, which takes that module's other
+// exports from the same build, at the address TACHI_TEST_BUILD gives, and is the real Memory given what
+// TACHI_TEST_MEMORY (JSON) names, so a whole
 // launch reaches only the stand-ins: the stand-in uv (tests/standin/uv.mjs) as `uv`, or none without it; every program
 // memory starts by its full path started with Node, after the stand-in Python's script (`python`) for Tachikoma's own
 // palace, or with `args` after it for the user's own MemPalace; the test's model server (`model`); the hub's figures
@@ -9,9 +11,11 @@
 // Memory not switched off without TACHI_TEST_MEMORY is refused, loudly, so no launch reaches the real uv on PATH or a
 // real MemPalace (the user's choice after step 27's review).
 import { existsSync } from "node:fs";
-import { Memory as Real } from "../../src/memory/memory.ts";
 
-export * from "../../src/memory/memory.ts";
+const built = await import(new URL("memory/memory.js", process.env.TACHI_TEST_BUILD).href);
+const Real = built.Memory;
+
+export const { NO_UV } = built;
 
 const given = process.env.TACHI_TEST_MEMORY ? JSON.parse(process.env.TACHI_TEST_MEMORY) : undefined;
 

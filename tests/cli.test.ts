@@ -18,7 +18,7 @@ import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { boxProtection, dropOnExit, keptForReview, type Network, sandboxReady, sandboxStart } from "../src/clilib.js";
 import { projectFile } from "../src/core/datadir.js";
 import { MEMORY_LINE } from "../src/core/prompt.js";
@@ -37,13 +37,37 @@ import { NO_UV } from "../src/memory/memory.js";
 import { memoryPaths, roomName } from "../src/memory/paths.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
-import { tempDir } from "./helpers.js";
+import { removeTree, tempDir } from "./helpers.js";
 import { type FakeOptions, fakeHelper, fakeServer, httpFake, readLog, signInFake } from "./mcp/fake.js";
+
+// The build every start runs (cleanup plan, step 14d): each run of this file builds Tachikoma, once before its first
+// test, into a new folder of its own at the repo's top, beside dist/ (the user's own build, which no test reads or
+// writes), so the build finds package.json, memory/ and sandbox/ as dist/ does. The folder is made by a call that fails
+// when the name is already there, so no build lands on another's output, and when the file's tests end the folder is
+// removed, the only one this run removes: a folder another run made, or left when it was killed, stays.
+const BUILD = path.resolve(`dist-test-${process.pid}-${Date.now()}`);
+const BUILD_URL = `${pathToFileURL(BUILD).href}/`;
+// The build's limit: 30 s, the user's choice (cleanup plan, step 14d), about 12 times the slowest build CI has had: the
+// build step took 0.98 to 2.40 s in all 55 CI runs that built (read 2026-11-27). A margin chosen, not measured.
+const BUILD_LIMIT_MS = 30_000;
+const made: string[] = [];
+function buildInto(dir: string) {
+  mkdirSync(dir);
+  made.push(dir);
+  const tsc = path.resolve("node_modules/typescript/bin/tsc");
+  const r = spawnSync(process.execPath, [tsc, "-p", "tsconfig.build.json", "--outDir", dir], { encoding: "utf8", timeout: BUILD_LIMIT_MS });
+  if (r.status !== 0) throw new Error(`The build into ${dir} failed${r.error ? ` (${r.error.message})` : ""}:\n${r.stdout}${r.stderr}`);
+}
+beforeAll(() => buildInto(BUILD), BUILD_LIMIT_MS);
+afterAll(async () => {
+  for (const dir of made) await removeTree(dir);
+});
 
 // Docker's answer for an image with no bash (node:22-alpine, as the quality review gave it).
 const NO_BASH = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "bash": executable file not found in $PATH: unknown';
 
-// Runs the real command through tsx, in a fresh project folder with a pretend home folder, and with
+// Runs the real command from this run's build (BUILD, above) with plain node, no tsx, in a fresh project folder with a
+// pretend home folder, and with
 // the walk for instruction files starting at a fresh folder of its own, so no case reads the user's
 // files. Every case here stops before any model answers. The launch reads git's settings (release 7 plan, Task 8), so
 // git is given empty system and user settings files of the test's own, and every variable it finds a home folder by
@@ -106,12 +130,15 @@ function launch(args: (string | Record<string, string>)[]) {
   // log, or from release 8a on their saved sessions (release 8a plan, Task 2).
   const data = path.join(top, "data", "tachikoma");
   return {
-    argv: ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, path.resolve("src/cli.tsx"), ...words],
+    // With the recording stand-in when the case names its file (cleanup plan, step 14a), last of the stand-ins, so it
+    // records what theirs resolve to (cleanup plan, step 14d). A case adds its other stand-ins before it.
+    argv: [...(env.TACHI_TEST_LOADED ? ["--import", LOADED] : []), path.join(BUILD, "cli.js"), ...words],
     options: {
       cwd: env.cwd ?? top,
+      // TACHI_TEST_BUILD: the build's address, for the stand-ins (tests/standin/hooks.mjs).
       env: {
         ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "",
-        TACHI_DATA_DIR: data, ...git, ...env,
+        TACHI_DATA_DIR: data, TACHI_TEST_BUILD: BUILD_URL, ...git, ...env,
       },
     },
   };
@@ -1496,8 +1523,7 @@ setInterval(() => {}, 1000);`,
 });
 
 // The window, launched for real: tachiLater() with a stand-in terminal (tests/standin/terminal.mjs), so the launch's
-// questions and the window's keys come from write(). The window draws JSX, which tsx compiles by the project's settings,
-// and the case's folder has none, so they are named. Ink takes the terminal for one only outside CI (is-in-ci), so the
+// questions and the window's keys come from write(). Ink takes the terminal for one only outside CI (is-in-ci), so the
 // run is told it is not in CI; it is in classic mode, and outside Windows Terminal, whose win32 input mode reads keys as
 // records (input.ts), so the keys written arrive as typed. A case waits on what the launch writes before the window, or
 // on what the window starts, as the window's frames are redrawn in place.
@@ -1512,11 +1538,9 @@ function windowLater(...args: (string | Record<string, string>)[]) {
 // it has closed.
 function screenLater(args: (string | Record<string, string>)[], more: string[] = []) {
   const { argv, options } = launch(args);
-  argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/terminal.mjs")).href); // after tsx's loader
-  for (const file of more) argv.splice(2, 0, "--import", pathToFileURL(path.resolve(file)).href);
-  // With the recording stand-in when the case names its file (cleanup plan, step 14a; loadedBy, below).
-  if (args.some((a) => typeof a === "object" && a.TACHI_TEST_LOADED)) argv.splice(2, 0, "--import", LOADED);
-  const terminal = { TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"), CI: "0", CONTINUOUS_INTEGRATION: "0", TACHI_CLASSIC: "1", WT_SESSION: "" };
+  argv.splice(0, 0, "--import", pathToFileURL(path.resolve("tests/standin/terminal.mjs")).href); // before the program
+  for (const file of more) argv.splice(0, 0, "--import", pathToFileURL(path.resolve(file)).href);
+  const terminal = { CI: "0", CONTINUOUS_INTEGRATION: "0", TACHI_CLASSIC: "1", WT_SESSION: "" };
   const child = spawn(process.execPath, argv, { ...options, env: { ...options.env, ...terminal } });
   stopAtEnd(child);
   let stdout = "";
@@ -1558,13 +1582,11 @@ function screenCode(loaded: string[]) {
   return { packages: [...new Set(packages)], modules: [...new Set(modules)] };
 }
 
-// tachiLater(), with the recording stand-in: the run's result and the modules it loaded. tsx is named the project's
-// settings, as for the window, so it compiles JSX as the build does, and a file with JSX loads React's drawing runtime.
+// tachiLater(), with the recording stand-in: the run's result and the modules it loaded.
 async function loadedBy(...args: (string | Record<string, string>)[]) {
   const record = path.join(tempDir("tachi-cli-loaded-"), "loaded.txt");
-  const env = { TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"), ...args.find((a) => typeof a === "object"), TACHI_TEST_LOADED: record };
+  const env = { ...args.find((a) => typeof a === "object"), TACHI_TEST_LOADED: record };
   const { argv, options } = launch([...args.filter((a) => typeof a === "string"), env]);
-  argv.splice(2, 0, "--import", LOADED); // after tsx's loader
   const child = spawn(process.execPath, argv, options);
   stopAtEnd(child);
   let stdout = "";
@@ -1626,6 +1648,31 @@ describe("what a start loads", { timeout: 60_000 }, () => {
     expect(packages.some((u) => u.includes("/node_modules/ink/"))).toBe(true);
     expect(packages.some((u) => /\/node_modules\/react\/jsx(?:-dev)?-runtime\.js$/.test(u))).toBe(true);
     expect(modules).toContain("App");
+  });
+});
+
+// Cleanup plan, step 14d: what a start loaded, by the recording stand-in's file, came from this run's own build: its
+// cli.js, and no file under src/.
+const SRC = `${pathToFileURL(path.resolve("src")).href}/`;
+function fromTheBuild(record: string) {
+  const loaded = readFileSync(record, "utf8").split("\n").filter(Boolean);
+  expect(loaded).toContain(new URL("cli.js", BUILD_URL).href);
+  expect(loaded.filter((u) => u.toLowerCase().startsWith(SRC.toLowerCase()))).toEqual([]);
+  return loaded;
+}
+
+// Cleanup plan, step 14d: each run of this file builds Tachikoma into a folder of its own, which every start runs.
+describe("the build the starts run", () => {
+  it("is what a plain start runs, loading nothing under src/", () => {
+    const record = path.join(tempDir("tachi-cli-loaded-"), "loaded.txt");
+    expect(tachi("--help", { TACHI_TEST_LOADED: record }).code).toBe(0);
+    fromTheBuild(record);
+  });
+
+  it("is made by a call that fails when the folder is already there, building nothing", () => {
+    const there = tempDir("tachi-cli-build-");
+    expect(() => buildInto(there)).toThrow(expect.objectContaining({ code: "EEXIST" }));
+    expect(readdirSync(there)).toEqual([]);
   });
 });
 
@@ -2286,7 +2333,7 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     // Memory off, as windowLater has it (8d plan, step 27).
     const copyFlags = ["--lead", "openai:lead", "--sandbox", "copy", "--no-memory", ...flags];
     const { argv, options } = launch([...copyFlags, "-p", "hi", env]);
-    argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/register.mjs")).href); // after tsx's loader
+    argv.splice(0, 0, "--import", pathToFileURL(path.resolve("tests/standin/register.mjs")).href); // before the program
     const child = spawn(process.execPath, argv, options);
     stopAtEnd(child);
     let stdout = "";
@@ -2318,6 +2365,17 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     expect(readdirSync(r.proj)).toEqual(["notes.txt"]);
     // The plan's test: `tachi review` lists the copy kept.
     expect(tachi("review", { TACHI_DATA_DIR: path.dirname(r.copies) }).stdout).toContain(`  ${session}  ${r.proj}  `);
+  });
+
+  // Cleanup plan, step 14d: the start runs this run's build, and the build's Docker module is the stand-in, which takes
+  // the module's other exports from that same build.
+  it("runs the build, with the stand-in in place of the build's Docker", async () => {
+    const record = path.join(tempDir("tachi-cli-loaded-"), "loaded.txt");
+    const r = await copyRun("ok", false, { TACHI_TEST_LOADED: record });
+    expect(r.code).toBe(0);
+    const loaded = fromTheBuild(record);
+    expect(loaded).toContain(pathToFileURL(path.resolve("tests/standin/docker.mjs")).href);
+    expect(loaded).toContain(new URL("sandbox/docker.js", BUILD_URL).href);
   });
 
   // Choice 121 (the user's): with nothing to review, the copy is removed, and said so in place of the kept line.
@@ -2456,18 +2514,17 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
       });
       const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
       const settings = homeWith(JSON.stringify({ network: "sites", allowedSites: ["github.com"] }));
-      const env = { cwd: proj, TACHI_DATA_DIR: path.join(top, "data"), OPENAI_API_KEY: "x", OPENAI_BASE_URL: url };
+      // With the recording stand-in (cleanup plan, step 14d).
+      const record = path.join(top, "loaded.txt");
+      const env = { cwd: proj, TACHI_DATA_DIR: path.join(top, "data"), OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, TACHI_TEST_LOADED: record };
       // Memory off, as windowLater has it (8d plan, step 27).
       const flags = ["--lead", "openai:lead", "--sandbox", "copy", "--no-memory"];
       const { argv, options } = launch([...flags, { ...env, ...settings }]);
-      // Both after tsx's loader; the terminal's variables as windowLater gives them.
+      // Both before the program; the terminal's variables as windowLater gives them.
       for (const hook of ["terminal", "register"]) {
-        argv.splice(2, 0, "--import", pathToFileURL(path.resolve(`tests/standin/${hook}.mjs`)).href);
+        argv.splice(0, 0, "--import", pathToFileURL(path.resolve(`tests/standin/${hook}.mjs`)).href);
       }
-      const terminal = {
-        TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"), CI: "0", CONTINUOUS_INTEGRATION: "0", TACHI_CLASSIC: "1",
-        WT_SESSION: "", TACHI_TEST_STANDIN_DOCKER: "ok",
-      };
+      const terminal = { CI: "0", CONTINUOUS_INTEGRATION: "0", TACHI_CLASSIC: "1", WT_SESSION: "", TACHI_TEST_STANDIN_DOCKER: "ok" };
       const child = spawn(process.execPath, argv, { ...options, env: { ...options.env, ...terminal } });
       stopAtEnd(child);
       const closed = new Promise<number | null>((resolve) => child.on("close", resolve));
@@ -2494,6 +2551,10 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
         "The sandbox's network reaches only these sites: github.com. Other sites and local addresses are refused, " +
         "and only the user can add a site.";
       for (const prompt of prompts) expect(prompt).toContain(line7);
+      // The window too runs this run's build, with the stand-in in place of the build's Docker (cleanup plan, step 14d).
+      const loaded = fromTheBuild(record);
+      expect(loaded).toContain(pathToFileURL(path.resolve("tests/standin/docker.mjs")).href);
+      expect(loaded).toContain(new URL("sandbox/docker.js", BUILD_URL).href);
     });
 
     // The servers get the list too: a remote server at a listed name starts, and its checked request is refused, as
@@ -2839,9 +2900,8 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
     const run = (window: boolean, ...args: string[]) => {
       const { argv, options } = launch(["--lead", "openai:lead", ...args, env]);
       const imports = ["tests/standin/register.mjs", ...(window ? ["tests/standin/terminal.mjs"] : [])];
-      argv.splice(2, 0, ...imports.flatMap((f) => ["--import", pathToFileURL(path.resolve(f)).href])); // after tsx's
+      argv.splice(0, 0, ...imports.flatMap((f) => ["--import", pathToFileURL(path.resolve(f)).href])); // before the program
       const terminal = {
-        TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
         CI: "0",
         CONTINUOUS_INTEGRATION: "0",
         TACHI_CLASSIC: "1",
@@ -2973,6 +3033,20 @@ if (!helper && !rest.includes("mempalace.mcp_server")) {
     expect(toolsOf(c.sent[0]!).filter((t) => TOOLS.includes(t))).toEqual(TOOLS);
     expect(systemOf(c.sent[0]!)).toContain(MEMORY_LINE);
     await vi.waitFor(() => expect(c.hubPids().filter(alive)).toEqual([]), WAIT); // the only window left the hub
+  });
+
+  // Cleanup plan, step 14d: the start runs this run's build, and the build's memory module is the stand-in, which takes
+  // the module's other exports from that same build.
+  it("runs the build, with the stand-in in place of the build's memory", async () => {
+    const c = await memoryCase({ ready: true });
+    const record = path.join(c.top, "loaded.txt");
+    Object.assign(c.env, { TACHI_TEST_LOADED: record });
+    const p = c.run(false, "-p", "hi");
+    expect(await p.closed).toBe(0);
+    expect(c.added(roomName(c.proj))).toHaveLength(1); // the turn was saved, through the stand-ins
+    const loaded = fromTheBuild(record);
+    expect(loaded).toContain(pathToFileURL(path.resolve("tests/standin/memory.mjs")).href);
+    expect(loaded).toContain(new URL("memory/memory.js", BUILD_URL).href);
   });
 
   it("says the line without uv once, in the window, and asks nothing", async () => {
