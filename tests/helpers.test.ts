@@ -62,10 +62,13 @@ function link(kind: Kind, target: string, at: string) {
 }
 
 // A stand-in program working in `folder`, as a killed server works in a test's folder, and its stop, which waits until
-// it has exited.
+// it has exited. It is given back once its own code has run and written a byte: Node's "spawn" comes as soon as Windows
+// has made the process, and the process takes hold of its working folder only as it starts up after that.
 async function standIn(folder: string): Promise<ChildProcess> {
-  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: folder, stdio: "ignore" });
+  const code = "process.stdout.write('1'); setInterval(() => {}, 1000)";
+  const child = spawn(process.execPath, ["-e", code], { cwd: folder, stdio: ["ignore", "pipe", "ignore"] });
   await once(child, "spawn");
+  await once(child.stdout!, "data");
   return child;
 }
 async function stop(child: ChildProcess) {
